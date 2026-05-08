@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CloseSeriesKey {
     pub(crate) len: usize,
+    pub(crate) content_hash: u64,
     pub(crate) host_ptr: usize,
     pub(crate) device_ptr: u64,
 }
@@ -17,7 +18,17 @@ impl CloseSeriesKey {
     pub(crate) fn from_host_and_device(close_f32: &[f32], close_device_ptr: u64) -> Self {
         Self {
             len: close_f32.len(),
+            content_hash: f32_slice_content_hash(close_f32),
             host_ptr: close_f32.as_ptr() as usize,
+            device_ptr: close_device_ptr,
+        }
+    }
+
+    pub(crate) fn from_host_f64_and_device(close_f64: &[f64], close_device_ptr: u64) -> Self {
+        Self {
+            len: close_f64.len(),
+            content_hash: f64_slice_content_hash(close_f64),
+            host_ptr: close_f64.as_ptr() as usize,
             device_ptr: close_device_ptr,
         }
     }
@@ -49,6 +60,24 @@ pub(crate) fn slice_signature<T: Hash>(values: &[T]) -> UploadSignature {
         len: values.len(),
         hash: hasher.finish(),
     }
+}
+
+#[inline]
+pub(crate) fn f32_slice_content_hash(values: &[f32]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for value in values {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+#[inline]
+pub(crate) fn f64_slice_content_hash(values: &[f64]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for value in values {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 pub(crate) fn ensure_device_buffer_len<T: DeviceCopy>(
@@ -110,7 +139,7 @@ pub(crate) fn ensure_host_f32_len(buf: &mut Vec<f32>, required: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_prefix_fits;
+    use super::{ensure_prefix_fits, CloseSeriesKey};
 
     #[test]
     fn ensure_prefix_fits_accepts_in_bounds_copy() {
@@ -122,5 +151,31 @@ mod tests {
     fn ensure_prefix_fits_rejects_oversize_copy() {
         let err = ensure_prefix_fits("copy", 3, 5).expect_err("oversize prefix should fail");
         assert_eq!(err, "copy prefix length 5 exceeds buffer length 3");
+    }
+
+    #[test]
+    fn close_series_key_changes_when_f32_content_changes_at_same_address() {
+        let mut close = vec![1.0_f32, 2.0, 3.0];
+        let first = CloseSeriesKey::from_host_and_device(&close, 123);
+        close[1] = 9.0;
+        let second = CloseSeriesKey::from_host_and_device(&close, 123);
+
+        assert_eq!(first.len, second.len);
+        assert_eq!(first.host_ptr, second.host_ptr);
+        assert_eq!(first.device_ptr, second.device_ptr);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn close_series_key_changes_when_f64_content_changes_at_same_address() {
+        let mut close = vec![1.0_f64, 2.0, 3.0];
+        let first = CloseSeriesKey::from_host_f64_and_device(&close, 456);
+        close[2] = 7.0;
+        let second = CloseSeriesKey::from_host_f64_and_device(&close, 456);
+
+        assert_eq!(first.len, second.len);
+        assert_eq!(first.host_ptr, second.host_ptr);
+        assert_eq!(first.device_ptr, second.device_ptr);
+        assert_ne!(first, second);
     }
 }

@@ -37,6 +37,30 @@ fn specta_bindings_are_current() {
 }
 
 #[test]
+fn specta_binding_allowlist_is_documented_by_generated_output() {
+    let expected_path = command_bindings::default_bindings_path();
+    let expected = std::fs::read_to_string(&expected_path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read {}; run npm --prefix web run gen:bindings first: {error}",
+            expected_path.display()
+        )
+    });
+
+    for command in command_bindings::TYPED_BINDING_COMMANDS {
+        assert!(
+            expected.contains(&format!("TAURI_INVOKE(\"{command}\"")),
+            "typed Specta binding output is missing {command}"
+        );
+    }
+
+    assert_eq!(
+        command_bindings::TYPED_BINDING_COMMANDS.len(),
+        expected.matches("TAURI_INVOKE(\"").count(),
+        "Specta bindings are a narrow typed DTO allowlist; add new commands intentionally"
+    );
+}
+
+#[test]
 #[ignore]
 fn export_specta_bindings() {
     command_bindings::export_bindings_to_default_web_path().expect("export Specta bindings");

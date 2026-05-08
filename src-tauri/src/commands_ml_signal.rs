@@ -144,16 +144,109 @@ fn classify_bundle_status_from_manifest(
     }
 }
 
-fn resolve_bundle_relative_path(manifest_path: &Path, raw: &str) -> PathBuf {
+fn has_nonempty_optional_text(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+}
+
+fn reject_renderer_supplied_score_cache_paths(
+    req: &MlSignalScoreCacheBuildRequest,
+) -> Result<(), String> {
+    if has_nonempty_optional_text(req.source_bundle_manifest_path.as_deref()) {
+        return Err(
+            "source_bundle_manifest_path is resolved by the backend from model_bundle_id."
+                .to_string(),
+        );
+    }
+    if has_nonempty_optional_text(req.native_library_path.as_deref()) {
+        return Err(
+            "native_library_path is resolved by the backend from the model bundle or packaged resources."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn normalize_ml_signal_output_path(
+    raw: &str,
+    expected_ext: &str,
+    field_name: &str,
+) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{field_name} is required"));
+    }
+    let path = PathBuf::from(trimmed);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    if file_name.is_empty() {
+        return Err(format!(
+            "{field_name} must point to a file: {}",
+            path.to_string_lossy()
+        ));
+    }
+    match path.extension().and_then(|value| value.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case(expected_ext) => Ok(path),
+        _ => Err(format!(
+            "{field_name} must use .{expected_ext} extension: {}",
+            path.to_string_lossy()
+        )),
+    }
+}
+
+fn validate_ml_signal_dataset_output_path(raw: &str, state: &AppState) -> Result<String, String> {
+    let path = normalize_ml_signal_output_path(raw, "csv", "output_path")?;
+    state.consume_issued_csv_save_path(&path).map_err(|_| {
+        "ML Signal dataset output path must be selected with the native CSV save dialog."
+            .to_string()
+    })?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn validate_ml_signal_score_cache_output_path(
+    raw: &str,
+    state: &AppState,
+) -> Result<String, String> {
+    let path = normalize_ml_signal_output_path(raw, "json", "output_path")?;
+    state.consume_issued_json_save_path(&path).map_err(|_| {
+        "ML Signal score-cache output path must be selected with the native JSON save dialog."
+            .to_string()
+    })?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn resolve_bundle_relative_path(
+    manifest_path: &Path,
+    raw: &str,
+    field_name: &str,
+) -> Result<PathBuf, String> {
     let candidate = Path::new(raw.trim());
     if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        manifest_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(candidate)
+        return Err(format!(
+            "{field_name} must be relative to the ML model bundle: {}",
+            candidate.display()
+        ));
     }
+    if candidate.components().any(|component| {
+        !matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    }) {
+        return Err(format!(
+            "{field_name} must stay within the ML model bundle: {}",
+            candidate.display()
+        ));
+    }
+    Ok(manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(candidate))
 }
 
 #[cfg(target_os = "windows")]
@@ -253,17 +346,17 @@ fn enrich_score_cache_request_from_source_manifest(
         .filter(|value| !value.is_empty())
         .is_none()
     {
-        req.native_library_path = manifest
+        if let Some(candidate) = manifest
             .native_library_path
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(|value| {
-                resolve_bundle_relative_path(manifest_path, value)
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .filter(|value| Path::new(value).is_file());
+            .map(|value| resolve_bundle_relative_path(manifest_path, value, "native_library_path"))
+            .transpose()?
+            .filter(|value| value.is_file())
+        {
+            req.native_library_path = Some(candidate.to_string_lossy().to_string());
+        }
     }
 
     Ok(())
@@ -280,10 +373,11 @@ fn packaged_ml_signal_native_library_path<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn export_ml_signal_dataset(
-    req: MlSignalDatasetExportRequest,
+    mut req: MlSignalDatasetExportRequest,
     state: tauri::State<'_, AppState>,
 ) -> Result<MlSignalDatasetExportResult, String> {
     let _run_guard = state.try_begin_run()?;
+    req.output_path = validate_ml_signal_dataset_output_path(&req.output_path, &state)?;
     let cancel = state.cancel_token();
     let candles = state.get_candles(&req.data_id)?;
 
@@ -301,6 +395,8 @@ pub async fn generate_ml_signal_score_cache(
     app: tauri::AppHandle,
 ) -> Result<MlSignalScoreCacheBuildResult, String> {
     let _run_guard = state.try_begin_run()?;
+    reject_renderer_supplied_score_cache_paths(&req)?;
+    req.output_path = validate_ml_signal_score_cache_output_path(&req.output_path, &state)?;
     let cancel = state.cancel_token();
     let candles = state.get_candles(&req.data_id)?;
     if req
@@ -565,6 +661,67 @@ mod tests {
         validate_ml_signal_context(Some(&ctx), &loaded).expect("unknown timeframe should bypass");
     }
 
+    #[test]
+    fn ml_signal_output_path_requires_expected_extension() {
+        let csv = normalize_ml_signal_output_path(
+            "C:/exports/ml_signal_dataset.csv",
+            "csv",
+            "output_path",
+        )
+        .expect("csv output path");
+        assert_eq!(csv, PathBuf::from("C:/exports/ml_signal_dataset.csv"));
+
+        let err = normalize_ml_signal_output_path(
+            "C:/exports/ml_signal_score_cache.csv",
+            "json",
+            "output_path",
+        )
+        .expect_err("score cache must be json");
+        assert!(err.contains(".json"));
+    }
+
+    #[test]
+    fn ml_signal_dataset_output_requires_native_csv_save_token() {
+        let state = AppState::default();
+        let path = temp_dir_path("dataset_save_token").join("ml_dataset.csv");
+        let raw = path.to_string_lossy().to_string();
+
+        let err = validate_ml_signal_dataset_output_path(&raw, &state)
+            .expect_err("unissued path should fail");
+        assert!(err.contains("native CSV save dialog"));
+
+        state
+            .record_issued_csv_save_path(path.clone())
+            .expect("record issued csv save path");
+        assert_eq!(
+            validate_ml_signal_dataset_output_path(&raw, &state).expect("issued path accepted"),
+            raw
+        );
+        validate_ml_signal_dataset_output_path(&raw, &state)
+            .expect_err("token should be single use");
+    }
+
+    #[test]
+    fn ml_signal_score_cache_output_requires_native_json_save_token() {
+        let state = AppState::default();
+        let path = temp_dir_path("score_cache_save_token").join("ml_score_cache.json");
+        let raw = path.to_string_lossy().to_string();
+
+        let err = validate_ml_signal_score_cache_output_path(&raw, &state)
+            .expect_err("unissued path should fail");
+        assert!(err.contains("native JSON save dialog"));
+
+        state
+            .record_issued_json_save_path(path.clone())
+            .expect("record issued json save path");
+        assert_eq!(
+            validate_ml_signal_score_cache_output_path(&raw, &state).expect("issued path accepted"),
+            raw
+        );
+        validate_ml_signal_score_cache_output_path(&raw, &state)
+            .expect_err("token should be single use");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn list_ml_signal_model_bundles_does_not_create_missing_models_dir() {
         let app = build_mock_app();
@@ -639,6 +796,30 @@ mod tests {
     }
 
     #[test]
+    fn score_cache_command_rejects_renderer_supplied_source_manifest_path() {
+        let mut req = score_cache_request_template();
+        req.source_bundle_manifest_path = Some("C:/models/bundle-a/manifest.json".to_string());
+
+        let err = reject_renderer_supplied_score_cache_paths(&req)
+            .expect_err("renderer manifest path must be rejected");
+
+        assert!(err.contains("source_bundle_manifest_path"));
+        assert!(err.contains("model_bundle_id"));
+    }
+
+    #[test]
+    fn score_cache_command_rejects_renderer_supplied_native_library_path() {
+        let mut req = score_cache_request_template();
+        req.native_library_path = Some("C:/catboost/catboostmodel.dll".to_string());
+
+        let err = reject_renderer_supplied_score_cache_paths(&req)
+            .expect_err("renderer native path must be rejected");
+
+        assert!(err.contains("native_library_path"));
+        assert!(err.contains("model bundle"));
+    }
+
+    #[test]
     fn enrich_score_cache_request_from_source_manifest_errors_on_invalid_manifest() {
         let dir = temp_dir_path("invalid_source_manifest");
         std::fs::create_dir_all(&dir).expect("create manifest dir");
@@ -650,6 +831,38 @@ mod tests {
             .expect_err("invalid manifest should error");
         assert!(err.contains("read source bundle manifest"));
         assert!(err.contains("manifest.json"));
+
+        let _ = std::fs::remove_file(&manifest_path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enrich_score_cache_request_from_source_manifest_rejects_absolute_native_library() {
+        let dir = temp_dir_path("absolute_native_library");
+        let bundle_dir = dir.join("bundle-a");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        let manifest_path = bundle_dir.join("manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "bundle_id": "bundle-a",
+                "schema_version": 1,
+                "feature_schema_version": 1,
+                "model_family": "catboost_binary_pair",
+                "model_format": "cbm",
+                "long_model_path": "model_long.cbm",
+                "short_model_path": "model_short.cbm",
+                "native_library_path": "C:/catboost/catboostmodel.dll"
+            }))
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+        let mut req = score_cache_request_template();
+
+        let err = enrich_score_cache_request_from_source_manifest(&mut req, &manifest_path)
+            .expect_err("absolute native library path should be rejected");
+        assert!(err.contains("native_library_path"));
+        assert!(err.contains("relative"));
 
         let _ = std::fs::remove_file(&manifest_path);
         let _ = std::fs::remove_dir_all(&dir);

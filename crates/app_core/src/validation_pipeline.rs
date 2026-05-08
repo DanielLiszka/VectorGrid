@@ -1580,14 +1580,14 @@ pub fn select_validation_collection_mode(
 }
 
 fn estimated_window_count(n: usize, start_t: usize, window: usize, step: usize) -> usize {
-    if n < 3 || start_t + 2 > n {
+    if n < 3 || start_t > n.saturating_sub(2) {
         return 0;
     }
     let mut count = 0usize;
     let mut t0 = start_t;
-    while t0 + 2 <= n {
+    while t0 <= n.saturating_sub(2) {
         let end = t0.saturating_add(window).min(n);
-        if end <= t0 + 1 {
+        if end <= t0.saturating_add(1) {
             break;
         }
         count = count.saturating_add(1);
@@ -1709,9 +1709,9 @@ where
     let mut last_disjoint_end = 0usize;
 
     let mut t0 = start_t;
-    while t0 + 2 <= n {
+    while t0 <= n.saturating_sub(2) {
         let end = t0.saturating_add(window).min(n);
-        if end <= t0 + 1 {
+        if end <= t0.saturating_add(1) {
             break;
         }
         if !has_merged_interval {
@@ -1927,13 +1927,13 @@ where
     let mut positive_forward_pnl = 0usize;
 
     let mut t0 = common_start_t;
-    while t0 + 2 < n {
+    while t0 < n.saturating_sub(2) {
         let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
+        if train_end <= t0.saturating_add(1) {
             break;
         }
         let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
+        if test_end <= train_end.saturating_add(1) {
             break;
         }
 
@@ -3313,6 +3313,22 @@ mod tests {
         assert_eq!(stats.windows, 3);
         assert_eq!(stats.effective_windows_upper_bound, Some(1));
         assert_eq!(stats.bars_covered, Some(66));
+    }
+
+    #[test]
+    fn compute_walk_forward_stats_rejects_extreme_start_without_overflow() {
+        let cfg = WalkForwardConfigOptional {
+            window_bars: 64,
+            step_bars: 1,
+        };
+
+        let stats = compute_walk_forward_stats(100, usize::MAX, &cfg, |_start, _end| {
+            panic!("start_t beyond data length must not evaluate windows");
+        });
+
+        assert_eq!(stats.windows, 0);
+        assert_eq!(stats.effective_windows_upper_bound, Some(0));
+        assert_eq!(stats.bars_covered, Some(0));
     }
 
     #[test]

@@ -1322,27 +1322,45 @@ fn cv_group_fold_plan(
     rows: &[DatasetRow],
     k_folds: usize,
 ) -> (usize, usize, Vec<usize>, Vec<usize>) {
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashMap};
 
-    let mut uniq_groups: HashSet<&str> = HashSet::new();
+    let mut group_counts: BTreeMap<&str, usize> = BTreeMap::new();
     for row in rows {
-        uniq_groups.insert(row.cv_group_id.as_str());
+        *group_counts.entry(row.cv_group_id.as_str()).or_insert(0) += 1;
     }
 
-    let uniq_count = uniq_groups.len();
-    let k = k_folds.clamp(2, 10).min(uniq_count.max(2));
+    let uniq_count = group_counts.len();
+    if uniq_count < 2 {
+        return (uniq_count, 0, Vec::new(), Vec::new());
+    }
+
+    let k = k_folds.clamp(2, 10).min(uniq_count);
     let mut fold_counts = vec![0usize; k];
-    let folds = if uniq_count >= 2 && k >= 2 {
-        let mut folds = Vec::with_capacity(rows.len());
-        for row in rows {
-            let fold = (fnv1a64(&row.cv_group_id) % (k as u64)) as usize;
-            fold_counts[fold] += 1;
-            folds.push(fold);
-        }
-        folds
-    } else {
-        Vec::new()
-    };
+    let mut groups: Vec<(&str, usize)> = group_counts.into_iter().collect();
+    groups.sort_by(|(lhs_group, lhs_count), (rhs_group, rhs_count)| {
+        rhs_count
+            .cmp(lhs_count)
+            .then_with(|| fnv1a64(lhs_group).cmp(&fnv1a64(rhs_group)))
+            .then_with(|| lhs_group.cmp(rhs_group))
+    });
+
+    let mut group_to_fold: HashMap<&str, usize> = HashMap::with_capacity(groups.len());
+    for (group_id, row_count) in groups {
+        let fold = (0..k)
+            .min_by_key(|&fold| (fold_counts[fold], fold))
+            .expect("k is at least 2 when groups are assigned");
+        fold_counts[fold] += row_count;
+        group_to_fold.insert(group_id, fold);
+    }
+
+    let folds = rows
+        .iter()
+        .map(|row| {
+            *group_to_fold
+                .get(row.cv_group_id.as_str())
+                .expect("every row group is assigned to a CV fold")
+        })
+        .collect();
     (uniq_count, k, folds, fold_counts)
 }
 
@@ -2011,6 +2029,42 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn cv_group_fold_plan_balances_groups_that_hash_to_same_legacy_fold() {
+        let mut same_legacy_fold: Vec<String> = Vec::new();
+        for idx in 0..256usize {
+            let group_id = format!("legacy-fold-collision-{idx:03}");
+            if fnv1a64(&group_id) % 2 == 0 {
+                same_legacy_fold.push(group_id);
+            }
+            if same_legacy_fold.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(same_legacy_fold.len(), 2);
+        assert_eq!(
+            fnv1a64(&same_legacy_fold[0]) % 2,
+            fnv1a64(&same_legacy_fold[1]) % 2
+        );
+
+        let rows: Vec<MlConfidenceDatasetRow> = same_legacy_fold
+            .iter()
+            .enumerate()
+            .map(|(idx, group_id)| MlConfidenceDatasetRow {
+                group_id: group_id.clone(),
+                cv_group_id: group_id.clone(),
+                x: vec![idx as f64; FEATURE_NAMES.len()],
+                y: if idx == 0 { 0.0 } else { 1.0 },
+            })
+            .collect();
+
+        let (unique_groups, k, fold_ids, fold_counts) = cv_group_fold_plan(&rows, 10);
+        assert_eq!(unique_groups, 2);
+        assert_eq!(k, 2);
+        assert_eq!(fold_counts, vec![1, 1]);
+        assert_ne!(fold_ids[0], fold_ids[1]);
     }
 
     fn mixed_history_scope_cfg_and_artifacts(

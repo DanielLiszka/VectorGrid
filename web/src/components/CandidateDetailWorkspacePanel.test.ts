@@ -136,14 +136,27 @@ describe('CandidateDetailWorkspacePanel', () => {
 
     const rows = document.querySelectorAll<HTMLTableRowElement>('#tradeTableBodyVue tr[data-trade-idx]')
     expect(rows.length).toBe(2)
+    expect(rows[0]?.tabIndex).toBe(0)
+    expect(rows[0]?.getAttribute('aria-label')).toBe('Select trade 1')
 
     rows[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPanel()
     expect(document.querySelector('#tradeTableBodyVue tr.selected')?.getAttribute('data-trade-idx')).toBe('1')
 
+    rows[0]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await flushPanel()
+    expect(document.querySelector('#tradeTableBodyVue tr.selected')?.getAttribute('data-trade-idx')).toBe('0')
+
     expect(await drillClearTradeSelection()).toBeUndefined()
     await flushPanel()
     expect(document.querySelector('#tradeTableBodyVue tr.selected')).toBeNull()
+
+    rows[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+    await flushPanel()
+    expect(document.querySelector('#tradeTableBodyVue tr.selected')?.getAttribute('data-trade-idx')).toBe('1')
+
+    expect(await drillClearTradeSelection()).toBeUndefined()
+    await flushPanel()
 
     expect(await drillNextTrade()).toBeUndefined()
     await flushPanel()

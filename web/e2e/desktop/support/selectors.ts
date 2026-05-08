@@ -1,4 +1,4 @@
-export type WorkspaceKey = 'workflow' | 'library' | 'aggregate' | 'pro' | 'live' | 'settings'
+export type WorkspaceKey = 'workflow' | 'library' | 'aggregate' | 'portfolio' | 'pro' | 'live' | 'settings'
 
 export const shellSelectors = {
   titlebar: '[aria-label="Desktop titlebar"]',

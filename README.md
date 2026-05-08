@@ -13,7 +13,7 @@ This repository is currently published as a **backend/CLI preview**.
 - Do not treat `web/`, `npm run dev`, `npm run build`, `cargo run -p ta_desktop_demo_app`, or Tauri packaging as the public quick-start path for this release.
 - No financial, trading, broker, paper-trading, or live-execution workflow in this repo should be treated as production advice or a production trading system.
 
-Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases. For those signed desktop artifacts, the intended first-run path is Simple Mode: load the bundled synthetic sample or a local CSV, run a CPU-safe optimization, optionally validate, copy the compact summary, or switch to Advanced Mode for detailed exports.
+Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases. The current frontend code defaults to the Advanced workbench and ignores legacy guided/simple mode requests, so the staged Simple Mode release docs are blocked until the UI, tests, runbooks, and public copy are realigned around the actual shipped first-run path.
 
 Website-ready end-user documentation for that signed desktop release path is staged under `docs/public/`. Start with `docs/public/README.md` for the public documentation index, first-run guide, data setup, validation guide, troubleshooting, FAQ, and release-page template.
 
@@ -99,7 +99,7 @@ Broadly, the repo is in a good backend state for the current target set.
 - `VCC` remains parity-gated.
 - `CompositeMo` remains CPU-bound.
 
-The README tracks the public backend coverage status. Internal tracker history and research notes are intentionally kept out of the public source tree.
+The README tracks the public backend coverage status. Planning records, tracker history, and research notes are not part of the supported public surface, even when they remain visible in the repository for transparency.
 
 ## Backend Quick Start
 
@@ -211,7 +211,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run_performance_audit_baseline_
 
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 
-For public contribution, support, security-reporting, privacy, disclaimer, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, `PRIVACY.md`, `DISCLAIMER.md`, and `LICENSE`.
+For public contribution, support, security-reporting, privacy, disclaimer, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, `PRIVACY.md`, `DISCLAIMER.md`, `LICENSE`, and `NOTICE`.
 
 ## Reproduce The Benchmark
 

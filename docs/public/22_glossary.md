@@ -96,7 +96,7 @@ Information describing what actually ran, including CPU/GPU route, fallback reas
 
 ## Simple Mode
 
-The recommended public workflow: load data, choose a streamlined strategy, run optimization, optionally validate, and save/copy a summary.
+The intended recommended public workflow for releases that implement it: load data, choose a streamlined strategy, run optimization, optionally validate, and save/copy a summary. If a release ships the Advanced workbench first, its release notes should define the current first-run path instead.
 
 ## Top-K
 
@@ -109,4 +109,3 @@ Additional evidence after optimization. Validation can include holdout-style che
 ## Walk-Forward
 
 A validation method that evaluates behavior across sequential time windows.
-

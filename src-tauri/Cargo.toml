@@ -3,15 +3,84 @@ name = "ta_desktop_demo_app"
 version = "0.1.0"
 edition = "2021"
 default-run = "ta_desktop_demo_app"
+autobins = false
 
 [lib]
 test = false
 doctest = false
 
+[[bin]]
+name = "ta_desktop_demo_app"
+path = "src/main.rs"
+
+# Public/support CLIs are listed explicitly so maintainer-only harnesses don't
+# become release-visible by accidental file discovery.
+[[bin]]
+name = "ta_release_readiness"
+path = "src/bin/ta_release_readiness.rs"
+
+[[bin]]
+name = "ta_headless_validate"
+path = "src/bin/ta_headless_validate.rs"
+
+[[bin]]
+name = "ta_options_dataset_download"
+path = "src/bin/ta_options_dataset_download.rs"
+
+[[bin]]
+name = "ta_options_dataset_import"
+path = "src/bin/ta_options_dataset_import.rs"
+
+[[bin]]
+name = "ta_options_expression_compare"
+path = "src/bin/ta_options_expression_compare.rs"
+
+[[bin]]
+name = "ta_options_expression_feasibility"
+path = "src/bin/ta_options_expression_feasibility.rs"
+
+[[bin]]
+name = "ta_options_expression_smoke"
+path = "src/bin/ta_options_expression_smoke.rs"
+
+[[bin]]
+name = "ta_options_parent_artifact"
+path = "src/bin/ta_options_parent_artifact.rs"
+
+# Internal harnesses remain buildable by name but are intentionally not
+# auto-discovered.
+[[bin]]
+name = "ta_app_path_faceoff"
+path = "src/bin/ta_app_path_faceoff.rs"
+
+[[bin]]
+name = "ta_campaign_perf"
+path = "src/bin/ta_campaign_perf.rs"
+
+[[bin]]
+name = "ta_double_ma_validation_cost"
+path = "src/bin/ta_double_ma_validation_cost.rs"
+
+[[bin]]
+name = "ta_perf_authority_support"
+path = "src/bin/ta_perf_authority_support.rs"
+
+[[bin]]
+name = "ta_profile_route_matrix"
+path = "src/bin/ta_profile_route_matrix.rs"
+
+[[bin]]
+name = "ta_refactor_snapshots"
+path = "src/bin/ta_refactor_snapshots.rs"
+
+[[bin]]
+name = "ta_workflow_regression"
+path = "src/bin/ta_workflow_regression.rs"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-cuda = ["ta_app_core/cuda", "vector-ta/cuda", "cust"]
+cuda = ["ta_app_core/cuda", "vector-ta/cuda"]
 cuda-backtest-kernel = ["cuda", "ta_app_core/cuda-backtest-kernel"]
 nvtx-profiling = ["ta_app_core/nvtx-profiling"]
 
@@ -21,7 +90,7 @@ serde_json = "1"
 bincode = "1"
 sha2 = "0.10"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri = { version = "2", features = ["tray-icon"] }
 clap = { version = "4.5", features = ["derive"] }
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 specta-typescript = "0.0.9"
@@ -40,7 +109,6 @@ axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
-cust = { version = "0.3", optional = true }
 tauri-plugin-window-state = "2"
 tauri-plugin-log = "2"
 tauri-plugin-notification = "2"
@@ -54,6 +122,9 @@ log = "0.4.29"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 window-vibrancy = "0.7.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 
 [build-dependencies]
 tauri-build = "2"

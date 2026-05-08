@@ -1,5 +1,7 @@
 # First Run And Simple Mode
 
+Draft status: this page is release-candidate copy for a desktop build that implements and verifies Simple Mode. The current checked-in frontend defaults to the Advanced workbench and ignores legacy guided/simple mode requests, so this page must not be published as current end-user instructions until the UI and tests match it.
+
 Simple Mode is the recommended public workflow. It keeps the app focused on one task: run an optimization, optionally validate the selected result, and produce a compact summary.
 
 ## What Simple Mode Supports
@@ -113,4 +115,3 @@ Switch to Advanced Mode when you need:
 - live or paper execution workflows.
 
 Simple Mode should remain the main public path even for advanced users because it is the fastest way to confirm the app works end to end.
-

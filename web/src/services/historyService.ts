@@ -29,7 +29,6 @@ import {
 } from "../utils/core/artifactEvidenceStatus";
 import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { measureArtifactHistoryPerf } from "./artifactHistoryPerf";
-import { openPathWithRevealFallback } from "../utils/openPath";
 import { useAdvancedStore } from "../stores/advancedStore";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useDataStore } from "../stores/dataStore";
@@ -100,8 +99,36 @@ function parseBooleanLike(value: unknown): boolean | null {
 }
 
 function normalizeOptionalNumber(value: unknown): number | null {
-  const parsed = Number(value);
+  if (value == null) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = normalizeText(value);
+  if (!text) return null;
+  const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function requireRecord(value: unknown, context: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${context} payload was malformed.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireSavedRunHydrationPayload(
+  value: unknown,
+): RunArtifactHydrationResponse {
+  const payload = requireRecord(value, "Saved run hydration");
+  const currentRun = requireRecord(
+    payload.currentRun,
+    "Saved run hydration currentRun",
+  );
+  if (!normalizeText(currentRun.ts)) {
+    throw new Error("Saved run hydration currentRun is missing ts.");
+  }
+  if (currentRun.res == null) {
+    throw new Error("Saved run hydration currentRun is missing res.");
+  }
+  return payload as RunArtifactHydrationResponse;
 }
 
 function hasMlSignalDatasetExportShape(
@@ -1743,10 +1770,7 @@ async function loadRunArtifactHydration(
       })) as RunArtifactHydrationResponse;
       return {
         path: nextPath,
-        payload:
-          raw && typeof raw === "object"
-            ? raw
-            : ({} as RunArtifactHydrationResponse),
+        payload: requireSavedRunHydrationPayload(raw),
       };
     },
     {
@@ -1772,10 +1796,10 @@ async function loadRunArtifactDetailRecord(
       })) as RunArtifactDetailResponse;
       return {
         path: nextPath,
-        detail:
-          raw && typeof raw === "object"
-            ? raw
-            : ({} as RunArtifactDetailResponse),
+        detail: requireRecord(
+          raw,
+          "Saved run detail",
+        ) as unknown as RunArtifactDetailResponse,
       };
     },
     {
@@ -1943,7 +1967,7 @@ function normalizeRunArtifactSummary(
     configFingerprintVersion: normalizeOptionalNumber(
       row.config_fingerprint_version,
     ),
-    hasValidation: !!row.has_validation,
+    hasValidation: parseBooleanLike(row.has_validation) === true,
     replayClass: normalizeText(row.replay_class),
     replayReasons: normalizeStringList(row.replay_reasons),
     reportXlsxPath: normalizeText(row.report_xlsx_path),
@@ -1977,7 +2001,10 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
     "historyService.refreshSavedRunsMs",
     async () => {
       const rows = (await invokeCommand("list_run_artifacts")) as unknown;
-      const list = Array.isArray(rows) ? rows : [];
+      if (!Array.isArray(rows)) {
+        throw new Error("Saved run artifact list payload was malformed.");
+      }
+      const list = rows;
       const runs: HistorySavedRunSummary[] = [];
 
       for (const entry of list) {
@@ -2008,10 +2035,7 @@ export async function openRunsDir(): Promise<void> {
 
 export async function loadSavedRun(path: string): Promise<void> {
   const loaded = await loadRunArtifactHydration(path);
-  const payload =
-    loaded.payload && typeof loaded.payload === "object"
-      ? loaded.payload
-      : ({} as RunArtifactHydrationResponse);
+  const payload = loaded.payload;
   applyWorkflowArtifactsPayload(payload, "vue");
 
   const pinia = resolveRuntimePinia();
@@ -2183,16 +2207,9 @@ export async function rerunSavedRun(path: string): Promise<void> {
 }
 
 export async function openSavedRunReport(path: string): Promise<void> {
-  const detail = await loadSavedRunDetail(path);
-  const reportPath = normalizePath(detail.reportPath);
-  if (detail.reportPathExists === false) {
-    throw new Error("Saved run report file no longer exists on disk.");
-  }
-  if (!reportPath)
-    throw new Error(
-      "No report path for this saved run yet (run validation + export XLSX).",
-    );
-  await openPathWithRevealFallback(reportPath);
+  const nextPath = normalizePath(path);
+  if (!nextPath) throw new Error("Select a saved run first.");
+  await invokeCommand("open_run_artifact_report", { path: nextPath });
 }
 
 export async function revealSavedRun(path: string): Promise<void> {
@@ -2205,6 +2222,12 @@ export async function deleteSavedRun(path: string): Promise<void> {
   const nextPath = normalizePath(path);
   if (!nextPath) return;
   await invokeCommand("delete_run_artifact", { path: nextPath });
+  const pinia = resolveRuntimePinia();
+  if (!pinia) return;
+  const artifacts = useWorkflowArtifactsStore(pinia);
+  if (normalizePath(artifacts.currentRun?.artifactPath || "") === nextPath) {
+    artifacts.clearArtifacts();
+  }
 }
 
 function defaultRepairTargetPath(path: string): string {
@@ -2348,7 +2371,7 @@ export async function loadSavedRunDetail(
         (detail as unknown as Record<string, unknown>).reportPathExists ??
         (detail as unknown as Record<string, unknown>).report_path_exists,
     ),
-    hasValidation: !!detail.hasValidation,
+    hasValidation: parseBooleanLike(detail.hasValidation) === true,
     replayClass: normalizeText(
       (detail as unknown as Record<string, unknown>).replayClass ??
         (detail as unknown as Record<string, unknown>).replay_class,

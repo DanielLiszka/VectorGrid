@@ -1,7 +1,7 @@
 import { invokeCommand } from "../tauri/invoke";
 import {
-  parseBoundaryArray,
-  parseBoundaryObject,
+  requireBoundaryArray,
+  requireBoundaryObject,
 } from "./serviceBoundarySchemas";
 
 export type PortfolioEvidenceStatus =
@@ -112,6 +112,22 @@ function integer(value: unknown, fallback = 0): number {
   return Math.max(0, Math.floor(parsed));
 }
 
+function requiredInteger(value: unknown, field: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Portfolio feasibility response field '${field}' must be a finite number.`);
+  }
+  return Math.max(0, Math.floor(parsed));
+}
+
+function requiredText(value: unknown, field: string): string {
+  const normalized = text(value);
+  if (!normalized) {
+    throw new Error(`Portfolio feasibility response field '${field}' must be a non-empty string.`);
+  }
+  return normalized;
+}
+
 function maybeNumber(value: unknown): number | null {
   if (value == null) return null;
   const parsed = Number(value);
@@ -140,7 +156,7 @@ function normalizeStatus(value: unknown): PortfolioEvidenceStatus {
     case "unsupported_candidate_family":
       return normalized;
     default:
-      return "insufficient_covariance_evidence";
+      throw new Error(`Unknown portfolio feasibility status: '${normalized}'.`);
   }
 }
 
@@ -154,7 +170,7 @@ function normalizeSourceRole(value: unknown): PortfolioSourceRole {
     case "unknown":
       return normalized;
     default:
-      return "unknown";
+      throw new Error(`Unknown portfolio source role: '${normalized}'.`);
   }
 }
 
@@ -167,7 +183,7 @@ function normalizeAssetClass(value: unknown): PortfolioAssetClass {
     case "unknown":
       return normalized;
     default:
-      return "unknown";
+      throw new Error(`Unknown portfolio asset class: '${normalized}'.`);
   }
 }
 
@@ -180,12 +196,12 @@ function normalizeReplayStatus(value: unknown): PortfolioReplayEvidenceStatus {
     case "not_applicable":
       return normalized;
     default:
-      return "missing_replay_matrix";
+      throw new Error(`Unknown portfolio replay status: '${normalized}'.`);
   }
 }
 
 function normalizeAdmission(raw: unknown): PortfolioAdmissionEvidence {
-  const row = parseBoundaryObject(raw);
+  const row = requireBoundaryObject(raw, "portfolio admission evidence");
   return {
     validationPassed: maybeBool(row.validation_passed),
     runApproved: maybeBool(row.run_approved),
@@ -202,7 +218,7 @@ function normalizeAdmission(raw: unknown): PortfolioAdmissionEvidence {
 }
 
 function normalizeMetrics(raw: unknown): PortfolioSummaryMetrics {
-  const row = parseBoundaryObject(raw);
+  const row = requireBoundaryObject(raw, "portfolio summary metrics");
   return {
     pnl: maybeNumber(row.pnl),
     sharpe: maybeNumber(row.sharpe),
@@ -218,15 +234,15 @@ function normalizeMetrics(raw: unknown): PortfolioSummaryMetrics {
 }
 
 function normalizeCandidate(raw: unknown): PortfolioCandidateEvidence {
-  const row = parseBoundaryObject(raw);
+  const row = requireBoundaryObject(raw, "portfolio candidate evidence");
   return {
-    candidateId: text(row.candidate_id),
-    sourceArtifactIndex: integer(row.source_artifact_index),
+    candidateId: requiredText(row.candidate_id, "candidate_id"),
+    sourceArtifactIndex: requiredInteger(row.source_artifact_index, "source_artifact_index"),
     sourceRole: normalizeSourceRole(row.source_role),
-    strategyKind: text(row.strategy_kind),
-    symbolRoot: text(row.symbol_root),
-    timeframe: text(row.timeframe),
-    paramsHash: text(row.params_hash),
+    strategyKind: requiredText(row.strategy_kind, "strategy_kind"),
+    symbolRoot: requiredText(row.symbol_root, "symbol_root"),
+    timeframe: requiredText(row.timeframe, "timeframe"),
+    paramsHash: requiredText(row.params_hash, "params_hash"),
     assetClass: normalizeAssetClass(row.asset_class),
     admission: normalizeAdmission(row.admission),
     summaryMetrics: normalizeMetrics(row.summary_metrics),
@@ -235,45 +251,53 @@ function normalizeCandidate(raw: unknown): PortfolioCandidateEvidence {
 }
 
 function normalizeRejectedCandidate(raw: unknown): PortfolioRejectedCandidate {
-  const row = parseBoundaryObject(raw);
+  const row = requireBoundaryObject(raw, "portfolio rejected candidate");
   return {
-    candidateId: text(row.candidate_id),
-    sourceArtifactIndex: integer(row.source_artifact_index),
+    candidateId: requiredText(row.candidate_id, "candidate_id"),
+    sourceArtifactIndex: requiredInteger(row.source_artifact_index, "source_artifact_index"),
     sourceRole: normalizeSourceRole(row.source_role),
-    reason: text(row.reason),
+    reason: requiredText(row.reason, "reason"),
   };
 }
 
 function normalizeMissingEvidence(raw: unknown): PortfolioMissingEvidence {
-  const row = parseBoundaryObject(raw);
+  const row = requireBoundaryObject(raw, "portfolio missing evidence");
   const index =
     row.source_artifact_index == null ? null : integer(row.source_artifact_index);
   return {
     sourceArtifactIndex: index,
-    candidateId: text(row.candidate_id),
-    evidenceKind: text(row.evidence_kind),
-    message: text(row.message),
+    candidateId: requiredText(row.candidate_id, "candidate_id"),
+    evidenceKind: requiredText(row.evidence_kind, "evidence_kind"),
+    message: requiredText(row.message, "message"),
   };
 }
 
 export function normalizePortfolioFeasibilityResult(
   raw: unknown,
 ): PortfolioFeasibilityResult {
-  const row = parseBoundaryObject(raw);
+  const row = requireBoundaryObject(raw, "portfolio feasibility response");
   return {
-    version: integer(row.version, 1),
+    version: requiredInteger(row.version, "version"),
     status: normalizeStatus(row.status),
-    sourceArtifactsSeen: integer(row.source_artifacts_seen),
-    eligibleCandidates: parseBoundaryArray(row.eligible_candidates).map(
-      normalizeCandidate,
+    sourceArtifactsSeen: requiredInteger(
+      row.source_artifacts_seen,
+      "source_artifacts_seen",
     ),
-    rejectedCandidates: parseBoundaryArray(row.rejected_candidates).map(
-      normalizeRejectedCandidate,
-    ),
-    missingEvidence: parseBoundaryArray(row.missing_evidence).map(
-      normalizeMissingEvidence,
-    ),
-    warnings: parseBoundaryArray(row.warnings).map(text).filter(Boolean),
+    eligibleCandidates: requireBoundaryArray(
+      row.eligible_candidates,
+      "portfolio eligible_candidates",
+    ).map(normalizeCandidate),
+    rejectedCandidates: requireBoundaryArray(
+      row.rejected_candidates,
+      "portfolio rejected_candidates",
+    ).map(normalizeRejectedCandidate),
+    missingEvidence: requireBoundaryArray(
+      row.missing_evidence,
+      "portfolio missing_evidence",
+    ).map(normalizeMissingEvidence),
+    warnings: requireBoundaryArray(row.warnings, "portfolio warnings")
+      .map(text)
+      .filter(Boolean),
     nextRequiredStep: text(row.next_required_step),
   };
 }
@@ -297,4 +321,3 @@ export async function analyzePortfolioFeasibility(
   });
   return normalizePortfolioFeasibilityResult(raw);
 }
-

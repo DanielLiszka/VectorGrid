@@ -22,7 +22,8 @@ describe("providerErrorTaxonomy", () => {
       classifyPolygonProviderError("Polygon returned no aggregate bars").kind,
     ).toBe("empty_valid_window");
     expect(
-      classifyPolygonProviderError("Polygon returned an unexpected payload").kind,
+      classifyPolygonProviderError("Polygon returned an unexpected payload")
+        .kind,
     ).toBe("provider_schema_changed");
     expect(classifyPolygonProviderError("request timed out").kind).toBe(
       "network_transient",
@@ -36,9 +37,21 @@ describe("providerErrorTaxonomy", () => {
     expect(formatPolygonProviderErrorMessage("HTTP 429", "fallback")).toContain(
       "rate limit reached",
     );
-    expect(formatPolygonProviderErrorMessage("custom [redacted]", "fallback")).toBe(
-      "custom [redacted]",
-    );
+    expect(
+      formatPolygonProviderErrorMessage("custom [redacted]", "fallback"),
+    ).toBe("custom [redacted]");
     expect(formatPolygonProviderErrorMessage("", "fallback")).toBe("fallback");
+  });
+
+  it("redacts credentials before preserving unknown provider text", () => {
+    const message = formatPolygonProviderErrorMessage(
+      "provider failed: apiKey=pk_live_secret Authorization: Bearer abcdefghijk",
+      "fallback",
+    );
+
+    expect(message).toContain("apiKey=[redacted]");
+    expect(message).toContain("Authorization: [redacted]");
+    expect(message).not.toContain("pk_live_secret");
+    expect(message).not.toContain("abcdefghijk");
   });
 });

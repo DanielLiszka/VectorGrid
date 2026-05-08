@@ -620,6 +620,7 @@ defineExpose({ exportPng, repaint })
         id="heatmapCanvasStackVue"
         ref="stackRef"
         class="heatmapCanvasStack chartSurface"
+        role="group"
         :aria-label="ariaLabel"
         aria-describedby="heatmapKeyboardHint"
         :class="{ zoomed: viewportZoomed, panning: isPanning }"
@@ -650,7 +651,7 @@ defineExpose({ exportPng, repaint })
       <div class="heatmapLegendRow">
         <HeatmapLegend ref="legendRef" :note="renderModel?.displayLegendNote || ''" />
         <div>
-          <label>&nbsp;</label>
+          <div class="heatmapLegendSpacer" aria-hidden="true"></div>
           <div class="panelMuted heatmapLegendNote">
             Select a Top result for exact retained candidates, or click a populated cell for representative heatmap-region candidate detail. Markers and crosshair stay on for both paths.
           </div>
@@ -807,6 +808,10 @@ defineExpose({ exportPng, repaint })
 
 .heatmapLegendNote {
   margin-top: 0.5rem;
+}
+
+.heatmapLegendSpacer {
+  min-height: 1.1rem;
 }
 
 .mono {

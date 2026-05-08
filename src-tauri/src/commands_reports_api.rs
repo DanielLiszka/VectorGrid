@@ -111,7 +111,7 @@ where
 
 #[tauri::command]
 pub async fn reveal_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let path = validate_shell_open_path(&app, &path, ShellOpenPurpose::GenericReveal)?;
+    let path = validate_generic_or_market_folder(&app, &path, ShellOpenPurpose::GenericReveal)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .reveal_item_in_dir(path)
@@ -120,11 +120,25 @@ pub async fn reveal_path(path: String, app: tauri::AppHandle) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn open_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let path = validate_shell_open_path(&app, &path, ShellOpenPurpose::GenericOpen)?;
+    let path = validate_generic_or_market_folder(&app, &path, ShellOpenPurpose::GenericOpen)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+fn validate_generic_or_market_folder<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &str,
+    purpose: ShellOpenPurpose,
+) -> Result<std::path::PathBuf, String> {
+    match validate_shell_open_path(app, path, purpose) {
+        Ok(path) => Ok(path),
+        Err(generic_error) => {
+            validate_shell_open_path(app, path, ShellOpenPurpose::MarketDataFolderOpen)
+                .map_err(|_| generic_error)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -83,7 +83,6 @@ impl TradeRecords {
     }
 
     pub fn len(&self) -> usize {
-        self.debug_assert_consistent_lengths();
         self.col.len()
     }
 
@@ -107,18 +106,14 @@ impl TradeRecords {
     }
 
     pub fn get(&self, i: usize) -> Option<TradeRecord> {
-        self.debug_assert_consistent_lengths();
-        if i >= self.len() {
-            return None;
-        }
         Some(TradeRecord {
-            col: self.col[i],
-            entry_t: self.entry_t[i],
-            exit_t: self.exit_t[i],
-            direction: self.direction[i],
-            pnl: self.pnl[i],
-            bars: self.bars[i],
-            open: self.open[i],
+            col: *self.col.get(i)?,
+            entry_t: *self.entry_t.get(i)?,
+            exit_t: *self.exit_t.get(i)?,
+            direction: *self.direction.get(i)?,
+            pnl: *self.pnl.get(i)?,
+            bars: *self.bars.get(i)?,
+            open: *self.open.get(i)?,
         })
     }
 
@@ -135,47 +130,46 @@ impl TradeRecords {
     }
 
     pub fn try_push_trade(&mut self, col: u32, trade: &Trade) -> Result<(), String> {
+        self.validate()?;
         let rec = TradeRecord::try_from_trade(col, trade)?;
         self.push_record(rec);
         Ok(())
     }
 
     pub fn try_extend_trades(&mut self, col: u32, trades: &[Trade]) -> Result<(), String> {
-        self.debug_assert_consistent_lengths();
-        self.col.reserve(trades.len());
-        self.entry_t.reserve(trades.len());
-        self.exit_t.reserve(trades.len());
-        self.direction.reserve(trades.len());
-        self.pnl.reserve(trades.len());
-        self.bars.reserve(trades.len());
-        self.open.reserve(trades.len());
-        for tr in trades {
-            self.try_push_trade(col, tr)?;
+        self.validate()?;
+        let records = trades
+            .iter()
+            .map(|trade| TradeRecord::try_from_trade(col, trade))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.col.reserve(records.len());
+        self.entry_t.reserve(records.len());
+        self.exit_t.reserve(records.len());
+        self.direction.reserve(records.len());
+        self.pnl.reserve(records.len());
+        self.bars.reserve(records.len());
+        self.open.reserve(records.len());
+        for record in records {
+            self.push_record(record);
         }
         self.debug_assert_consistent_lengths();
         Ok(())
     }
 
     pub fn to_trades_for_col(&self, col: u32) -> Vec<Trade> {
-        self.debug_assert_consistent_lengths();
         let mut out: Vec<Trade> = Vec::new();
-        for i in 0..self.len() {
-            if self.col[i] == col {
-                out.push(Trade {
-                    entry_t: self.entry_t[i] as usize,
-                    exit_t: self.exit_t[i] as usize,
-                    direction: self.direction[i],
-                    pnl: self.pnl[i],
-                    bars: self.bars[i],
-                    open: self.open[i],
-                });
+        for i in 0..self.col.len() {
+            if let Some(record) = self.get(i) {
+                if record.col == col {
+                    out.push(record.to_trade());
+                }
             }
         }
         out
     }
 
     pub fn trade_stats_for_col(&self, col: u32) -> Option<TradeStats> {
-        self.debug_assert_consistent_lengths();
         let mut open_trades: usize = 0;
         let mut closed_trades: usize = 0;
         let mut wins: usize = 0;
@@ -186,16 +180,19 @@ impl TradeRecords {
         let mut sum_loss_count: usize = 0;
         let mut sum_all: f64 = 0.0;
 
-        for i in 0..self.len() {
-            if self.col[i] != col {
+        for i in 0..self.col.len() {
+            let Some(record) = self.get(i) else {
+                continue;
+            };
+            if record.col != col {
                 continue;
             }
-            if self.open[i] {
+            if record.open {
                 open_trades += 1;
                 continue;
             }
             closed_trades += 1;
-            let r = self.pnl[i];
+            let r = record.pnl;
             sum_all += r;
             if r > 0.0 {
                 wins += 1;
@@ -428,11 +425,36 @@ mod tests {
     }
 
     #[test]
-    fn trade_records_get_panics_when_col_outpaces_sibling_columns() {
+    fn trade_records_get_returns_none_when_col_outpaces_sibling_columns() {
         let mut recs = TradeRecords::default();
         recs.col.push(42);
 
-        let result = std::panic::catch_unwind(|| recs.get(0));
-        assert!(result.is_err());
+        assert_eq!(recs.get(0), None);
+        assert!(recs.to_trades_for_col(42).is_empty());
+        assert!(recs.trade_stats_for_col(42).is_none());
+    }
+
+    #[test]
+    fn trade_records_extend_rejects_invalid_existing_state_without_appending() {
+        let mut recs = TradeRecords::default();
+        recs.col.push(42);
+
+        let err = recs
+            .try_push_trade(
+                42,
+                &Trade {
+                    entry_t: 0,
+                    exit_t: 1,
+                    direction: 1,
+                    pnl: 0.1,
+                    bars: 1,
+                    open: false,
+                },
+            )
+            .expect_err("invalid existing state should be rejected");
+
+        assert!(err.contains("length mismatch"), "{err}");
+        assert_eq!(recs.col.len(), 1);
+        assert!(recs.entry_t.is_empty());
     }
 }

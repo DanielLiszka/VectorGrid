@@ -17,6 +17,7 @@ const props = withDefaults(
     icon?: AppIcon | null
     iconOnly?: boolean
     ariaLabel?: string
+    title?: string
   }>(),
   {
     type: 'button',
@@ -29,15 +30,22 @@ const props = withDefaults(
     icon: null,
     iconOnly: false,
     ariaLabel: '',
+    title: '',
   },
 )
 
 const attrs = useAttrs()
 const buttonDisabled = computed(() => props.disabled || props.loading)
-const resolvedTitle = computed(() => (buttonDisabled.value ? String(props.disabledReason || '').trim() : ''))
+const resolvedTitle = computed(() => {
+  const disabledReason = String(props.disabledReason || '').trim()
+  if (buttonDisabled.value && disabledReason) return disabledReason
+  return String(props.title || '').trim()
+})
 const resolvedAriaLabel = computed(() => {
   const label = String(props.ariaLabel || '').trim()
   if (label) return label
+  const title = String(props.title || '').trim()
+  if (props.iconOnly && title) return title
   return props.iconOnly ? String(props.disabledReason || '').trim() || undefined : undefined
 })
 const resolvedLoadingLabel = computed(() => String(props.loadingLabel || '').trim() || 'Loading')

@@ -19,6 +19,11 @@ use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 use tauri::{Listener, Manager};
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Clone, Copy, Debug)]
 struct U32Range {
     start: u32,
@@ -128,7 +133,7 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     validation_max_candidates: usize,
 
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     cleanup_artifacts: bool,
 }
 
@@ -401,9 +406,10 @@ fn parse_progress_event(payload: &str, trial_started: Instant) -> Option<Progres
 }
 
 fn cleanup_campaign_outputs(
+    app_local_data_dir: &Path,
     summary_path: &Path,
     response: &ta_desktop_demo_app::commands::RunResearchCampaignResponse,
-) {
+) -> Result<usize, String> {
     let mut paths = vec![summary_path.to_path_buf()];
     for item in &response.summary.items {
         if let Some(path) = item.artifact_path.as_ref() {
@@ -419,9 +425,57 @@ fn cleanup_campaign_outputs(
     if let Some(path) = response.summary.stage5_json_path.as_ref() {
         paths.push(PathBuf::from(path));
     }
+    let mut removed = 0usize;
     for path in paths {
-        let _ = fs::remove_file(path);
+        if cleanup_campaign_output_path(app_local_data_dir, &path)? {
+            removed = removed.saturating_add(1);
+        }
     }
+    Ok(removed)
+}
+
+fn cleanup_campaign_output_path(app_local_data_dir: &Path, path: &Path) -> Result<bool, String> {
+    let root = app_local_data_dir.canonicalize().map_err(|e| {
+        format!(
+            "failed to resolve app data dir {}: {e}",
+            app_local_data_dir.display()
+        )
+    })?;
+    let canonical = match path.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "failed to resolve cleanup path {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    if !canonical.starts_with(&root) {
+        return Err(format!(
+            "refusing to cleanup campaign artifact outside app data dir: {}",
+            canonical.display()
+        ));
+    }
+    let metadata = fs::metadata(&canonical).map_err(|e| {
+        format!(
+            "failed to inspect cleanup path {}: {e}",
+            canonical.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "refusing to cleanup non-file campaign artifact: {}",
+            canonical.display()
+        ));
+    }
+    fs::remove_file(&canonical).map_err(|e| {
+        format!(
+            "failed to remove campaign artifact {}: {e}",
+            canonical.display()
+        )
+    })?;
+    Ok(true)
 }
 
 fn artifact_string(value: Option<&Value>) -> Option<String> {
@@ -616,6 +670,7 @@ fn summarize_prefetch_economics(trials: &[TrialArtifact]) -> PrefetchEconomicsSu
 }
 
 fn main() -> Result<(), String> {
+    let _benchmark_guard = benchmark_lock::acquire("ta_campaign_perf")?;
     let cli = Cli::parse();
     if cli.measured_trials == 0 {
         return Err("--measured-trials must be >= 1".to_string());
@@ -637,10 +692,6 @@ fn main() -> Result<(), String> {
         .collect::<Result<_, _>>()?;
     if datasets.len() < 2 {
         return Err("campaign perf requires at least two datasets".to_string());
-    }
-
-    if let Some(parent) = cli.output_json.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
     let app = tauri::Builder::default()
@@ -712,7 +763,7 @@ fn main() -> Result<(), String> {
         let dataset_routes = load_dataset_routes(&response);
         let summary_path = PathBuf::from(&response.summary_json_path);
         if cli.cleanup_artifacts {
-            cleanup_campaign_outputs(&summary_path, &response);
+            cleanup_campaign_outputs(&app_local_data_dir, &summary_path, &response)?;
         }
 
         if trial_index >= cli.warmup_trials {
@@ -773,11 +824,8 @@ fn main() -> Result<(), String> {
         measured_trials_detail: measured,
     };
 
-    fs::write(
-        &cli.output_json,
-        serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
+    atomic_output::write_str(&cli.output_json, &json).map_err(|e| e.to_string())?;
 
     println!(
         "wrote {} summary to {}",
@@ -790,7 +838,8 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        summarize_prefetch_economics, DatasetRouteArtifact, PrefetchEconomicsSummary, TrialArtifact,
+        cleanup_campaign_output_path, summarize_prefetch_economics, DatasetRouteArtifact,
+        PrefetchEconomicsSummary, TrialArtifact,
     };
 
     fn route(label: &str, outcome: Option<&str>, wall_ms: Option<f64>) -> DatasetRouteArtifact {
@@ -885,5 +934,40 @@ mod tests {
                 mean_stage_cost_vs_prepare_wait_frac: Some(0.25),
             }
         );
+    }
+
+    #[test]
+    fn cleanup_campaign_output_path_refuses_outside_app_data() {
+        let temp_root = std::env::temp_dir()
+            .join("vectorgrid_campaign_cleanup_test")
+            .join(format!("{}", std::process::id()));
+        let app_dir = temp_root.join("app");
+        let outside_dir = temp_root.join("outside");
+        std::fs::create_dir_all(&app_dir).expect("app dir");
+        std::fs::create_dir_all(&outside_dir).expect("outside dir");
+        let outside_file = outside_dir.join("artifact.json");
+        std::fs::write(&outside_file, b"{}").expect("outside file");
+
+        let err = cleanup_campaign_output_path(&app_dir, &outside_file)
+            .expect_err("outside cleanup should be rejected");
+        assert!(err.contains("outside app data dir"));
+        assert!(outside_file.exists());
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn cleanup_campaign_output_path_removes_files_inside_app_data() {
+        let temp_root = std::env::temp_dir()
+            .join("vectorgrid_campaign_cleanup_inside_test")
+            .join(format!("{}", std::process::id()));
+        let app_dir = temp_root.join("app");
+        std::fs::create_dir_all(&app_dir).expect("app dir");
+        let artifact = app_dir.join("artifact.json");
+        std::fs::write(&artifact, b"{}").expect("artifact");
+
+        let removed = cleanup_campaign_output_path(&app_dir, &artifact).expect("cleanup");
+        assert!(removed);
+        assert!(!artifact.exists());
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }

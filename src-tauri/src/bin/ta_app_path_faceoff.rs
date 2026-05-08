@@ -10,6 +10,11 @@ use ta_desktop_demo_app::state::AppState;
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Debug, Serialize)]
 struct EnvironmentFingerprint {
     hostname: String,
@@ -915,6 +920,7 @@ fn run_cold_state_trial(
 }
 
 fn main() -> Result<(), String> {
+    let _benchmark_guard = benchmark_lock::acquire("ta_app_path_faceoff")?;
     let cli = Cli::parse();
     let cache_dir = cli
         .cache_dir
@@ -1049,16 +1055,8 @@ fn main() -> Result<(), String> {
         generated_at_utc: chrono::Utc::now().to_rfc3339(),
     };
 
-    if let Some(parent) = cli.output_json.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "failed to create output dir {}: {e}",
-                parent.to_string_lossy()
-            )
-        })?;
-    }
     let json = serde_json::to_string_pretty(&artifact).map_err(|e| e.to_string())?;
-    std::fs::write(&cli.output_json, json).map_err(|e| {
+    atomic_output::write_str(&cli.output_json, &json).map_err(|e| {
         format!(
             "failed to write output json {}: {e}",
             cli.output_json.to_string_lossy()

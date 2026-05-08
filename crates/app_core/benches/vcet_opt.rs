@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -293,4 +296,4 @@ criterion_group!(
     bench_vcet_gpu_kernel,
     bench_vcet_gpu_kernel_contract_split
 );
-criterion_main!(vcet_benches);
+serialized_criterion_main!(vcet_benches);

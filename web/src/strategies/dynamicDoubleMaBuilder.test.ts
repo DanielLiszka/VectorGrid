@@ -73,6 +73,51 @@ describe('dynamicDoubleMaBuilder', () => {
     expect(ir.execution.strategy.allow_flip).toBe(false)
   })
 
+  it('normalizes percent-style risk overlay fields before building strategy_ir', () => {
+    const builder = createDefaultDynamicDoubleMaBuilderState(sampleCatalog)
+    builder.stopLossPct = '5'
+    builder.takeProfitPct = '0.025'
+
+    const ir = buildDynamicDoubleMaStrategyIrFromBuilder({
+      fastMaType: 'sma',
+      slowMaType: 'alma',
+      fastMaParams: null,
+      slowMaParams: null,
+      builder,
+    })
+
+    expect(ir.execution.strategy.stop_loss_pct).toBe(0.05)
+    expect(ir.execution.strategy.take_profit_pct).toBe(0.025)
+  })
+
+  it('rejects invalid risk overlay fields and malformed indicator params', () => {
+    const builder = createDefaultDynamicDoubleMaBuilderState(sampleCatalog)
+    builder.stopLossPct = '100'
+
+    expect(() =>
+      buildDynamicDoubleMaStrategyIrFromBuilder({
+        fastMaType: 'sma',
+        slowMaType: 'alma',
+        fastMaParams: null,
+        slowMaParams: null,
+        builder,
+      }),
+    ).toThrow(/less than 100%/)
+
+    const malformed = createDefaultDynamicDoubleMaBuilderState(sampleCatalog)
+    malformed.indicators[0]!.params.length = { kind: 'int', value: Number.NaN }
+
+    expect(() =>
+      buildDynamicDoubleMaStrategyIrFromBuilder({
+        fastMaType: 'sma',
+        slowMaType: 'alma',
+        fastMaParams: null,
+        slowMaParams: null,
+        builder: malformed,
+      }),
+    ).toThrow(/not a finite number/)
+  })
+
   it('restores default short-side bindings when long-only is disabled', () => {
     const builder = createDefaultDynamicDoubleMaBuilderState(sampleCatalog)
     setDynamicDoubleMaBuilderLongOnly(builder, false)

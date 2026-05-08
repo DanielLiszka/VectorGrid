@@ -144,6 +144,15 @@ describe('validation store actions', () => {
     expect(store.reoptWfEnable).toBe(false)
   })
 
+  it('keeps the walk-forward step default when hydrating empty legacy snapshots', () => {
+    const store = useValidationStore()
+    store.wfStep = ''
+
+    store.applyLegacySnapshot({} as never)
+
+    expect(store.wfStep).toBe('5000')
+  })
+
   it('dispatches validate and export actions', async () => {
     const store = useValidationStore()
     store.runValidation()
@@ -172,6 +181,39 @@ describe('validation store actions', () => {
     expect(runValidationMock).toHaveBeenCalled()
     expect(store.statusLine).toBe('Validation failed: Error: dataset mismatch')
     expect(store.validationHint).toBe('Validation failed: Error: dataset mismatch')
+    expect(store.source).toBe('vue')
+  })
+
+  it('keeps export service rejections inside store state', async () => {
+    const store = useValidationStore()
+
+    exportShortlistCsvMock.mockRejectedValueOnce(new Error('csv denied'))
+    store.exportShortlistCsv()
+    await flushServiceImports()
+    expect(store.statusLine).toBe(
+      'Shortlist CSV export failed: Error: csv denied',
+    )
+
+    exportValidationJsonMock.mockRejectedValueOnce(new Error('json denied'))
+    store.exportValidationJson()
+    await flushServiceImports()
+    expect(store.statusLine).toBe(
+      'Validation JSON export failed: Error: json denied',
+    )
+
+    exportReportJsonMock.mockRejectedValueOnce(new Error('report denied'))
+    store.exportReportJson()
+    await flushServiceImports()
+    expect(store.statusLine).toBe(
+      'Report JSON export failed: Error: report denied',
+    )
+
+    exportReportXlsxMock.mockRejectedValueOnce(new Error('xlsx denied'))
+    store.exportReportXlsx()
+    await flushServiceImports()
+    expect(store.statusLine).toBe(
+      'Report XLSX export failed: Error: xlsx denied',
+    )
     expect(store.source).toBe('vue')
   })
 

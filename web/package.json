@@ -16,6 +16,7 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json",
     "typecheck:desktop": "tsc --noEmit -p tsconfig.wdio.json",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
     "parity": "node ./scripts/check-tauri-parity.mjs",
     "check:tauri-command-risk-policy": "node ./scripts/check-tauri-command-risk-policy.mjs",
     "check:node-reproducibility": "node ../scripts/check_node_reproducibility.mjs",

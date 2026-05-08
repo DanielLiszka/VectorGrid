@@ -4,6 +4,8 @@ This folder contains public-facing documentation for VectorGrid website pages, r
 
 These pages describe the intended signed Windows desktop release surface. Until a signed installer is published, treat them as release-candidate public docs rather than proof that a public desktop artifact already exists.
 
+Publication blocker: the current checked-in Vue frontend defaults to the Advanced workbench and ignores legacy guided/simple mode requests. Do not publish the Simple Mode pages as end-user instructions until Simple Mode is implemented or restored, covered by frontend tests, and verified by clean-machine release smoke evidence. If the first public desktop release ships the Advanced workbench instead, update this documentation set before publishing.
+
 ## Start Here
 
 | Page | Audience | Purpose |
@@ -39,7 +41,7 @@ VectorGrid is local-first research software for strategy optimization and valida
 The public message should stay grounded in four facts:
 
 - The app is research and analysis software, not financial advice.
-- Simple Mode is the recommended first-run workflow.
+- Simple Mode is the intended first-run workflow only for a release that implements and verifies it.
 - CPU-only builds are the broadest compatibility path.
 - GPU builds are variant-specific and require clear driver/runtime expectations.
 
@@ -62,7 +64,7 @@ Do not present benchmark numbers, GPU support, live execution, options workflows
 This public docs pack covers the major user-facing surfaces:
 
 - Installation and release integrity: requirements, hashes, signatures, SmartScreen, WebView2, updates, uninstall.
-- First-run path: Simple Mode, bundled synthetic sample, local CSV, optimization, optional validation, Markdown summary.
+- First-run path: Simple Mode draft, bundled synthetic sample, local CSV, optimization, optional validation, Markdown summary.
 - Data: CSV format, binary cache, Polygon.io historical data, Polygon cache validation/repair/top-off, live stock streams.
 - Research workflow: strategy families, CPU/GPU route labels, Top-K, heatmaps, include-all/export-all, validation modules, evidence interpretation.
 - Outputs: saved artifacts, replay classes, reports, JSON/CSV/XLSX/Markdown exports, local cleanup.

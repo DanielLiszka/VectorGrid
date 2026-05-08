@@ -36,8 +36,8 @@ defineExpose({ paint })
 </script>
 
 <template>
-  <div class="heatmapLegendBlock">
-    <label>{{ label }}</label>
+  <div class="heatmapLegendBlock" role="group" :aria-label="label">
+    <div class="heatmapLegendLabel">{{ label }}</div>
     <canvas
       id="heatmapLegendVue"
       ref="canvasRef"
@@ -58,6 +58,12 @@ defineExpose({ paint })
 <style scoped>
 .heatmapLegendBlock {
   min-width: min(100%, 32rem);
+}
+
+.heatmapLegendLabel {
+  color: var(--muted-strong);
+  font-size: 0.74rem;
+  font-weight: 700;
 }
 
 .heatmapLegendNote {

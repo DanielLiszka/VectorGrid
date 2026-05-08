@@ -1,7 +1,11 @@
 use serde::Serialize;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri_plugin_dialog::DialogExt;
+
+static SIMPLE_SUMMARY_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SaveSimpleSummaryMarkdownResponse {
@@ -47,6 +51,110 @@ fn normalize_save_markdown_path(path: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
+fn simple_summary_temp_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "summary save path has no parent directory: {}",
+            path.to_string_lossy()
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("summary.md");
+    let seq = SIMPLE_SUMMARY_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Ok(parent.join(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nonce,
+        seq
+    )))
+}
+
+fn summary_existing_file_metadata(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "summary save path must be a regular file: {}",
+                    path.to_string_lossy()
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to inspect summary save path {}: {error}",
+            path.to_string_lossy()
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn replace_existing_summary_file(path: &Path, temp_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let replaced = wide_null(path);
+    let replacement = wide_null(temp_path);
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_summary_file(path: &Path, temp_path: &Path) -> Result<(), String> {
+    std::fs::rename(temp_path, path).map_err(|e| e.to_string())
+}
+
+fn write_summary_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temp_path = simple_summary_temp_path(path)?;
+    let write_temp_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())
+    })();
+    if let Err(error) = write_temp_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    let replace_result = if summary_existing_file_metadata(path)?.is_some() {
+        replace_existing_summary_file(path, &temp_path)
+    } else {
+        std::fs::rename(&temp_path, path).map_err(|e| e.to_string())
+    };
+    if let Err(error) = replace_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn write_simple_summary_markdown(
     path: &Path,
     markdown: &str,
@@ -55,21 +163,10 @@ fn write_simple_summary_markdown(
     if content.trim().is_empty() {
         return Err("summary Markdown must not be empty".to_string());
     }
-    let mut file = std::fs::File::create(path).map_err(|e| {
-        format!(
-            "failed to write Simple summary at {}: {}",
-            path.to_string_lossy(),
-            e
-        )
-    })?;
-    file.write_all(content.as_bytes()).map_err(|e| {
-        format!(
-            "failed to write Simple summary at {}: {}",
-            path.to_string_lossy(),
-            e
-        )
-    })?;
-    file.write_all(b"\n").map_err(|e| {
+    let mut bytes = Vec::with_capacity(content.len().saturating_add(1));
+    bytes.extend_from_slice(content.as_bytes());
+    bytes.push(b'\n');
+    write_summary_bytes_atomically(path, &bytes).map_err(|e| {
         format!(
             "failed to write Simple summary at {}: {}",
             path.to_string_lossy(),
@@ -78,7 +175,7 @@ fn write_simple_summary_markdown(
     })?;
     Ok(SaveSimpleSummaryMarkdownResponse {
         path: path.to_string_lossy().to_string(),
-        bytes: content.len().saturating_add(1),
+        bytes: bytes.len(),
     })
 }
 
@@ -167,6 +264,26 @@ mod tests {
         assert_eq!(raw, "# Summary\n\nBody\n");
         assert_eq!(saved.bytes, raw.len());
         assert_eq!(saved.path, path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn write_simple_summary_markdown_replaces_existing_regular_file() {
+        let dir = make_temp_dir("simple_summary_markdown_replace");
+        let path = dir.join("summary.md");
+        std::fs::write(&path, "old\n").expect("seed old summary");
+
+        write_simple_summary_markdown(&path, "new").expect("replace summary");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read summary"),
+            "new\n"
+        );
+        let temp_leftovers = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        assert_eq!(temp_leftovers, 0);
     }
 
     #[test]

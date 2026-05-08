@@ -35,6 +35,8 @@ If Windows SmartScreen appears, verify the publisher, hash, and download source 
 
 ## First Run
 
+These notes assume a signed desktop release whose first-run UI has been verified against this document. The current backend-preview repository is not a supported desktop release, and the checked-in frontend currently defaults to the Advanced workbench rather than Simple Mode.
+
 Start in Simple Mode for the public workflow:
 
 1. Load the bundled synthetic sample dataset, or browse to a local OHLCV CSV.

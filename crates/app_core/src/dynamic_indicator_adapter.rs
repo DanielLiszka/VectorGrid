@@ -308,14 +308,14 @@ impl PreparedCudaFieldMask {
                 close: false,
                 volume: false,
             },
-            IndicatorInputKind::Candles | IndicatorInputKind::Ohlc => Self {
+            IndicatorInputKind::Candles | IndicatorInputKind::Ohlcv => Self::all(),
+            IndicatorInputKind::Ohlc => Self {
                 open: true,
                 high: true,
                 low: true,
                 close: true,
                 volume: false,
             },
-            IndicatorInputKind::Ohlcv => Self::all(),
             IndicatorInputKind::HighLow => Self {
                 open: false,
                 high: true,
@@ -1083,8 +1083,8 @@ impl PreparedCudaIndicatorInputs {
     pub fn first_valid_for_input_kind(&self, input_kind: IndicatorInputKind) -> usize {
         match input_kind {
             IndicatorInputKind::Slice => self.source_first_valid(),
-            IndicatorInputKind::Candles | IndicatorInputKind::Ohlc => self.ohlc_first_valid(),
-            IndicatorInputKind::Ohlcv => self.ohlcv_first_valid(),
+            IndicatorInputKind::Candles | IndicatorInputKind::Ohlcv => self.ohlcv_first_valid(),
+            IndicatorInputKind::Ohlc => self.ohlc_first_valid(),
             IndicatorInputKind::HighLow => self.high_low_first_valid(),
             IndicatorInputKind::CloseVolume => self.close_volume_first_valid(),
         }
@@ -1125,20 +1125,20 @@ fn cuda_data_ref_for_input_kind<'a>(
         IndicatorInputKind::Slice => IndicatorCudaDataRef::Slice {
             values: buffers.source_slice(),
         },
-        IndicatorInputKind::Candles | IndicatorInputKind::Ohlc => IndicatorCudaDataRef::Ohlc {
-            open: buffers.open(),
-            high: buffers.high(),
-            low: buffers.low(),
-            close: buffers.close(),
-            source: Some(buffers.source_slice()),
-        },
-        IndicatorInputKind::Ohlcv => IndicatorCudaDataRef::Ohlcv {
+        IndicatorInputKind::Candles | IndicatorInputKind::Ohlcv => IndicatorCudaDataRef::Ohlcv {
             timestamp: None,
             open: buffers.open(),
             high: buffers.high(),
             low: buffers.low(),
             close: buffers.close(),
             volume: buffers.volume(),
+            source: Some(buffers.source_slice()),
+        },
+        IndicatorInputKind::Ohlc => IndicatorCudaDataRef::Ohlc {
+            open: buffers.open(),
+            high: buffers.high(),
+            low: buffers.low(),
+            close: buffers.close(),
             source: Some(buffers.source_slice()),
         },
         IndicatorInputKind::HighLow => IndicatorCudaDataRef::HighLow {
@@ -1161,13 +1161,15 @@ fn cuda_device_data_ref_for_input_kind(
         IndicatorInputKind::Slice => Ok(IndicatorCudaDeviceDataRef::Slice {
             values: buffers.source_device().as_view(),
         }),
-        IndicatorInputKind::Candles | IndicatorInputKind::Ohlc => {
-            Ok(IndicatorCudaDeviceDataRef::Ohlc(
-                CudaDeviceOhlcRef::new(
+        IndicatorInputKind::Candles | IndicatorInputKind::Ohlcv => {
+            Ok(IndicatorCudaDeviceDataRef::Ohlcv(
+                CudaDeviceOhlcvRef::new(
+                    None,
                     buffers.open_device().as_view(),
                     buffers.high_device().as_view(),
                     buffers.low_device().as_view(),
                     buffers.close_device().as_view(),
+                    buffers.volume_device().as_view(),
                     Some(buffers.source_device().as_view()),
                 )
                 .map_err(|e| DynamicIndicatorAdapterError::CudaPreparation {
@@ -1175,14 +1177,12 @@ fn cuda_device_data_ref_for_input_kind(
                 })?,
             ))
         }
-        IndicatorInputKind::Ohlcv => Ok(IndicatorCudaDeviceDataRef::Ohlcv(
-            CudaDeviceOhlcvRef::new(
-                None,
+        IndicatorInputKind::Ohlc => Ok(IndicatorCudaDeviceDataRef::Ohlc(
+            CudaDeviceOhlcRef::new(
                 buffers.open_device().as_view(),
                 buffers.high_device().as_view(),
                 buffers.low_device().as_view(),
                 buffers.close_device().as_view(),
-                buffers.volume_device().as_view(),
                 Some(buffers.source_device().as_view()),
             )
             .map_err(|e| DynamicIndicatorAdapterError::CudaPreparation {
@@ -1878,6 +1878,41 @@ mod tests {
                 close: true,
                 volume: true,
             }
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepared_cuda_field_mask_for_candles_requires_full_ohlcv() {
+        assert_eq!(
+            PreparedCudaFieldMask::for_input_kind(IndicatorInputKind::Candles),
+            PreparedCudaFieldMask::all()
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepared_cuda_candles_first_valid_requires_volume() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        reset_test_cuda_input_cache();
+        let mut candles = make_trending_candles(256);
+        candles.volume[0] = f64::NAN;
+        let prepared_inputs = PreparedCudaIndicatorInputs::from_candles_for_input_kinds(
+            &candles,
+            "close",
+            &[IndicatorInputKind::Candles],
+        )
+        .expect("prepared inputs should upload full candle fields");
+
+        assert_eq!(
+            prepared_inputs.prepared_field_mask(),
+            PreparedCudaFieldMask::all()
+        );
+        assert_eq!(
+            prepared_inputs.first_valid_for_input_kind(IndicatorInputKind::Candles),
+            1
         );
     }
 

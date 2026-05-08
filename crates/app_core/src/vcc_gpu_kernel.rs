@@ -9,8 +9,8 @@ use crate::gpu_backtest_kernel::{
     load_double_crossover_module, DeviceLaunchCaps, KernelLaunchCaps,
 };
 use crate::standalone_gpu_runtime::{
-    checked_i32, ensure_device_buffer_len, ensure_host_f32_len, slice_signature, CloseSeriesKey,
-    UploadSignature,
+    checked_i32, ensure_device_buffer_len, ensure_host_f32_len, f64_slice_content_hash,
+    slice_signature, CloseSeriesKey, UploadSignature,
 };
 use crate::vcc::VccStrategyParams;
 use cust::context::{Context, CurrentContext};
@@ -132,8 +132,26 @@ enum VccKernelKey {
     Backtest,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VccCloseSeriesKey {
+    f32_key: CloseSeriesKey,
+    f64_content_hash: u64,
+}
+
+impl VccCloseSeriesKey {
+    fn from_signals(signals: &VccGpuDeviceSignalMatrices<'_>) -> Self {
+        Self {
+            f32_key: CloseSeriesKey::from_host_and_device(
+                signals.close_f32,
+                signals.close_device_ptr,
+            ),
+            f64_content_hash: f64_slice_content_hash(signals.close_f64),
+        }
+    }
+}
+
 struct VccResidentSeries {
-    key: CloseSeriesKey,
+    key: VccCloseSeriesKey,
     close_ptr: u64,
     d_close_owner: Option<DeviceBuffer<f32>>,
     d_lr: DeviceBuffer<f32>,
@@ -429,7 +447,7 @@ fn ensure_resident_close_returns<'a>(
     rt: &'a mut VccCudaRuntime,
     signals: &VccGpuDeviceSignalMatrices<'_>,
 ) -> Result<&'a VccResidentSeries, String> {
-    let key = CloseSeriesKey::from_host_and_device(signals.close_f32, signals.close_device_ptr);
+    let key = VccCloseSeriesKey::from_signals(signals);
     let needs_refresh = rt
         .resident_series
         .as_ref()
@@ -1088,6 +1106,31 @@ mod tests {
     fn checked_i32_rejects_overflow() {
         let err = checked_i32("VCC GPU test value", usize::MAX).expect_err("overflow");
         assert!(err.contains("exceeds i32 range"));
+    }
+
+    #[test]
+    fn resident_close_key_tracks_f64_content_even_when_f32_content_matches() {
+        let close_f32 = [100.0f32, 100.0, 100.0, 100.0];
+        let close_a = [100.00000001f64, 100.00000002, 100.00000003, 100.00000004];
+        let close_b = [100.00000004f64, 100.00000003, 100.00000002, 100.00000001];
+        assert_eq!(
+            close_a
+                .iter()
+                .map(|value| *value as f32)
+                .collect::<Vec<_>>(),
+            close_b
+                .iter()
+                .map(|value| *value as f32)
+                .collect::<Vec<_>>()
+        );
+
+        let signals_a = sample_signals(&close_a, &close_f32);
+        let signals_b = sample_signals(&close_b, &close_f32);
+
+        assert_ne!(
+            VccCloseSeriesKey::from_signals(&signals_a),
+            VccCloseSeriesKey::from_signals(&signals_b)
+        );
     }
 
     #[test]

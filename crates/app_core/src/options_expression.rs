@@ -26,7 +26,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::{DefaultHasher, Entry};
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -309,16 +309,26 @@ fn exit_summary_cache_store() -> &'static Mutex<BTreeMap<String, ExitSummaryCach
     EXIT_SUMMARY_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+fn lock_options_expression_cache<'a, T>(
+    cache: &'a Mutex<BTreeMap<String, T>>,
+    label: &str,
+) -> Result<MutexGuard<'a, BTreeMap<String, T>>, String> {
+    cache
+        .lock()
+        .map_err(|_| format!("{label} cache lock poisoned"))
+}
+
 #[cfg(test)]
 fn reset_options_expression_prepare_caches() {
     if let Some(cache) = STRUCTURAL_CANDIDATE_CACHE.get() {
-        cache
-            .lock()
-            .expect("structural candidate cache poisoned")
-            .clear();
+        if let Ok(mut cache) = cache.lock() {
+            cache.clear();
+        }
     }
     if let Some(cache) = EXIT_SUMMARY_CACHE.get() {
-        cache.lock().expect("exit summary cache poisoned").clear();
+        if let Ok(mut cache) = cache.lock() {
+            cache.clear();
+        }
     }
 }
 
@@ -2907,7 +2917,7 @@ fn prepare_options_expression_run(
             &req.filters,
             AggregateStressMode::Baseline,
             &mut cache_stats,
-        );
+        )?;
         let baseline_candidate_compile_ms = if baseline_candidate_lookup.hit {
             0
         } else {
@@ -2927,7 +2937,7 @@ fn prepare_options_expression_run(
         exit_axis.clone(),
         AggregateStressMode::Baseline,
         &mut cache_stats,
-    );
+    )?;
     let baseline_exit_summary_compile_ms = if baseline_exit_summary_lookup.hit {
         0
     } else {
@@ -2955,7 +2965,7 @@ fn prepare_options_expression_run(
             &req.filters,
             AggregateStressMode::Conservative,
             &mut cache_stats,
-        );
+        )?;
         let conservative_candidate_compile_ms = if conservative_candidate_lookup.hit {
             0
         } else {
@@ -2979,7 +2989,7 @@ fn prepare_options_expression_run(
         exit_axis.clone(),
         AggregateStressMode::Conservative,
         &mut cache_stats,
-    );
+    )?;
     let conservative_exit_summary_compile_ms = if conservative_exit_summary_lookup.hit {
         0
     } else {
@@ -3007,7 +3017,7 @@ fn prepare_options_expression_run(
             &req.filters,
             AggregateStressMode::Harsher,
             &mut cache_stats,
-        );
+        )?;
         let harsher_candidate_compile_ms = if harsher_candidate_lookup.hit {
             0
         } else {
@@ -3027,7 +3037,7 @@ fn prepare_options_expression_run(
         exit_axis,
         AggregateStressMode::Harsher,
         &mut cache_stats,
-    );
+    )?;
     let harsher_exit_summary_compile_ms = if harsher_exit_summary_lookup.hit {
         0
     } else {
@@ -4706,7 +4716,7 @@ fn get_or_build_structural_candidate_cache(
     filters: &crate::options_types::OptionsStaticFilterBundle,
     stress_mode: AggregateStressMode,
     cache_stats: &mut OptionsExpressionFeasibilityCacheStats,
-) -> CacheLookup<StructuralCandidateCache> {
+) -> Result<CacheLookup<StructuralCandidateCache>, String> {
     let key = structural_candidate_cache_key(
         signal_manifest,
         dataset,
@@ -4716,31 +4726,31 @@ fn get_or_build_structural_candidate_cache(
         stress_mode,
     );
     {
-        let cache = structural_candidate_cache_store()
-            .lock()
-            .expect("structural candidate cache poisoned");
+        let cache = lock_options_expression_cache(
+            structural_candidate_cache_store(),
+            "structural candidate",
+        )?;
         if let Some(existing) = cache.get(&key).cloned() {
             cache_stats.structural_cache_hits += 1;
             cache_stats.structural_cache_entries = cache.len();
-            return CacheLookup {
+            return Ok(CacheLookup {
                 value: existing,
                 hit: true,
-            };
+            });
         }
     }
     let built =
         compile_structural_candidate_cache(events, dataset, axis, fill_model, filters, stress_mode);
-    let mut cache = structural_candidate_cache_store()
-        .lock()
-        .expect("structural candidate cache poisoned");
+    let mut cache =
+        lock_options_expression_cache(structural_candidate_cache_store(), "structural candidate")?;
     evict_if_needed(&mut cache);
     cache.insert(key, built.clone());
     cache_stats.structural_cache_misses += 1;
     cache_stats.structural_cache_entries = cache.len();
-    CacheLookup {
+    Ok(CacheLookup {
         value: built,
         hit: false,
-    }
+    })
 }
 
 fn get_or_build_exit_summary_cache(
@@ -4751,33 +4761,29 @@ fn get_or_build_exit_summary_cache(
     axis: ExitAxis,
     stress_mode: AggregateStressMode,
     cache_stats: &mut OptionsExpressionFeasibilityCacheStats,
-) -> CacheLookup<ExitSummaryCache> {
+) -> Result<CacheLookup<ExitSummaryCache>, String> {
     let key = exit_summary_cache_key(structural_key, &axis);
     {
-        let cache = exit_summary_cache_store()
-            .lock()
-            .expect("exit summary cache poisoned");
+        let cache = lock_options_expression_cache(exit_summary_cache_store(), "exit summary")?;
         if let Some(existing) = cache.get(&key).cloned() {
             cache_stats.summary_cache_hits += 1;
             cache_stats.summary_cache_entries = cache.len();
-            return CacheLookup {
+            return Ok(CacheLookup {
                 value: existing,
                 hit: true,
-            };
+            });
         }
     }
     let built = compile_exit_summary_cache(events, dataset, candidate_cache, axis, stress_mode);
-    let mut cache = exit_summary_cache_store()
-        .lock()
-        .expect("exit summary cache poisoned");
+    let mut cache = lock_options_expression_cache(exit_summary_cache_store(), "exit summary")?;
     evict_if_needed(&mut cache);
     cache.insert(key, built.clone());
     cache_stats.summary_cache_misses += 1;
     cache_stats.summary_cache_entries = cache.len();
-    CacheLookup {
+    Ok(CacheLookup {
         value: built,
         hit: false,
-    }
+    })
 }
 
 fn evaluate_compiled_tuple_for_split(
@@ -6850,6 +6856,18 @@ mod tests {
         manifest.runtime_dataset_id = Some(dataset_id.clone());
         dataset.manifest.options_dataset_id = dataset_id.clone();
         dataset.manifest.dataset_path = format!("mem://{dataset_id}");
+    }
+
+    #[test]
+    fn options_expression_cache_lock_reports_poisoned_mutex() {
+        let cache = Mutex::new(BTreeMap::<String, usize>::new());
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = cache.lock().expect("lock local cache");
+            panic!("poison local cache");
+        });
+
+        let err = lock_options_expression_cache(&cache, "unit-test").expect_err("poisoned cache");
+        assert!(err.contains("unit-test cache lock poisoned"));
     }
 
     #[allow(dead_code)]

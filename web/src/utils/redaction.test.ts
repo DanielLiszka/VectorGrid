@@ -31,5 +31,11 @@ describe("redactKnownSecrets", () => {
       "API key is not set. Enter your key.",
     );
   });
-});
 
+  it("redacts unquoted authorization headers as one value", () => {
+    const text = redactKnownSecrets("Authorization: Bearer abcdefghijkl");
+
+    expect(text).toBe("Authorization: [redacted]");
+    expect(text).not.toContain("abcdefghijkl");
+  });
+});

@@ -6,6 +6,25 @@ function Enter-BenchmarkLock {
   )
 
   if ($env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_HELD -eq "1") {
+    $ownerPidText = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_OWNER_PID
+    $ownerToken = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_TOKEN
+    $ownerContext = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_CONTEXT
+    if (
+      [string]::IsNullOrWhiteSpace($ownerPidText) -or
+      [string]::IsNullOrWhiteSpace($ownerToken) -or
+      [string]::IsNullOrWhiteSpace($ownerContext)
+    ) {
+      throw "Benchmark lock inheritance marker is incomplete; refusing to bypass the mutex for $Context."
+    }
+
+    $ownerPid = 0
+    if (-not [int]::TryParse($ownerPidText, [ref]$ownerPid)) {
+      throw "Benchmark lock owner PID is invalid: $ownerPidText"
+    }
+    if ($ownerPid -ne $PID -and -not (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) {
+      throw "Benchmark lock owner PID $ownerPid is no longer running; refusing to inherit lock for $Context."
+    }
+
     Write-Host "Benchmark lock inherited for $Context from PID $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_OWNER_PID."
     return [pscustomobject]@{
       acquired = $false
@@ -15,6 +34,7 @@ function Enter-BenchmarkLock {
       previous_held = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_HELD
       previous_owner_pid = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_OWNER_PID
       previous_context = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_CONTEXT
+      previous_token = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_TOKEN
     }
   }
 
@@ -37,9 +57,11 @@ function Enter-BenchmarkLock {
     $previousHeld = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_HELD
     $previousOwnerPid = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_OWNER_PID
     $previousContext = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_CONTEXT
+    $previousToken = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_TOKEN
     $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_HELD = "1"
     $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_OWNER_PID = "$PID"
     $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_CONTEXT = $Context
+    $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_TOKEN = [guid]::NewGuid().ToString("N")
 
     Write-Host "Benchmark lock acquired ($Context)."
     return [pscustomobject]@{
@@ -50,6 +72,7 @@ function Enter-BenchmarkLock {
       previous_held = $previousHeld
       previous_owner_pid = $previousOwnerPid
       previous_context = $previousContext
+      previous_token = $previousToken
     }
   } catch {
     if ($acquired) {
@@ -97,5 +120,6 @@ function Exit-BenchmarkLock {
     Restore-BenchmarkLockEnvValue -Name "TA_DESKTOP_DEMO_BENCHMARK_LOCK_HELD" -Value $Handle.previous_held
     Restore-BenchmarkLockEnvValue -Name "TA_DESKTOP_DEMO_BENCHMARK_LOCK_OWNER_PID" -Value $Handle.previous_owner_pid
     Restore-BenchmarkLockEnvValue -Name "TA_DESKTOP_DEMO_BENCHMARK_LOCK_CONTEXT" -Value $Handle.previous_context
+    Restore-BenchmarkLockEnvValue -Name "TA_DESKTOP_DEMO_BENCHMARK_LOCK_TOKEN" -Value $Handle.previous_token
   }
 }

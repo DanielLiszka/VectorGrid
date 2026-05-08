@@ -24,7 +24,7 @@ Validation is especially important when:
 
 ## Simple Mode Validation
 
-Simple Mode presents validation as a recommendation state:
+For a release that implements Simple Mode, Simple Mode presents validation as a recommendation state:
 
 - blocked;
 - recommended;
@@ -128,4 +128,3 @@ A good review process asks:
 7. Did evidence agree across windows or datasets?
 8. Are warnings acceptable for the intended research question?
 9. Does the report include enough provenance to reproduce or reopen the result?
-

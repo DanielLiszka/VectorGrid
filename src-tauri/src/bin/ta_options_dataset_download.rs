@@ -9,7 +9,7 @@ use tauri::Manager;
 #[derive(Parser, Debug)]
 #[command(name = "ta_options_dataset_download")]
 #[command(
-    about = "Download Polygon/Massive options contract-reference + 1m aggregate data into the local options dataset store"
+    about = "Download Polygon options contract-reference + 1m aggregate data into the local options dataset store"
 )]
 struct Cli {
     #[arg(long)]

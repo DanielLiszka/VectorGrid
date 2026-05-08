@@ -263,7 +263,8 @@ fn is_cpu_metric_route(artifact: &Value) -> bool {
 fn strategy_kind_supports_core17(artifact: &Value) -> bool {
     let strategy_kind = artifact_strategy_kind(artifact);
     match strategy_kind.as_str() {
-        "DoubleMa" | "Pit" | "Set" | "Mts" | "Orc" | "Marrt" | "Vfct" | "CompositeCpu" => true,
+        "DoubleMa" | "Pit" | "Set" | "Mts" | "Orc" | "Marrt" | "Vfct" | "CompositeCpu"
+        | "RegimeHybrid" => true,
         "CompositeTrend" | "BreakoutMomentum" => {
             is_exact_gpu_kernel_route(&artifact_backend_route(artifact))
         }
@@ -1678,6 +1679,32 @@ mod tests {
             rebuilt.surface,
             OptimizationMetricSurfaceKind::Core17.as_str()
         );
+    }
+
+    #[test]
+    fn build_metric_surface_artifact_treats_regime_hybrid_hybrid_route_as_core17() {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "RegimeHybrid",
+                    "metric_contract": null,
+                    "include_trade_metrics": false
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuHybridKernel",
+                    "best_metrics": sample_metrics(),
+                    "top": []
+                }
+            }
+        });
+
+        let rebuilt = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            rebuilt.surface,
+            OptimizationMetricSurfaceKind::Core17.as_str()
+        );
+        assert_eq!(rebuilt.fields.len(), CORE17_FIELDS.len());
     }
 
     #[test]

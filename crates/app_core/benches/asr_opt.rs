@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -124,7 +127,7 @@ fn bench_asr_cpu(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_asr_gpu_kernel(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
         return;
@@ -226,10 +229,10 @@ fn bench_asr_gpu_kernel(c: &mut Criterion) {
 }
 
 criterion_group!(asr_benches, bench_asr_cpu);
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 criterion_group!(asr_benches_cuda, bench_asr_gpu_kernel);
 
-#[cfg(feature = "cuda")]
-criterion_main!(asr_benches, asr_benches_cuda);
-#[cfg(not(feature = "cuda"))]
-criterion_main!(asr_benches);
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+serialized_criterion_main!(asr_benches, asr_benches_cuda);
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+serialized_criterion_main!(asr_benches);

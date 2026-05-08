@@ -224,6 +224,7 @@ onBeforeUnmount(() => {
     </div>
     <div
       class="chartSurface paretoChartSurface"
+      role="group"
       tabindex="0"
       :aria-label="ariaLabel"
       :aria-describedby="describedBy"

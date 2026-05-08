@@ -51,6 +51,17 @@ function Assert-SafeBuildRootDir {
   if ([string]::IsNullOrWhiteSpace($relative) -or $relative -notmatch '[\\/]') {
     throw "Refusing to recursively delete build root '$fullPath'. Choose a nested directory under a dedicated build root."
   }
+  $segments = @($relative -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $hasDedicatedMarker = $false
+  foreach ($segment in $segments) {
+    if ($segment -match '(?i)^(cbbuild|catboost|catboostmodel|catboost[-_].*)$' -or $segment -match '(?i)^.*[-_]catboost[-_].*$') {
+      $hasDedicatedMarker = $true
+      break
+    }
+  }
+  if (-not $hasDedicatedMarker) {
+    throw "Refusing to recursively delete build root '$fullPath'. Include a dedicated catboost/cbbuild path segment."
+  }
   if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
     throw "BuildRootDir '$fullPath' is a file, not a directory."
   }

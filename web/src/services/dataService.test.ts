@@ -94,14 +94,22 @@ describe("dataService market-data directory actions", () => {
     expect(result?.loadSource).toBe("csv_parsed_and_cached");
   });
 
-  it("returns null when the native CSV picker fails", async () => {
-    invokeCommandMock.mockRejectedValueOnce(new Error("picker unavailable"));
+  it("returns null when the native CSV picker is cancelled", async () => {
+    invokeCommandMock.mockResolvedValueOnce(null);
 
     const result = await browseCsv();
 
     expect(invokeCommandMock).toHaveBeenCalledTimes(1);
     expect(invokeCommandMock).toHaveBeenCalledWith("pick_csv_file");
     expect(result).toBeNull();
+  });
+
+  it("surfaces native CSV picker failures", async () => {
+    invokeCommandMock.mockRejectedValueOnce(new Error("picker unavailable"));
+
+    await expect(browseCsv()).rejects.toThrow("picker unavailable");
+    expect(invokeCommandMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenCalledWith("pick_csv_file");
   });
 
   it("loads CSV directly and normalizes response shape", async () => {

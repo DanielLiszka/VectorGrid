@@ -11,6 +11,8 @@ The app is designed for users who want to ask questions such as:
 
 VectorGrid does not decide whether you should trade. It produces research evidence that still requires independent review.
 
+Simple Mode language on this page applies only to a signed desktop release that implements, tests, and verifies Simple Mode as the shipped first-run surface. The current checked-in frontend defaults to the Advanced workbench, so these Simple Mode sections are release-candidate public copy rather than current repository run instructions.
+
 ## Core Workflow
 
 The public first-run workflow is intentionally simple:
@@ -22,7 +24,7 @@ The public first-run workflow is intentionally simple:
 5. Optionally run validation.
 6. Save or copy a Markdown summary, or use Advanced Mode for detailed exports.
 
-Simple Mode focuses on that path. Advanced Mode exposes deeper controls, additional strategy surfaces, validation modules, saved-run history, reports, data tooling, ML-signal workflows, options-expression workflows, and live execution workspaces where available.
+For a release that promotes Simple Mode, Simple Mode focuses on that path. Advanced Mode exposes deeper controls, additional strategy surfaces, validation modules, saved-run history, reports, data tooling, ML-signal workflows, options-expression workflows, and live execution workspaces where available.
 
 ## What VectorGrid Is For
 
@@ -57,7 +59,7 @@ Network access is used for user-invoked workflows such as Polygon.io data downlo
 
 ## Simple Mode And Advanced Mode
 
-Simple Mode is the public-facing mode. It keeps the main task sequence visible:
+Simple Mode is the intended public-facing mode for a release that ships it. It keeps the main task sequence visible:
 
 - Data.
 - Strategy.
@@ -105,4 +107,3 @@ Users should review:
 - CPU/GPU route;
 - report and artifact provenance;
 - known limitations for the selected workflow.
-

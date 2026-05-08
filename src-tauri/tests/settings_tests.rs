@@ -246,6 +246,32 @@ fn save_settings_fails_when_base_path_is_a_file() {
     assert!(!settings::settings_path(base.path()).exists());
 }
 
+#[test]
+fn save_settings_replaces_existing_file_without_leaving_temp_files() {
+    let base = TempPath::new("save_settings_replaces_existing_file_without_leaving_temp_files");
+    std::fs::create_dir_all(base.path()).unwrap();
+
+    settings::save_settings(base.path(), &settings::AppSettings::default()).unwrap();
+    let mut next = settings::AppSettings::default();
+    next.artifact_retention.run_keep_newest = Some(3);
+    settings::save_settings(base.path(), &next).unwrap();
+
+    let loaded = settings::load_settings(base.path()).unwrap();
+    assert_eq!(loaded.artifact_retention.run_keep_newest, Some(3));
+    let temp_files = std::fs::read_dir(base.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("app_settings.json")
+                && entry.path().extension().and_then(|value| value.to_str()) == Some("tmp")
+        })
+        .count();
+    assert_eq!(temp_files, 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn move_dir_all_fallback_rejects_unsupported_symlink_entries() {

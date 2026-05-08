@@ -40,6 +40,8 @@ impl ReleaseVariant {
 pub struct ReleaseReadinessOptions {
     #[serde(default)]
     pub require_packaged_smoke: bool,
+    #[serde(default)]
+    pub require_public_signing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +59,7 @@ pub struct ReleaseReadinessReport {
     pub gpu: ReleaseGpuReadiness,
     pub resources: ReleaseResourceReadiness,
     pub tooling: ReleaseToolingReadiness,
+    pub updater: ReleaseUpdaterReadiness,
     pub provider: ReleaseProviderReadiness,
 }
 
@@ -108,6 +111,9 @@ pub struct ReleaseToolingReadiness {
     pub tauri_driver_available: bool,
     pub edge_driver_available: bool,
     pub signtool_available: bool,
+    pub custom_signing_hook_configured: bool,
+    pub windows_certificate_thumbprint_configured: bool,
+    pub windows_timestamp_url_configured: bool,
     pub makensis_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo_path: Option<String>,
@@ -121,6 +127,16 @@ pub struct ReleaseToolingReadiness {
     pub signtool_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub makensis_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseUpdaterReadiness {
+    pub configured: bool,
+    pub active: bool,
+    pub endpoint_count: usize,
+    pub pubkey_configured: bool,
+    pub intentionally_disabled: bool,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +180,7 @@ pub fn collect_release_readiness(
     let gpu = gpu_readiness();
     let resources = resource_readiness(repo_root, &market_root, &polygon_cache_dir);
     let tooling = tooling_readiness(repo_root);
+    let updater = updater_readiness(repo_root);
     let provider = provider_readiness(app_identifier, &polygon_info);
 
     let mut errors = Vec::new();
@@ -238,9 +255,29 @@ pub fn collect_release_readiness(
     if !tooling.cargo_tauri_available {
         errors.push("cargo tauri is unavailable; packaged release builds cannot run.".to_string());
     }
-    if !tooling.signtool_available {
+    let public_signing_ready = tooling.custom_signing_hook_configured
+        || (tooling.signtool_available && tooling.windows_certificate_thumbprint_configured);
+    if !tooling.signtool_available && !tooling.custom_signing_hook_configured {
         warnings.push(
-            "signtool.exe is not available on PATH; public Authenticode signing will need a configured custom signing hook or Windows SDK SignTool."
+            "signtool.exe is not available on PATH and no Windows signCommand is configured; public Authenticode signing needs one of those lanes."
+                .to_string(),
+        );
+    }
+    if !public_signing_ready {
+        warnings.push(
+            "Public Authenticode signing is not fully configured; set bundle.windows.signCommand or a certificate thumbprint with SignTool available before publishing installers."
+                .to_string(),
+        );
+    }
+    if public_signing_ready && !tooling.windows_timestamp_url_configured {
+        warnings.push(
+            "Public Authenticode signing has no configured timestamp URL; signed installers may become unverifiable after certificate expiry."
+                .to_string(),
+        );
+    }
+    if options.require_public_signing && !public_signing_ready {
+        errors.push(
+            "Public signing is required, but no complete Authenticode signing lane is configured."
                 .to_string(),
         );
     }
@@ -257,6 +294,22 @@ pub fn collect_release_readiness(
         errors.push(
             "msedgedriver is unavailable; packaged smoke cannot run on this machine.".to_string(),
         );
+    }
+
+    if !updater.configured {
+        notes.push(
+            "Updater config is absent; public release update delivery is treated as disabled."
+                .to_string(),
+        );
+    } else if updater.intentionally_disabled {
+        notes.push("Updater is explicitly disabled in Tauri config; public release update delivery is out of scope for this build.".to_string());
+    } else {
+        if updater.endpoint_count == 0 {
+            errors.push("Updater is active but has no configured endpoints.".to_string());
+        }
+        if !updater.pubkey_configured {
+            errors.push("Updater is active but has no public signing key configured.".to_string());
+        }
     }
 
     if variant.requires_cuda() && !gpu.built_with_cuda {
@@ -335,6 +388,7 @@ pub fn collect_release_readiness(
         gpu,
         resources,
         tooling,
+        updater,
         provider,
     })
 }
@@ -569,6 +623,7 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
     let tauri_driver_path = find_command_path("tauri-driver", None);
     let signtool_path = find_command_path("signtool", None);
     let makensis_path = find_command_path("makensis", None);
+    let signing_config = windows_signing_config(repo_root);
     let edge_driver_path = find_command_path(
         "msedgedriver",
         Some(&[
@@ -584,6 +639,9 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
         tauri_driver_available: tauri_driver_path.is_some(),
         edge_driver_available: edge_driver_path.is_some(),
         signtool_available: signtool_path.is_some(),
+        custom_signing_hook_configured: signing_config.sign_command_configured,
+        windows_certificate_thumbprint_configured: signing_config.certificate_thumbprint_configured,
+        windows_timestamp_url_configured: signing_config.timestamp_url_configured,
         makensis_available: makensis_path.is_some(),
         cargo_path: cargo_path.map(|path| path.to_string_lossy().to_string()),
         npm_path: npm_path.map(|path| path.to_string_lossy().to_string()),
@@ -592,6 +650,104 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
         signtool_path: signtool_path.map(|path| path.to_string_lossy().to_string()),
         makensis_path: makensis_path.map(|path| path.to_string_lossy().to_string()),
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct WindowsSigningConfig {
+    sign_command_configured: bool,
+    certificate_thumbprint_configured: bool,
+    timestamp_url_configured: bool,
+}
+
+fn windows_signing_config(repo_root: &Path) -> WindowsSigningConfig {
+    let config_path = repo_root.join("src-tauri").join("tauri.windows.conf.json");
+    let Ok(raw) = std::fs::read_to_string(config_path) else {
+        return WindowsSigningConfig::default();
+    };
+    let Ok(config) = serde_json::from_str::<Value>(&raw) else {
+        return WindowsSigningConfig::default();
+    };
+    let Some(windows) = config.pointer("/bundle/windows") else {
+        return WindowsSigningConfig::default();
+    };
+    WindowsSigningConfig {
+        sign_command_configured: non_empty_json_text(windows.get("signCommand")),
+        certificate_thumbprint_configured: non_empty_json_text(
+            windows.get("certificateThumbprint"),
+        ),
+        timestamp_url_configured: non_empty_json_text(windows.get("timestampUrl")),
+    }
+}
+
+fn updater_readiness(repo_root: &Path) -> ReleaseUpdaterReadiness {
+    let config_path = repo_root.join("src-tauri").join("tauri.conf.json");
+    let Ok(raw) = std::fs::read_to_string(config_path) else {
+        return ReleaseUpdaterReadiness {
+            configured: false,
+            active: false,
+            endpoint_count: 0,
+            pubkey_configured: false,
+            intentionally_disabled: true,
+            status: "missing-config".to_string(),
+        };
+    };
+    let Ok(config) = serde_json::from_str::<Value>(&raw) else {
+        return ReleaseUpdaterReadiness {
+            configured: false,
+            active: false,
+            endpoint_count: 0,
+            pubkey_configured: false,
+            intentionally_disabled: true,
+            status: "invalid-config".to_string(),
+        };
+    };
+    let Some(updater) = config.pointer("/plugins/updater") else {
+        return ReleaseUpdaterReadiness {
+            configured: false,
+            active: false,
+            endpoint_count: 0,
+            pubkey_configured: false,
+            intentionally_disabled: true,
+            status: "missing-updater-config".to_string(),
+        };
+    };
+    let active = updater
+        .get("active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let endpoint_count = updater
+        .get("endpoints")
+        .and_then(Value::as_array)
+        .map(|endpoints| {
+            endpoints
+                .iter()
+                .filter(|endpoint| non_empty_json_text(Some(endpoint)))
+                .count()
+        })
+        .unwrap_or(0);
+    let pubkey_configured = non_empty_json_text(updater.get("pubkey"));
+    let intentionally_disabled = !active;
+    let status = if intentionally_disabled {
+        "disabled"
+    } else if endpoint_count > 0 && pubkey_configured {
+        "active-configured"
+    } else {
+        "active-incomplete"
+    };
+    ReleaseUpdaterReadiness {
+        configured: true,
+        active,
+        endpoint_count,
+        pubkey_configured,
+        intentionally_disabled,
+        status: status.to_string(),
+    }
+}
+
+fn non_empty_json_text(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|raw| !raw.trim().is_empty())
 }
 
 fn provider_readiness(
@@ -718,8 +874,8 @@ fn find_command_path(command: &str, fallback_paths: Option<&[PathBuf]>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_release_readiness, resolve_release_build_paths, ReleaseReadinessOptions,
-        ReleaseVariant,
+        collect_release_readiness, resolve_release_build_paths, updater_readiness,
+        windows_signing_config, ReleaseReadinessOptions, ReleaseVariant,
     };
     use std::path::PathBuf;
 
@@ -769,6 +925,66 @@ mod tests {
             report.resources.release_bundle_dir_exists,
             report.resources.release_bundle_dir_path.is_some()
         );
+        assert!(report.updater.configured);
+        assert!(report.updater.intentionally_disabled);
+        assert_eq!(report.updater.status, "disabled");
+    }
+
+    #[test]
+    fn updater_readiness_reports_active_incomplete_config() {
+        let temp_root = std::env::temp_dir()
+            .join("vectorgrid_release_readiness_updater")
+            .join(format!("{}", std::process::id()));
+        let src_tauri = temp_root.join("src-tauri");
+        std::fs::create_dir_all(&src_tauri).expect("src-tauri");
+        std::fs::write(
+            src_tauri.join("tauri.conf.json"),
+            r#"{
+              "plugins": {
+                "updater": {
+                  "active": true,
+                  "endpoints": [],
+                  "pubkey": ""
+                }
+              }
+            }"#,
+        )
+        .expect("tauri config");
+
+        let updater = updater_readiness(&temp_root);
+        assert!(updater.configured);
+        assert!(updater.active);
+        assert_eq!(updater.endpoint_count, 0);
+        assert!(!updater.pubkey_configured);
+        assert_eq!(updater.status, "active-incomplete");
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn windows_signing_config_detects_sign_command_and_timestamp() {
+        let temp_root = std::env::temp_dir()
+            .join("vectorgrid_release_readiness_signing")
+            .join(format!("{}", std::process::id()));
+        let src_tauri = temp_root.join("src-tauri");
+        std::fs::create_dir_all(&src_tauri).expect("src-tauri");
+        std::fs::write(
+            src_tauri.join("tauri.windows.conf.json"),
+            r#"{
+              "bundle": {
+                "windows": {
+                  "signCommand": "C:/sign/vectorgrid-sign.cmd",
+                  "timestampUrl": "http://timestamp.example.invalid"
+                }
+              }
+            }"#,
+        )
+        .expect("windows config");
+
+        let signing = windows_signing_config(&temp_root);
+        assert!(signing.sign_command_configured);
+        assert!(!signing.certificate_thumbprint_configured);
+        assert!(signing.timestamp_url_configured);
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

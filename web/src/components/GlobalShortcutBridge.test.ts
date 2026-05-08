@@ -34,6 +34,11 @@ function dispatchKeydown(options: KeyboardEventInit): void {
   document.dispatchEvent(event)
 }
 
+function dispatchTargetKeydown(target: EventTarget, options: KeyboardEventInit): void {
+  const event = new KeyboardEvent('keydown', { bubbles: true, ...options })
+  target.dispatchEvent(event)
+}
+
 function nativeShellCommandHandler(): (payload: unknown) => void {
   const call = tauriEventsMock.listenEvent.mock.calls.find(([event]) => event === 'shell-command')
   expect(call).toBeDefined()
@@ -106,7 +111,7 @@ describe('GlobalShortcutBridge', () => {
     wrapper.unmount()
   })
 
-  it('runs drill clear and cancellation on Escape when cancellation is enabled', () => {
+  it('clears drill selection on Escape without cancelling an active run', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const optimizeStore = useOptimizeStore(pinia)
@@ -119,7 +124,53 @@ describe('GlobalShortcutBridge', () => {
     dispatchKeydown({ key: 'Escape' })
 
     expect(clearDrillSpy).toHaveBeenCalledTimes(1)
-    expect(cancelSpy).toHaveBeenCalledTimes(1)
+    expect(cancelSpy).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('ignores IME composition shortcuts', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    const openSpy = vi.spyOn(paletteStore, 'openPalette')
+
+    const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
+    dispatchKeydown({ key: 'k', ctrlKey: true, isComposing: true })
+    dispatchKeydown({ key: 'Process', ctrlKey: true })
+
+    expect(openSpy).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not route trade navigation shortcuts while interactive controls have focus', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const actionStore = useCommandActionStore(pinia)
+    const prevSpy = vi.spyOn(actionStore, 'drillPrevTrade').mockImplementation(() => {})
+    const nextSpy = vi.spyOn(actionStore, 'drillNextTrade').mockImplementation(() => {})
+
+    const input = document.createElement('input')
+    const select = document.createElement('select')
+    const button = document.createElement('button')
+    document.body.append(input, select, button)
+
+    const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
+
+    input.focus()
+    dispatchKeydown({ key: 'j' })
+    select.focus()
+    dispatchKeydown({ key: 'ArrowDown' })
+    button.focus()
+    dispatchKeydown({ key: 'ArrowUp' })
+
+    const roleButton = document.createElement('div')
+    roleButton.setAttribute('role', 'button')
+    roleButton.tabIndex = 0
+    document.body.appendChild(roleButton)
+    dispatchTargetKeydown(roleButton, { key: 'j' })
+
+    expect(prevSpy).not.toHaveBeenCalled()
+    expect(nextSpy).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

@@ -6,11 +6,12 @@ use ta_desktop_demo_app::commands::{
 };
 use tauri::Manager;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+
 #[derive(Parser, Debug)]
 #[command(name = "ta_options_dataset_import")]
-#[command(
-    about = "Import a Polygon/Massive normalized options CSV into the VectorGrid local dataset store"
-)]
+#[command(about = "Import a Polygon options CSV into the VectorGrid local dataset store")]
 struct Cli {
     #[arg(long)]
     csv: PathBuf,
@@ -24,7 +25,7 @@ struct Cli {
     #[arg(long)]
     root_symbol: Option<String>,
 
-    #[arg(long, default_value = "massive")]
+    #[arg(long, default_value = "polygon")]
     provider_name: String,
 
     #[arg(long, default_value = "minute_aggregate")]
@@ -54,7 +55,7 @@ struct Cli {
     #[arg(long)]
     corporate_action_mapping_version: Option<u32>,
 
-    #[arg(long, default_value = "massive_contract_reference")]
+    #[arg(long, default_value = "polygon_contract_reference")]
     contract_reference_source: String,
 
     #[arg(long)]
@@ -133,7 +134,7 @@ fn main() -> Result<(), String> {
     let json = serde_json::to_string_pretty(&output)
         .map_err(|e| format!("failed to serialize import output: {e}"))?;
     if let Some(out_path) = cli.out_json.as_ref() {
-        std::fs::write(out_path, &json)
+        atomic_output::write_str(out_path, &json)
             .map_err(|e| format!("failed to write import JSON {}: {e}", out_path.display()))?;
     }
     println!("{json}");

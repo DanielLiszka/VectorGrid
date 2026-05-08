@@ -2,6 +2,7 @@ import { invokeCommand } from '../tauri/invoke'
 import type { GpuSpeedupEntry as GeneratedGpuSpeedupEntry } from '../tauri/generatedBindings'
 import { readCachedCatalog, removeCachedCatalog } from './catalogReadCache'
 import { gpuSpeedupsQueryKey } from './catalogQueryKeys'
+import { requireBoundaryArray, requireBoundaryObject } from './serviceBoundarySchemas'
 
 export { gpuSpeedupsQueryKey }
 
@@ -22,25 +23,35 @@ function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
 }
 
+function requireText(value: unknown, field: string): string {
+  const text = normalizeText(value)
+  if (!text) throw new Error(`GPU speedup catalog field '${field}' must be a non-empty string`)
+  return text
+}
+
 function normalizeFinite(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function requireFinite(value: unknown, field: string): number {
+  const parsed = normalizeFinite(value)
+  if (parsed == null) throw new Error(`GPU speedup catalog field '${field}' must be finite`)
+  return parsed
+}
+
 export function normalizeGpuSpeedups(value: unknown): GpuSpeedupEntry[] {
-  if (!Array.isArray(value)) return []
+  const rows = requireBoundaryArray(value, 'GPU speedup catalog response')
   const out: GpuSpeedupEntry[] = []
   const seen = new Set<string>()
 
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object') continue
-    const row = entry as RawGpuSpeedupEntry
-    const id = normalizeText(row.indicator_id)
-    if (!id || seen.has(id)) continue
-    const speedup = normalizeFinite(row.speedup)
-    const cpuMs = normalizeFinite(row.cpu_ms)
-    const cudaMs = normalizeFinite(row.cuda_ms)
-    if (speedup == null || cpuMs == null || cudaMs == null) continue
+  for (const entry of rows) {
+    const row = requireBoundaryObject(entry, 'GPU speedup catalog entry') as RawGpuSpeedupEntry
+    const id = requireText(row.indicator_id, 'indicator_id')
+    if (seen.has(id)) continue
+    const speedup = requireFinite(row.speedup, `${id}.speedup`)
+    const cpuMs = requireFinite(row.cpu_ms, `${id}.cpu_ms`)
+    const cudaMs = requireFinite(row.cuda_ms, `${id}.cuda_ms`)
     out.push({
       id,
       name: normalizeText(row.indicator_name) || id,

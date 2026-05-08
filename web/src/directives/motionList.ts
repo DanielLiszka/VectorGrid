@@ -1,24 +1,25 @@
-import type { Directive, DirectiveBinding } from 'vue'
+import type { Directive } from 'vue'
 
 interface MotionListState {
   observer: MutationObserver
   snapshot: Map<Element, DOMRectReadOnly>
   frameId: number | null
+  enabled: boolean | undefined
 }
 
 const states = new WeakMap<HTMLElement, MotionListState>()
 const DURATION_MS = 160
 const DISTANCE_PX = 4
 
-function animationAllowed(binding: DirectiveBinding<boolean | undefined>): boolean {
-  if (binding.value === false) return false
+function animationAllowed(enabled: boolean | undefined): boolean {
+  if (enabled === false) return false
   if (typeof window === 'undefined' || typeof MutationObserver === 'undefined') return false
   if (typeof Element === 'undefined' || typeof Element.prototype.animate !== 'function') return false
   return !window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
 }
 
-function childrenOf(el: HTMLElement): HTMLElement[] {
-  return Array.from(el.children).filter((child): child is HTMLElement => child instanceof HTMLElement)
+function childrenOf(el: HTMLElement): Element[] {
+  return Array.from(el.children)
 }
 
 function snapshotChildren(el: HTMLElement): Map<Element, DOMRectReadOnly> {
@@ -42,7 +43,7 @@ function cancelFrame(frameId: number): void {
   window.clearTimeout(frameId)
 }
 
-function animateChild(child: HTMLElement, first: DOMRectReadOnly | null, last: DOMRectReadOnly): void {
+function animateChild(child: Element, first: DOMRectReadOnly | null, last: DOMRectReadOnly): void {
   if (!first) {
     child.animate(
       [
@@ -67,9 +68,9 @@ function animateChild(child: HTMLElement, first: DOMRectReadOnly | null, last: D
   )
 }
 
-function runAnimation(el: HTMLElement, state: MotionListState, binding: DirectiveBinding<boolean | undefined>): void {
+function runAnimation(el: HTMLElement, state: MotionListState): void {
   state.frameId = null
-  if (!animationAllowed(binding)) {
+  if (!animationAllowed(state.enabled)) {
     state.snapshot = snapshotChildren(el)
     return
   }
@@ -83,21 +84,28 @@ function runAnimation(el: HTMLElement, state: MotionListState, binding: Directiv
   state.snapshot = nextSnapshot
 }
 
-function scheduleAnimation(el: HTMLElement, state: MotionListState, binding: DirectiveBinding<boolean | undefined>): void {
+function scheduleAnimation(el: HTMLElement, state: MotionListState): void {
   if (state.frameId !== null) return
-  state.frameId = requestFrame(() => runAnimation(el, state, binding))
+  state.frameId = requestFrame(() => runAnimation(el, state))
 }
 
 export const vMotionList: Directive<HTMLElement, boolean | undefined> = {
   mounted(el, binding) {
     if (typeof MutationObserver === 'undefined') return
     const state: MotionListState = {
-      observer: new MutationObserver(() => scheduleAnimation(el, state, binding)),
+      observer: new MutationObserver(() => scheduleAnimation(el, state)),
       snapshot: snapshotChildren(el),
       frameId: null,
+      enabled: binding.value,
     }
     states.set(el, state)
     state.observer.observe(el, { childList: true })
+  },
+  updated(el, binding) {
+    const state = states.get(el)
+    if (state) {
+      state.enabled = binding.value
+    }
   },
   unmounted(el) {
     const state = states.get(el)

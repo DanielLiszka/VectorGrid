@@ -1,99 +1,101 @@
-import { check, type Update } from '@tauri-apps/plugin-updater'
-import { relaunch } from '@tauri-apps/plugin-process'
-import { tauriRuntimeAvailable } from '../tauri/invoke'
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { tauriRuntimeAvailable } from "../tauri/invoke";
 
 export type DesktopUpdaterStatus =
-  | 'unavailable'
-  | 'idle'
-  | 'checking'
-  | 'up-to-date'
-  | 'update-available'
-  | 'error'
+  | "unavailable"
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "update-available"
+  | "error";
 
 export interface DesktopUpdateInfo {
-  available: boolean
-  version: string
-  currentVersion: string
-  date: string
-  body: string
+  available: boolean;
+  version: string;
+  currentVersion: string;
+  date: string;
+  body: string;
 }
 
 export interface DesktopUpdaterCheckResult {
-  status: DesktopUpdaterStatus
-  update: DesktopUpdateInfo | null
-  error?: string
+  status: DesktopUpdaterStatus;
+  update: DesktopUpdateInfo | null;
+  error?: string;
 }
 
-let pendingUpdate: Update | null = null
+let pendingUpdate: Update | null = null;
 
 function errorMessage(error: unknown): string {
-  return String(error instanceof Error ? error.message : error)
+  return String(error instanceof Error ? error.message : error);
 }
 
 function normalizeUpdate(update: Update): DesktopUpdateInfo {
   return {
     available: true,
-    version: String(update.version ?? ''),
-    currentVersion: String(update.currentVersion ?? ''),
-    date: String(update.date ?? ''),
-    body: String(update.body ?? ''),
-  }
+    version: String(update.version ?? ""),
+    currentVersion: String(update.currentVersion ?? ""),
+    date: String(update.date ?? ""),
+    body: String(update.body ?? ""),
+  };
 }
 
 export function resetDesktopUpdaterForTests(): void {
-  pendingUpdate = null
+  pendingUpdate = null;
 }
 
 export async function checkForDesktopUpdate(): Promise<DesktopUpdaterCheckResult> {
   if (!tauriRuntimeAvailable()) {
-    pendingUpdate = null
-    return { status: 'unavailable', update: null }
+    pendingUpdate = null;
+    return { status: "unavailable", update: null };
   }
 
   try {
-    const update = await check()
-    pendingUpdate = update ?? null
-    if (!update) return { status: 'up-to-date', update: null }
+    const update = await check();
+    pendingUpdate = update ?? null;
+    if (!update) return { status: "up-to-date", update: null };
     return {
-      status: 'update-available',
+      status: "update-available",
       update: normalizeUpdate(update),
-    }
+    };
   } catch (error) {
-    pendingUpdate = null
+    pendingUpdate = null;
     return {
-      status: 'error',
+      status: "error",
       update: null,
       error: errorMessage(error),
-    }
+    };
   }
 }
 
 export async function downloadAndInstallDesktopUpdate(): Promise<DesktopUpdaterCheckResult> {
   if (!tauriRuntimeAvailable()) {
-    return { status: 'unavailable', update: null }
+    return { status: "unavailable", update: null };
   }
 
-  const update = pendingUpdate ?? (await check())
-  pendingUpdate = update ?? null
-  if (!update) return { status: 'up-to-date', update: null }
-
+  let update = pendingUpdate;
   try {
-    await update.downloadAndInstall()
+    update = update ?? (await check());
+    pendingUpdate = update ?? null;
+    if (!update) return { status: "up-to-date", update: null };
+
+    await update.downloadAndInstall();
     return {
-      status: 'update-available',
+      status: "update-available",
       update: normalizeUpdate(update),
-    }
+    };
   } catch (error) {
+    if (!update) pendingUpdate = null;
     return {
-      status: 'error',
-      update: normalizeUpdate(update),
+      status: "error",
+      update: update ? normalizeUpdate(update) : null,
       error: errorMessage(error),
-    }
+    };
   }
 }
 
 export async function relaunchAfterDesktopUpdate(): Promise<boolean> {
-  if (!tauriRuntimeAvailable()) return false
-  await relaunch()
-  return true
+  if (!tauriRuntimeAvailable()) return false;
+  await relaunch();
+  return true;
 }

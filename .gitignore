@@ -20,6 +20,13 @@
 data/**/*.csv
 data/*.csv
 
+# Generated reports should live under output/ or another documented artifact path.
+/*.xls
+/*.xlsx
+
+# Stale generated report screenshots should not be checked in as source assets.
+/src-tauri/assets/report_image.png
+
 # Logs
 *.log
 

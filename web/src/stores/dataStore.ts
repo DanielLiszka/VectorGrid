@@ -1405,7 +1405,11 @@ export const useDataStore = defineStore("data", {
 
       void browseCsvAction()
         .then((result) => {
-          if (!result) return;
+          if (!result) {
+            this.statusLine = "CSV selection cancelled.";
+            markVueUpdate(this);
+            return;
+          }
           this.applyLoadResult(result, {
             treatAsBase: true,
             statusLine: baseLoadStatusText(result, "csv"),

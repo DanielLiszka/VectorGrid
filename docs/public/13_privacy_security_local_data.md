@@ -46,6 +46,7 @@ Never share API keys, broker secrets, signing keys, updater private keys, or loc
 
 Network access may occur when the user:
 
+- installs the app and allows the Windows installer to download or repair Microsoft Edge WebView2 Runtime if it is missing;
 - downloads Polygon.io historical data;
 - starts a Polygon live stock stream;
 - uses Alpaca broker workflows;
@@ -97,4 +98,3 @@ Before deleting:
 - export any research reports you want to keep;
 - note provider rate limits if cache redownloads will be needed;
 - make sure no running app workflow is writing to the folder.
-

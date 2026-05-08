@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -168,4 +171,4 @@ fn bench_rocb_gpu_kernel(c: &mut Criterion) {
 fn bench_rocb_gpu_kernel(_c: &mut Criterion) {}
 
 criterion_group!(rocb_benches, bench_rocb_cpu, bench_rocb_gpu_kernel);
-criterion_main!(rocb_benches);
+serialized_criterion_main!(rocb_benches);

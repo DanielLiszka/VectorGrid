@@ -3,8 +3,11 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ta_app_core::OptionsExpressionArtifactV1;
 use tauri::Manager;
@@ -39,6 +42,7 @@ const DEFAULT_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST: usize = 100;
 const DEFAULT_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST: usize = 100;
 const ARTIFACT_CATALOG_DB_FILE: &str = "artifact_catalog.sqlite3";
 const ARTIFACT_CATALOG_SCHEMA_VERSION: &str = "1";
+static RUN_ARTIFACT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArtifactFamily {
@@ -1141,7 +1145,7 @@ fn existing_run_artifact_target_path<R: tauri::Runtime>(
         .and_then(|value| value.to_str())
         .ok_or_else(|| "artifact path is missing a filename".to_string())?;
 
-    if path.exists() {
+    if regular_file_metadata_if_exists(&path, "existing artifact path")?.is_some() {
         let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -1233,6 +1237,130 @@ fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
     let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
     if !path.starts_with(&dir) {
         return Err("path is outside app runs dir".to_string());
+    }
+    Ok(())
+}
+
+fn regular_file_metadata_if_exists(
+    path: &Path,
+    label: &str,
+) -> Result<Option<std::fs::Metadata>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "{label} must not be a symlink: {}",
+                    path.to_string_lossy()
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(format!(
+                    "{label} must be a file: {}",
+                    path.to_string_lossy()
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn run_artifact_temp_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "artifact path is missing a parent directory".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "artifact path is missing a filename".to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let sequence = RUN_ARTIFACT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(parent.join(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nonce,
+        sequence
+    )))
+}
+
+fn write_new_run_artifact_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == ErrorKind::AlreadyExists {
+                format!("artifact path already exists: {}", path.to_string_lossy())
+            } else {
+                error.to_string()
+            }
+        })?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let replaced = wide_null(path);
+    let replacement = wide_null(temp_path);
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
+    std::fs::rename(temp_path, path).map_err(|e| e.to_string())
+}
+
+fn replace_run_artifact_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temp_path = run_artifact_temp_path(path)?;
+    let write_temp_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())
+    })();
+    if let Err(error) = write_temp_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    let replace_result = (|| -> Result<(), String> {
+        if regular_file_metadata_if_exists(path, "artifact overwrite target")?.is_some() {
+            replace_existing_file_with_temp(path, &temp_path)
+        } else {
+            std::fs::rename(&temp_path, path).map_err(|e| e.to_string())
+        }
+    })();
+    if let Err(error) = replace_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
     }
     Ok(())
 }
@@ -2103,6 +2231,20 @@ fn normalize_run_artifact_value_canonical(
     artifact: &Value,
 ) -> Result<RunArtifactNormalizationResult, String> {
     let mut normalized = normalize_run_artifact_value_pure(artifact_path, artifact)?;
+    if normalized.value.get("artifact_schema_version").is_none() {
+        let root = normalized
+            .value
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        root.insert(
+            "artifact_schema_version".to_string(),
+            Value::from(RUN_ARTIFACT_SCHEMA_VERSION),
+        );
+        push_unique_change(
+            &mut normalized.changes,
+            "backfilled artifact_schema_version",
+        );
+    }
     normalize_run_artifact_dataset_identity(&mut normalized.value, &mut normalized.changes);
     Ok(normalized)
 }
@@ -2136,8 +2278,7 @@ fn repair_run_artifact_target_path<R: tauri::Runtime>(
         return Err("write_target is outside app runs dir".to_string());
     }
 
-    if target_path.exists() {
-        ensure_path_is_within_dir(&target_path, &runs)?;
+    if regular_file_metadata_if_exists(&target_path, "write_target")?.is_some() {
         let raw = std::fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
         let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -2410,6 +2551,7 @@ pub fn save_run_artifact_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     existing_path: Option<String>,
 ) -> Result<SaveRunArtifactResponse, String> {
+    let replace_existing = existing_path.is_some();
     let path = match existing_path.as_deref() {
         Some(value) => existing_run_artifact_target_path(value, &app)?,
         None => run_artifact_path(&artifact, &app)?,
@@ -2435,12 +2577,18 @@ pub fn save_run_artifact_blocking<R: tauri::Runtime>(
                     .or_insert_with(|| Value::String(std::env::consts::ARCH.to_string()));
             }
         }
+        root.entry("artifact_schema_version".to_string())
+            .or_insert_with(|| Value::from(RUN_ARTIFACT_SCHEMA_VERSION));
     }
 
     artifact = normalize_run_artifact_value_canonical(&path, &artifact)?.value;
 
     let bytes = serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    if replace_existing {
+        replace_run_artifact_file(&path, &bytes)?;
+    } else {
+        write_new_run_artifact_file(&path, &bytes)?;
+    }
 
     prune_old_run_artifacts_blocking(
         &app,
@@ -2562,6 +2710,17 @@ fn read_json_value(path: &Path) -> Option<Value> {
     serde_json::from_str(&raw).ok()
 }
 
+fn regular_artifact_metadata(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(metadata))
+}
+
 fn scan_artifact_library(
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<Vec<ArtifactScanEntry>, String> {
@@ -2598,7 +2757,7 @@ fn scan_artifact_library(
 }
 
 fn read_artifact_scan_entry(path: PathBuf, file_name: String) -> Option<ArtifactScanEntry> {
-    let bytes = std::fs::metadata(&path).ok()?.len();
+    let bytes = regular_artifact_metadata(&path).ok()??.len();
     let value = read_json_value(&path)?;
     Some(ArtifactScanEntry {
         path,
@@ -2644,10 +2803,9 @@ fn scan_artifact_file_identities_in_dir(dir: &Path) -> Result<Vec<ArtifactFileId
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let metadata = entry.metadata().map_err(|e| e.to_string())?;
-        if !metadata.is_file() {
+        let Some(metadata) = regular_artifact_metadata(&path)? else {
             continue;
-        }
+        };
         out.push(ArtifactFileIdentity {
             path: path.to_string_lossy().to_string(),
             bytes: metadata.len(),
@@ -2675,6 +2833,37 @@ fn artifact_catalog_fingerprint(identities: &[ArtifactFileIdentity]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+fn artifact_identity_map(identities: &[ArtifactFileIdentity]) -> HashMap<String, u64> {
+    identities
+        .iter()
+        .map(|identity| (identity.path.clone(), identity.bytes))
+        .collect()
+}
+
+fn current_catalog_summary_value(
+    summary_json: &str,
+    row_path: &str,
+    row_bytes: i64,
+    identities: &HashMap<String, u64>,
+) -> Result<Option<Value>, String> {
+    let value: Value = serde_json::from_str(summary_json).map_err(|e| e.to_string())?;
+    let summary_path = value.get("path").and_then(Value::as_str).unwrap_or("");
+    if summary_path != row_path {
+        return Ok(None);
+    }
+    let Some(current_bytes) = identities.get(row_path).copied() else {
+        return Ok(None);
+    };
+    if row_bytes < 0 || current_bytes != row_bytes as u64 {
+        return Ok(None);
+    }
+    let summary_bytes = value.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    if summary_bytes != current_bytes {
+        return Ok(None);
+    }
+    Ok(Some(value))
 }
 
 fn sort_artifact_library_snapshot(snapshot: &mut ArtifactLibrarySnapshot) {
@@ -2871,6 +3060,7 @@ fn write_artifact_catalog_snapshot(
 fn load_artifact_catalog_snapshot(
     path: &Path,
     expected_fingerprint: &str,
+    identities: &HashMap<String, u64>,
 ) -> Result<Option<ArtifactLibrarySnapshot>, String> {
     let Some(conn) = open_valid_artifact_catalog_connection(path, expected_fingerprint)? else {
         return Ok(None);
@@ -2886,7 +3076,7 @@ fn load_artifact_catalog_snapshot(
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT family, summary_json
+            SELECT family, path, bytes, summary_json
             FROM artifact_index
             ORDER BY family ASC, ts DESC, path ASC
             "#,
@@ -2895,23 +3085,30 @@ fn load_artifact_catalog_snapshot(
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let family: String = row.get(0).map_err(|e| e.to_string())?;
-        let summary_json: String = row.get(1).map_err(|e| e.to_string())?;
+        let row_path: String = row.get(1).map_err(|e| e.to_string())?;
+        let row_bytes: i64 = row.get(2).map_err(|e| e.to_string())?;
+        let summary_json: String = row.get(3).map_err(|e| e.to_string())?;
+        let Some(summary_value) =
+            current_catalog_summary_value(&summary_json, &row_path, row_bytes, identities)?
+        else {
+            return Ok(None);
+        };
         match family.as_str() {
             "runs" => snapshot
                 .runs
-                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+                .push(serde_json::from_value(summary_value).map_err(|e| e.to_string())?),
             "meta" => snapshot
                 .meta
-                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+                .push(serde_json::from_value(summary_value).map_err(|e| e.to_string())?),
             "stage5" => snapshot
                 .stage5
-                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+                .push(serde_json::from_value(summary_value).map_err(|e| e.to_string())?),
             "policy_evals" => snapshot
                 .policy_evals
-                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+                .push(serde_json::from_value(summary_value).map_err(|e| e.to_string())?),
             "options_expression" => snapshot
                 .options_expression
-                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+                .push(serde_json::from_value(summary_value).map_err(|e| e.to_string())?),
             _ => return Ok(None),
         }
     }
@@ -2967,6 +3164,7 @@ fn load_artifact_catalog_family<T: DeserializeOwned>(
     path: &Path,
     expected_fingerprint: &str,
     family: &str,
+    identities: &HashMap<String, u64>,
 ) -> Result<Option<Vec<T>>, String> {
     let Some(conn) = open_valid_artifact_catalog_connection(path, expected_fingerprint)? else {
         return Ok(None);
@@ -2976,7 +3174,7 @@ fn load_artifact_catalog_family<T: DeserializeOwned>(
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT summary_json
+            SELECT path, bytes, summary_json
             FROM artifact_index
             WHERE family = ?1
             ORDER BY ts DESC, path ASC
@@ -2985,8 +3183,15 @@ fn load_artifact_catalog_family<T: DeserializeOwned>(
         .map_err(|e| e.to_string())?;
     let mut rows = stmt.query(params![family]).map_err(|e| e.to_string())?;
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let summary_json: String = row.get(0).map_err(|e| e.to_string())?;
-        out.push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?);
+        let row_path: String = row.get(0).map_err(|e| e.to_string())?;
+        let row_bytes: i64 = row.get(1).map_err(|e| e.to_string())?;
+        let summary_json: String = row.get(2).map_err(|e| e.to_string())?;
+        let Some(summary_value) =
+            current_catalog_summary_value(&summary_json, &row_path, row_bytes, identities)?
+        else {
+            return Ok(None);
+        };
+        out.push(serde_json::from_value(summary_value).map_err(|e| e.to_string())?);
     }
     Ok(Some(out))
 }
@@ -3093,7 +3298,9 @@ fn load_artifact_entry_checked(
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "artifact path is missing a filename".to_string())?;
-    let bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    let bytes = regular_artifact_metadata(&path)?
+        .ok_or_else(|| "artifact path is not a regular file".to_string())?
+        .len();
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
@@ -5187,8 +5394,9 @@ pub fn list_artifact_library_blocking<R: tauri::Runtime>(
     let dir = runs_dir(&app)?;
     let identities = scan_artifact_file_identities_in_dir(&dir)?;
     let fingerprint = artifact_catalog_fingerprint(&identities);
+    let identity_map = artifact_identity_map(&identities);
     if let Ok(path) = artifact_catalog_db_path(&app) {
-        match load_artifact_catalog_snapshot(&path, &fingerprint) {
+        match load_artifact_catalog_snapshot(&path, &fingerprint, &identity_map) {
             Ok(Some(snapshot)) => return Ok(snapshot),
             Ok(None) => {}
             Err(error) => {
@@ -5216,8 +5424,9 @@ where
     let dir = runs_dir(app)?;
     let identities = scan_artifact_file_identities_in_dir(&dir)?;
     let fingerprint = artifact_catalog_fingerprint(&identities);
+    let identity_map = artifact_identity_map(&identities);
     let path = artifact_catalog_db_path(app)?;
-    load_artifact_catalog_family(&path, &fingerprint, family)
+    load_artifact_catalog_family(&path, &fingerprint, family, &identity_map)
 }
 
 fn try_list_artifact_catalog_family_blocking<R, T>(
@@ -5508,7 +5717,11 @@ pub(super) fn repair_run_artifact_blocking<R: tauri::Runtime>(
         serde_json::to_vec_pretty(&normalized.value).map_err(|e| e.to_string())?;
     let mut wrote = false;
     if !dry_run && changed {
-        std::fs::write(&result_path, &normalized_bytes).map_err(|e| e.to_string())?;
+        if regular_file_metadata_if_exists(&result_path, "repair artifact target")?.is_some() {
+            replace_run_artifact_file(&result_path, &normalized_bytes)?;
+        } else {
+            write_new_run_artifact_file(&result_path, &normalized_bytes)?;
+        }
         wrote = true;
     }
 
@@ -5927,6 +6140,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temp dir");
         path
+    }
+
+    #[cfg(unix)]
+    fn try_create_file_symlink(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn try_create_file_symlink(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, link)
     }
 
     fn minimal_run_artifact(ts: &str) -> Value {
@@ -7761,6 +7984,12 @@ mod tests {
 
         assert_eq!(
             saved_value
+                .pointer("/artifact_schema_version")
+                .and_then(Value::as_u64),
+            Some(super::RUN_ARTIFACT_SCHEMA_VERSION as u64)
+        );
+        assert_eq!(
+            saved_value
                 .pointer("/route_provenance/requestedRoute")
                 .and_then(|value| value.as_str()),
             Some("GpuOnly")
@@ -8202,6 +8431,53 @@ mod tests {
             persisted.get("kind").and_then(Value::as_str),
             Some("vectorgrid_meta_selection")
         );
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_rejects_symlink_existing_path() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let outside_dir = make_temp_dir("run_artifact_symlink_target");
+        let outside_path = outside_dir.join("outside.json");
+        let mut outside_artifact = minimal_run_artifact("2026-04-10T12:00:00Z");
+        if let Some(root) = outside_artifact.as_object_mut() {
+            root.insert(
+                "report_xlsx_path".to_string(),
+                Value::String("outside-original.xlsx".to_string()),
+            );
+        }
+        std::fs::write(
+            &outside_path,
+            serde_json::to_vec_pretty(&outside_artifact).expect("outside artifact json"),
+        )
+        .expect("write outside artifact");
+
+        let symlink_path = dir.join("vectorgrid_run_symlink.json");
+        if try_create_file_symlink(&outside_path, &symlink_path).is_err() {
+            let _ = std::fs::remove_dir_all(&outside_dir);
+            return;
+        }
+
+        let mut updated = minimal_run_artifact("2026-04-10T12:00:00Z");
+        if let Some(root) = updated.as_object_mut() {
+            root.insert(
+                "report_xlsx_path".to_string(),
+                Value::String("should-not-overwrite-outside.xlsx".to_string()),
+            );
+        }
+
+        let err = save_run_artifact_blocking(
+            updated,
+            handle,
+            Some(symlink_path.to_string_lossy().to_string()),
+        )
+        .expect_err("symlink overwrite target should fail");
+
+        assert!(err.contains("must not be a symlink"));
+        let outside_raw = std::fs::read_to_string(&outside_path).expect("read outside artifact");
+        assert!(outside_raw.contains("outside-original.xlsx"));
+        let _ = std::fs::remove_dir_all(&outside_dir);
     }
 
     #[test]
@@ -8849,7 +9125,7 @@ mod tests {
     }
 
     #[test]
-    fn list_run_artifacts_blocking_uses_valid_catalog_snapshot() {
+    fn list_run_artifacts_blocking_rejects_stale_catalog_snapshot() {
         let app = build_mock_app();
         let handle = app.handle().clone();
         let saved = save_run_artifact_blocking(
@@ -8901,15 +9177,78 @@ mod tests {
         .expect("insert unrelated invalid catalog row");
         drop(conn);
 
-        let listed = list_run_artifacts_blocking(handle).expect("list via catalog");
+        let listed = list_run_artifacts_blocking(handle).expect("list via catalog fallback");
 
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].path, summary.path);
-        assert_eq!(listed[0].ts, "2026-04-10T12:00:00Z");
+        assert!(listed.is_empty());
     }
 
     #[test]
-    fn list_meta_artifacts_blocking_uses_valid_catalog_snapshot() {
+    fn list_run_artifacts_blocking_rejects_outside_path_catalog_rows() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save run");
+        let artifact_path = PathBuf::from(&saved.path);
+        let artifact_value: Value =
+            serde_json::from_slice(&std::fs::read(&artifact_path).expect("read saved artifact"))
+                .expect("parse saved artifact");
+        let mut summary =
+            build_run_artifact_summary(&artifact_path, saved.bytes as u64, &artifact_value)
+                .expect("summary");
+        summary.path = "C:/outside/vectorgrid_run_escape.json".to_string();
+
+        let runs = runs_dir(&handle).expect("runs dir");
+        let identities = scan_artifact_file_identities_in_dir(&runs).expect("scan identities");
+        let fingerprint = artifact_catalog_fingerprint(&identities);
+        let catalog_path = artifact_catalog_db_path(&handle).expect("catalog path");
+        write_artifact_catalog_snapshot(
+            &catalog_path,
+            &fingerprint,
+            &ArtifactLibrarySnapshot {
+                runs: vec![summary],
+                meta: Vec::new(),
+                stage5: Vec::new(),
+                policy_evals: Vec::new(),
+                options_expression: Vec::new(),
+            },
+        )
+        .expect("write catalog");
+
+        let listed = list_run_artifacts_blocking(handle).expect("list via catalog fallback");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, saved.path);
+    }
+
+    #[test]
+    fn list_run_artifacts_blocking_skips_file_symlinks_when_supported() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let runs = runs_dir(&handle).expect("runs dir");
+        std::fs::create_dir_all(&runs).expect("create runs dir");
+        let outside_dir = make_temp_dir("run_artifacts_outside_symlink_target");
+        let outside_artifact = outside_dir.join("vectorgrid_run_outside.json");
+        std::fs::write(
+            &outside_artifact,
+            serde_json::to_vec_pretty(&minimal_run_artifact("2026-04-10T12:00:00Z")).expect("json"),
+        )
+        .expect("write outside artifact");
+        let link_path = runs.join("vectorgrid_run_symlink.json");
+        if try_create_file_symlink(&outside_artifact, &link_path).is_err() {
+            return;
+        }
+
+        let listed = list_run_artifacts_blocking(handle).expect("list runs");
+
+        assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn list_meta_artifacts_blocking_rejects_stale_catalog_snapshot() {
         let app = build_mock_app();
         let handle = app.handle().clone();
         let meta_path =
@@ -8971,11 +9310,9 @@ mod tests {
         .expect("insert unrelated invalid catalog row");
         drop(conn);
 
-        let listed = list_meta_artifacts_blocking(handle).expect("list via catalog");
+        let listed = list_meta_artifacts_blocking(handle).expect("list via catalog fallback");
 
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].path, summary.path);
-        assert_eq!(listed[0].ts, "2026-04-10T13:00:00Z");
+        assert!(listed.is_empty());
     }
 
     #[test]

@@ -8,6 +8,7 @@ import {
   normalizeStageCompletions,
   type StageCompletionPacketV1,
 } from "../utils/core/stageCompletion";
+import { csvLine } from "../utils/csv";
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
@@ -999,14 +1000,10 @@ function normalizeObjectiveScoreComponents(
     stressContribution: normalizeNumber(row.stress_contribution),
     harsherStressUtility: normalizeNumber(row.harsher_stress_utility),
     harsherStressWeight: normalizeNumber(row.harsher_stress_weight),
-    harsherStressContribution: normalizeNumber(
-      row.harsher_stress_contribution,
-    ),
+    harsherStressContribution: normalizeNumber(row.harsher_stress_contribution),
     extremeStressUtility: normalizeNumber(row.extreme_stress_utility),
     extremeStressWeight: normalizeNumber(row.extreme_stress_weight),
-    extremeStressContribution: normalizeNumber(
-      row.extreme_stress_contribution,
-    ),
+    extremeStressContribution: normalizeNumber(row.extreme_stress_contribution),
     totalScore: normalizeNumber(row.total_score),
   };
 }
@@ -1117,9 +1114,7 @@ function normalizeDatasetQuoteQuality(
 ): OptionsExpressionDatasetQuoteQualitySummary | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
-  const perContract = Array.isArray(row.per_contract)
-    ? row.per_contract
-    : [];
+  const perContract = Array.isArray(row.per_contract) ? row.per_contract : [];
   return {
     priceSemantics: normalizeText(row.price_semantics),
     rowCount: normalizeNumber(row.row_count),
@@ -1199,7 +1194,9 @@ function normalizeValidationPlan(
     startTimestampMs: normalizeOptionalNumber(row.start_timestamp_ms),
     endTimestampMs: normalizeOptionalNumber(row.end_timestamp_ms),
     trainSessionCount: normalizeOptionalNumber(row.train_session_count),
-    validationSessionCount: normalizeOptionalNumber(row.validation_session_count),
+    validationSessionCount: normalizeOptionalNumber(
+      row.validation_session_count,
+    ),
     stepSessionCount: normalizeOptionalNumber(row.step_session_count),
   };
 }
@@ -1216,12 +1213,8 @@ function normalizeValidationTupleDrift(
     holdoutExpectancyDelta: normalizeOptionalNumber(
       row.holdout_expectancy_delta,
     ),
-    sealedExpectancyDelta: normalizeOptionalNumber(
-      row.sealed_expectancy_delta,
-    ),
-    stressExpectancyDelta: normalizeOptionalNumber(
-      row.stress_expectancy_delta,
-    ),
+    sealedExpectancyDelta: normalizeOptionalNumber(row.sealed_expectancy_delta),
+    stressExpectancyDelta: normalizeOptionalNumber(row.stress_expectancy_delta),
     extremeStressExpectancyDelta: normalizeOptionalNumber(
       row.extreme_stress_expectancy_delta,
     ),
@@ -2371,23 +2364,6 @@ function normalizeEventPathInspection(
     pointCount: normalizeNumber(row.point_count),
     points: points.map((entry) => normalizeEventPathPoint(entry)),
   };
-}
-
-function csvCell(value: unknown): string {
-  const text = String(value ?? "");
-  if (/[",\r\n]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function csvLine(values: readonly unknown[]): string {
-  let line = "";
-  for (let index = 0; index < values.length; index += 1) {
-    if (index > 0) line += ",";
-    line += csvCell(values[index]);
-  }
-  return line;
 }
 
 function downloadBlob(filename: string, blob: Blob): boolean {

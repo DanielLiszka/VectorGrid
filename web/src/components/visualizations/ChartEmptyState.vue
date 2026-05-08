@@ -12,10 +12,12 @@ defineEmits<{
 </script>
 
 <template>
-  <div class="chartEmptyState" role="status" aria-live="polite">
-    <div class="chartEmptyTitle">{{ title }}</div>
-    <div class="chartEmptyBody">{{ body }}</div>
-    <div v-if="status" class="chartEmptyStatus mono panelNumeric">{{ status }}</div>
+  <div class="chartEmptyState">
+    <div class="chartEmptyMessage" role="status" aria-live="polite">
+      <div class="chartEmptyTitle">{{ title }}</div>
+      <div class="chartEmptyBody">{{ body }}</div>
+      <div v-if="status" class="chartEmptyStatus mono panelNumeric">{{ status }}</div>
+    </div>
     <button v-if="actionLabel" type="button" @click="$emit('action')">{{ actionLabel }}</button>
   </div>
 </template>
@@ -28,6 +30,11 @@ defineEmits<{
   border: 1px solid var(--border);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel-footer) 86%, transparent);
+}
+
+.chartEmptyMessage {
+  display: grid;
+  gap: 0.45rem;
 }
 
 .chartEmptyTitle {

@@ -499,14 +499,10 @@ export async function listSampleCsvs(): Promise<DataSampleCsvSummary[]> {
 }
 
 export async function browseCsv(): Promise<DataLoadResult | null> {
-  try {
-    const picked = await invokeCommand<string | null>("pick_csv_file");
-    const path = normalizeText(picked);
-    if (!path) return null;
-    return await loadCsv(path);
-  } catch {
-    return null;
-  }
+  const picked = await invokeCommand<string | null>("pick_csv_file");
+  const path = normalizeText(picked);
+  if (!path) return null;
+  return await loadCsv(path);
 }
 
 export async function openPolygon(): Promise<void> {

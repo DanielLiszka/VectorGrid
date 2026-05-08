@@ -37,6 +37,7 @@ export function useOptimizeCatalogQueries(options: OptimizeCatalogQueryOptions =
     query: () => listMovingAverageCatalog(),
     initialData: () => [],
     initialDataUpdatedAt: 0,
+    enabled,
     staleTime: CATALOG_STALE_TIME_MS,
   })
   const gpuSpeedupsQuery = useQuery<GpuSpeedupEntry[], Error, GpuSpeedupEntry[]>({
@@ -44,6 +45,7 @@ export function useOptimizeCatalogQueries(options: OptimizeCatalogQueryOptions =
     query: () => listGpuSpeedups(),
     initialData: () => [],
     initialDataUpdatedAt: 0,
+    enabled,
     staleTime: CATALOG_STALE_TIME_MS,
   })
   const dynamicIndicatorCatalogQuery = useQuery<

@@ -7,7 +7,7 @@ Windows-first desktop end-to-end smoke coverage for the Tauri shell.
 Required:
 
 - Rust stable
-- Node version compatible with [package.json](C:\Rust Projects\ta_desktop_demo\web\package.json)
+- Node version compatible with [`web/package.json`](../../package.json)
 - `tauri-driver`
 - `msedgedriver.exe` that matches the locally installed Edge version
 

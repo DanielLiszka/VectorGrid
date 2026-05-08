@@ -1,12 +1,19 @@
 const REDACTED: &str = "[redacted]";
 const SENSITIVE_KEYS: &[&str] = &[
-    "apikey",
+    "apca-api-key-id",
+    "apca-api-secret-key",
+    "x-api-key",
+    "api-key",
+    "api-secret-key",
+    "api_key_id",
     "api_key",
+    "apikey",
     "api-secret",
     "api_secret",
     "authorization",
     "password",
     "secret",
+    "secret-key",
     "token",
 ];
 
@@ -27,6 +34,7 @@ pub fn redact_sensitive_text_with_values<'a>(
     }
 
     out = redact_bearer_tokens(out);
+    out = redact_line_prefix_assignments(out);
     out = redact_assignments(out);
     redact_url_params(out)
 }
@@ -55,7 +63,7 @@ fn redact_bearer_tokens(input: String) -> String {
 
 fn redact_assignments(input: String) -> String {
     let mut out = input;
-    for key in SENSITIVE_KEYS {
+    for &key in SENSITIVE_KEYS {
         let mut start = 0usize;
         loop {
             let lower = out.to_ascii_lowercase();
@@ -65,13 +73,17 @@ fn redact_assignments(input: String) -> String {
             let key_start = start + relative;
             let mut cursor = key_start + key.len();
             cursor = skip_ascii_ws(&out, cursor);
-            if !matches!(out.as_bytes().get(cursor), Some(b':') | Some(b'=')) {
+            if !is_assignment_separator(&out, cursor) {
                 start = cursor;
                 continue;
             }
             cursor += 1;
             cursor = skip_ascii_ws(&out, cursor);
-            let quote = out.as_bytes().get(cursor).copied();
+            let quote = out
+                .as_bytes()
+                .get(cursor)
+                .copied()
+                .filter(|byte| matches!(*byte, b'"' | b'\''));
             let value_start = if matches!(quote, Some(b'"') | Some(b'\'')) {
                 cursor + 1
             } else {
@@ -89,14 +101,85 @@ fn redact_assignments(input: String) -> String {
     out
 }
 
+fn redact_line_prefix_assignments(input: String) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        if ch == '\n' || ch == '\r' {
+            let end = idx + ch.len_utf8();
+            out.push_str(&redact_line_prefix_segment(&input[start..end]));
+            start = end;
+        }
+    }
+    if start < input.len() {
+        out.push_str(&redact_line_prefix_segment(&input[start..]));
+    }
+    out
+}
+
+fn redact_line_prefix_segment(segment: &str) -> String {
+    let line_end = match (segment.find('\n'), segment.find('\r')) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => segment.len(),
+    };
+    let (line, ending) = segment.split_at(line_end);
+    let leading_ws = line
+        .find(|c: char| c != ' ' && c != '\t')
+        .unwrap_or(line.len());
+    let candidate = &line[leading_ws..];
+    for &key in SENSITIVE_KEYS {
+        let Some(prefix) = candidate.get(..key.len()) else {
+            continue;
+        };
+        if !prefix.eq_ignore_ascii_case(key) {
+            continue;
+        }
+        let mut cursor = leading_ws + key.len();
+        cursor = skip_ascii_ws(line, cursor);
+        if !is_assignment_separator(line, cursor) {
+            continue;
+        }
+        cursor += 1;
+        cursor = skip_ascii_ws(line, cursor);
+        let quote = line
+            .as_bytes()
+            .get(cursor)
+            .copied()
+            .filter(|byte| matches!(*byte, b'"' | b'\''));
+        let value_start = if matches!(quote, Some(b'"') | Some(b'\'')) {
+            cursor + 1
+        } else {
+            cursor
+        };
+        let value_end = find_value_end(line, value_start, quote);
+        if value_end <= value_start {
+            continue;
+        }
+        let mut redacted = line.to_string();
+        redacted.replace_range(value_start..value_end, REDACTED);
+        redacted.push_str(ending);
+        return redacted;
+    }
+    segment.to_string()
+}
+
 fn skip_ascii_ws(input: &str, mut cursor: usize) -> usize {
-    while matches!(
-        input.as_bytes().get(cursor),
-        Some(b' ' | b'\t' | b'\r' | b'\n')
-    ) {
+    while input
+        .as_bytes()
+        .get(cursor)
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
         cursor += 1;
     }
     cursor
+}
+
+fn is_assignment_separator(input: &str, cursor: usize) -> bool {
+    input
+        .as_bytes()
+        .get(cursor)
+        .is_some_and(|byte| matches!(*byte, b':' | b'='))
 }
 
 fn find_value_end(input: &str, start: usize, quote: Option<u8>) -> usize {
@@ -121,7 +204,7 @@ fn find_value_end(input: &str, start: usize, quote: Option<u8>) -> usize {
 
 fn redact_url_params(input: String) -> String {
     let mut out = input;
-    for key in SENSITIVE_KEYS {
+    for &key in SENSITIVE_KEYS {
         let marker = format!("{key}=");
         let mut start = 0usize;
         loop {
@@ -173,5 +256,23 @@ mod tests {
         assert!(text.contains("[redacted]"));
         assert!(!text.contains("poly_secret_123"));
         assert!(text.contains("limit=1"));
+    }
+
+    #[test]
+    fn redacts_header_style_provider_key_names() {
+        let text = redact_sensitive_text_with_values(
+            "x-api-key: poly_secret\nAPCA-API-KEY-ID=alpaca_key\nAPCA-API-SECRET-KEY: \"alpaca_secret\"",
+            [],
+        );
+        assert!(text.contains("[redacted]"));
+        assert!(!text.contains("poly_secret"));
+        assert!(!text.contains("alpaca_key"));
+        assert!(!text.contains("alpaca_secret"));
+    }
+
+    #[test]
+    fn redacts_sensitive_key_at_line_prefix() {
+        let text = super::redact_line_prefix_segment("x-api-key: poly_secret\n");
+        assert_eq!(text, "x-api-key: [redacted]\n");
     }
 }

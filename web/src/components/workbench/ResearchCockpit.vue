@@ -28,6 +28,7 @@ function selectStep(id: ResearchCockpitStepId): void {
         :class="step.state"
         :data-state="step.state"
         :data-qa-action="step.actionId"
+        :aria-current="step.state === 'active' ? 'step' : undefined"
         @click="selectStep(step.id)"
       >
         <span>{{ step.label }}</span>

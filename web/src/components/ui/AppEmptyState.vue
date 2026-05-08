@@ -1,24 +1,31 @@
 <script setup lang="ts">
+import { computed, useId } from 'vue'
+
 defineOptions({ inheritAttrs: false })
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     title: string
     body?: string
     hint?: string
     blockedReason?: string
+    headingId?: string
   }>(),
   {
     body: '',
     hint: '',
     blockedReason: '',
+    headingId: '',
   },
 )
+
+const generatedId = useId()
+const resolvedHeadingId = computed(() => props.headingId || `${generatedId}-empty-heading`)
 </script>
 
 <template>
-  <section v-bind="$attrs" class="appEmptyState emptyState">
-    <div class="emptyTitle">{{ title }}</div>
+  <section v-bind="$attrs" class="appEmptyState emptyState" :aria-labelledby="resolvedHeadingId">
+    <h3 :id="resolvedHeadingId" class="emptyTitle">{{ title }}</h3>
     <div v-if="body" class="emptyBody">{{ body }}</div>
     <div v-if="blockedReason" class="emptyBlockedReason" role="status">
       {{ blockedReason }}
@@ -33,6 +40,10 @@ withDefaults(
 <style scoped>
 .appEmptyState {
   min-height: 0;
+}
+
+.emptyTitle {
+  margin: 0;
 }
 
 .appEmptyHint {

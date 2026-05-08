@@ -6,6 +6,7 @@ use crate::execution_policy::{
     evaluate_execution_policy, ExecutionPolicyDecision, ExecutionPolicyInput, ExecutionPolicyLimits,
 };
 use crate::execution_quantity::normalize_execution_quantity;
+use crate::redaction::redact_sensitive_text_with_values;
 use crate::settings::{self, ExecutionRiskPolicySettings};
 use crate::state::AppState;
 use reqwest::blocking::Client;
@@ -1573,6 +1574,46 @@ fn alpaca_client() -> Result<&'static Client, String> {
         .ok_or_else(|| "failed to initialize Alpaca HTTP client".to_string())
 }
 
+fn build_alpaca_path_segment_url(
+    mode: LiveExecutionMode,
+    base_path: &str,
+    segment: &str,
+    segment_name: &str,
+) -> Result<reqwest::Url, String> {
+    let segment = segment.trim();
+    if segment.is_empty() {
+        return Err(format!("Alpaca {segment_name} must not be empty"));
+    }
+    let mut url = reqwest::Url::parse(&format!("{}{}", base_url(mode), base_path))
+        .map_err(|e| format!("failed to build Alpaca {segment_name} url: {e}"))?;
+    url.path_segments_mut()
+        .map_err(|_| format!("failed to append Alpaca {segment_name} path segment"))?
+        .push(segment);
+    Ok(url)
+}
+
+fn build_alpaca_position_url(
+    mode: LiveExecutionMode,
+    symbol: &str,
+) -> Result<reqwest::Url, String> {
+    build_alpaca_path_segment_url(mode, "/v2/positions", symbol, "position symbol")
+}
+
+fn build_alpaca_order_url(mode: LiveExecutionMode, order_id: &str) -> Result<reqwest::Url, String> {
+    build_alpaca_path_segment_url(mode, "/v2/orders", order_id, "order id")
+}
+
+fn alpaca_http_error_message(
+    label: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+    api_key: &str,
+    api_secret: &str,
+) -> String {
+    let body = redact_sensitive_text_with_values(body, [api_key, api_secret]);
+    format!("{label} ({status}): {body}")
+}
+
 fn fetch_alpaca_position_qty(
     client: &Client,
     mode: LiveExecutionMode,
@@ -1581,7 +1622,7 @@ fn fetch_alpaca_position_qty(
     symbol: &str,
 ) -> Result<f64, String> {
     let headers = build_alpaca_headers(api_key, api_secret)?;
-    let url = format!("{}/v2/positions/{}", base_url(mode), symbol);
+    let url = build_alpaca_position_url(mode, symbol)?;
     let resp = client
         .get(url)
         .headers(headers)
@@ -1593,7 +1634,13 @@ fn fetch_alpaca_position_qty(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!("Alpaca position request failed ({status}): {body}"));
+        return Err(alpaca_http_error_message(
+            "Alpaca position request failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
+        ));
     }
     let v: serde_json::Value = resp
         .json()
@@ -1625,7 +1672,13 @@ fn fetch_alpaca_account(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!("Alpaca account request failed ({status}): {body}"));
+        return Err(alpaca_http_error_message(
+            "Alpaca account request failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
+        ));
     }
     resp.json()
         .map_err(|e| format!("failed to decode Alpaca account response: {e}"))
@@ -1646,8 +1699,12 @@ fn fetch_alpaca_clock(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!(
-            "Alpaca market clock request failed ({status}): {body}"
+        return Err(alpaca_http_error_message(
+            "Alpaca market clock request failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
         ));
     }
     resp.json()
@@ -1849,7 +1906,13 @@ fn fetch_alpaca_orders_with_filters(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!("Alpaca orders request failed ({status}): {body}"));
+        return Err(alpaca_http_error_message(
+            "Alpaca orders request failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
+        ));
     }
     let v: serde_json::Value = resp
         .json()
@@ -1895,8 +1958,12 @@ fn fetch_alpaca_order_by_client_order_id(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!(
-            "Alpaca client-order lookup failed ({status}): {body}"
+        return Err(alpaca_http_error_message(
+            "Alpaca client-order lookup failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
         ));
     }
     resp.json()
@@ -1933,8 +2000,12 @@ fn fetch_alpaca_positions(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!(
-            "Alpaca positions request failed ({status}): {body}"
+        return Err(alpaca_http_error_message(
+            "Alpaca positions request failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
         ));
     }
     let v: serde_json::Value = resp
@@ -1954,7 +2025,7 @@ fn fetch_alpaca_position(
     symbol: &str,
 ) -> Result<Option<serde_json::Value>, String> {
     let headers = build_alpaca_headers(api_key, api_secret)?;
-    let url = format!("{}/v2/positions/{}", base_url(mode), symbol);
+    let url = build_alpaca_position_url(mode, symbol)?;
     let resp = client
         .get(url)
         .headers(headers)
@@ -1966,7 +2037,13 @@ fn fetch_alpaca_position(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!("Alpaca position request failed ({status}): {body}"));
+        return Err(alpaca_http_error_message(
+            "Alpaca position request failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
+        ));
     }
     resp.json()
         .map(Some)
@@ -1981,7 +2058,7 @@ fn cancel_alpaca_order(
     order_id: &str,
 ) -> Result<(), String> {
     let headers = build_alpaca_headers(api_key, api_secret)?;
-    let url = format!("{}/v2/orders/{}", base_url(mode), order_id);
+    let url = build_alpaca_order_url(mode, order_id)?;
     let resp = client
         .delete(url)
         .headers(headers)
@@ -1993,7 +2070,13 @@ fn cancel_alpaca_order(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!("Alpaca order cancel failed ({status}): {body}"));
+        return Err(alpaca_http_error_message(
+            "Alpaca order cancel failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
+        ));
     }
     Ok(())
 }
@@ -3210,7 +3293,13 @@ fn submit_alpaca_order(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        return Err(format!("Alpaca order failed ({status}): {body}"));
+        return Err(alpaca_http_error_message(
+            "Alpaca order failed",
+            status,
+            &body,
+            api_key,
+            api_secret,
+        ));
     }
     resp.json()
         .map_err(|e| format!("failed to decode Alpaca order response: {e}"))
@@ -6560,6 +6649,46 @@ mod tests {
             base_url(LiveExecutionMode::Live),
             "https://api.alpaca.markets"
         );
+    }
+
+    #[test]
+    fn alpaca_path_segment_urls_percent_encode_symbols_and_order_ids() {
+        let position_url =
+            build_alpaca_position_url(LiveExecutionMode::Paper, "EUR/USD").expect("position url");
+        assert_eq!(
+            position_url.as_str(),
+            "https://paper-api.alpaca.markets/v2/positions/EUR%2FUSD"
+        );
+
+        let order_url =
+            build_alpaca_order_url(LiveExecutionMode::Live, "ord/../123").expect("order url");
+        assert_eq!(
+            order_url.as_str(),
+            "https://api.alpaca.markets/v2/orders/ord%2F..%2F123"
+        );
+    }
+
+    #[test]
+    fn alpaca_path_segment_urls_reject_empty_segments() {
+        let err = build_alpaca_position_url(LiveExecutionMode::Paper, "   ")
+            .expect_err("empty position symbol should fail");
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn alpaca_http_error_message_redacts_credentials_from_broker_body() {
+        let msg = alpaca_http_error_message(
+            "Alpaca order failed",
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"message":"key AK_TEST_KEY secret SK_TEST_SECRET apiKey=AK_TEST_KEY"}"#,
+            "AK_TEST_KEY",
+            "SK_TEST_SECRET",
+        );
+
+        assert!(msg.contains("Alpaca order failed"));
+        assert!(!msg.contains("AK_TEST_KEY"));
+        assert!(!msg.contains("SK_TEST_SECRET"));
+        assert!(msg.contains("[redacted]"));
     }
 
     #[test]

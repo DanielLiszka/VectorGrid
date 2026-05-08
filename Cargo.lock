@@ -5310,6 +5310,7 @@ dependencies = [
  "ta_strategies",
  "vector-ta",
  "which",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5321,7 +5322,6 @@ dependencies = [
  "bincode",
  "chrono",
  "clap",
- "cust",
  "futures-util",
  "keyring",
  "log",
@@ -5352,6 +5352,7 @@ dependencies = [
  "tokio-tungstenite",
  "vector-ta",
  "window-vibrancy 0.7.1",
+ "windows-sys 0.59.0",
  "zip 2.4.2",
 ]
 

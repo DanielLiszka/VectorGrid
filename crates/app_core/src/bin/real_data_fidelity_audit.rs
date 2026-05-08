@@ -19,6 +19,11 @@ use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Clone, Debug)]
 struct CliConfig {
     csv_path: PathBuf,
@@ -300,6 +305,7 @@ struct MetricsSummary {
 
 fn main() -> Result<(), String> {
     let cfg = parse_args()?;
+    let _benchmark_guard = benchmark_lock::acquire("real-data fidelity audit")?;
     let base = read_candles_from_csv_compat(cfg.csv_path.to_string_lossy().as_ref())?;
     let cancel = AtomicBool::new(false);
     let strategy_cases = [
@@ -484,15 +490,12 @@ fn main() -> Result<(), String> {
     }
 
     let artifact = FidelityAuditArtifact {
-        csv_path: cfg.csv_path.to_string_lossy().to_string(),
+        csv_path: artifact_path_label(&cfg.csv_path),
         timeframes: timeframe_results,
     };
 
-    if let Some(parent) = cfg.out_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let json = serde_json::to_string_pretty(&artifact).map_err(|e| e.to_string())?;
-    std::fs::write(&cfg.out_path, json).map_err(|e| e.to_string())?;
+    atomic_output::write_str(&cfg.out_path, &json)?;
     println!(
         "Wrote fidelity audit artifact to {}",
         cfg.out_path.to_string_lossy()
@@ -1642,7 +1645,29 @@ fn parse_range_arg(raw: &str, name: &str) -> Result<(u32, u32, u32), String> {
     let step = parts[2]
         .parse::<u32>()
         .map_err(|_| format!("invalid {name} step"))?;
+    if start == 0 || end == 0 || step == 0 || start > end {
+        return Err(format!(
+            "invalid {name} '{raw}': expected positive start:end:step with start <= end"
+        ));
+    }
     Ok((start, end, step))
+}
+
+fn artifact_path_label(path: &std::path::Path) -> String {
+    let cwd = std::env::current_dir().ok();
+    let absolute = path.canonicalize().unwrap_or_else(|_| {
+        cwd.as_ref()
+            .map_or_else(|| path.to_path_buf(), |base| base.join(path))
+    });
+    if let Some(cwd) = cwd.and_then(|value| value.canonicalize().ok()) {
+        if let Ok(relative) = absolute.strip_prefix(&cwd) {
+            return relative.to_string_lossy().replace('\\', "/");
+        }
+    }
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|name| format!("<external>/{name}"))
+        .unwrap_or_else(|| "<external>".to_string())
 }
 
 fn expand_range_u16((start, end, step): (u32, u32, u32)) -> Vec<u16> {
@@ -1874,5 +1899,18 @@ mod tests {
     fn parse_args_from_iter_rejects_out_of_band_holdout_fraction() {
         let err = parse_args_from_iter(vec!["--holdout-frac", "0.80"]).unwrap_err();
         assert!(err.contains("--holdout-frac should usually be in [0.05, 0.50)"));
+    }
+
+    #[test]
+    fn parse_args_from_iter_rejects_invalid_ranges() {
+        for args in [
+            vec!["--fast-range", "0:10:1"],
+            vec!["--fast-range", "10:0:1"],
+            vec!["--fast-range", "10:5:1"],
+            vec!["--fast-range", "5:10:0"],
+        ] {
+            let err = parse_args_from_iter(args).unwrap_err();
+            assert!(err.contains("expected positive start:end:step with start <= end"));
+        }
     }
 }

@@ -381,12 +381,21 @@ function resolveValidationCommand(
     runReq && typeof runReq === "object"
       ? (runReq as Record<string, unknown>)
       : null;
-  const kind = normalizeStrategyKindRaw(
-    req?.strategy_kind ?? req?.strategyKind,
-  );
-  return isDoubleLikeKind(kind)
-    ? "run_double_ma_validation"
-    : "run_composite_validation";
+  const kind = normalizeStrategyKind(req?.strategy_kind ?? req?.strategyKind);
+  if (!kind) {
+    throw new Error("Validation run request is missing strategy_kind.");
+  }
+  if (isDoubleLikeKind(kind)) {
+    return "run_double_ma_validation";
+  }
+  if (
+    kind === "CompositeCpu" ||
+    kind === "CompositeMo" ||
+    isCompositeGpuNativeAdvancedKind(kind)
+  ) {
+    return "run_composite_validation";
+  }
+  throw new Error(`Unsupported validation strategy_kind '${kind}'.`);
 }
 
 interface CrossSelectionEntry {

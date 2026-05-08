@@ -470,6 +470,78 @@ describe("history store actions", () => {
     );
   });
 
+  it("updates the selected saved-run detail when a compare detail is still loading", async () => {
+    const store = useHistoryStore();
+    const detailA = {
+      strategyKind: "DoubleMA",
+      timeframe: "1m",
+      csvPath: "C:/data/aapl.csv",
+      reportPath: "C:/runs/aapl.xlsx",
+      hasValidation: true,
+      tags: ["aapl"],
+      paramsText: "strategy: DoubleMA A",
+    };
+    const detailB = {
+      ...detailA,
+      csvPath: "C:/data/msft.csv",
+      reportPath: "C:/runs/msft.xlsx",
+      tags: ["msft"],
+      paramsText: "strategy: DoubleMA B",
+    };
+    const pending = new Map<string, (detail: typeof detailA) => void>();
+    loadSavedRunDetailMock.mockImplementation(
+      (path: string) =>
+        new Promise((resolve) => {
+          pending.set(path, resolve);
+        }),
+    );
+
+    store.savedRunsRaw = [
+      {
+        ts: "2026-02-25T00:00:00Z",
+        path: "C:/runs/aapl.json",
+        bytes: 2048,
+        strategyKind: "DoubleMA",
+        hasValidation: true,
+        reportXlsxPath: "C:/runs/aapl.xlsx",
+        csvPath: "C:/data/aapl.csv",
+        tags: ["aapl"],
+      },
+      {
+        ts: "2026-02-24T00:00:00Z",
+        path: "C:/runs/msft.json",
+        bytes: 1024,
+        strategyKind: "DoubleMA",
+        hasValidation: true,
+        reportXlsxPath: "C:/runs/msft.xlsx",
+        csvPath: "C:/data/msft.csv",
+        tags: ["msft"],
+      },
+    ];
+
+    store.syncSavedRunsView("C:/runs/aapl.json");
+    await flushServiceImports();
+    store.setSelectField("savedRunCompareSelect", "C:/runs/msft.json");
+    await flushServiceImports();
+
+    expect(loadSavedRunDetailMock).toHaveBeenCalledWith("C:/runs/aapl.json");
+    expect(loadSavedRunDetailMock).toHaveBeenCalledWith("C:/runs/msft.json");
+    expect(store.savedRunDetailParams).toBe("Loading parameter snapshot...");
+
+    pending.get("C:/runs/aapl.json")?.(detailA);
+    await flushServiceImports();
+
+    expect(store.savedRunDetailParams).toBe("strategy: DoubleMA A");
+    expect(store.savedRunCompareSummary).toBe("Loading compare...");
+
+    pending.get("C:/runs/msft.json")?.(detailB);
+    await flushServiceImports();
+
+    expect(store.savedRunCompareSummary).toBe(
+      "Compare unavailable for this artifact because request/result data is missing.",
+    );
+  });
+
   it("gates mutating saved-run actions while a runtime is marked active", () => {
     vi.stubGlobal("document", {
       documentElement: {

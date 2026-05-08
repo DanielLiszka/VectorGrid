@@ -159,6 +159,20 @@ fn csv_record_line_num(record: &StringRecord, fallback: usize) -> usize {
         .unwrap_or(fallback)
 }
 
+fn csv_record_looks_headerless(record: &StringRecord) -> bool {
+    let Some(ts_raw) = record.get(0) else {
+        return false;
+    };
+    if parse_i64_flexible(ts_raw).is_err() {
+        return false;
+    }
+
+    record
+        .iter()
+        .skip(1)
+        .any(|field| field.trim().parse::<f64>().is_ok_and(f64::is_finite))
+}
+
 fn format_csv_read_error(context: &str, error: csv::Error) -> String {
     let line_num = error
         .position()
@@ -193,6 +207,13 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
             None => return Err("CSV is empty".to_string()),
         }
     };
+
+    if csv_record_looks_headerless(&header_record) {
+        return Err(
+            "CSV appears to be headerless; add a header row with at least timestamp and close columns"
+                .to_string(),
+        );
+    }
 
     let headers: Vec<String> = header_record
         .iter()
@@ -424,14 +445,13 @@ mod tests {
     }
 
     #[test]
-    fn headerless_csv_consumes_first_row_as_header_and_only_reads_later_rows() {
+    fn headerless_csv_is_rejected_instead_of_dropping_first_row() {
         let csv = concat!("1350460800000,23.5143\n", "1350460860000,23.6143\n");
         let tmp = write_temp_csv("vta_csv_compat_test_headerless", csv);
 
-        let candles =
-            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("headerless parse result");
-        assert_eq!(candles.timestamp, vec![1350460860000]);
-        assert_eq!(candles.close, vec![23.6143]);
+        let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect_err("headerless CSV should fail explicitly");
+        assert!(error.contains("headerless"));
     }
 
     #[test]

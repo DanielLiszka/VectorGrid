@@ -16,6 +16,11 @@ use ta_desktop_demo_app::commands::apply_cross_ticker_validation_double_ma_headl
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Clone, Copy, Debug)]
 struct U32Range {
     start: u32,
@@ -854,6 +859,7 @@ fn make_cross_config(cli: &Cli) -> Option<CrossTickerConfig> {
 }
 
 fn main() -> Result<(), String> {
+    let _benchmark_guard = benchmark_lock::acquire("ta_double_ma_validation_cost")?;
     let cli = Cli::parse();
     if !cli.csv.exists() {
         return Err(format!(
@@ -1331,10 +1337,7 @@ fn main() -> Result<(), String> {
 
     let out = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     if let Some(path) = cli.out_json.as_ref() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(path, out).map_err(|e| e.to_string())?;
+        atomic_output::write_str(path, &out)?;
         println!("Saved measurement report: {}", path.to_string_lossy());
     } else {
         println!("{out}");

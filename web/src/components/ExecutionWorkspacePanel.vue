@@ -1186,7 +1186,7 @@ watch(
             <label for="vueExecApiKey">API key</label>
             <input
               id="vueExecApiKey"
-              type="text"
+              type="password"
               :value="apiKeyDraft"
               autocomplete="off"
               @input="apiKeyDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execApiKey', apiKeyDraft)"
@@ -1213,7 +1213,7 @@ watch(
             </select>
           </div>
           <div>
-            <label for="vueExecRiskSl">Risk SL % (optional)</label>
+            <label for="vueExecRiskSl">Stop-loss % (optional)</label>
             <input
               id="vueExecRiskSl"
               type="number"
@@ -1225,7 +1225,7 @@ watch(
             />
           </div>
           <div>
-            <label for="vueExecRiskTp">Risk TP % (optional)</label>
+            <label for="vueExecRiskTp">Take-profit % (optional)</label>
             <input
               id="vueExecRiskTp"
               type="number"
@@ -1284,7 +1284,7 @@ watch(
           </div>
           <div class="policyStatus">{{ riskPolicyStatusHint }}</div>
           <div>
-            <label for="vueExecManualFast">Manual fast len</label>
+            <label for="vueExecManualFast">Manual fast length</label>
             <input
               id="vueExecManualFast"
               type="number"
@@ -1296,7 +1296,7 @@ watch(
             />
           </div>
           <div>
-            <label for="vueExecManualSlow">Manual slow len</label>
+            <label for="vueExecManualSlow">Manual slow length</label>
             <input
               id="vueExecManualSlow"
               type="number"

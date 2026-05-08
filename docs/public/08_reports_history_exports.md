@@ -4,7 +4,7 @@ VectorGrid can create local summaries, saved run artifacts, and detailed reports
 
 ## Simple Markdown Summary
 
-Simple Mode can produce a compact Markdown summary. It is the recommended first sharing format because it is readable and includes the main workflow context.
+For a release that implements Simple Mode, Simple Mode can produce a compact Markdown summary. It is the recommended first sharing format for that release because it is readable and includes the main workflow context.
 
 It can include:
 

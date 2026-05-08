@@ -3,7 +3,8 @@ param(
   [string]$Variant = "cpu",
   [string]$OutDir = "",
   [string]$AppLocalDataDir = "",
-  [switch]$RequirePackagedSmoke
+  [switch]$RequirePackagedSmoke,
+  [switch]$RequirePublicSigning
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,6 +87,9 @@ $cargoArgs += @("--", "--variant", $Variant, "--json", $coreReportPath)
 if ($RequirePackagedSmoke) {
   $cargoArgs += "--require-packaged-smoke"
 }
+if ($RequirePublicSigning) {
+  $cargoArgs += "--require-public-signing"
+}
 if (-not [string]::IsNullOrWhiteSpace($AppLocalDataDir)) {
   $cargoArgs += @("--app-local-data-dir", [System.IO.Path]::GetFullPath($AppLocalDataDir))
 }
@@ -123,6 +127,7 @@ try {
     variant = $Variant
     out_dir = $resolvedOutDir
     packaged_smoke_required = [bool]$RequirePackagedSmoke
+    public_signing_required = [bool]$RequirePublicSigning
     supported = [bool]$core.supported
     steps = $steps
     node_reproducibility = Read-JsonFile -Path $nodeReproPath
@@ -151,6 +156,7 @@ try {
     variant = $Variant
     out_dir = $resolvedOutDir
     packaged_smoke_required = [bool]$RequirePackagedSmoke
+    public_signing_required = [bool]$RequirePublicSigning
     supported = $false
     error = $_.Exception.Message
     steps = $steps

@@ -598,8 +598,11 @@ record(
 )
 record(
   'features.tauri.cuda-forwarding',
-  tauriCuda.includes('ta_app_core/cuda') && tauriCuda.includes('vector-ta/cuda') && tauriCuda.includes('cust'),
-  'src-tauri cuda feature forwards to app_core, vector-ta, and optional cust',
+  tauriCuda.includes('ta_app_core/cuda') &&
+    tauriCuda.includes('vector-ta/cuda') &&
+    !tauriCuda.includes('cust') &&
+    !tauriCuda.includes('dep:cust'),
+  'src-tauri cuda feature forwards to app_core/vector-ta without owning cust directly',
   { actual: tauriCuda },
 )
 record(
@@ -615,9 +618,9 @@ record(
   { actual: tauriNvtx },
 )
 record(
-  'features.tauri.cust-optional',
-  dependencyOptional(tauriCust),
-  'src-tauri cust dependency is optional',
+  'features.tauri.no-direct-cust',
+  tauriCust === null,
+  'src-tauri does not own a direct cust dependency; app_core owns optional CUDA runtime binding',
   { actual: tauriCust },
 )
 

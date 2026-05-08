@@ -1,4 +1,3 @@
-
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeCommand } from "../tauri/invoke";
 import {
@@ -289,8 +288,7 @@ describe("optionsExpressionService", () => {
           exactness_semantics: {
             exactness_class: "aggregate_class",
             median_replay_contract: "ranking_irrelevant_deferred",
-            retained_frontier_certification:
-              "provisional_missing_extreme_lane",
+            retained_frontier_certification: "provisional_missing_extreme_lane",
             exact_pruning_contract:
               "requires_exact_extreme_lane_and_interval_certificate",
           },
@@ -1331,12 +1329,16 @@ describe("optionsExpressionService", () => {
     expect(invokeCommandMock).toHaveBeenNthCalledWith(
       1,
       "analyze_options_expression_validation_feasibility",
-      { req: { artifact_path: "C:/runs/vectorgrid_options_expression_1.json" } },
+      {
+        req: { artifact_path: "C:/runs/vectorgrid_options_expression_1.json" },
+      },
     );
     expect(invokeCommandMock).toHaveBeenNthCalledWith(
       2,
       "validate_options_expression_artifact",
-      { req: { artifact_path: "C:/runs/vectorgrid_options_expression_1.json" } },
+      {
+        req: { artifact_path: "C:/runs/vectorgrid_options_expression_1.json" },
+      },
     );
   });
 
@@ -1355,8 +1357,7 @@ describe("optionsExpressionService", () => {
       exactness_semantics: {
         exactness_class: "aggregate_class",
         median_replay_contract: "ranking_irrelevant_deferred",
-        retained_frontier_certification:
-          "provisional_missing_extreme_lane",
+        retained_frontier_certification: "provisional_missing_extreme_lane",
         exact_pruning_contract:
           "requires_exact_extreme_lane_and_interval_certificate",
       },
@@ -1995,7 +1996,7 @@ describe("optionsExpressionService", () => {
       priceSemantics: "minute_aggregate",
       tuples: [
         {
-          structureFamily: "long_single",
+          structureFamily: "=long_single",
           delayMinutes: 0,
           dteDays: 1,
           moneynessBucket: "atm",
@@ -2040,6 +2041,10 @@ describe("optionsExpressionService", () => {
         ),
       },
     });
+    const saveArgs = invokeCommandMock.mock.calls[1]?.[1] as {
+      req?: { csv_text?: string };
+    };
+    expect(saveArgs.req?.csv_text).toContain("0,1,'=long_single");
     expect(invokeCommandMock).toHaveBeenNthCalledWith(3, "reveal_path", {
       path: "C:/exports/vectorgrid_options_expression_spy.csv",
     });

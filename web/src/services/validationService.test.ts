@@ -1342,6 +1342,103 @@ describe("validationService", () => {
     }
   });
 
+  it("routes composite double-MA profiles through run_double_ma_validation", async () => {
+    const strategyKinds = [
+      "CompositeTrend",
+      "RegimeHybrid",
+      "BreakoutMomentum",
+    ];
+    for (const strategyKind of strategyKinds) {
+      invokeCommandMock.mockClear();
+      installDefaultInvokeCommandMock();
+      (pinia.state.value as Record<string, unknown>).validation = {
+        candidates: "8",
+        seed: "1",
+        crossEnable: false,
+      };
+      useWorkflowArtifactsStore(pinia).clearArtifacts();
+      useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+        currentRun: {
+          ts: "2026-02-25T12:00:00Z",
+          req: {
+            strategy_kind: strategyKind,
+            data_id: `data-${strategyKind.toLowerCase()}`,
+            backend: { backend: "GpuHybridKernel", device_id: 0 },
+            ma_source: "close",
+            fast_ma_types: ["ema"],
+            slow_ma_types: ["sma"],
+            strategy: { fee_bps: 1.0 },
+          },
+          res: {
+            top: [
+              {
+                params: {
+                  fast_ma_type: "ema",
+                  slow_ma_type: "sma",
+                  fast_len: 10,
+                  slow_len: 40,
+                },
+              },
+            ],
+          },
+        },
+        currentValidation: null,
+      });
+
+      await runValidation({ switchTab: false });
+
+      const [command] = firstValidationRunCall();
+      expect(
+        command,
+        `strategy ${strategyKind} should use double-MA validation`,
+      ).toBe("run_double_ma_validation");
+    }
+  });
+
+  it("rejects unknown validation strategy kinds before invoking a validation command", async () => {
+    (pinia.state.value as Record<string, unknown>).validation = {
+      candidates: "8",
+      seed: "1",
+      crossEnable: false,
+    };
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-02-25T12:00:00Z",
+        req: {
+          strategy_kind: "DefinitelyUnknown",
+          data_id: "data-unknown",
+          backend: { backend: "CpuOnly" },
+          ma_source: "close",
+          strategy: { fee_bps: 1.0 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: "ema",
+                slow_ma_type: "sma",
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    });
+
+    await expect(runValidation({ switchTab: false })).rejects.toThrow(
+      "Unsupported validation strategy_kind 'DefinitelyUnknown'",
+    );
+    expect(
+      invokeCommandMock.mock.calls.some(
+        ([command]) =>
+          command === "run_double_ma_validation" ||
+          command === "run_composite_validation",
+      ),
+    ).toBe(false);
+  });
+
   it("surfaces composite lightweight cross rerun semantics in post-run summaries", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === "run_composite_validation") {

@@ -4,7 +4,9 @@ This runbook is the maintainer checklist for publishing VectorGrid as a Windows 
 
 The default public target is a signed Windows x64 NSIS setup executable. CPU-only is the first recommended public variant because it avoids CUDA driver/runtime ambiguity. GPU variants should be released only with variant-specific evidence and clear system requirements.
 
-Public website and end-user documentation lives under `docs/public/`. Before publishing, verify the release page, installer notes, privacy/disclaimer language, troubleshooting page, and first-run Simple Mode guide match the exact release variant.
+Public website and end-user documentation lives under `docs/public/`. Before publishing, verify the release page, installer notes, privacy/disclaimer language, troubleshooting page, and first-run guide match the exact release variant.
+
+Current code review note: the checked-in Vue frontend defaults to the Advanced workbench and ignores legacy guided/simple mode requests. Any public release that uses the staged Simple Mode documentation is blocked until Simple Mode is implemented or restored, covered by tests, and verified by clean-machine smoke evidence. Alternatively, update this runbook and `docs/public/` to document the actual released first-run surface.
 
 ## Release Variant Policy
 
@@ -139,11 +141,11 @@ After the public gate passes, verify on a clean Windows 10/11 machine or VM:
 - inspect Authenticode publisher and timestamp;
 - install without developer tools installed;
 - launch from Start menu and desktop shortcut if created;
-- confirm the app opens into Simple Mode or can be switched there immediately;
+- confirm the app opens into the documented first-run surface for the release;
 - load the bundled synthetic sample dataset, or a known local CSV if the sample is unavailable;
-- run a CPU-only Simple optimization and confirm the run summary names the dataset, strategy, candidate, and metrics;
-- optionally run Simple validation and confirm the recommendation state is clear;
-- copy the Simple run summary and save the Markdown summary file;
+- run a CPU-only first-run optimization and confirm the run summary names the dataset, strategy, candidate, and metrics;
+- optionally run validation and confirm the recommendation state is clear;
+- copy or save the first-run summary if that surface is promoted by the release docs;
 - switch to Advanced Mode and export JSON/CSV/XLSX reports;
 - verify local data directories are created under the expected app identifier;
 - confirm no credentials are bundled and no private local paths are exposed in public logs;
@@ -163,5 +165,5 @@ Every public release should include:
 - `docs/WINDOWS_INSTALL.md` or equivalent release-page install notes;
 - no-financial-advice and no-production-trading disclaimer;
 - known limitations and supported workflows;
-- first-run Simple Mode steps and the bundled synthetic sample note;
+- first-run steps that match the shipped UI, plus the bundled synthetic sample note;
 - hashes and publisher/signature identity.

@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use serde_json::{json, Value};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -797,4 +800,4 @@ fn bench_e2e_workflow_with_ml(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_e2e_workflow_with_ml);
-criterion_main!(benches);
+serialized_criterion_main!(benches);

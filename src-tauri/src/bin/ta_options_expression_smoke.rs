@@ -1,6 +1,5 @@
 use clap::Parser;
 use serde::Serialize;
-use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 use ta_app_core::{
@@ -13,6 +12,9 @@ use ta_app_core::{
     OptionsSignalEventManifestV1, OptionsSplitAssignmentMode, OptionsStaticFilterBundle,
     SignalSide,
 };
+
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
 
 const MINUTE_MS: i64 = 60_000;
 const DAY_MS: i64 = 86_400_000;
@@ -498,10 +500,8 @@ fn main() -> Result<(), String> {
     };
     let json = serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?;
     if let Some(path) = cli.out_json.as_ref() {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        fs::write(path, &json).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        atomic_output::write_str(path, &json)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     }
     println!("{json}");
     Ok(())

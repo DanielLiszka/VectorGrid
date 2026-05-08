@@ -5,6 +5,7 @@ import { useWorkflowStore } from "../stores/workflowStore";
 import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore";
 import { invokeCommand } from "../tauri/invoke";
 import { copyTextToDesktopClipboard } from "./desktopClipboard";
+import { csvLine } from "../utils/csv";
 import {
   buildRunCompareSummary,
   parseArtifactLineage,
@@ -3769,12 +3770,6 @@ function baselineRunToComparisonTarget(
   };
 }
 
-function csvEscape(v: unknown): string {
-  const s = String(v ?? "");
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
 function startEq(req: Record<string, unknown>): number {
   const direct = Number(req.starting_equity ?? req.startingEquity);
   if (Number.isFinite(direct) && direct > 0) return direct;
@@ -4498,11 +4493,11 @@ export async function exportTopCsv(): Promise<void> {
       }
     })();
     lines.push(
-      [
+      csvLine([
         row.rank,
-        csvEscape(p.fast_ma_type || ""),
+        p.fast_ma_type || "",
         num(p.fast_len, 0),
-        csvEscape(p.slow_ma_type || ""),
+        p.slow_ma_type || "",
         num(p.slow_len, 0),
         pnl,
         pnl * 100,
@@ -4521,8 +4516,8 @@ export async function exportTopCsv(): Promise<void> {
         num(shortExposure, 0),
         num(directionalBias, 0),
         num(score, 0),
-        csvEscape(paramsJson),
-      ].join(","),
+        paramsJson,
+      ]),
     );
   }
   if (

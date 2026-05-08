@@ -77,6 +77,19 @@ function Resolve-ReleaseBundleRoot {
   return $null
 }
 
+function Assert-RequiredScript {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+    [Parameter(Mandatory = $true)]
+    [string]$Purpose
+  )
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "$Purpose requires script '$Path', but it is not present in this checkout."
+  }
+}
+
 function Invoke-ReleaseStep {
   param(
     [Parameter(Mandatory = $true)]
@@ -273,6 +286,9 @@ try {
   }
 
   if ($IncludeOutputParity) {
+    Assert-RequiredScript `
+      -Path (Join-Path $repoRoot "scripts\\run_output_parity_check.mjs") `
+      -Purpose "Output parity"
     Invoke-ReleaseStep -Name "Output parity" -CommandText "node scripts/run_output_parity_check.mjs" -Action {
       node "$repoRoot\\scripts\\run_output_parity_check.mjs"
       if ($LASTEXITCODE -ne 0) {
@@ -424,6 +440,9 @@ try {
   }
 
   if ($IncludeDesktopSmoke -and -not $SkipPackagedSmoke) {
+    Assert-RequiredScript `
+      -Path (Join-Path $repoRoot "scripts\\run_packaged_smoke.ps1") `
+      -Purpose "Packaged desktop smoke"
     $smokeArgs = @(
       "-File", (Join-Path $repoRoot "scripts\\run_packaged_smoke.ps1"),
       "-BinaryPath", $releaseBinaryPath,

@@ -20,11 +20,17 @@ describe('movingAverageCatalogService', () => {
 
   it('normalizes moving average catalog entries and parameter schema', () => {
     const catalog = normalizeMovingAverageCatalog([
-      null,
-      { id: '   ', label: 'invalid', params: [] },
       {
         id: 'alma',
         label: 'ALMA',
+        supports_cpu: true,
+        supports_cuda: true,
+        supports_cuda_ma_sweep: true,
+        supports_cuda_kernel: true,
+        prefers_cuda_kernel: true,
+        requires_candles: false,
+        period_based: true,
+        single_output: true,
         params: [
           {
             key: 'offset',
@@ -56,7 +62,15 @@ describe('movingAverageCatalogService', () => {
       },
       {
         id: 'sma',
-        params: [{ key: 'period', default: 10, step: 0 }],
+        supports_cpu: true,
+        supports_cuda: true,
+        supports_cuda_ma_sweep: true,
+        supports_cuda_kernel: false,
+        prefers_cuda_kernel: false,
+        requires_candles: false,
+        period_based: true,
+        single_output: true,
+        params: [{ key: 'period', kind: 'float', default: 10, step: 0 }],
       },
     ])
 
@@ -64,14 +78,14 @@ describe('movingAverageCatalogService', () => {
     expect(catalog[0]).toEqual({
       id: 'alma',
       label: 'ALMA',
-      supportsCpu: false,
-      supportsCuda: false,
-      supportsCudaMaSweep: false,
-      supportsCudaKernel: false,
-      prefersCudaKernel: false,
+      supportsCpu: true,
+      supportsCuda: true,
+      supportsCudaMaSweep: true,
+      supportsCudaKernel: true,
+      prefersCudaKernel: true,
       requiresCandles: false,
-      periodBased: false,
-      singleOutput: false,
+      periodBased: true,
+      singleOutput: true,
       notes: '',
       params: [
         {
@@ -99,14 +113,14 @@ describe('movingAverageCatalogService', () => {
     expect(catalog[1]).toEqual({
       id: 'sma',
       label: 'sma',
-      supportsCpu: false,
-      supportsCuda: false,
-      supportsCudaMaSweep: false,
+      supportsCpu: true,
+      supportsCuda: true,
+      supportsCudaMaSweep: true,
       supportsCudaKernel: false,
       prefersCudaKernel: false,
       requiresCandles: false,
-      periodBased: false,
-      singleOutput: false,
+      periodBased: true,
+      singleOutput: true,
       notes: '',
       params: [
         {
@@ -159,10 +173,60 @@ describe('movingAverageCatalogService', () => {
     ])
   })
 
+  it('rejects malformed catalog responses instead of publishing false capabilities', () => {
+    expect(() => normalizeMovingAverageCatalog({ not: 'array' })).toThrow(
+      'moving average catalog response must be an array',
+    )
+    expect(() =>
+      normalizeMovingAverageCatalog([
+        {
+          id: 'sma',
+          supports_cpu: true,
+          supports_cuda: true,
+          supports_cuda_ma_sweep: true,
+          supports_cuda_kernel: false,
+          prefers_cuda_kernel: false,
+          requires_candles: false,
+          period_based: true,
+          single_output: true,
+          params: [{ key: 'period', kind: 'mystery' }],
+        },
+      ]),
+    ).toThrow("unknown param kind 'mystery'")
+  })
+
   it('caches list_moving_averages responses unless force refresh is requested', async () => {
     invokeCommandMock
-      .mockResolvedValueOnce([{ id: 'sma', label: 'SMA', params: [] }])
-      .mockResolvedValueOnce([{ id: 'ema', label: 'EMA', params: [] }])
+      .mockResolvedValueOnce([
+        {
+          id: 'sma',
+          label: 'SMA',
+          supports_cpu: true,
+          supports_cuda: true,
+          supports_cuda_ma_sweep: true,
+          supports_cuda_kernel: true,
+          prefers_cuda_kernel: false,
+          requires_candles: false,
+          period_based: true,
+          single_output: true,
+          params: [],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'ema',
+          label: 'EMA',
+          supports_cpu: true,
+          supports_cuda: true,
+          supports_cuda_ma_sweep: true,
+          supports_cuda_kernel: true,
+          prefers_cuda_kernel: false,
+          requires_candles: false,
+          period_based: true,
+          single_output: true,
+          params: [],
+        },
+      ])
 
     const first = await listMovingAverageCatalog()
     const second = await listMovingAverageCatalog()

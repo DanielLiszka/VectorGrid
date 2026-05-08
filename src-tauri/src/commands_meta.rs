@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use ta_app_core::{
     EvidenceGateRole, EvidenceMetricClass, EvidencePolicyMetric, EvidencePolicySummary,
@@ -20,6 +20,8 @@ use ta_app_core::{
     MlConfidenceTrainMetrics,
 };
 use tauri::Manager;
+
+static META_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -407,30 +409,101 @@ fn ml_confidence_model_path_read_only(
     ))
 }
 
+fn meta_temp_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "artifact path has no parent directory: {}",
+            path.to_string_lossy()
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("artifact.json");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let seq = META_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(parent.join(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nanos,
+        seq
+    )))
+}
+
+fn existing_regular_file_metadata(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "artifact path must be a regular file: {}",
+                    path.to_string_lossy()
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to inspect artifact path {}: {error}",
+            path.to_string_lossy()
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let replaced = wide_null(path);
+    let replacement = wide_null(temp_path);
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
+    std::fs::rename(temp_path, path).map_err(|e| e.to_string())
+}
+
 fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let tmp = {
-        let file_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("artifact.json");
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        path.with_file_name(format!("{file_name}.tmp.{}.{}", std::process::id(), nanos))
-    };
+    let tmp = meta_temp_path(path)?;
     let result = (|| -> Result<(), String> {
-        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?;
         file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.flush().map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
+        drop(file);
+        if existing_regular_file_metadata(path)?.is_some() {
+            replace_existing_file_with_temp(path, &tmp)
+        } else {
+            std::fs::rename(&tmp, path).map_err(|e| e.to_string())
         }
-        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -2062,7 +2135,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
         "res": result,
     });
     let out_bytes = serde_json::to_vec_pretty(&payload).map_err(|e| e.to_string())?;
-    std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
+    write_bytes_atomically(&out_path, &out_bytes)?;
     run_artifacts::prune_old_ml_policy_eval_artifacts_blocking(
         &app,
         run_artifacts::artifact_retention_policy_for_app(&app).ml_policy_eval_keep_newest,
@@ -2452,7 +2525,7 @@ fn run_meta_stage5_ml_confidence_blocking(
     });
     let out_bytes = serde_json::to_vec_pretty(&out_obj).map_err(|e| e.to_string())?;
     let out_path = suggest_stage5_artifact_path(&ts, &app)?;
-    std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
+    write_bytes_atomically(&out_path, &out_bytes)?;
     run_artifacts::prune_old_stage5_artifacts_blocking(
         &app,
         run_artifacts::artifact_retention_policy_for_app(&app).stage5_keep_newest,
@@ -2919,7 +2992,7 @@ pub(super) fn run_meta_selection_blocking(
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_export");
     let xlsx_bytes = build_meta_report_xlsx_bytes(&ts, &result)?;
     let report_path = suggest_meta_report_path(&ts, &app, "xlsx")?;
-    std::fs::write(&report_path, &xlsx_bytes).map_err(|e| e.to_string())?;
+    write_bytes_atomically(&report_path, &xlsx_bytes)?;
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_export");
 
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_save");
@@ -2936,7 +3009,7 @@ pub(super) fn run_meta_selection_blocking(
     });
     let meta_bytes = serde_json::to_vec_pretty(&meta_obj).map_err(|e| e.to_string())?;
     let meta_path = run_artifacts::suggest_meta_artifact_path(&ts, &app)?;
-    std::fs::write(&meta_path, &meta_bytes).map_err(|e| e.to_string())?;
+    write_bytes_atomically(&meta_path, &meta_bytes)?;
 
     run_artifacts::prune_old_meta_artifacts_blocking(
         &app,

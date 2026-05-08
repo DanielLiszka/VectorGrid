@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use vector_ta::indicators::moving_averages::ma::{ma, MaData};
 use vector_ta::indicators::moving_averages::ma_batch::ma_batch;
+use vector_ta::indicators::moving_averages::registry::MovingAverageInfo;
 use vector_ta::utilities::data_loader::{source_type, Candles};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2084,9 +2085,98 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
     }
 }
 
-fn compute_ma_series(candles: &Candles, len: usize, ma_type: &str, source: &str) -> Vec<f64> {
-    let n = candles.close.len();
-    ma(ma_type, MaData::Candles { candles, source }, len).unwrap_or_else(|_| vec![f64::NAN; n])
+fn lookup_double_ma_info(ma_type: &str) -> Option<&'static MovingAverageInfo> {
+    vector_ta::indicators::moving_averages::registry::list_moving_averages()
+        .iter()
+        .find(|info| info.id.eq_ignore_ascii_case(ma_type))
+}
+
+pub fn validate_double_ma_type(ma_type: &str) -> Result<(), String> {
+    if ma_type.trim() != ma_type || ma_type.is_empty() {
+        return Err("moving average type must be a non-empty canonical id".to_string());
+    }
+
+    let info = lookup_double_ma_info(ma_type)
+        .ok_or_else(|| format!("unknown moving average type: '{ma_type}'"))?;
+    if !info.period_based {
+        return Err(format!(
+            "moving average type '{ma_type}' is not period-based and cannot be used in double-MA"
+        ));
+    }
+    if !info.single_output {
+        return Err(format!(
+            "moving average type '{ma_type}' has multiple outputs and cannot be used in double-MA"
+        ));
+    }
+    if !info.supports_cpu_single {
+        return Err(format!(
+            "moving average type '{ma_type}' does not support CPU evaluation"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_double_ma_type_axis(types: &[String], axis: &str) -> Result<(), String> {
+    if types.is_empty() {
+        return Err(format!("{axis} moving average type list must not be empty"));
+    }
+    if types.len() > u16::MAX as usize {
+        return Err(format!(
+            "{axis} moving average type list has {} entries, exceeding {} addressable ids",
+            types.len(),
+            u16::MAX
+        ));
+    }
+
+    for (index, ma_type) in types.iter().enumerate() {
+        validate_double_ma_type(ma_type)
+            .map_err(|err| format!("{axis} moving average type at index {index}: {err}"))?;
+    }
+    Ok(())
+}
+
+pub fn validate_double_ma_batch_inputs(
+    combos: &[DoubleMaParams],
+    fast_ma_types: &[String],
+    slow_ma_types: &[String],
+) -> Result<(), String> {
+    validate_double_ma_type_axis(fast_ma_types, "fast")?;
+    validate_double_ma_type_axis(slow_ma_types, "slow")?;
+
+    for (index, params) in combos.iter().enumerate() {
+        if params.fast_len == 0 {
+            return Err(format!("combo {index} has fast_len=0"));
+        }
+        if params.slow_len == 0 {
+            return Err(format!("combo {index} has slow_len=0"));
+        }
+        if params.fast_ma_id as usize >= fast_ma_types.len() {
+            return Err(format!(
+                "combo {index} fast_ma_id={} is outside fast moving average type list length {}",
+                params.fast_ma_id,
+                fast_ma_types.len()
+            ));
+        }
+        if params.slow_ma_id as usize >= slow_ma_types.len() {
+            return Err(format!(
+                "combo {index} slow_ma_id={} is outside slow moving average type list length {}",
+                params.slow_ma_id,
+                slow_ma_types.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn compute_ma_series(
+    candles: &Candles,
+    len: usize,
+    ma_type: &str,
+    source: &str,
+) -> Result<Vec<f64>, String> {
+    validate_double_ma_type(ma_type)?;
+    ma(ma_type, MaData::Candles { candles, source }, len)
+        .map_err(|err| format!("failed to compute {ma_type}({len}) on {source}: {err}"))
 }
 
 pub fn expand_grid(range: &DoubleMaBatchRange) -> Vec<DoubleMaParams> {
@@ -2214,7 +2304,7 @@ impl DoubleMaBatchBuilder {
         expand_grid(&self.range)
     }
 
-    pub fn run_cpu(&self, candles: &Candles) -> Vec<Metrics> {
+    pub fn run_cpu(&self, candles: &Candles) -> Result<Vec<Metrics>, String> {
         let combos = self.combos();
         double_ma_batch_cpu(
             candles,
@@ -2226,48 +2316,28 @@ impl DoubleMaBatchBuilder {
     }
 }
 
-pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics {
+pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Result<Metrics, String> {
     let prices = source_type(candles, "close");
     let n = prices.len();
     if n < 2 {
-        return Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            sortino: 0.0,
-            downside_deviation: 0.0,
-            calmar: 0.0,
-            omega: 0.0,
-            kappa_tau: 0.0,
-            volatility: 0.0,
-            ulcer_index: 0.0,
-            martin_ratio: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-            downside_frequency: 0.0,
-            downside_severity: 0.0,
-            long_mean_return: 0.0,
-            short_mean_return: 0.0,
-            ..Metrics::default()
-        };
+        return Ok(Metrics::default());
     }
 
     let fast = match params.fast_ma_id {
-        0 => compute_ma_series(candles, params.fast_len as usize, "sma", "close"),
-        1 => compute_ma_series(candles, params.fast_len as usize, "ema", "close"),
-        2 => compute_ma_series(candles, params.fast_len as usize, "alma", "close"),
-        _ => vec![f64::NAN; n],
+        0 => compute_ma_series(candles, params.fast_len as usize, "sma", "close")?,
+        1 => compute_ma_series(candles, params.fast_len as usize, "ema", "close")?,
+        2 => compute_ma_series(candles, params.fast_len as usize, "alma", "close")?,
+        other => return Err(format!("unsupported built-in fast_ma_id={other}")),
     };
     let slow = match params.slow_ma_id {
-        0 => compute_ma_series(candles, params.slow_len as usize, "sma", "close"),
-        1 => compute_ma_series(candles, params.slow_len as usize, "ema", "close"),
-        2 => compute_ma_series(candles, params.slow_len as usize, "alma", "close"),
-        _ => vec![f64::NAN; n],
+        0 => compute_ma_series(candles, params.slow_len as usize, "sma", "close")?,
+        1 => compute_ma_series(candles, params.slow_len as usize, "ema", "close")?,
+        2 => compute_ma_series(candles, params.slow_len as usize, "alma", "close")?,
+        other => return Err(format!("unsupported built-in slow_ma_id={other}")),
     };
 
     let first_valid = first_finite_idx(prices).unwrap_or(0);
-    eval_double_ma_from_series_cfg(
+    Ok(eval_double_ma_from_series_cfg(
         prices,
         &fast,
         &slow,
@@ -2275,7 +2345,7 @@ pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics
         params.slow_len,
         first_valid,
         &StrategyConfig::default(),
-    )
+    ))
 }
 
 pub fn eval_double_ma_one_with_types(
@@ -2283,67 +2353,23 @@ pub fn eval_double_ma_one_with_types(
     params: &DoubleMaParams,
     fast_ma_types: &[String],
     slow_ma_types: &[String],
-) -> Metrics {
+) -> Result<Metrics, String> {
+    validate_double_ma_batch_inputs(std::slice::from_ref(params), fast_ma_types, slow_ma_types)?;
+
     let prices = source_type(candles, "close");
     if prices.len() < 2 {
-        return Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            sortino: 0.0,
-            downside_deviation: 0.0,
-            calmar: 0.0,
-            omega: 0.0,
-            kappa_tau: 0.0,
-            volatility: 0.0,
-            ulcer_index: 0.0,
-            martin_ratio: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-            downside_frequency: 0.0,
-            downside_severity: 0.0,
-            long_mean_return: 0.0,
-            short_mean_return: 0.0,
-            ..Metrics::default()
-        };
+        return Ok(Metrics::default());
     }
 
-    let fast_type = fast_ma_types
-        .get(params.fast_ma_id as usize)
-        .map(|s| s.as_str());
-    let slow_type = slow_ma_types
-        .get(params.slow_ma_id as usize)
-        .map(|s| s.as_str());
-    let (Some(fast_type), Some(slow_type)) = (fast_type, slow_type) else {
-        return Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            sortino: 0.0,
-            downside_deviation: 0.0,
-            calmar: 0.0,
-            omega: 0.0,
-            kappa_tau: 0.0,
-            volatility: 0.0,
-            ulcer_index: 0.0,
-            martin_ratio: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-            downside_frequency: 0.0,
-            downside_severity: 0.0,
-            long_mean_return: 0.0,
-            short_mean_return: 0.0,
-            ..Metrics::default()
-        };
-    };
-
+    let fast_type = fast_ma_types[params.fast_ma_id as usize].as_str();
+    let slow_type = slow_ma_types[params.slow_ma_id as usize].as_str();
     let fast = compute_ma_series(candles, params.fast_len as usize, fast_type, "close");
     let slow = compute_ma_series(candles, params.slow_len as usize, slow_type, "close");
+    let fast = fast?;
+    let slow = slow?;
 
     let first_valid = first_finite_idx(prices).unwrap_or(0);
-    eval_double_ma_from_series_cfg(
+    Ok(eval_double_ma_from_series_cfg(
         prices,
         &fast,
         &slow,
@@ -2351,7 +2377,7 @@ pub fn eval_double_ma_one_with_types(
         params.slow_len,
         first_valid,
         &StrategyConfig::default(),
-    )
+    ))
 }
 
 pub fn double_ma_batch_cpu(
@@ -2360,15 +2386,16 @@ pub fn double_ma_batch_cpu(
     fast_ma_types: &[String],
     slow_ma_types: &[String],
     ma_source: &str,
-) -> Vec<Metrics> {
+) -> Result<Vec<Metrics>, String> {
     if combos.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+    validate_double_ma_batch_inputs(combos, fast_ma_types, slow_ma_types)?;
 
     let prices = source_type(candles, "close");
     let n = prices.len();
     if n < 2 {
-        return combos
+        return Ok(combos
             .iter()
             .map(|_| Metrics {
                 pnl: 0.0,
@@ -2391,7 +2418,7 @@ pub fn double_ma_batch_cpu(
                 short_mean_return: 0.0,
                 ..Metrics::default()
             })
-            .collect();
+            .collect());
     }
 
     let cfg = StrategyConfig::default();
@@ -2404,10 +2431,10 @@ pub fn double_ma_batch_cpu(
     };
 
     let matrices =
-        build_ma_matrices_cpu(candles, combos, fast_ma_types, slow_ma_types, n, ma_source);
+        build_ma_matrices_cpu(candles, combos, fast_ma_types, slow_ma_types, n, ma_source)?;
     let nan_row: Vec<f64> = vec![f64::NAN; n];
 
-    combos
+    let metrics = combos
         .par_iter()
         .map(|p| {
             let fast_type = fast_ma_types.get(p.fast_ma_id as usize).map(|s| s.as_str());
@@ -2451,7 +2478,8 @@ pub fn double_ma_batch_cpu(
             let start_t = t_valid.saturating_add(trade_offset);
             eval_double_ma_from_log_returns_and_mas_f64(&lr, fast, slow, start_t, &cfg)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    Ok(metrics)
 }
 
 #[inline]
@@ -4121,7 +4149,7 @@ fn build_ma_matrices_cpu<'a>(
     slow_ma_types: &'a [String],
     series_len: usize,
     ma_source: &str,
-) -> HashMap<&'a str, PeriodMatrixF64> {
+) -> Result<HashMap<&'a str, PeriodMatrixF64>, String> {
     let max_period_supported: u16 = if series_len >= u16::MAX as usize {
         u16::MAX
     } else {
@@ -4193,11 +4221,20 @@ fn build_ma_matrices_cpu<'a>(
                         .copy_from_slice(&b.values[src_off..src_off + series_len]);
                 }
             }
-            _ => {
+            Ok(b) => {
+                return Err(format!(
+                    "batch {ma_type} matrix returned {} columns for series length {series_len}",
+                    b.cols
+                ));
+            }
+            Err(_) => {
                 for (row, period) in (start..=end).enumerate() {
-                    let series = compute_ma_series(candles, period as usize, ma_type, ma_source);
+                    let series = compute_ma_series(candles, period as usize, ma_type, ma_source)?;
                     if series.len() != series_len {
-                        continue;
+                        return Err(format!(
+                            "{ma_type}({period}) returned {} values for series length {series_len}",
+                            series.len()
+                        ));
                     }
                     let off = match row.checked_mul(series_len) {
                         Some(v) => v,
@@ -4221,7 +4258,7 @@ fn build_ma_matrices_cpu<'a>(
         );
     }
 
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -4274,11 +4311,47 @@ mod tests {
             .fast_ma_types(vec!["sma".to_string()])
             .slow_ma_types(vec!["sma".to_string()]);
 
-        let metrics = builder.run_cpu(&candles);
+        let metrics = builder.run_cpu(&candles).expect("CPU batch should run");
         assert_eq!(metrics.len(), 1);
 
         let m = &metrics[0];
         assert!(m.max_dd >= 0.0);
+    }
+
+    #[test]
+    fn batch_builder_rejects_unknown_ma_type() {
+        let candles = make_trending_candles(200);
+        let builder = DoubleMaBatchBuilder::new()
+            .fast_len_range(5, 5, 0)
+            .slow_len_range(20, 20, 0)
+            .fast_ma_types(vec!["sma".to_string()])
+            .slow_ma_types(vec!["definitely_not_a_ma".to_string()]);
+
+        let err = builder
+            .run_cpu(&candles)
+            .expect_err("unknown MA must be rejected before evaluation");
+        assert!(err.contains("unknown moving average type"), "{err}");
+    }
+
+    #[test]
+    fn double_ma_batch_cpu_rejects_out_of_range_ma_ids() {
+        let candles = make_trending_candles(200);
+        let combos = vec![DoubleMaParams {
+            fast_len: 5,
+            slow_len: 20,
+            fast_ma_id: 1,
+            slow_ma_id: 0,
+        }];
+
+        let err = double_ma_batch_cpu(
+            &candles,
+            &combos,
+            &["sma".to_string()],
+            &["sma".to_string()],
+            "close",
+        )
+        .expect_err("out-of-range MA id must be rejected");
+        assert!(err.contains("fast_ma_id=1"), "{err}");
     }
 
     #[test]
@@ -4341,7 +4414,7 @@ mod tests {
             fast_ma_id: 0,
             slow_ma_id: 0,
         };
-        let metrics = eval_double_ma_one(&candles, &params);
+        let metrics = eval_double_ma_one(&candles, &params).expect("single eval should run");
 
         assert!(metrics.downside_deviation.is_finite());
         assert!(metrics.downside_deviation >= 0.0);

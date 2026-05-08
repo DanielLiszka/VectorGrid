@@ -20,6 +20,7 @@ import {
   selectTopRow,
   setBaseline,
   sortTopTable,
+  exportTopCsv,
 } from "./analysisService";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useHistoryStore } from "../stores/historyStore";
@@ -267,6 +268,88 @@ describe("analysis service", () => {
         },
       },
     } as never);
+  });
+
+  it("neutralizes spreadsheet formulas in exported Top CSV text columns", async () => {
+    seedWorkflowRun({
+      ts: "2026-02-26T12:00:00.000Z",
+      req: { strategy_kind: "DoubleMa", objective: "Sharpe", top_k: 1 },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "=cmd",
+              fast_len: 5,
+              slow_ma_type: "+slow",
+              slow_len: 20,
+            },
+            {
+              pnl: 0.2,
+              sharpe: 1.1,
+              max_dd: 0.1,
+              trades: 12,
+              exposure: 0.4,
+            },
+          ],
+        ],
+      },
+    });
+
+    let capturedBlob: Blob | null = null;
+    const createObjectUrlMock = vi.fn((blob: Blob) => {
+      capturedBlob = blob;
+      return "blob:top-csv";
+    });
+    const revokeObjectUrlMock = vi.fn();
+    type MutableUrlObjectUrl = {
+      createObjectURL?: (blob: Blob | MediaSource) => string;
+      revokeObjectURL?: (url: string) => void;
+    };
+    const urlObjectUrl = URL as unknown as MutableUrlObjectUrl;
+    const originalCreateObjectURL = urlObjectUrl.createObjectURL;
+    const originalRevokeObjectURL = urlObjectUrl.revokeObjectURL;
+    const hasOwn = Object.prototype.hasOwnProperty;
+    const hadCreateObjectURL = hasOwn.call(URL, "createObjectURL");
+    const hadRevokeObjectURL = hasOwn.call(URL, "revokeObjectURL");
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrlMock,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrlMock,
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+
+    try {
+      await exportTopCsv();
+      expect(capturedBlob).not.toBeNull();
+      const csv = await capturedBlob!.text();
+      expect(csv).toContain("1,'=cmd,5,'+slow,20");
+      expect(csv).not.toContain(",=cmd,");
+      expect(csv).not.toContain(",+slow,");
+      expect(createObjectUrlMock).toHaveBeenCalledOnce();
+      expect(revokeObjectUrlMock).toHaveBeenCalledWith("blob:top-csv");
+    } finally {
+      if (hadCreateObjectURL) {
+        Object.defineProperty(URL, "createObjectURL", {
+          configurable: true,
+          value: originalCreateObjectURL,
+        });
+      } else {
+        delete urlObjectUrl.createObjectURL;
+      }
+      if (hadRevokeObjectURL) {
+        Object.defineProperty(URL, "revokeObjectURL", {
+          configurable: true,
+          value: originalRevokeObjectURL,
+        });
+      } else {
+        delete urlObjectUrl.revokeObjectURL;
+      }
+    }
   });
 
   it("sorts top table rows in Vue store state", async () => {

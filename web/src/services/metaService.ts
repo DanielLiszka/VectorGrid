@@ -2455,10 +2455,8 @@ async function refreshBatchDatasetsInternal(): Promise<void> {
   const extras: string[] = [];
   if (localDir) extras.push(`local=${fileBasename(localDir) || "data"}`);
   if (localTruncated) extras.push("local truncated");
-  if (polygonError && BATCH_DATASETS_CACHE.length === 0)
-    extras.push("polygon error");
-  if (localError && BATCH_DATASETS_CACHE.length === 0)
-    extras.push("local data error");
+  if (polygonError) extras.push("polygon error");
+  if (localError) extras.push("local data error");
   renderBatchDatasetList(extras.join(" • "));
 }
 

@@ -17,7 +17,8 @@ describe('AppEmptyState', () => {
       },
     })
 
-    expect(wrapper.get('.emptyTitle').text()).toBe('No dataset loaded')
+    expect(wrapper.get('h3.emptyTitle').text()).toBe('No dataset loaded')
+    expect(wrapper.attributes('aria-labelledby')).toBe(wrapper.get('h3.emptyTitle').attributes('id'))
     expect(wrapper.get('.emptyBody').text()).toContain('Load CSV')
     expect(wrapper.get('.emptyBlockedReason').attributes('role')).toBe('status')
     expect(wrapper.get('.emptyBlockedReason').text()).toContain('blocked')

@@ -16,6 +16,11 @@ function loadOptimizeService(): Promise<
   return optimizeServicePromise;
 }
 
+function formatActionError(prefix: string, error: unknown): string {
+  const detail = String(error || "").trim();
+  return detail ? `${prefix}: ${detail}` : prefix;
+}
+
 export interface OptimizeOption {
   value: string;
   label: string;
@@ -1105,11 +1110,26 @@ export const useOptimizeStore = defineStore("optimize", {
     },
 
     applyPreset(): void {
-      void loadOptimizeService().then((service) => service.applyPreset());
+      void loadOptimizeService()
+        .then((service) => service.applyPreset())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError("Preset failed", error);
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     presetKernel(): void {
-      void loadOptimizeService().then((service) => service.presetKernel());
+      void loadOptimizeService()
+        .then((service) => service.presetKernel())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError(
+            "GPU-kernel preset failed",
+            error,
+          );
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     refreshGpuStatus(quiet = false): void {
@@ -1133,8 +1153,10 @@ export const useOptimizeStore = defineStore("optimize", {
         })
         .catch((error: unknown) => {
           if (!quiet) {
-            this.statusLine =
-              `GPU status refresh failed: ${String(error || "")}`.trim();
+            this.statusLine = formatActionError(
+              "GPU status refresh failed",
+              error,
+            );
           }
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
@@ -1142,13 +1164,26 @@ export const useOptimizeStore = defineStore("optimize", {
     },
 
     runGpuParityCheck(): void {
-      void loadOptimizeService().then((service) => service.runGpuParityCheck());
+      void loadOptimizeService()
+        .then((service) => service.runGpuParityCheck())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError("GPU parity check failed", error);
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     previewDynamicStrategyIr(): void {
-      void loadOptimizeService().then((service) =>
-        service.previewDynamicStrategyIr(),
-      );
+      void loadOptimizeService()
+        .then((service) => service.previewDynamicStrategyIr())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError(
+            "Dynamic strategy preview failed",
+            error,
+          );
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     runOptimization(): void {
@@ -1186,10 +1221,20 @@ export const useOptimizeStore = defineStore("optimize", {
               }
             }
           },
-        );
+        ).catch((error: unknown) => {
+          this.statusLine = formatActionError("ML signal action failed", error);
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
         return;
       }
-      void loadOptimizeService().then((service) => service.runOptimization());
+      void loadOptimizeService()
+        .then((service) => service.runOptimization())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError("Optimization failed", error);
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     cancelOptimization(): void {
@@ -1199,7 +1244,7 @@ export const useOptimizeStore = defineStore("optimize", {
       void loadOptimizeService()
         .then((service) => service.cancelOptimization())
         .catch((error: unknown) => {
-          this.statusLine = `Cancel failed: ${String(error || "")}`.trim();
+          this.statusLine = formatActionError("Cancel failed", error);
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1214,7 +1259,7 @@ export const useOptimizeStore = defineStore("optimize", {
         void import("../services/mlSignalService")
           .then(({ runMlSignalValidation }) => runMlSignalValidation())
           .catch((error: unknown) => {
-            this.statusLine = `Validation failed: ${String(error || "")}`.trim();
+            this.statusLine = formatActionError("Validation failed", error);
             this.source = "vue";
             this.updatedAtUnixMs = Date.now();
           });
@@ -1223,7 +1268,7 @@ export const useOptimizeStore = defineStore("optimize", {
       void loadOptimizeService()
         .then((service) => service.runValidation())
         .catch((error: unknown) => {
-          this.statusLine = `Validation failed: ${String(error || "")}`.trim();
+          this.statusLine = formatActionError("Validation failed", error);
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });

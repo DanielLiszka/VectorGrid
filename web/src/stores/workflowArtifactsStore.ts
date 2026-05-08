@@ -52,6 +52,7 @@ export interface WorkflowRunSnapshot {
   artifactKind?: string;
   artifactCompatibility?: ArtifactCompatibilitySummary;
   configFingerprint?: string;
+  configFingerprintVersion?: number | null;
   routeProvenance?: RouteProvenanceSummary | null;
   req: unknown;
   res: unknown;
@@ -163,6 +164,7 @@ function workflowRunSignature(run: WorkflowRunArtifact | null): string {
     reportXlsxExists: run.reportXlsxExists ?? null,
     csvPath: run.csvPath,
     configFingerprint: run.configFingerprint,
+    configFingerprintVersion: run.configFingerprintVersion ?? null,
     datasetMeta: run.datasetMeta,
     routeProvenance: run.routeProvenance,
     lineage: run.lineage,
@@ -823,8 +825,11 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
           typeof row.optimizationMetricSurface === "object"
         ? (row.optimizationMetricSurface as Record<string, unknown>)
         : null;
+  const ts = normalizeText(row.ts);
+  if (!ts || row.res == null) return null;
+
   return markRaw({
-    ts: normalizeText(row.ts),
+    ts,
     artifactPath: normalizeText(row.artifact_path ?? row.artifactPath),
     artifactKind: normalizeText(
       row.artifact_kind ?? row.artifactKind ?? row.kind,
@@ -874,8 +879,11 @@ function normalizeValidationArtifact(
     req?: unknown;
     res?: unknown;
   };
+  const ts = normalizeText(row.ts);
+  if (!ts || row.res == null) return null;
+
   return markRaw({
-    ts: normalizeText(row.ts),
+    ts,
     req: markRawUnknown(row.req ?? null),
     res: markRawUnknown(row.res ?? null),
   });
@@ -922,6 +930,7 @@ export function readLatestWorkflowRunSnapshot(): {
   artifactKind?: string;
   artifactCompatibility?: ArtifactCompatibilitySummary;
   configFingerprint?: string;
+  configFingerprintVersion?: number | null;
   routeProvenance?: RouteProvenanceSummary | null;
   req: unknown;
   res: unknown;
@@ -946,11 +955,11 @@ function applyNormalizedArtifacts(
 ): WorkflowArtifactsApplyResult {
   const nextRunSignature = workflowRunSignature(run);
   const nextValidationSignature = workflowValidationSignature(validation);
-  const runChanged = nextRunSignature !== latestWorkflowRunSignature;
-  const validationChanged =
+  const globalRunChanged = nextRunSignature !== latestWorkflowRunSignature;
+  const globalValidationChanged =
     nextValidationSignature !== latestWorkflowValidationSignature;
 
-  if (runChanged || validationChanged) {
+  if (globalRunChanged || globalValidationChanged) {
     latestWorkflowRunSignature = nextRunSignature;
     latestWorkflowValidationSignature = nextValidationSignature;
     latestWorkflowRunSnapshot = run
@@ -962,6 +971,7 @@ function applyNormalizedArtifacts(
             ? { artifactCompatibility: run.artifactCompatibility }
             : {}),
           configFingerprint: run.configFingerprint ?? "",
+          configFingerprintVersion: run.configFingerprintVersion ?? null,
           routeProvenance: run.routeProvenance ?? null,
           req: run.req ?? null,
           res: run.res ?? null,
@@ -978,20 +988,21 @@ function applyNormalizedArtifacts(
 
   if (!store) {
     return {
-      applied: runChanged || validationChanged,
-      runChanged,
-      validationChanged,
+      applied: globalRunChanged || globalValidationChanged,
+      runChanged: globalRunChanged,
+      validationChanged: globalValidationChanged,
       sourceChanged: false,
     };
   }
 
   const sourceChanged = store.source !== source;
-  const storeNeedsExplicitClear =
-    !run &&
-    !validation &&
-    (store.currentRun !== null || store.currentValidation !== null);
+  const storeRunChanged = workflowRunSignature(store.currentRun) !== nextRunSignature;
+  const storeValidationChanged =
+    workflowValidationSignature(store.currentValidation) !== nextValidationSignature;
+  const runChanged = globalRunChanged || storeRunChanged;
+  const validationChanged = globalValidationChanged || storeValidationChanged;
 
-  if (!runChanged && !validationChanged && !storeNeedsExplicitClear) {
+  if (!runChanged && !validationChanged) {
     if (sourceChanged) store.source = source;
     return {
       applied: sourceChanged,
@@ -1028,7 +1039,8 @@ export function applyWorkflowArtifactsPayload(
   }
   const row = payload as WorkflowArtifactsPayload;
   let run = normalizeRunArtifact(row.currentRun);
-  const validation = normalizeValidationArtifact(row.currentValidation);
+  let validation = normalizeValidationArtifact(row.currentValidation);
+  if (!run) validation = null;
   if (run) {
     run = markRaw({
       ...run,

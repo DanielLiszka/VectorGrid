@@ -1,6 +1,9 @@
+#[macro_use]
+mod bench_support;
+
 mod options_expression_bench_support;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, Criterion};
 use std::time::Duration;
 use ta_app_core::analyze_options_expression_feasibility_blocking;
 
@@ -47,4 +50,4 @@ fn bench_options_expression_summary_compile(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_options_expression_summary_compile);
-criterion_main!(benches);
+serialized_criterion_main!(benches);

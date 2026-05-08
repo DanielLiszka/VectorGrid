@@ -24,13 +24,13 @@ pub fn grid_search<E: BacktestEngine>(
     num_candles: usize,
     top_k: usize,
     include_all: bool,
-) -> Option<OptimizationResult> {
+) -> Result<Option<OptimizationResult>, String> {
     if combos.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let metrics = engine.eval_batch(combos);
+    let metrics = engine.eval_batch(combos)?;
     if metrics.len() != combos.len() {
-        return None;
+        return Ok(None);
     }
 
     let mut best_idx = 0usize;
@@ -79,7 +79,7 @@ pub fn grid_search<E: BacktestEngine>(
         None
     };
 
-    Some(OptimizationResult {
+    Ok(Some(OptimizationResult {
         best_params,
         best_metrics,
         best_score: Some(best_score),
@@ -90,7 +90,7 @@ pub fn grid_search<E: BacktestEngine>(
         heatmap: None,
         num_combos: combos.len(),
         num_candles,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -103,8 +103,8 @@ mod tests {
     }
 
     impl BacktestEngine for StubEngine {
-        fn eval_batch(&self, _combos: &[DoubleMaParams]) -> Vec<Metrics> {
-            self.metrics.clone()
+        fn eval_batch(&self, _combos: &[DoubleMaParams]) -> Result<Vec<Metrics>, String> {
+            Ok(self.metrics.clone())
         }
     }
 
@@ -136,6 +136,7 @@ mod tests {
         };
 
         let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 2, true)
+            .expect("grid search should not fail")
             .expect("grid result");
 
         assert_eq!(result.best_params.fast_len, 6);
@@ -160,6 +161,7 @@ mod tests {
         };
 
         let grid = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 3, true)
+            .expect("grid search should not fail")
             .expect("grid result");
 
         let mut stream = StreamAggregator::new(ObjectiveKind::Sharpe, 3, true, 512);
@@ -210,6 +212,7 @@ mod tests {
         };
 
         let result = grid_search(&engine, &combos, ObjectiveKind::Volatility, 512, 3, false)
+            .expect("grid search should not fail")
             .expect("grid result");
 
         assert_eq!(result.best_params.fast_len, 6);
@@ -229,6 +232,7 @@ mod tests {
         };
 
         let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 3, false)
+            .expect("grid search should not fail")
             .expect("grid result");
 
         assert_eq!(result.best_params.fast_len, 5);
@@ -256,6 +260,7 @@ mod tests {
         };
 
         let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 2, false)
+            .expect("grid search should not fail")
             .expect("grid result");
 
         assert_eq!(
@@ -280,6 +285,7 @@ mod tests {
         };
 
         let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 2, false)
+            .expect("grid search should not fail")
             .expect("grid result");
 
         assert_eq!(result.best_params.fast_len, 5);
@@ -302,6 +308,7 @@ mod tests {
         };
 
         let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 0, true)
+            .expect("grid search should not fail")
             .expect("grid result");
 
         assert!(result.top.is_empty());
@@ -318,7 +325,11 @@ mod tests {
         let under = StubEngine {
             metrics: vec![metrics_with_sharpe(1.0)],
         };
-        assert!(grid_search(&under, &combos, ObjectiveKind::Sharpe, 512, 2, false).is_none());
+        assert!(
+            grid_search(&under, &combos, ObjectiveKind::Sharpe, 512, 2, false)
+                .expect("grid search should not fail")
+                .is_none()
+        );
 
         let over = StubEngine {
             metrics: vec![
@@ -327,6 +338,10 @@ mod tests {
                 metrics_with_sharpe(0.2),
             ],
         };
-        assert!(grid_search(&over, &combos, ObjectiveKind::Sharpe, 512, 2, false).is_none());
+        assert!(
+            grid_search(&over, &combos, ObjectiveKind::Sharpe, 512, 2, false)
+                .expect("grid search should not fail")
+                .is_none()
+        );
     }
 }

@@ -1,5 +1,5 @@
 #[cfg(feature = "cuda")]
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 pub struct PreferredCudaDevice {
@@ -25,32 +25,58 @@ where
 }
 
 #[cfg(feature = "cuda")]
-fn resolve_preferred_cuda_device_id() -> Result<Option<u32>, String> {
-    static PREFERRED_CUDA_DEVICE_ID: OnceLock<Result<Option<u32>, String>> = OnceLock::new();
-    PREFERRED_CUDA_DEVICE_ID
-        .get_or_init(|| {
-            use cust::{device::Device, prelude::CudaFlags};
-
-            cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
-
-            let count = Device::num_devices().map_err(|e| e.to_string())?;
-            if count == 0 {
-                return Ok(None);
-            }
-            if count == 1 {
-                return Ok(Some(0));
-            }
-
-            let devices = (0..count)
-                .map(|idx| {
-                    let device = Device::get_device(idx).map_err(|e| e.to_string())?;
-                    let total_memory_bytes = device.total_memory().map_err(|e| e.to_string())?;
-                    Ok((idx as u32, total_memory_bytes as u64))
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            Ok(select_preferred_cuda_device_id_by_total_memory(devices))
-        })
+fn cached_successful_cuda_discovery<T, F>(
+    cache: &'static OnceLock<Mutex<Option<T>>>,
+    discover: F,
+) -> Result<T, String>
+where
+    T: Clone,
+    F: FnOnce() -> Result<T, String>,
+{
+    let mutex = cache.get_or_init(|| Mutex::new(None));
+    if let Some(cached) = mutex
+        .lock()
+        .map_err(|_| "CUDA discovery cache lock poisoned".to_string())?
         .clone()
+    {
+        return Ok(cached);
+    }
+
+    let discovered = discover()?;
+    *mutex
+        .lock()
+        .map_err(|_| "CUDA discovery cache lock poisoned".to_string())? = Some(discovered.clone());
+    Ok(discovered)
+}
+
+#[cfg(feature = "cuda")]
+fn discover_preferred_cuda_device_id() -> Result<Option<u32>, String> {
+    use cust::{device::Device, prelude::CudaFlags};
+
+    cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
+
+    let count = Device::num_devices().map_err(|e| e.to_string())?;
+    if count == 0 {
+        return Ok(None);
+    }
+    if count == 1 {
+        return Ok(Some(0));
+    }
+
+    let devices = (0..count)
+        .map(|idx| {
+            let device = Device::get_device(idx).map_err(|e| e.to_string())?;
+            let total_memory_bytes = device.total_memory().map_err(|e| e.to_string())?;
+            Ok((idx as u32, total_memory_bytes as u64))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(select_preferred_cuda_device_id_by_total_memory(devices))
+}
+
+#[cfg(feature = "cuda")]
+fn resolve_preferred_cuda_device_id() -> Result<Option<u32>, String> {
+    static PREFERRED_CUDA_DEVICE_ID: OnceLock<Mutex<Option<Option<u32>>>> = OnceLock::new();
+    cached_successful_cuda_discovery(&PREFERRED_CUDA_DEVICE_ID, discover_preferred_cuda_device_id)
 }
 
 #[cfg(feature = "cuda")]
@@ -62,25 +88,23 @@ pub fn preferred_cuda_device_id_result() -> Result<Option<u32>, String> {
 #[cfg(feature = "cuda")]
 
 pub fn preferred_cuda_device() -> Result<Option<PreferredCudaDevice>, String> {
-    static PREFERRED_CUDA_DEVICE: OnceLock<Result<Option<PreferredCudaDevice>, String>> =
+    static PREFERRED_CUDA_DEVICE: OnceLock<Mutex<Option<Option<PreferredCudaDevice>>>> =
         OnceLock::new();
-    PREFERRED_CUDA_DEVICE
-        .get_or_init(|| {
-            use cust::{device::Device, prelude::CudaFlags};
+    cached_successful_cuda_discovery(&PREFERRED_CUDA_DEVICE, || {
+        use cust::{device::Device, prelude::CudaFlags};
 
-            let Some(device_id) = resolve_preferred_cuda_device_id()? else {
-                return Ok(None);
-            };
+        let Some(device_id) = resolve_preferred_cuda_device_id()? else {
+            return Ok(None);
+        };
 
-            cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
-            let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
-            Ok(Some(PreferredCudaDevice {
-                device_id,
-                name: device.name().map_err(|e| e.to_string())?,
-                total_memory_bytes: device.total_memory().map_err(|e| e.to_string())? as u64,
-            }))
-        })
-        .clone()
+        cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
+        let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
+        Ok(Some(PreferredCudaDevice {
+            device_id,
+            name: device.name().map_err(|e| e.to_string())?,
+            total_memory_bytes: device.total_memory().map_err(|e| e.to_string())? as u64,
+        }))
+    })
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -118,6 +142,30 @@ mod tests {
         assert_eq!(
             select_preferred_cuda_device_id_by_total_memory([(4, 12), (7, 12), (9, 10)]),
             Some(4)
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_discovery_cache_retries_after_error_and_caches_success() {
+        static CACHE: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+
+        let err = cached_successful_cuda_discovery(&CACHE, || {
+            Err("transient discovery failure".to_string())
+        })
+        .expect_err("first failure should not be cached as success");
+        assert!(err.contains("transient"));
+
+        assert_eq!(
+            cached_successful_cuda_discovery(&CACHE, || Ok(7)).expect("retry should run"),
+            7
+        );
+        assert_eq!(
+            cached_successful_cuda_discovery(&CACHE, || {
+                Err("cached success should avoid rediscovery".to_string())
+            })
+            .expect("cached success"),
+            7
         );
     }
 

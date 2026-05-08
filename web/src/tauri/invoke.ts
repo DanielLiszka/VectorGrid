@@ -1,9 +1,9 @@
 import { invoke as tauriApiInvoke, isTauri } from '@tauri-apps/api/core'
 import { isTauriCommand, type TauriCommand } from './commands'
 import { TauriRuntimeError, normalizeTauriRuntimeError } from './runtimeError'
-
+    // Lifecycle hooks are observational; command results should not depend on them.
 export type InvokeArgs = Record<string, unknown> | undefined
-
+    // Lifecycle hooks are observational; command errors should not depend on them.
 export interface InvokeLifecycleHooks {
   beforeInvoke?: (command: TauriCommand, args?: InvokeArgs) => unknown
   afterSuccess?: (

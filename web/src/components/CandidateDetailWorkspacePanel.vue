@@ -207,6 +207,16 @@ function selectTradeFromRow(tradeIdx: number): void {
   }
 }
 
+function onTradeRowKeydown(event: KeyboardEvent, tradeIdx: number): void {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  selectTradeFromRow(tradeIdx)
+}
+
+function tradeRowLabel(tradeIdx: number): string {
+  return `Select trade ${tradeIdx + 1}`
+}
+
 function clearTradeSelection(): boolean {
   if (selectedTradeIdx.value < 0) return false
   selectedTradeIdx.value = -1
@@ -438,9 +448,9 @@ onBeforeUnmount(() => {
                     <th class="left">#</th>
                     <th class="left">Dir</th>
                     <th class="left">Entry</th>
-                    <th class="left">EntryTime</th>
+                    <th class="left">Entry time</th>
                     <th class="left">Exit</th>
-                    <th class="left">ExitTime</th>
+                    <th class="left">Exit time</th>
                     <th>Bars</th>
                     <th>PnL</th>
                     <th class="left">State</th>
@@ -452,7 +462,11 @@ onBeforeUnmount(() => {
                     :key="row.tradeIdx"
                     :data-trade-idx="String(row.tradeIdx)"
                     :class="{ selected: row.selected }"
+                    tabindex="0"
+                    :aria-selected="row.selected ? 'true' : 'false'"
+                    :aria-label="tradeRowLabel(row.tradeIdx)"
                     @click="selectTradeFromRow(row.tradeIdx)"
+                    @keydown="onTradeRowKeydown($event, row.tradeIdx)"
                   >
                     <td
                       v-for="(cell, cellIndex) in row.cells"

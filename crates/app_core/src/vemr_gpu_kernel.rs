@@ -8,6 +8,7 @@ use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
     load_double_crossover_module, DeviceLaunchCaps, KernelLaunchCaps,
 };
+use crate::standalone_gpu_runtime::f32_slice_content_hash;
 use crate::vemr::VemrStrategyParams;
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
@@ -91,8 +92,20 @@ struct VemrCudaScratch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct VemrCloseSignature {
     len: usize,
+    content_hash: u64,
     host_ptr: usize,
     device_ptr: u64,
+}
+
+impl VemrCloseSignature {
+    fn from_signals(signals: &VemrGpuDeviceSignalMatrices<'_>) -> Self {
+        Self {
+            len: signals.cols,
+            content_hash: f32_slice_content_hash(signals.close_f32),
+            host_ptr: signals.close_f32.as_ptr() as usize,
+            device_ptr: signals.close_device_ptr,
+        }
+    }
 }
 
 impl VemrCudaScratch {
@@ -718,11 +731,7 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
             VemrCudaScratch::ensure_len_i32(&mut scratch.d_combo_end, combo_count)?;
             VemrCudaScratch::ensure_len_f32(&mut scratch.d_out, out_len)?;
 
-            let close_sig = VemrCloseSignature {
-                len: signals.cols,
-                host_ptr: signals.close_f32.as_ptr() as usize,
-                device_ptr: signals.close_device_ptr,
-            };
+            let close_sig = VemrCloseSignature::from_signals(signals);
             let close_ptr = if signals.close_device_ptr != 0 {
                 signals.close_device_ptr
             } else {
@@ -1014,7 +1023,10 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_inputs, VemrCudaScratch, VemrGpuComboBatch, VemrGpuDeviceSignalMatrices};
+    use super::{
+        validate_inputs, VemrCloseSignature, VemrCudaScratch, VemrGpuComboBatch,
+        VemrGpuDeviceSignalMatrices,
+    };
 
     fn valid_signals() -> VemrGpuDeviceSignalMatrices<'static> {
         VemrGpuDeviceSignalMatrices {
@@ -1083,6 +1095,29 @@ mod tests {
 
         assert_eq!(scratch.host_top_combo_tags.len(), 6);
         assert!(scratch.host_top_combo_tags.capacity() >= 6);
+    }
+
+    #[test]
+    fn close_signature_changes_when_content_changes_at_same_address() {
+        let mut close = vec![1.0_f32, 2.0, 3.0, 4.0];
+        let first = {
+            let mut signals = valid_signals();
+            signals.close_f32 = close.as_slice();
+            signals.close_device_ptr = 0x7777;
+            VemrCloseSignature::from_signals(&signals)
+        };
+        close[2] = 8.0;
+        let second = {
+            let mut signals = valid_signals();
+            signals.close_f32 = close.as_slice();
+            signals.close_device_ptr = 0x7777;
+            VemrCloseSignature::from_signals(&signals)
+        };
+
+        assert_eq!(first.len, second.len);
+        assert_eq!(first.host_ptr, second.host_ptr);
+        assert_eq!(first.device_ptr, second.device_ptr);
+        assert_ne!(first, second);
     }
 
     #[test]

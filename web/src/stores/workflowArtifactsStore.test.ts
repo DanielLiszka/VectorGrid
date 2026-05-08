@@ -111,6 +111,42 @@ describe("workflowArtifactsStore", () => {
     expect(store.updatedAtUnixMs).toBe(2_000);
   });
 
+  it("hydrates a fresh store even when the latest global artifact signature is unchanged", () => {
+    vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(2_000);
+    const payload = {
+      currentRun: {
+        ts: "2026-04-01T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        req: { strategy_kind: "DoubleMa" },
+        res: { top: [] },
+      },
+      currentValidation: {
+        ts: "2026-04-01T12:00:00Z",
+        req: { candidates: 16 },
+        res: { rows: [] },
+      },
+    };
+
+    applyWorkflowArtifactsPayload(payload, "vue");
+
+    const freshPinia = createPinia();
+    setActivePinia(freshPinia);
+    bindRuntimePinia(freshPinia);
+    const freshStore = useWorkflowArtifactsStore(freshPinia);
+
+    const applied = applyWorkflowArtifactsPayload(payload, "vue");
+
+    expect(applied).toMatchObject({
+      applied: true,
+      runChanged: true,
+      validationChanged: true,
+      sourceChanged: true,
+    });
+    expect(freshStore.currentRun?.artifactPath).toBe("C:/runs/run.json");
+    expect(freshStore.currentValidation?.res).toMatchObject({ rows: [] });
+    expect(freshStore.updatedAtUnixMs).toBe(2_000);
+  });
+
   it("normalizes optimization metric surface metadata from hydrated artifacts", () => {
     const store = useWorkflowArtifactsStore(pinia);
 
@@ -452,6 +488,85 @@ describe("workflowArtifactsStore", () => {
       sourceChanged: false,
     });
     expect(store.currentRun?.reportXlsxExists).toBe(false);
+  });
+
+  it("treats config fingerprint version changes as meaningful run updates", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+    const basePayload = {
+      currentRun: {
+        ts: "2026-04-01T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        config_fingerprint: "cfg-a",
+        config_fingerprint_version: 1,
+        req: { strategy_kind: "DoubleMa" },
+        res: { top: [] },
+      },
+      currentValidation: null,
+    };
+
+    applyWorkflowArtifactsPayload(basePayload, "vue");
+    const next = applyWorkflowArtifactsPayload(
+      {
+        currentRun: {
+          ...basePayload.currentRun,
+          config_fingerprint_version: 2,
+        },
+        currentValidation: null,
+      },
+      "vue",
+    );
+
+    expect(next).toMatchObject({
+      applied: true,
+      runChanged: true,
+      validationChanged: false,
+      sourceChanged: false,
+    });
+    expect(store.currentRun?.configFingerprintVersion).toBe(2);
+  });
+
+  it("rejects malformed run and validation artifacts instead of fabricating loaded state", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+
+    applyWorkflowArtifactsPayload(
+      {
+        currentRun: {},
+        currentValidation: {},
+      },
+      "vue",
+    );
+
+    expect(store.currentRun).toBeNull();
+    expect(store.currentValidation).toBeNull();
+    expect(store.hasRun).toBe(false);
+    expect(store.hasValidation).toBe(false);
+    expect(readLatestWorkflowRunIdentitySnapshot()).toBeNull();
+  });
+
+  it("does not treat an empty validation object as validation for a valid run", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+
+    applyWorkflowArtifactsPayload(
+      {
+        currentRun: {
+          ts: "2026-04-01T12:00:00Z",
+          artifact_path: "C:/runs/run.json",
+          req: { strategy_kind: "DoubleMa" },
+          res: { top: [] },
+        },
+        currentValidation: {},
+      },
+      "vue",
+    );
+
+    expect(store.currentRun?.artifactPath).toBe("C:/runs/run.json");
+    expect(store.currentValidation).toBeNull();
+    expect(store.hasValidation).toBe(false);
+    expect(readLatestWorkflowRunIdentitySnapshot()).toEqual({
+      ts: "2026-04-01T12:00:00Z",
+      artifactPath: "C:/runs/run.json",
+      hasValidation: false,
+    });
   });
 
   it("clears stale store state even when the latest global signatures are already null", () => {

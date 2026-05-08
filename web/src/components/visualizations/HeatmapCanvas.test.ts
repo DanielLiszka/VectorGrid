@@ -126,6 +126,7 @@ describe('HeatmapCanvas', () => {
     expect(wrapper.get('#heatmapEmptyHintVue').text()).toContain('Heatmap bins')
     expect(wrapper.get('#heatmapWrapVue').attributes('style')).toContain('display: none')
     expect(wrapper.get('#heatmapCanvasStackVue').attributes('aria-label')).toContain('Optimization heatmap')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('role')).toBe('group')
     expect(wrapper.get('#heatmapCanvasStackVue').attributes('tabindex')).toBe('0')
     expect(wrapper.find('#heatmapCanvasVue').exists()).toBe(true)
     expect(wrapper.find('#heatmapOverlayVue').exists()).toBe(true)

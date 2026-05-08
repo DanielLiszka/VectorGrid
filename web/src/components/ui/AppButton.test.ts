@@ -54,4 +54,17 @@ describe('AppButton', () => {
     expect(button.text()).toBe('Running')
     expect(wrapper.find('.appButtonSpinner').exists()).toBe(true)
   })
+
+  it('uses an explicit title as the accessible name for icon-only buttons', () => {
+    const wrapper = mount(AppButton, {
+      props: {
+        iconOnly: true,
+        title: 'Open chart settings',
+      },
+    })
+
+    const button = wrapper.get('button')
+    expect(button.attributes('title')).toBe('Open chart settings')
+    expect(button.attributes('aria-label')).toBe('Open chart settings')
+  })
 })

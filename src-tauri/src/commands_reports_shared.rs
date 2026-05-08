@@ -1,7 +1,10 @@
 use serde_json::Value;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const REPORT_FILENAME_COLLISION_LIMIT: u32 = 999;
+static REPORT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
 pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
@@ -54,6 +57,7 @@ pub(super) fn reports_dir_for_base(base: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+#[cfg(test)]
 pub(super) fn suggest_report_path_for_base(report: &Value, base: &Path) -> Result<PathBuf, String> {
     let dir = reports_dir_for_base(base)?;
     suggest_report_path_in_dir(report, &dir, REPORT_FILENAME_COLLISION_LIMIT)
@@ -68,19 +72,28 @@ fn report_base_name(report: &Value) -> String {
     format!("vectorgrid_report_{safe_ts}")
 }
 
+fn report_path_for_slot(dir: &Path, base_name: &str, slot: u32) -> PathBuf {
+    if slot <= 1 {
+        dir.join(format!("{base_name}.xlsx"))
+    } else {
+        dir.join(format!("{base_name}_{slot}.xlsx"))
+    }
+}
+
+#[cfg(test)]
 fn suggest_report_path_in_dir(
     report: &Value,
     dir: &Path,
     max_suffix: u32,
 ) -> Result<PathBuf, String> {
     let base_name = report_base_name(report);
-    let path = dir.join(format!("{base_name}.xlsx"));
+    let path = report_path_for_slot(dir, &base_name, 1);
     if !path.exists() {
         return Ok(path);
     }
 
     for i in 2..=max_suffix {
-        let candidate = dir.join(format!("{base_name}_{i}.xlsx"));
+        let candidate = report_path_for_slot(dir, &base_name, i);
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -92,9 +105,84 @@ fn suggest_report_path_in_dir(
     ))
 }
 
+fn report_temp_path(dir: &Path, base_name: &str) -> PathBuf {
+    let seq = REPORT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    dir.join(format!(
+        ".{base_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nonce,
+        seq
+    ))
+}
+
+fn write_report_temp_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| {
+            format!(
+                "failed to create temp report workbook {}: {e}",
+                path.display()
+            )
+        })?;
+    file.write_all(bytes).map_err(|e| {
+        format!(
+            "failed to write temp report workbook {}: {e}",
+            path.display()
+        )
+    })?;
+    file.sync_all().map_err(|e| {
+        format!(
+            "failed to sync temp report workbook {}: {e}",
+            path.display()
+        )
+    })
+}
+
+pub(super) fn persist_report_bytes_for_base(
+    report: &Value,
+    base: &Path,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let dir = reports_dir_for_base(base)?;
+    let base_name = report_base_name(report);
+    let temp_path = report_temp_path(&dir, &base_name);
+    write_report_temp_file(&temp_path, bytes)?;
+
+    for slot in 1..=REPORT_FILENAME_COLLISION_LIMIT {
+        let candidate = report_path_for_slot(&dir, &base_name, slot);
+        match std::fs::hard_link(&temp_path, &candidate) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&temp_path);
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(format!(
+                    "failed to persist report workbook at {}: {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&temp_path);
+    Err(format!(
+        "no available report filename slots for {}",
+        report_path_for_slot(&dir, &base_name, 1).to_string_lossy()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     fn make_temp_dir(prefix: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -178,6 +266,61 @@ mod tests {
         let err = suggest_report_path_in_dir(&report, &dir, 3).expect_err("slots should exhaust");
         assert!(err.contains("no available report filename slots"));
         assert!(err.contains(&base_name));
+    }
+
+    #[test]
+    fn persist_report_bytes_for_base_does_not_overwrite_existing_report() {
+        let base = make_temp_dir("persist_report_no_overwrite");
+        let report = serde_json::json!({ "ts": "2026-04-10T23:59:59Z" });
+        let reports = reports_dir_for_base(&base).expect("reports dir");
+        let base_name = report_base_name(&report);
+        let seed = reports.join(format!("{base_name}.xlsx"));
+        std::fs::write(&seed, b"existing").expect("seed existing report");
+
+        let saved =
+            persist_report_bytes_for_base(&report, &base, b"new workbook").expect("persist report");
+
+        assert_eq!(saved, reports.join(format!("{base_name}_2.xlsx")));
+        assert_eq!(std::fs::read(&seed).expect("read seed"), b"existing");
+        assert_eq!(std::fs::read(saved).expect("read saved"), b"new workbook");
+    }
+
+    #[test]
+    fn persist_report_bytes_for_base_concurrent_same_timestamp_uses_distinct_files() {
+        let base = Arc::new(make_temp_dir("persist_report_concurrent"));
+        let report = Arc::new(serde_json::json!({ "ts": "2026-04-10T23:59:59Z" }));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let handles = (0..2)
+            .map(|idx| {
+                let base = Arc::clone(&base);
+                let report = Arc::clone(&report);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    persist_report_bytes_for_base(
+                        &report,
+                        &base,
+                        format!("workbook-{idx}").as_bytes(),
+                    )
+                    .expect("persist report")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut paths = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("worker should not panic"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+
+        assert_eq!(paths.len(), 2);
+        for path in paths {
+            assert!(path.is_file(), "report should exist: {}", path.display());
+            let bytes = std::fs::read(path).expect("read report");
+            assert!(bytes == b"workbook-0" || bytes == b"workbook-1");
+        }
     }
 
     #[test]

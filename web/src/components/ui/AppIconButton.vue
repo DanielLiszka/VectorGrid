@@ -27,7 +27,7 @@ const props = withDefaults(
 )
 
 const attrs = useAttrs()
-const resolvedLabel = computed(() => String(props.label || '').trim())
+const resolvedLabel = computed(() => String(props.label || '').trim() || String(props.title || '').trim())
 const resolvedTitle = computed(() => {
   if (props.disabled && String(props.disabledReason || '').trim()) return String(props.disabledReason || '').trim()
   return String(props.title || '').trim() || resolvedLabel.value

@@ -93,7 +93,7 @@ GPU validation `-Quick` is a smoke lane, not a full-profile replacement. It comp
 | Is the local machine/repo ready for this variant? | `scripts/run_release_doctor.ps1` and `readiness.json` | Doctor runs Tauri config sync and release-readiness core. It does not build, stage, hash, or smoke a package. |
 | Was a candidate locally rehearsed? | `scripts/run_release_candidate_gate.ps1` and `summary.json` / `summary.md` | Summary is broad rehearsal evidence, not a replacement for specific artifacts. |
 | What exactly was built? | `provenance.json` first, `provenance.txt` secondary | Includes build identity, toolchain, and environment evidence. |
-| Which assets were staged? | `manifest.json` | Current required resources include CatBoost native DLL, bundled synthetic sample CSV, and `double_crossover.prebuilt.ptx`. |
+| Which assets were staged? | `manifest.json` | Current required resources include CatBoost native DLL, bundled synthetic sample CSV, `double_crossover.prebuilt.ptx`, and `options_expression.prebuilt.ptx`. |
 | What are the asset hashes? | `SHA256SUMS.txt`, interpreted against `manifest.json` | Hash file alone is not variant authority. |
 | Did the packaged artifact launch? | `packaged-smoke-summary.json` | Check `smoke_mode`; raw release-binary smoke is not bundle-level packaging proof. |
 | Are artifact/report outputs still compatible? | `node scripts/run_output_parity_check.mjs` | Separate from release-candidate gate because output parity is skipped there. |
@@ -114,7 +114,7 @@ Current release-candidate caveats:
 | CPU-only | CPU build; release doctor; release candidate; provenance/manifest/hash. | Must not require CUDA Toolkit, NVCC, NVIDIA GPU, or driver. |
 | GPU MA-sweep | `--features cuda`; release doctor/candidate for `gpu-ma`; NVIDIA driver/runtime evidence. | Current RC `-IncludePerf` uses generic GPU perf gate; dedicated MA-sweep authority is a gap. |
 | GPU kernel | `--features cuda-backtest-kernel`; `VECTORBT_USE_PREBUILT_PTX=1` for packaged kernel path; manifest PTX evidence; GPU perf; GPU validation perf when validation/residency claims are made. | `cuda-backtest-kernel` implies `cuda`; runtime NVIDIA driver still required. |
-| Options GPU scorer | Options promotion gate; CPU/GPU ranking parity; options tests. | Current manifest does not list `options_expression.prebuilt.ptx`; adding that is a later packaging-evidence gap, not current fact. |
+| Options GPU scorer | Options promotion gate; CPU/GPU ranking parity; options tests. | The manifest tracks `options_expression.prebuilt.ptx`; that packaging evidence is not enough to promote options GPU scorer claims. |
 | ML Signal native CPU | ML quality gate; native smoke; CatBoost DLL resource in manifest. | Manifest currently requires CatBoost native DLL unless explicitly allowed missing. |
 | Live execution enabled | Execution safety gate; no live credentials; safety harness only after exact script review. | Public live release requires manual recovery and emergency-halt posture. |
 
@@ -178,7 +178,7 @@ A recommendation is not implementation-ready until it states:
 | Gap | Status | Why blocked/deferred |
 |---|---|---|
 | Dedicated `gpu-ma` perf authority | Deferred | Current release `-IncludePerf` uses generic GPU perf for non-CPU variants. |
-| Options PTX in manifest required resources | Deferred | Current manifest tracks double-crossover PTX only; CUDA source/PTX package change needs exact review. |
+| Options GPU scorer release-promotion authority | Deferred | The manifest tracks `options_expression.prebuilt.ptx`, but public options GPU claims still need promotion-gate, CPU/GPU parity, and options-test evidence. |
 | Release-candidate output parity integration | Deferred | Current script intentionally skips output parity; adding it changes release workflow behavior. |
 | Machine-readable authority matrix | Deferred | Markdown policy should stabilize before adding JSON/schema/tooling. |
 | Live safety harness authority | Blocked | `scripts/run_live_execution_safety_harness.ps1` must be reviewed before internal behavior claims. |

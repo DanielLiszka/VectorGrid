@@ -184,14 +184,31 @@ fn output_path() -> PathBuf {
     PathBuf::from("research").join("validation_report_preview.xlsx")
 }
 
-fn main() {
+fn run() -> Result<PathBuf, String> {
+    if env::args_os().nth(2).is_some() {
+        return Err(
+            "usage: cargo run -p ta_desktop_demo_app --example generate_validation_report_preview -- [out.xlsx]"
+                .to_string(),
+        );
+    }
     let report = sample_report();
-    let bytes =
-        build_report_xlsx_bytes_headless(&report, Some(25)).expect("build validation xlsx preview");
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(25))
+        .map_err(|err| format!("failed to build validation report preview workbook: {err}"))?;
     let path = output_path();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create preview dir");
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
-    fs::write(&path, bytes).expect("write preview xlsx");
-    println!("{}", path.display());
+    fs::write(&path, bytes).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    Ok(path)
+}
+
+fn main() {
+    match run() {
+        Ok(path) => println!("{}", path.display()),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    }
 }

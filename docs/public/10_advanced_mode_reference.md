@@ -1,6 +1,6 @@
 # Advanced Mode Reference
 
-Advanced Mode exposes the full research workbench. It is for users who need more control than the streamlined Simple Mode workflow.
+Advanced Mode exposes the full research workbench. For releases that implement Simple Mode, it is for users who need more control than the streamlined first-run workflow. In the current checked-in frontend, Advanced Mode is the default implemented workbench.
 
 ## When To Use Advanced Mode
 

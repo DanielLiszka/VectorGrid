@@ -1685,9 +1685,7 @@ fn period_upload_signature(periods: &[i32]) -> PeriodUploadSignature {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct PeriodSliceSignature {
     len: usize,
-    first: u16,
-    second: u16,
-    last: u16,
+    hash: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1922,14 +1920,12 @@ pub fn prepare_cuda_kernel_runtime_for_probe(device_id: u32) -> Result<usize, St
 
 #[inline]
 fn period_slice_signature(periods: &[u16]) -> Option<PeriodSliceSignature> {
-    let first = *periods.first()?;
-    let second = periods.get(1).copied().unwrap_or(first);
-    let last = *periods.last().unwrap_or(&first);
+    periods.first()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    periods.hash(&mut hasher);
     Some(PeriodSliceSignature {
         len: periods.len(),
-        first,
-        second,
-        last,
+        hash: hasher.finish(),
     })
 }
 
@@ -4046,11 +4042,17 @@ fn kernel_pinned_d2h_enabled() -> bool {
 struct CandleDatasetSignature {
     len: usize,
     timestamp_ptr: usize,
+    timestamp_hash: u64,
     open_ptr: usize,
+    open_hash: u64,
     high_ptr: usize,
+    high_hash: u64,
     low_ptr: usize,
+    low_hash: u64,
     close_ptr: usize,
+    close_hash: u64,
     volume_ptr: usize,
+    volume_hash: u64,
     field_mask: u8,
 }
 
@@ -4118,6 +4120,22 @@ fn resident_market_series_cached_bytes(cache: &ResidentMarketSeriesCache) -> usi
 }
 
 #[inline]
+fn hash_plain_slice<T: Hash>(values: &[T]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    values.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[inline]
+fn hash_f64_slice(values: &[f64]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for value in values {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+#[inline]
 fn candle_dataset_signature(candles: &Candles) -> CandleDatasetSignature {
     let mut field_mask = 0u8;
     if candles.fields.open {
@@ -4139,11 +4157,17 @@ fn candle_dataset_signature(candles: &Candles) -> CandleDatasetSignature {
     CandleDatasetSignature {
         len: candles.close.len(),
         timestamp_ptr: candles.timestamp.as_ptr() as usize,
+        timestamp_hash: hash_plain_slice(&candles.timestamp),
         open_ptr: candles.open.as_ptr() as usize,
+        open_hash: hash_f64_slice(&candles.open),
         high_ptr: candles.high.as_ptr() as usize,
+        high_hash: hash_f64_slice(&candles.high),
         low_ptr: candles.low.as_ptr() as usize,
+        low_hash: hash_f64_slice(&candles.low),
         close_ptr: candles.close.as_ptr() as usize,
+        close_hash: hash_f64_slice(&candles.close),
         volume_ptr: candles.volume.as_ptr() as usize,
+        volume_hash: hash_f64_slice(&candles.volume),
         field_mask,
     }
 }
@@ -17436,6 +17460,17 @@ mod tests {
     }
 
     #[test]
+    fn period_slice_signature_tracks_full_period_contents() {
+        let a = super::period_slice_signature(&[5, 10, 15, 30]).expect("signature");
+        let b = super::period_slice_signature(&[5, 10, 15, 30]).expect("signature");
+        let colliding_shape = super::period_slice_signature(&[5, 10, 20, 30])
+            .expect("same len/first/second/last signature shape");
+
+        assert_eq!(a, b);
+        assert_ne!(a, colliding_shape);
+    }
+
+    #[test]
     fn candle_dataset_signature_tracks_dataset_identity() {
         let candles = make_trending_candles(32);
         let same_a = super::candle_dataset_signature(&candles);
@@ -17450,6 +17485,18 @@ mod tests {
         assert_eq!(same_a.field_mask, clone_sig.field_mask);
         assert_ne!(same_a, clone_sig);
         assert_ne!(same_a, shorter_sig);
+    }
+
+    #[test]
+    fn candle_dataset_signature_tracks_in_place_content_mutation() {
+        let mut candles = make_trending_candles(32);
+        let before = super::candle_dataset_signature(&candles);
+        candles.close[8] += 1.25;
+        let after = super::candle_dataset_signature(&candles);
+
+        assert_eq!(before.len, after.len);
+        assert_eq!(before.close_ptr, after.close_ptr);
+        assert_ne!(before, after);
     }
 
     #[test]

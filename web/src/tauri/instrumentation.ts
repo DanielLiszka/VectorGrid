@@ -34,11 +34,14 @@ export const INSTRUMENTED_EVENT_CHANNELS = [
   'polygon_live_bar',
 ] as const
 
+type InstrumentedEventChannel = (typeof INSTRUMENTED_EVENT_CHANNELS)[number]
+
 let invokeHooksInstalled = false
 let disposeRegistered = false
 let eventRetryTimer: ReturnType<typeof setInterval> | null = null
 let eventSubscribePromise: Promise<void> | null = null
 let eventUnsubscribers: Array<() => void> = []
+const eventSubscribedChannels = new Set<InstrumentedEventChannel>()
 
 function isTrackedLifecycleCommand(command: string): command is TauriCommand {
   return isTauriCommand(command) && TRACKED_TAURI_COMMANDS.has(command)
@@ -122,6 +125,29 @@ function normalizePolygonBar(payload: unknown): PolygonLiveBarEventPayload | nul
   }
 }
 
+const EVENT_HANDLERS: Record<InstrumentedEventChannel, (payload: unknown) => void> = {
+  double_ma_progress(payload) {
+    const p = normalizeDoubleMa(payload)
+    if (p) applyDoubleMaProgress(p)
+  },
+  research_campaign_progress(payload) {
+    const p = normalizeResearchCampaign(payload)
+    if (p) applyResearchCampaignProgress(p)
+  },
+  live_execution_runner_event(payload) {
+    const p = normalizeRunnerEvent(payload)
+    if (p) recordLiveExecutionRunnerEvent(p)
+  },
+  polygon_live_status(payload) {
+    const p = normalizePolygonStatus(payload)
+    if (p) recordPolygonLiveStatusEvent(p)
+  },
+  polygon_live_bar(payload) {
+    const p = normalizePolygonBar(payload)
+    if (p) recordPolygonLiveBarEvent(p)
+  },
+}
+
 function clearEventRetryTimer(): void {
   if (!eventRetryTimer) return
   globalThis.clearInterval(eventRetryTimer)
@@ -134,62 +160,48 @@ function clearEventSubscriptions(): void {
     try {
       off()
     } catch {
-          }
+      // Listener disposal is best-effort during teardown.
+    }
   }
   eventUnsubscribers = []
+  eventSubscribedChannels.clear()
   eventSubscribePromise = null
 }
 
 async function attachListener(
-  event: string,
+  event: InstrumentedEventChannel,
   handler: (payload: unknown) => void,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const off = await listenEvent(event, (payload) => handler(payload))
     if (typeof off === 'function') {
       eventUnsubscribers.push(off)
+      eventSubscribedChannels.add(event)
+      return true
     }
   } catch {
-      }
+    return false
+  }
+
+  return false
+}
+
+function allInstrumentedEventsSubscribed(): boolean {
+  return INSTRUMENTED_EVENT_CHANNELS.every((event) => eventSubscribedChannels.has(event))
 }
 
 async function subscribeProgressEvents(): Promise<void> {
-  if (eventUnsubscribers.length > 0 || eventSubscribePromise) {
+  if (allInstrumentedEventsSubscribed() || eventSubscribePromise) {
     await eventSubscribePromise
     return
   }
 
   eventSubscribePromise = (async () => {
-    const nextUnsubscribers: Array<() => void> = []
-    const priorUnsubscribers = eventUnsubscribers
-    eventUnsubscribers = nextUnsubscribers
     try {
-      await attachListener('double_ma_progress', (payload) => {
-        const p = normalizeDoubleMa(payload)
-        if (p) applyDoubleMaProgress(p)
-      })
-      await attachListener('research_campaign_progress', (payload) => {
-        const p = normalizeResearchCampaign(payload)
-        if (p) applyResearchCampaignProgress(p)
-      })
-      await attachListener('live_execution_runner_event', (payload) => {
-        const p = normalizeRunnerEvent(payload)
-        if (p) recordLiveExecutionRunnerEvent(p)
-      })
-      await attachListener('polygon_live_status', (payload) => {
-        const p = normalizePolygonStatus(payload)
-        if (p) recordPolygonLiveStatusEvent(p)
-      })
-      await attachListener('polygon_live_bar', (payload) => {
-        const p = normalizePolygonBar(payload)
-        if (p) recordPolygonLiveBarEvent(p)
-      })
-
-      for (const off of priorUnsubscribers) {
-        try {
-          off()
-        } catch {
-                  }
+      for (const event of INSTRUMENTED_EVENT_CHANNELS) {
+        if (!eventSubscribedChannels.has(event)) {
+          await attachListener(event, EVENT_HANDLERS[event])
+        }
       }
     } finally {
       eventSubscribePromise = null
@@ -200,13 +212,13 @@ async function subscribeProgressEvents(): Promise<void> {
 }
 
 function subscribeWithRetry(maxTries = 30, everyMs = 100): void {
-  if (eventUnsubscribers.length > 0 || eventSubscribePromise || eventRetryTimer) return
+  if (allInstrumentedEventsSubscribed() || eventSubscribePromise || eventRetryTimer) return
 
   let tries = 0
   const attempt = async (): Promise<boolean> => {
     if (!hasTauriEventApi()) return false
     await subscribeProgressEvents()
-    return eventUnsubscribers.length > 0
+    return allInstrumentedEventsSubscribed()
   }
 
   void attempt().then((ok) => {

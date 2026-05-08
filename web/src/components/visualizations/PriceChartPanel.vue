@@ -41,6 +41,7 @@ onBeforeUnmount(() => {
     <div v-if="advisory" class="panelAdvisory">{{ advisory }}</div>
     <div
       class="tvChartFrame chartSurface"
+      role="group"
       :aria-label="frameAriaLabel || hostAriaLabel"
       :aria-describedby="describedBy || undefined"
     >

@@ -52,9 +52,9 @@ pub use commands_artifacts::{
     list_stage5_artifacts, load_artifact, load_latest_run_artifact_hydration,
     load_latest_run_artifact_summary, load_live_session_artifact_detail, load_meta_artifact_replay,
     load_ml_policy_eval_artifact_replay, load_run_artifact, load_run_artifact_detail,
-    load_run_artifact_hydration, load_stage5_artifact_replay, open_runs_dir,
-    rebuild_artifact_catalog, repair_run_artifact, save_batch_summary, save_run_artifact,
-    update_artifact_tags,
+    load_run_artifact_hydration, load_stage5_artifact_replay, open_run_artifact_report,
+    open_runs_dir, rebuild_artifact_catalog, repair_run_artifact, save_batch_summary,
+    save_run_artifact, update_artifact_tags,
 };
 pub use commands_campaign::{
     preload_research_campaign_dataset_pack_headless, run_research_campaign,
@@ -69,7 +69,7 @@ pub use commands_data::{
     get_artifact_retention_info, get_market_data_dir_info, list_dynamic_indicators,
     list_gpu_speedups, list_moving_averages, list_repo_data_csvs, list_sample_csvs,
     list_sample_csvs_for_bindings, load_price_data, pick_csv_file, pick_folder, pick_save_csv,
-    polygon_clear_api_key, polygon_download_1m_and_load, polygon_get_cache_info,
+    pick_save_json, polygon_clear_api_key, polygon_download_1m_and_load, polygon_get_cache_info,
     polygon_live_candle_stream_status, polygon_repair_dataset, polygon_set_api_key,
     polygon_start_live_candle_stream, polygon_stop_live_candle_stream, polygon_top_off_dataset,
     polygon_validate_dataset, resample_price_data, set_artifact_retention_settings,

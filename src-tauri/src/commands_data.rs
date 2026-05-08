@@ -24,10 +24,80 @@ pub fn load_price_data(
     state: tauri::State<AppState>,
     app: tauri::AppHandle,
 ) -> Result<LoadPriceDataResponse, String> {
-    crate::local_path_policy::ensure_csv_extension(Path::new(path.trim()))?;
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
-    state.load_price_data(&path, &cache_dir)
+    let path = validate_csv_load_path_for_command(&path, &state, &app)?;
+    state.load_price_data(path.to_string_lossy().as_ref(), &cache_dir)
+}
+
+pub(crate) fn validate_csv_load_path_for_command<R: tauri::Runtime>(
+    raw: &str,
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
+    let validated = crate::local_path_policy::canonical_existing_path(raw)?;
+    crate::local_path_policy::ensure_csv_extension(&validated.canonical)?;
+    if !validated.canonical.is_file() {
+        return Err(format!(
+            "CSV load path must be a file: {}",
+            validated.original.to_string_lossy()
+        ));
+    }
+
+    if state
+        .consume_issued_csv_load_path(&validated.canonical)
+        .is_ok()
+    {
+        return Ok(validated.canonical);
+    }
+
+    let roots = allowed_csv_load_roots(app)?;
+    if roots
+        .iter()
+        .any(|root| validated.canonical == *root || validated.canonical.starts_with(root))
+    {
+        return Ok(validated.canonical);
+    }
+
+    Err(format!(
+        "CSV load path was not issued by the native open dialog and is outside allowed data roots: {}",
+        validated.original.to_string_lossy()
+    ))
+}
+
+fn allowed_csv_load_roots<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Vec<PathBuf>, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let market_root = settings::resolve_market_data_root_dir(&base)?;
+    let mut roots = vec![
+        base.clone(),
+        crate::data_cache::app_data_cache_dir(&base),
+        market_root.clone(),
+        polygon::polygon_cache_dir(&market_root),
+        dev_resource_dir().join("sample-data"),
+    ];
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        roots.push(resource_dir.join("sample-data"));
+    }
+    if let Some(workspace_root) = find_workspace_root() {
+        roots.push(
+            find_repo_data_dir_from(&workspace_root).unwrap_or_else(|| workspace_root.join("data")),
+        );
+    }
+    Ok(canonical_existing_roots(roots))
+}
+
+fn canonical_existing_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    roots
+        .into_iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .fold(Vec::new(), |mut out, root| {
+            if !out.iter().any(|existing| existing == &root) {
+                out.push(root);
+            }
+            out
+        })
 }
 
 #[tauri::command]
@@ -1640,7 +1710,10 @@ pub async fn polygon_top_off_dataset(
 }
 
 #[tauri::command]
-pub fn pick_csv_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub fn pick_csv_file(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
     app.dialog()
@@ -1651,7 +1724,10 @@ pub fn pick_csv_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
             path.into_path()
                 .map_err(|e| e.to_string())
                 .and_then(validate_picked_csv_path)
-                .map(|path| path.to_string_lossy().to_string())
+                .and_then(|path| {
+                    state.record_issued_csv_load_path(path.clone())?;
+                    Ok(path.to_string_lossy().to_string())
+                })
         })
         .transpose()
 }
@@ -1677,10 +1753,26 @@ fn normalize_save_csv_path(path: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
+fn normalize_save_json_path(path: PathBuf) -> Result<PathBuf, String> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("json") => Ok(path),
+        Some(_) => Err(format!(
+            "save path must use .json extension: {}",
+            path.to_string_lossy()
+        )),
+        None => {
+            let mut with_ext = path;
+            with_ext.set_extension("json");
+            Ok(with_ext)
+        }
+    }
+}
+
 #[tauri::command]
 pub fn pick_save_csv(
     default_name: Option<String>,
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
@@ -1697,7 +1789,39 @@ pub fn pick_save_csv(
             path.into_path()
                 .map_err(|e| e.to_string())
                 .and_then(normalize_save_csv_path)
-                .map(|path| path.to_string_lossy().to_string())
+                .and_then(|path| {
+                    state.record_issued_csv_save_path(path.clone())?;
+                    Ok(path.to_string_lossy().to_string())
+                })
+        })
+        .transpose()
+}
+
+#[tauri::command]
+pub fn pick_save_json(
+    default_name: Option<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut builder = app.dialog().file().add_filter("JSON Files", &["json"]);
+    if let Some(name) = default_name {
+        let name = name.trim();
+        if !name.is_empty() {
+            builder = builder.set_file_name(name);
+        }
+    }
+    builder
+        .blocking_save_file()
+        .map(|path| {
+            path.into_path()
+                .map_err(|e| e.to_string())
+                .and_then(normalize_save_json_path)
+                .and_then(|path| {
+                    state.record_issued_json_save_path(path.clone())?;
+                    Ok(path.to_string_lossy().to_string())
+                })
         })
         .transpose()
 }
@@ -1733,17 +1857,20 @@ mod tests {
     use super::market_data_dir_info_for_base;
     use super::normalize_polygon_live_bar;
     use super::normalize_save_csv_path;
+    use super::normalize_save_json_path;
     use super::parse_csv_fields;
     use super::sample_csvs_from_resource_dir;
     use super::sample_csvs_from_root;
     use super::set_artifact_retention_settings_for_base;
     use super::set_market_data_dir_for_base;
     use super::should_force_runner_review_posture;
+    use super::validate_csv_load_path_for_command;
     use super::validate_picked_csv_path;
     use super::SampleCsv;
     use crate::state::AppState;
     use serde_json::json;
     use std::path::{Path, PathBuf};
+    use tauri::Manager;
     use vector_ta::utilities::data_loader::Candles;
 
     fn make_temp_dir(prefix: &str) -> PathBuf {
@@ -1756,6 +1883,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("create temp dir");
         p
+    }
+
+    fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app")
     }
 
     fn sample_retention_settings_dto() -> super::ArtifactRetentionSettingsDto {
@@ -2256,6 +2389,83 @@ mod tests {
     }
 
     #[test]
+    fn csv_load_path_requires_open_dialog_token_or_allowed_root() {
+        let app = build_mock_app();
+        let state = AppState::default();
+        let external_dir = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join(format!(
+                "commands_data_external_csv_load_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+        let _ = std::fs::remove_dir_all(&external_dir);
+        std::fs::create_dir_all(&external_dir).expect("create external dir");
+        let external_csv = external_dir.join("external.csv");
+        std::fs::write(
+            &external_csv,
+            "timestamp,open,high,low,close,volume\n1,1,1,1,1,1\n",
+        )
+        .expect("write external csv");
+
+        let err = validate_csv_load_path_for_command(
+            external_csv.to_string_lossy().as_ref(),
+            &state,
+            app.handle(),
+        )
+        .expect_err("arbitrary external CSV should be rejected");
+        assert!(err.contains("native open dialog"));
+
+        let canonical = external_csv.canonicalize().expect("canonical external csv");
+        state
+            .record_issued_csv_load_path(canonical.clone())
+            .expect("record issued path");
+        let accepted = validate_csv_load_path_for_command(
+            external_csv.to_string_lossy().as_ref(),
+            &state,
+            app.handle(),
+        )
+        .expect("dialog-issued path should be accepted once");
+        assert_eq!(accepted, canonical);
+
+        validate_csv_load_path_for_command(
+            external_csv.to_string_lossy().as_ref(),
+            &state,
+            app.handle(),
+        )
+        .expect_err("dialog-issued path token should be single use");
+
+        let base = app
+            .handle()
+            .path()
+            .app_local_data_dir()
+            .expect("app data dir");
+        std::fs::create_dir_all(&base).expect("create app data dir");
+        let app_csv = base.join("allowed.csv");
+        std::fs::write(
+            &app_csv,
+            "timestamp,open,high,low,close,volume\n1,1,1,1,1,1\n",
+        )
+        .expect("write allowed csv");
+        let accepted_app_root = validate_csv_load_path_for_command(
+            app_csv.to_string_lossy().as_ref(),
+            &state,
+            app.handle(),
+        )
+        .expect("app data CSV should be accepted");
+        assert_eq!(
+            accepted_app_root,
+            app_csv.canonicalize().expect("canonical app csv")
+        );
+
+        let _ = std::fs::remove_dir_all(external_dir);
+    }
+
+    #[test]
     fn normalize_save_csv_path_appends_missing_extension_and_rejects_unsupported_extension() {
         let bare = PathBuf::from("C:/exports/vectorgrid_report");
         assert_eq!(
@@ -2271,6 +2481,24 @@ mod tests {
         let err = normalize_save_csv_path(PathBuf::from("C:/exports/vectorgrid_report.xlsx"))
             .expect_err("xlsx should fail");
         assert!(err.contains(".csv"));
+    }
+
+    #[test]
+    fn normalize_save_json_path_appends_missing_extension_and_rejects_unsupported_extension() {
+        let bare = PathBuf::from("C:/exports/ml_signal_score_cache");
+        assert_eq!(
+            normalize_save_json_path(bare).expect("bare path gets json"),
+            PathBuf::from("C:/exports/ml_signal_score_cache.json")
+        );
+        assert_eq!(
+            normalize_save_json_path(PathBuf::from("C:/exports/ml_signal_score_cache.JSON"))
+                .expect("existing json kept"),
+            PathBuf::from("C:/exports/ml_signal_score_cache.JSON")
+        );
+
+        let err = normalize_save_json_path(PathBuf::from("C:/exports/ml_signal_score_cache.csv"))
+            .expect_err("csv should fail");
+        assert!(err.contains(".json"));
     }
 
     #[test]

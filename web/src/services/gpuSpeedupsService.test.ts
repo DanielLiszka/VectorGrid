@@ -19,13 +19,10 @@ describe('gpuSpeedupsService', () => {
     resetGpuSpeedupsCacheForTests()
   })
 
-  it('normalizes speedup rows and removes invalid/duplicate entries', () => {
+  it('normalizes speedup rows and removes duplicate entries', () => {
     const normalized = normalizeGpuSpeedups([
-      null,
-      { indicator_id: '', speedup: 1, cpu_ms: 1, cuda_ms: 1 },
       { indicator_id: 'alma', indicator_name: 'ALMA', speedup: 42.9, cpu_ms: 158.25, cuda_ms: 3.68 },
       { indicator_id: 'alma', indicator_name: 'duplicate', speedup: 9, cpu_ms: 9, cuda_ms: 1 },
-      { indicator_id: 'ema', indicator_name: 'EMA', speedup: 'bad', cpu_ms: 100, cuda_ms: 10 },
       { indicator_id: 'sma', indicator_name: '', speedup: '8.03', cpu_ms: '114.3', cuda_ms: '14.2' },
     ])
 
@@ -47,6 +44,17 @@ describe('gpuSpeedupsService', () => {
     ])
   })
 
+  it('rejects malformed speedup catalogs instead of publishing empty defaults', () => {
+    expect(() => normalizeGpuSpeedups({ not: 'array' })).toThrow(
+      'GPU speedup catalog response must be an array',
+    )
+    expect(() =>
+      normalizeGpuSpeedups([
+        { indicator_id: 'ema', indicator_name: 'EMA', speedup: 'bad', cpu_ms: 100, cuda_ms: 10 },
+      ]),
+    ).toThrow("GPU speedup catalog field 'ema.speedup' must be finite")
+  })
+
   it('caches command responses and builds id map', async () => {
     invokeCommandMock
       .mockResolvedValueOnce([{ indicator_id: 'sma', indicator_name: 'SMA', speedup: 8, cpu_ms: 100, cuda_ms: 12 }])
@@ -64,4 +72,3 @@ describe('gpuSpeedupsService', () => {
     expect(refreshed.map((entry) => entry.id)).toEqual(['ema'])
   })
 })
-

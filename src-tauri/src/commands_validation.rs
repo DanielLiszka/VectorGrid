@@ -131,6 +131,23 @@ fn normalize_strategy_kind(raw: &str) -> String {
     }
 }
 
+fn required_validation_context_text<'a>(
+    raw: Option<&'a str>,
+    field_name: &str,
+) -> Result<&'a str, String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("validation_context.{field_name} is required"))
+}
+
+fn canonical_validation_context_path_key(raw: &str) -> String {
+    crate::local_path_policy::canonical_existing_path(raw)
+        .map(|validated| {
+            validation_common::normalize_path_key(validated.canonical.to_string_lossy().as_ref())
+        })
+        .unwrap_or_else(|_| validation_common::normalize_path_key(raw))
+}
+
 fn validate_validation_context(
     ctx: Option<&ta_app_core::ValidationArtifactContext>,
     loaded: &LoadedDataContext,
@@ -151,37 +168,76 @@ fn validate_validation_context(
         ));
     }
 
-    if let Some(expected_csv_path) = ctx.csv_path.as_deref() {
-        let expected = validation_common::normalize_path_key(expected_csv_path);
-        let actual = validation_common::normalize_path_key(&loaded.csv_path);
-        if !expected.is_empty() && !actual.is_empty() && expected != actual {
-            let label = ctx
-                .label
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(expected_csv_path.trim());
-            return Err(format!(
-                "validation requires dataset '{label}' ({expected_csv_path}), but loaded data id points to '{}'",
-                loaded.csv_path
-            ));
-        }
+    let expected_csv_path = required_validation_context_text(ctx.csv_path.as_deref(), "csv_path")?;
+    let expected = canonical_validation_context_path_key(expected_csv_path);
+    let actual = canonical_validation_context_path_key(&loaded.csv_path);
+    if actual.is_empty() {
+        return Err("loaded data id is missing source CSV metadata".to_string());
     }
-
-    if let Some(expected_timeframe) = ctx.timeframe.as_deref() {
-        let expected = normalize_timeframe_label(expected_timeframe);
-        let actual = loaded
-            .timeframe
+    if expected != actual {
+        let label = ctx
+            .label
             .as_deref()
-            .map(normalize_timeframe_label)
-            .unwrap_or_default();
-        if !expected.is_empty() && !actual.is_empty() && expected != actual {
-            return Err(format!(
-                "validation requires timeframe '{expected}', but loaded data id has timeframe '{actual}'"
-            ));
-        }
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(expected_csv_path);
+        return Err(format!(
+            "validation requires dataset '{label}' ({expected_csv_path}), but loaded data id points to '{}'",
+            loaded.csv_path
+        ));
     }
 
+    let expected_timeframe = normalize_timeframe_label(required_validation_context_text(
+        ctx.timeframe.as_deref(),
+        "timeframe",
+    )?);
+    if expected_timeframe.is_empty() {
+        return Err("validation_context.timeframe is required".to_string());
+    }
+    let actual_timeframe_raw = loaded
+        .timeframe
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "loaded data id is missing timeframe metadata".to_string())?;
+    let actual_timeframe = normalize_timeframe_label(actual_timeframe_raw);
+    if actual_timeframe.is_empty() {
+        return Err("loaded data id is missing timeframe metadata".to_string());
+    }
+    if expected_timeframe != actual_timeframe {
+        return Err(format!(
+            "validation requires timeframe '{expected_timeframe}', but loaded data id has timeframe '{actual_timeframe}'"
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_cross_ticker_config_paths_for_command<R: tauri::Runtime>(
+    cross_cfg: &mut ta_app_core::CrossTickerConfig,
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    validation_common::sanitize_cross_ticker_config(cross_cfg);
+    if cross_cfg.max_datasets == 0 {
+        cross_cfg.datasets.clear();
+        return Ok(());
+    }
+    if cross_cfg.datasets.len() > cross_cfg.max_datasets {
+        cross_cfg.datasets.truncate(cross_cfg.max_datasets);
+    }
+
+    for ds in &mut cross_cfg.datasets {
+        let prior_path = ds.csv_path.clone();
+        let canonical =
+            super::commands_data::validate_csv_load_path_for_command(&prior_path, state, app)
+                .map_err(|e| {
+                    let label = validation_common::dataset_label(&prior_path, &ds.label);
+                    format!("cross_ticker dataset '{label}' is not allowed: {e}")
+                })?;
+        ds.csv_path = canonical.to_string_lossy().to_string();
+    }
+    validation_common::sanitize_cross_ticker_config(cross_cfg);
     Ok(())
 }
 
@@ -344,7 +400,7 @@ where
 
 #[tauri::command]
 pub async fn run_composite_validation(
-    req: CompositeValidationRequest,
+    mut req: CompositeValidationRequest,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<CompositeValidationResult, String> {
@@ -373,6 +429,9 @@ pub async fn run_composite_validation(
 
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let app_cache_dir = crate::data_cache::app_data_cache_dir(&base);
+    if let Some(cross_cfg) = req.cross_ticker.as_mut() {
+        validate_cross_ticker_config_paths_for_command(cross_cfg, &state, &app)?;
+    }
 
     let cancel2 = cancel.clone();
     let app2 = app.clone();
@@ -743,7 +802,7 @@ fn build_composite_cross_ticker_request(
 
 #[tauri::command]
 pub async fn run_double_ma_validation(
-    req: DoubleMaValidationRequest,
+    mut req: DoubleMaValidationRequest,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<DoubleMaValidationResult, String> {
@@ -770,6 +829,9 @@ pub async fn run_double_ma_validation(
 
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let app_cache_dir = crate::data_cache::app_data_cache_dir(&base);
+    if let Some(cross_cfg) = req.cross_ticker.as_mut() {
+        validate_cross_ticker_config_paths_for_command(cross_cfg, &state, &app)?;
+    }
 
     let cancel2 = cancel.clone();
     let app2 = app.clone();
@@ -1316,6 +1378,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use ta_app_core::CrossTickerStats;
     use ta_strategies::double_ma::Metrics;
+    use tauri::Manager;
 
     fn data_csv(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1332,6 +1395,48 @@ mod tests {
         let p = std::env::temp_dir().join(format!("ta_desktop_demo_cross_cache_{ts}"));
         let _ = std::fs::create_dir_all(&p);
         p
+    }
+
+    fn make_external_dir(prefix: &str) -> PathBuf {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let current = std::env::current_dir().expect("current dir");
+        let parent = current.parent().unwrap_or(current.as_path());
+        let p = parent.join(format!("{prefix}_{}_{}", std::process::id(), ts));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("create external dir");
+        p
+    }
+
+    fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app")
+    }
+
+    fn write_minimal_csv(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create csv parent");
+        }
+        std::fs::write(
+            path,
+            "timestamp,open,high,low,close,volume\n1,1,1,1,1,1\n2,2,2,2,2,2\n",
+        )
+        .expect("write csv");
+    }
+
+    fn cross_config_for(path: &Path) -> ta_app_core::CrossTickerConfig {
+        ta_app_core::CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: path.to_string_lossy().to_string(),
+                label: "Cross".to_string(),
+            }],
+            max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
+            gate: ta_app_core::CrossTickerGateConfig::default(),
+        }
     }
 
     fn load_candles(path: &Path) -> vector_ta::utilities::data_loader::Candles {
@@ -1501,6 +1606,100 @@ mod tests {
             err.contains("requires timeframe '1h'"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn validation_context_rejects_missing_dataset_path() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "DoubleMa".to_string(),
+            csv_path: None,
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        let err = validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa"],
+        )
+        .expect_err("missing context csv_path should fail");
+        assert!(err.contains("csv_path"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validation_context_rejects_missing_timeframe() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "DoubleMa".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("   ".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        let err = validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa"],
+        )
+        .expect_err("missing context timeframe should fail");
+        assert!(err.contains("timeframe"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn cross_ticker_command_path_validation_rejects_unissued_external_csv() {
+        let app = build_mock_app();
+        let state = AppState::default();
+        let external_dir = make_external_dir("ta_desktop_demo_cross_external");
+        let csv = external_dir.join("outside.csv");
+        write_minimal_csv(&csv);
+        let mut cfg = cross_config_for(&csv);
+
+        let err = validate_cross_ticker_config_paths_for_command(&mut cfg, &state, app.handle())
+            .expect_err("external cross CSV should require a picker token");
+        assert!(
+            err.contains("native open dialog") || err.contains("outside allowed data roots"),
+            "unexpected error: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(external_dir);
+    }
+
+    #[test]
+    fn cross_ticker_command_path_validation_accepts_issued_csv_once() {
+        let app = build_mock_app();
+        let state = AppState::default();
+        let external_dir = make_external_dir("ta_desktop_demo_cross_external_issued");
+        let csv = external_dir.join("issued.csv");
+        write_minimal_csv(&csv);
+        let canonical = csv.canonicalize().expect("canonical csv");
+        state
+            .record_issued_csv_load_path(canonical.clone())
+            .expect("record picker token");
+
+        let mut cfg = cross_config_for(&csv);
+        validate_cross_ticker_config_paths_for_command(&mut cfg, &state, app.handle())
+            .expect("issued cross CSV should pass");
+        assert_eq!(PathBuf::from(&cfg.datasets[0].csv_path), canonical);
+
+        let mut cfg = cross_config_for(&csv);
+        validate_cross_ticker_config_paths_for_command(&mut cfg, &state, app.handle())
+            .expect_err("picker token should be single-use");
+
+        let _ = std::fs::remove_dir_all(external_dir);
+    }
+
+    #[test]
+    fn cross_ticker_command_path_validation_accepts_app_local_csv() {
+        let app = build_mock_app();
+        let state = AppState::default();
+        let app_root = app.path().app_local_data_dir().expect("app local data dir");
+        let csv = app_root.join("cross").join("allowed.csv");
+        write_minimal_csv(&csv);
+        let canonical = csv.canonicalize().expect("canonical csv");
+
+        let mut cfg = cross_config_for(&csv);
+        validate_cross_ticker_config_paths_for_command(&mut cfg, &state, app.handle())
+            .expect("app-local cross CSV should pass");
+        assert_eq!(PathBuf::from(&cfg.datasets[0].csv_path), canonical);
+
+        let _ = std::fs::remove_dir_all(app_root);
     }
 
     #[test]

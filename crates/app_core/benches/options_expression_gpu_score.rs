@@ -1,7 +1,12 @@
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[macro_use]
+mod bench_support;
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 mod options_expression_bench_support;
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, Criterion};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::time::Duration;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -74,7 +79,7 @@ fn bench_options_expression_gpu_score(c: &mut Criterion) {
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 criterion_group!(benches, bench_options_expression_gpu_score);
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-criterion_main!(benches);
+serialized_criterion_main!(benches);
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 fn main() {}

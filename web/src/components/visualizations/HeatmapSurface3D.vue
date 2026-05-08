@@ -211,8 +211,10 @@ function ensureRenderer(): boolean {
   controls.maxPolarAngle = Math.PI * 0.48
   controls.target.set(0, 0.8, 0)
 
-  resizeObserver = new ResizeObserver(resizeRenderer)
-  resizeObserver.observe(viewport)
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(resizeRenderer)
+    resizeObserver.observe(viewport)
+  }
   resetCamera()
   return true
 }
@@ -359,13 +361,17 @@ function rebuildScene(): void {
   hoverSample.value = null
   hideTooltip()
   if (!renderModel || !surface || !surface.samples.length) {
+    stopAnimation()
     disposeSceneObjects(scene)
     scene = null
     surfaceMesh = null
     renderFrame()
     return
   }
-  if (!ensureRenderer()) return
+  if (!ensureRenderer()) {
+    stopAnimation()
+    return
+  }
 
   disposeSceneObjects(scene)
   const nextScene = new Scene()
@@ -481,7 +487,7 @@ function handlePointerLeave(): void {
   hideTooltip()
 }
 
-function handleClick(event: PointerEvent): void {
+function handleClick(event: MouseEvent): void {
   const renderModel = props.renderModel
   if (!renderModel || pointerDragged) return
   const sample = pickSample(event.clientX, event.clientY)
@@ -552,6 +558,14 @@ defineExpose({ exportPng, resetCamera })
     <div id="heatmap3dEmptyHintVue" v-show="!renderModel || !sliceModel" class="panelStatus" role="status" aria-live="polite">
       {{ sliceSummary }}
     </div>
+    <div class="heatmapSurface3dAssist">
+      <div id="heatmapSurface3DInstructionsVue" class="panelMuted">
+        Use the slice selector to compare retained variants. Top results remains the keyboard-friendly exact candidate path; populated 3D bins can be clicked for retained candidate detail.
+      </div>
+      <div class="actions">
+        <button type="button" @click="$emit('review-top-results')">Review Top results</button>
+      </div>
+    </div>
     <div id="heatmapSurface3DWrapVue" v-show="!!renderModel && !!sliceModel" class="heatmapSurface3dWrap">
       <div id="heatmapSurface3DMetaVue" class="panelStatus heatmapSurface3dRenderMeta" role="status" aria-live="polite">
         {{ sliceSummary }}
@@ -605,8 +619,8 @@ defineExpose({ exportPng, resetCamera })
         class="heatmapSurface3dViewport chartSurface"
         role="img"
         :aria-label="ariaLabel"
+        aria-describedby="heatmapSurface3DInstructionsVue heatmapSurface3DMetaVue"
         :data-render-ready="surfaceReady ? 'true' : 'false'"
-        tabindex="0"
         @pointerdown="handlePointerDown"
         @pointermove="handlePointerMove"
         @pointerleave="handlePointerLeave"
@@ -625,7 +639,7 @@ defineExpose({ exportPng, resetCamera })
       <div class="heatmapSurface3dLegendRow">
         <HeatmapLegend ref="legendRef" :note="sliceModel?.scoreLabel || ''" />
         <div>
-          <label>&nbsp;</label>
+          <div class="heatmapSurface3dLegendSpacer" aria-hidden="true"></div>
           <div class="panelMuted heatmapSurface3dLegendNote">
             Height and color use exact retained full-output rows for the selected slice. Click a populated bin to inspect that retained candidate.
           </div>
@@ -661,8 +675,25 @@ defineExpose({ exportPng, resetCamera })
   margin: 0;
 }
 
+.heatmapSurface3dAssist {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.actions button {
+  padding: 0.42rem 0.6rem;
+  font-size: 0.76rem;
+}
+
 .heatmapSurface3dSliceBar {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
   max-width: 100%;
@@ -674,7 +705,7 @@ defineExpose({ exportPng, resetCamera })
 }
 
 .heatmapSurface3dSliceBar label {
-  color: var(--text-muted);
+  color: var(--muted-strong);
   font-size: 0.74rem;
   font-weight: 700;
 }
@@ -768,6 +799,10 @@ defineExpose({ exportPng, resetCamera })
 
 .heatmapSurface3dLegendNote {
   margin-top: 0.5rem;
+}
+
+.heatmapSurface3dLegendSpacer {
+  min-height: 1.1rem;
 }
 
 .mono {

@@ -13,7 +13,8 @@ Preferred path:
 
 Fallback path:
 
-- contact the maintainer privately through the repository owner account: <https://github.com/DanielLiszka>
+- contact the maintainer through the repository owner account: <https://github.com/DanielLiszka>
+- if no private channel is available, open a public issue that asks for a private security contact without including vulnerability details
 
 Include as much detail as you can:
 

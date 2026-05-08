@@ -4,7 +4,7 @@ Optimization searches candidate strategy configurations and ranks the results un
 
 ## Simple Mode Strategies
 
-Simple Mode focuses on:
+Simple Mode is release-candidate public copy until a signed desktop release ships and verifies it. For a release that promotes Simple Mode, it focuses on:
 
 - Double MA crossover.
 - Composite signal.

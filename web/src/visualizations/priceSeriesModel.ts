@@ -33,6 +33,12 @@ function toNumber(value: unknown, fallback = Number.NaN): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function toOptionalNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function normalizeChartTimeSec(raw: unknown): number {
   const value = toNumber(raw);
   if (!Number.isFinite(value)) return Number.NaN;
@@ -144,10 +150,8 @@ export function normalizeMovingAverageIndicatorBars(
       rowRaw.time ?? rowRaw.timestamp ?? rowRaw.ts ?? rowRaw.t,
     );
     if (!Number.isFinite(time)) continue;
-    const fastRaw = toNumber(rowRaw.fast);
-    const slowRaw = toNumber(rowRaw.slow);
-    const fast = Number.isFinite(fastRaw) ? fastRaw : null;
-    const slow = Number.isFinite(slowRaw) ? slowRaw : null;
+    const fast = toOptionalNumber(rowRaw.fast);
+    const slow = toOptionalNumber(rowRaw.slow);
     if (fast == null && slow == null) continue;
     const previous = out[out.length - 1];
     if (previous && previous.time > time) sorted = false;
@@ -169,10 +173,8 @@ export function normalizeCompositeIndicatorBars(
       rowRaw.time ?? rowRaw.timestamp ?? rowRaw.ts ?? rowRaw.t,
     );
     if (!Number.isFinite(time)) continue;
-    const halftrendRaw = toNumber(rowRaw.halftrend);
-    const maczRaw = toNumber(rowRaw.macz_hist ?? rowRaw.macz);
-    const halftrend = Number.isFinite(halftrendRaw) ? halftrendRaw : null;
-    const macz = Number.isFinite(maczRaw) ? maczRaw : null;
+    const halftrend = toOptionalNumber(rowRaw.halftrend);
+    const macz = toOptionalNumber(rowRaw.macz_hist ?? rowRaw.macz);
     if (halftrend == null && macz == null) continue;
     const previous = out[out.length - 1];
     if (previous && previous.time > time) sorted = false;

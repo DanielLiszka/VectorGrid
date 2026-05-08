@@ -17,6 +17,9 @@ use ta_desktop_demo_app::commands::{
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+
 #[derive(Clone, Copy, Debug)]
 struct U32Range {
     start: u32,
@@ -674,11 +677,8 @@ fn main() -> Result<(), String> {
     });
 
     if let Some(out_json) = cli.out_json.as_ref() {
-        if let Some(parent) = out_json.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
         let txt = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
-        std::fs::write(out_json, txt).map_err(|e| e.to_string())?;
+        atomic_output::write_str(out_json, &txt)?;
         println!("Saved JSON report: {}", out_json.to_string_lossy());
     }
 
@@ -686,11 +686,8 @@ fn main() -> Result<(), String> {
         .out_xlsx
         .clone()
         .unwrap_or_else(|| make_default_xlsx_path(&cli.csv, &ts));
-    if let Some(parent) = out_xlsx.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let bytes = build_report_xlsx_bytes_headless(&report, Some(cli.xlsx_max_rows.max(1)))?;
-    std::fs::write(&out_xlsx, bytes).map_err(|e| e.to_string())?;
+    atomic_output::write_bytes(&out_xlsx, bytes)?;
     println!("Saved XLSX report: {}", out_xlsx.to_string_lossy());
 
     Ok(())
@@ -698,7 +695,10 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_cross_ticker_gate, make_default_xlsx_path, report_ts_path_fragment, Cli};
+    use super::{
+        atomic_output, build_cross_ticker_gate, make_default_xlsx_path, report_ts_path_fragment,
+        Cli,
+    };
     use clap::Parser;
     use std::path::Path;
 
@@ -731,5 +731,30 @@ mod tests {
         ]);
         let gate = build_cross_ticker_gate(&cli);
         assert!(!gate.enabled);
+    }
+
+    #[test]
+    fn atomic_output_replaces_existing_regular_file() {
+        let path = std::env::temp_dir().join(format!(
+            "ta_headless_validate_atomic_output_{}_{}.json",
+            std::process::id(),
+            unique_test_suffix()
+        ));
+        atomic_output::write_str(&path, "{\"old\":true}").expect("write old output");
+        atomic_output::write_str(&path, "{\"new\":true}").expect("replace output");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read output"),
+            "{\"new\":true}"
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    fn unique_test_suffix() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_string()
     }
 }

@@ -12,6 +12,9 @@ use ta_app_core::{
     MlSignalScoreCacheBuildRequest,
 };
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+
 #[derive(Parser, Debug)]
 #[command(name = "ta_ml_signal_native_smoke")]
 #[command(about = "Headless MlSignal native CatBoost score-cache smoke runner")]
@@ -42,6 +45,9 @@ struct Cli {
 
     #[arg(long)]
     data_id: Option<String>,
+
+    #[arg(long)]
+    include_local_paths: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,6 +121,26 @@ fn default_data_id(csv_path: &PathBuf) -> String {
         .to_string()
 }
 
+fn artifact_path_label(path: &std::path::Path, include_local_paths: bool) -> String {
+    if include_local_paths {
+        return path.to_string_lossy().to_string();
+    }
+    let cwd = std::env::current_dir().ok();
+    let absolute = path.canonicalize().unwrap_or_else(|_| {
+        cwd.as_ref()
+            .map_or_else(|| path.to_path_buf(), |base| base.join(path))
+    });
+    if let Some(cwd) = cwd.and_then(|value| value.canonicalize().ok()) {
+        if let Ok(relative) = absolute.strip_prefix(&cwd) {
+            return relative.to_string_lossy().replace('\\', "/");
+        }
+    }
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|name| format!("<external>/{name}"))
+        .unwrap_or_else(|| "<external>".to_string())
+}
+
 fn main() -> Result<(), String> {
     let cli = Cli::parse();
     let backend_preference = parse_backend_preference(&cli.backend_preference)?;
@@ -163,18 +189,20 @@ fn main() -> Result<(), String> {
     let cancel = AtomicBool::new(false);
     let result = build_ml_signal_score_cache_from_csv(req, &candles, &cancel)?;
     let output = SmokeOutput {
-        csv_path: cli.csv_path.to_string_lossy().to_string(),
-        bundle_manifest: cli.bundle_manifest.to_string_lossy().to_string(),
+        csv_path: artifact_path_label(&cli.csv_path, cli.include_local_paths),
+        bundle_manifest: artifact_path_label(&cli.bundle_manifest, cli.include_local_paths),
         backend_preference: cli.backend_preference,
-        native_library_path,
+        native_library_path: cli
+            .native_library_path
+            .as_ref()
+            .map(|path| artifact_path_label(path, cli.include_local_paths)),
         prediction_batch_size: cli.prediction_batch_size,
         result,
     };
     let rendered = serde_json::to_string_pretty(&output)
         .map_err(|e| format!("serialize smoke output: {e}"))?;
     if let Some(path) = cli.out_json {
-        ensure_parent_dir(&path, "out_json")?;
-        fs::write(&path, rendered.as_bytes())
+        atomic_output::write_str(&path, &rendered)
             .map_err(|e| format!("write smoke output '{}': {e}", path.display()))?;
     }
     println!("{rendered}");

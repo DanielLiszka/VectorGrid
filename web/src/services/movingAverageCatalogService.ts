@@ -1,6 +1,7 @@
 import { invokeCommand } from '../tauri/invoke'
 import { readCachedCatalog, removeCachedCatalog } from './catalogReadCache'
 import { movingAverageCatalogQueryKey } from './catalogQueryKeys'
+import { requireBoundaryArray, requireBoundaryObject } from './serviceBoundarySchemas'
 
 export { movingAverageCatalogQueryKey }
 
@@ -64,25 +65,37 @@ function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
 }
 
+function requireText(value: unknown, field: string): string {
+  const text = normalizeText(value)
+  if (!text) throw new Error(`Moving average catalog field '${field}' must be a non-empty string`)
+  return text
+}
+
 function normalizeFinite(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function normalizeBool(value: unknown): boolean {
+function normalizeBool(value: unknown, field: string): boolean {
   if (typeof value === 'boolean') return value
   const text = normalizeText(value).toLowerCase()
-  return text === 'true' || text === '1' || text === 'yes' || text === 'on'
+  if (text === 'true' || text === '1' || text === 'yes' || text === 'on') return true
+  if (text === 'false' || text === '0' || text === 'no' || text === 'off') return false
+  throw new Error(`Moving average catalog field '${field}' must be boolean-like`)
+}
+
+function normalizeParamKind(value: unknown, field: string): MaParamKind {
+  const kind = normalizeText(value).toLowerCase()
+  if (kind === 'int' || kind === 'float') return kind
+  throw new Error(`Moving average catalog field '${field}' has unknown param kind '${kind}'`)
 }
 
 function normalizeParamDescriptor(value: unknown): MaParamDescriptor | null {
-  if (!value || typeof value !== 'object') return null
-  const row = value as RawMaParamDescriptor
-  const key = normalizeText(row.key)
-  if (!key) return null
+  const row = requireBoundaryObject(value, 'moving average catalog param') as RawMaParamDescriptor
+  const key = requireText(row.key, 'params.key')
 
   const label = normalizeText(row.label) || key
-  const kind = normalizeText(row.kind).toLowerCase() === 'int' ? 'int' : 'float'
+  const kind = normalizeParamKind(row.kind, `params.${key}.kind`)
   const defaultValue = normalizeFinite(row.default) ?? 0
   const min = normalizeFinite(row.min)
   const max = normalizeFinite(row.max)
@@ -103,24 +116,22 @@ function normalizeParamDescriptor(value: unknown): MaParamDescriptor | null {
 }
 
 export function normalizeMovingAverageCatalog(value: unknown): MovingAverageCatalogEntry[] {
-  if (!Array.isArray(value)) return []
+  const rows = requireBoundaryArray(value, 'moving average catalog response')
   const out: MovingAverageCatalogEntry[] = []
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object') continue
-    const row = entry as RawMovingAverageEntry
-    const id = normalizeText(row.id)
-    if (!id) continue
+  for (const entry of rows) {
+    const row = requireBoundaryObject(entry, 'moving average catalog entry') as RawMovingAverageEntry
+    const id = requireText(row.id, 'id')
     const label = normalizeText(row.label) || id
-    const supportsCpu = normalizeBool(row.supports_cpu)
-    const supportsCuda = normalizeBool(row.supports_cuda)
-    const supportsCudaMaSweep = normalizeBool(row.supports_cuda_ma_sweep)
-    const supportsCudaKernel = normalizeBool(row.supports_cuda_kernel)
-    const prefersCudaKernel = normalizeBool(row.prefers_cuda_kernel)
-    const requiresCandles = normalizeBool(row.requires_candles)
-    const periodBased = normalizeBool(row.period_based)
-    const singleOutput = normalizeBool(row.single_output)
+    const supportsCpu = normalizeBool(row.supports_cpu, `${id}.supports_cpu`)
+    const supportsCuda = normalizeBool(row.supports_cuda, `${id}.supports_cuda`)
+    const supportsCudaMaSweep = normalizeBool(row.supports_cuda_ma_sweep, `${id}.supports_cuda_ma_sweep`)
+    const supportsCudaKernel = normalizeBool(row.supports_cuda_kernel, `${id}.supports_cuda_kernel`)
+    const prefersCudaKernel = normalizeBool(row.prefers_cuda_kernel, `${id}.prefers_cuda_kernel`)
+    const requiresCandles = normalizeBool(row.requires_candles, `${id}.requires_candles`)
+    const periodBased = normalizeBool(row.period_based, `${id}.period_based`)
+    const singleOutput = normalizeBool(row.single_output, `${id}.single_output`)
     const notes = normalizeText(row.notes)
-    const rawParams = Array.isArray(row.params) ? row.params : []
+    const rawParams = requireBoundaryArray(row.params, `${id}.params`)
     const params: MaParamDescriptor[] = []
     const seen = new Set<string>()
     for (const rawParam of rawParams) {

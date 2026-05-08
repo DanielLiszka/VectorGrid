@@ -552,6 +552,8 @@ describe('ExecutionWorkspacePanel', () => {
 
     const apiKeyInput = document.querySelector('#vueExecApiKey') as HTMLInputElement | null
     const apiSecretInput = document.querySelector('#vueExecApiSecret') as HTMLInputElement | null
+    expect(apiKeyInput?.type).toBe('password')
+    expect(apiSecretInput?.type).toBe('password')
     expect(apiKeyInput?.value).toBe('')
     expect(apiSecretInput?.value).toBe('')
     expect(document.body.textContent || '').toContain('Stored securely')

@@ -153,7 +153,7 @@ The narrowest supported public path is:
 
 - latest signed Windows x64 release;
 - CPU-only variant;
-- Simple Mode;
+- Simple Mode only if that release implements and verifies it, otherwise the release-documented first-run workspace;
 - bundled synthetic sample or clean local CSV.
 
 Advanced, GPU, ML, options, and live execution issues may require additional evidence and may be treated as research or release-specific surfaces.

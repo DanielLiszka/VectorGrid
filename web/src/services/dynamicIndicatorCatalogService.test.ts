@@ -20,7 +20,6 @@ describe('dynamicIndicatorCatalogService', () => {
 
   it('normalizes indicator descriptors with params and outputs', () => {
     const normalized = normalizeDynamicIndicatorCatalog([
-      null,
       {
         id: '  SMA ',
         label: 'Simple MA',
@@ -57,12 +56,24 @@ describe('dynamicIndicatorCatalogService', () => {
             key: 'period',
             label: 'duplicate',
             kind: 'int',
+            required: false,
           },
         ],
         notes: 'fast path',
       },
       {
         id: 'macd',
+        category: 'trend',
+        dynamic_strategy_eligible: false,
+        input_kind: 'slice',
+        requires_candles: false,
+        supports_cpu_single: true,
+        supports_cpu_batch: true,
+        supports_cuda_single: false,
+        supports_cuda_sweep: false,
+        supports_cuda_vram: false,
+        supports_gpu_kernel: false,
+        prefers_gpu_by_speedup: false,
         outputs: [
           { id: 'line', value_type: 'f64' },
           { id: 'signal', value_type: 'f64' },
@@ -130,10 +141,67 @@ describe('dynamicIndicatorCatalogService', () => {
     expect(second?.params[1]?.defaultValue).toEqual({ kind: 'enum_string', value: 'classic' })
   })
 
+  it('rejects malformed catalog responses instead of publishing default capabilities', () => {
+    expect(() => normalizeDynamicIndicatorCatalog({ not: 'array' })).toThrow(
+      'dynamic indicator catalog response must be an array',
+    )
+    expect(() =>
+      normalizeDynamicIndicatorCatalog([
+        {
+          id: 'sma',
+          dynamic_strategy_eligible: true,
+          input_kind: 'unknown',
+          requires_candles: false,
+          supports_cpu_single: true,
+          supports_cpu_batch: true,
+          supports_cuda_single: true,
+          supports_cuda_sweep: true,
+          supports_cuda_vram: false,
+          supports_gpu_kernel: true,
+          prefers_gpu_by_speedup: true,
+          outputs: [],
+          params: [],
+        },
+      ]),
+    ).toThrow("unknown input kind 'unknown'")
+  })
+
   it('caches list_dynamic_indicators responses unless force refreshed', async () => {
     invokeCommandMock
-      .mockResolvedValueOnce([{ id: 'sma', outputs: [] }])
-      .mockResolvedValueOnce([{ id: 'ema', outputs: [] }])
+      .mockResolvedValueOnce([
+        {
+          id: 'sma',
+          dynamic_strategy_eligible: true,
+          input_kind: 'slice',
+          requires_candles: false,
+          supports_cpu_single: true,
+          supports_cpu_batch: true,
+          supports_cuda_single: true,
+          supports_cuda_sweep: true,
+          supports_cuda_vram: false,
+          supports_gpu_kernel: true,
+          prefers_gpu_by_speedup: true,
+          outputs: [],
+          params: [],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'ema',
+          dynamic_strategy_eligible: true,
+          input_kind: 'slice',
+          requires_candles: false,
+          supports_cpu_single: true,
+          supports_cpu_batch: true,
+          supports_cuda_single: true,
+          supports_cuda_sweep: true,
+          supports_cuda_vram: false,
+          supports_gpu_kernel: true,
+          prefers_gpu_by_speedup: true,
+          outputs: [],
+          params: [],
+        },
+      ])
 
     const first = await listDynamicIndicatorCatalog()
     const second = await listDynamicIndicatorCatalog()

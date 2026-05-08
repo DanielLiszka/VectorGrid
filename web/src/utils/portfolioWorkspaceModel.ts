@@ -9,6 +9,7 @@ import type {
   PortfolioFeasibilityResult,
   PortfolioReplayEvidenceStatus,
 } from "../services/portfolioService";
+import { escapeCsvCell } from "./csv";
 
 export type PortfolioWorkspaceSourceKind =
   | "current_run"
@@ -447,11 +448,6 @@ export function buildPortfolioFeasibilityExportPayload(
   };
 }
 
-function csvCell(value: unknown): string {
-  const raw = value == null ? "" : String(value);
-  return /[",\r\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
-}
-
 export function buildPortfolioFeasibilityCsv(
   result: PortfolioFeasibilityResult,
   sources: PortfolioWorkspaceSource[],
@@ -551,7 +547,7 @@ export function buildPortfolioFeasibilityCsv(
       result.nextRequiredStep,
     ]);
   });
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+  return `${rows.map((row) => row.map(escapeCsvCell).join(",")).join("\n")}\n`;
 }
 
 export function buildPortfolioConstructionReadiness(

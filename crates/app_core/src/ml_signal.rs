@@ -19,10 +19,10 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::Candles;
@@ -35,6 +35,7 @@ const ML_SIGNAL_SPLIT_PLAN_VERSION: u32 = 1;
 const ML_SIGNAL_EXPORTER_VERSION: &str = "ml_signal_export_v2";
 const ML_SIGNAL_SCORE_CONTRACT_VERSION: u32 = 1;
 const DEFAULT_CATBOOST_PREDICTION_BATCH_SIZE: usize = 65_536;
+static ML_SIGNAL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn default_horizon_bars() -> usize {
     10
@@ -1240,6 +1241,25 @@ fn validate_pattern_rows_len(
     Ok(())
 }
 
+fn validate_ml_signal_candles(candles: &Candles, context: &str) -> Result<usize, String> {
+    let expected_len = candles.close.len();
+    let fields = [
+        ("timestamp", candles.timestamp.len()),
+        ("open", candles.open.len()),
+        ("high", candles.high.len()),
+        ("low", candles.low.len()),
+        ("volume", candles.volume.len()),
+    ];
+    for (name, actual_len) in fields {
+        if actual_len != expected_len {
+            return Err(format!(
+                "{context} requires aligned candle fields: {name} has {actual_len} rows but close has {expected_len}"
+            ));
+        }
+    }
+    Ok(expected_len)
+}
+
 fn feature_frame(
     candles: &Candles,
     ma_source: &str,
@@ -1626,7 +1646,7 @@ fn build_ml_signal_inference_feature_rows(
     schema: &MlSignalFeatureSchema,
     cancel: &AtomicBool,
 ) -> Result<MlSignalInferenceFeatureRows, String> {
-    let n = candles.close.len();
+    let n = validate_ml_signal_candles(candles, "native MlSignal inference")?;
     let h = schema.horizon_bars.max(2);
     if n < 64 {
         return Err("not enough candles for native MlSignal inference".to_string());
@@ -1760,11 +1780,72 @@ fn staged_sibling_path(path: &str, context: &str) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
+    let seq = ML_SIGNAL_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     Ok(parent.join(format!(
-        ".{file_name}.{context_tag}.{}.{}.tmp",
+        ".{file_name}.{context_tag}.{}.{}.{}.tmp",
         std::process::id(),
-        nonce
+        nonce,
+        seq
     )))
+}
+
+fn existing_regular_target(path: &Path, context: &str) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "replace {context}: target must be a regular file: {}",
+                    path.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("replace {context}: inspect target failed: {error}")),
+    }
+}
+
+#[cfg(windows)]
+fn replace_existing_file_with_staged(
+    staged_path: &Path,
+    final_path: &Path,
+    context: &str,
+) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let replaced = wide_null(final_path);
+    let replacement = wide_null(staged_path);
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "replace {context}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file_with_staged(
+    staged_path: &Path,
+    final_path: &Path,
+    context: &str,
+) -> Result<(), String> {
+    fs::rename(staged_path, final_path).map_err(|error| format!("replace {context}: {error}"))
 }
 
 fn replace_file_from_staged(
@@ -1772,26 +1853,22 @@ fn replace_file_from_staged(
     final_path: &Path,
     context: &str,
 ) -> Result<(), String> {
-    match fs::rename(staged_path, final_path) {
-        Ok(()) => Ok(()),
-        Err(initial_err) => {
-            if final_path.exists() {
-                fs::remove_file(final_path).map_err(|remove_err| {
-                    let _ = fs::remove_file(staged_path);
-                    format!(
-                        "replace {context}: rename failed ({initial_err}); remove existing failed: {remove_err}"
-                    )
-                })?;
-                fs::rename(staged_path, final_path).map_err(|retry_err| {
-                    let _ = fs::remove_file(staged_path);
-                    format!("replace {context}: {retry_err}")
-                })
-            } else {
-                let _ = fs::remove_file(staged_path);
-                Err(format!("replace {context}: {initial_err}"))
-            }
+    let existing_target = match existing_regular_target(final_path, context) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = fs::remove_file(staged_path);
+            return Err(error);
         }
+    };
+    let result = if existing_target {
+        replace_existing_file_with_staged(staged_path, final_path, context)
+    } else {
+        fs::rename(staged_path, final_path).map_err(|error| format!("replace {context}: {error}"))
+    };
+    if result.is_err() {
+        let _ = fs::remove_file(staged_path);
     }
+    result
 }
 
 fn stable_hash_mod(text: &str, modulus: usize) -> Option<usize> {
@@ -1868,13 +1945,21 @@ pub fn build_ml_signal_split_windows(
 fn write_json_file<T: Serialize>(path: &str, value: &T, context: &str) -> Result<(), String> {
     let staged_path = staged_sibling_path(path, context)?;
     let result = (|| -> Result<(), String> {
-        let file = File::create(&staged_path).map_err(|e| format!("create {context}: {e}"))?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_path)
+            .map_err(|e| format!("create {context}: {e}"))?;
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, value)
             .map_err(|e| format!("write {context}: {e}"))?;
         writer
             .flush()
             .map_err(|e| format!("flush {context}: {e}"))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .map_err(|e| format!("sync {context}: {e}"))?;
         drop(writer);
         replace_file_from_staged(&staged_path, Path::new(path), context)
     })();
@@ -2982,7 +3067,7 @@ pub fn export_ml_signal_dataset_with_candles(
     if req.output_path.trim().is_empty() {
         return Err("output_path is required".to_string());
     }
-    let n = candles.close.len();
+    let n = validate_ml_signal_candles(candles, "ML dataset export")?;
     if n < 64 {
         return Err("not enough candles for ML dataset export".to_string());
     }
@@ -3061,10 +3146,12 @@ pub fn export_ml_signal_dataset_with_candles(
     let mut emitter = MlSignalFeatureEmissionState::new(candles, &frame, h);
 
     let row_count = match (|| -> Result<usize, String> {
-        let mut writer = WriterBuilder::new()
-            .has_headers(true)
-            .from_path(&staged_output_path)
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_output_path)
             .map_err(|e| format!("create dataset csv: {e}"))?;
+        let mut writer = WriterBuilder::new().has_headers(true).from_writer(file);
         writer
             .write_record(header.iter().map(String::as_str))
             .map_err(|e| format!("write dataset header: {e}"))?;
@@ -3142,6 +3229,10 @@ pub fn export_ml_signal_dataset_with_candles(
         writer
             .flush()
             .map_err(|e| format!("flush dataset csv: {e}"))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .map_err(|e| format!("sync dataset csv: {e}"))?;
         Ok(row_count)
     })() {
         Ok(value) => value,
@@ -4317,6 +4408,7 @@ pub fn build_ml_signal_score_cache_from_csv(
     if req.output_path.trim().is_empty() {
         return Err("output_path is required".to_string());
     }
+    validate_ml_signal_candles(candles, "ML score-cache generation")?;
 
     if req.input_path.trim().is_empty() {
         let native = build_ml_signal_native_score_cache(&req, candles, cancel)?;
@@ -5510,7 +5602,8 @@ pub fn run_ml_signal_validation_blocking_with_candles(
     if req.candidates.is_empty() {
         return Err("at least one candidate is required".to_string());
     }
-    if candles.close.len() < 3 {
+    let n = validate_ml_signal_candles(candles, "ML validation")?;
+    if n < 3 {
         return Err("not enough candles for ML validation".to_string());
     }
 
@@ -5545,6 +5638,7 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
     if req.score_cache_path.trim().is_empty() {
         return Err("score_cache_path is required".to_string());
     }
+    validate_ml_signal_candles(candles, "ML policy sweep")?;
     let t_long_values = expand_axis_f64(req.t_long.as_ref(), default_threshold())?;
     let t_short_values = expand_axis_f64(req.t_short.as_ref(), default_threshold())?;
     let delta_values = expand_axis_f64(req.delta.as_ref(), default_delta())?;
@@ -6235,6 +6329,71 @@ mod tests {
                 volume: true,
             },
         )
+    }
+
+    #[test]
+    fn write_json_file_replaces_existing_regular_file() {
+        let path = temp_file_path("json_replace", "json");
+        fs::write(&path, br#"{"old":true}"#).expect("seed old json");
+
+        write_json_file(&path, &serde_json::json!({"new": true}), "test json")
+            .expect("replace json");
+
+        let value: JsonValue = serde_json::from_reader(BufReader::new(
+            File::open(&path).expect("open replaced json"),
+        ))
+        .expect("parse replaced json");
+        assert_eq!(value.get("new").and_then(JsonValue::as_bool), Some(true));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn dataset_export_rejects_misaligned_candle_fields() {
+        let _guard = lock_test_env();
+        let mut candles = sample_candles(160);
+        candles.open.pop();
+        let output_path = temp_file_path("ml_dataset_bad_candles", "csv");
+        let cancel = AtomicBool::new(false);
+
+        let err = export_ml_signal_dataset_with_candles(
+            MlSignalDatasetExportRequest {
+                data_id: "data-ml".to_string(),
+                output_path: output_path.clone(),
+                ma_source: "close".to_string(),
+                horizon_bars: 10,
+                round_trip_cost_bps: 12.5,
+                split_plan: None,
+                ticker_holdout: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("misaligned candles should fail before export");
+
+        assert!(err.contains("ML dataset export"));
+        assert!(err.contains("open has 159 rows but close has 160"));
+        assert!(!Path::new(&output_path).exists());
+    }
+
+    #[test]
+    fn score_cache_build_rejects_misaligned_candle_fields_before_io() {
+        let mut candles = sample_candles(24);
+        candles.timestamp.pop();
+        let input_path = temp_file_path("scores_missing_input", "csv");
+        let output_path = temp_file_path("scores_bad_candles_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let err = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &output_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect_err("misaligned candles should fail before reading score input");
+
+        assert!(err.contains("ML score-cache generation"));
+        assert!(err.contains("timestamp has 23 rows but close has 24"));
+        assert!(!Path::new(&output_path).exists());
     }
 
     #[test]

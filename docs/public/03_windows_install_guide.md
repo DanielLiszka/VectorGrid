@@ -2,6 +2,8 @@
 
 Use this guide with a signed public VectorGrid Windows release.
 
+First-run instructions that mention Simple Mode apply only to a release whose shipped UI implements and verifies Simple Mode. The current checked-in frontend defaults to the Advanced workbench, so do not use this page as current repository run instructions.
+
 ## Before You Install
 
 Confirm that the release page includes:
@@ -40,7 +42,7 @@ New signed Windows applications can still trigger SmartScreen reputation prompts
 
 ## First Launch
 
-On first launch:
+On first launch for a Simple Mode release:
 
 1. Start in Simple Mode.
 2. Load the bundled synthetic sample or a local CSV.
@@ -85,4 +87,3 @@ If installation fails:
 - check antivirus or enterprise application-control policy;
 - verify that the downloaded installer hash matches the release page;
 - try the CPU-only variant if the GPU variant fails on launch.
-

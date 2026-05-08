@@ -5,6 +5,20 @@ use tauri_specta::{collect_commands, Builder};
 
 use crate::commands::{GpuSpeedupEntry, GpuStatus, RepoDataCsvList, SampleCsv};
 
+/// Commands exported through Specta for frontend DTO types.
+///
+/// This is intentionally narrower than the full Tauri command surface in
+/// `lib.rs`. The authoritative frontend command-name registry is generated
+/// from `tauri::generate_handler!` by `web/scripts/generate-tauri-commands.mjs`;
+/// this module only covers commands whose Rust response types are imported
+/// directly by TypeScript.
+pub const TYPED_BINDING_COMMANDS: &[&str] = &[
+    "get_gpu_status",
+    "list_gpu_speedups",
+    "list_sample_csvs",
+    "list_repo_data_csvs",
+];
+
 #[tauri::command]
 #[specta::specta]
 async fn get_gpu_status() -> Result<GpuStatus, String> {

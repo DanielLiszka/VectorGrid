@@ -1,7 +1,6 @@
 use clap::Parser;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use ta_app_core::{OptionsExpressionArtifactV1, OptionsExpressionTupleResult};
 use ta_desktop_demo_app::commands::{
@@ -9,6 +8,9 @@ use ta_desktop_demo_app::commands::{
     load_options_expression_artifact_blocking_headless, OptionsExpressionArtifactSummary,
 };
 use tauri::Manager;
+
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
 
 #[derive(Parser, Debug)]
 #[command(name = "ta_options_expression_compare")]
@@ -455,10 +457,7 @@ fn main() -> Result<(), String> {
 
     let json = serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?;
     if let Some(out_path) = cli.out_json.as_ref() {
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        fs::write(out_path, &json)
+        atomic_output::write_str(out_path, &json)
             .map_err(|e| format!("failed to write {}: {e}", out_path.display()))?;
     }
     println!("{json}");

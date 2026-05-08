@@ -4,12 +4,12 @@ This page keeps public expectations conservative. A release can be useful before
 
 ## Current Public Posture
 
-The first signed desktop release should be treated as a Windows x64 research application with Simple Mode as the main public path.
+The first signed desktop release should be treated as a Windows x64 research application. If that release promotes Simple Mode as the main public path, Simple Mode must be implemented in the shipped UI, covered by frontend tests, and verified by clean-machine smoke evidence first. The current checked-in frontend defaults to the Advanced workbench and ignores legacy guided/simple mode requests.
 
 The recommended public default is:
 
 - CPU-only installer first;
-- Simple Mode first-run workflow;
+- first-run workflow matching the shipped UI;
 - bundled synthetic sample or local CSV first;
 - optional Polygon.io setup after the local workflow is verified;
 - Advanced Mode only when users need deeper controls.

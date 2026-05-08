@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::BufReader;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const SETTINGS_FILE: &str = "app_settings.json";
+static SETTINGS_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ArtifactRetentionSettings {
@@ -204,7 +207,114 @@ pub fn save_settings(app_local_data_dir: &Path, settings: &AppSettings) -> Resul
     fs::create_dir_all(app_local_data_dir).map_err(|e| e.to_string())?;
     let p = settings_path(app_local_data_dir);
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    fs::write(&p, json).map_err(|e| format!("failed to write {}: {e}", p.display()))
+    write_settings_file_atomically(&p, json.as_bytes())
+}
+
+fn settings_temp_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "settings path is missing a parent directory".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "settings path is missing a filename".to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let sequence = SETTINGS_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(parent.join(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nonce,
+        sequence
+    )))
+}
+
+fn settings_file_metadata_if_exists(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "settings overwrite target must not be a symlink: {}",
+                    path.display()
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(format!(
+                    "settings overwrite target must be a file: {}",
+                    path.display()
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("failed to inspect {}: {error}", path.display())),
+    }
+}
+
+#[cfg(windows)]
+fn replace_existing_settings_file(path: &Path, temp_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let replaced = wide_null(path);
+    let replacement = wide_null(temp_path);
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_settings_file(path: &Path, temp_path: &Path) -> Result<(), String> {
+    std::fs::rename(temp_path, path).map_err(|e| e.to_string())
+}
+
+fn write_settings_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temp_path = settings_temp_path(path)?;
+    let write_temp_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| format!("failed to create {}: {e}", temp_path.display()))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("failed to write {}: {e}", temp_path.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("failed to sync {}: {e}", temp_path.display()))
+    })();
+    if let Err(error) = write_temp_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    let replace_result = (|| -> Result<(), String> {
+        if settings_file_metadata_if_exists(path)?.is_some() {
+            replace_existing_settings_file(path, &temp_path)
+        } else {
+            std::fs::rename(&temp_path, path).map_err(|e| e.to_string())
+        }
+    })();
+    if let Err(error) = replace_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("failed to write {}: {error}", path.display()));
+    }
+    Ok(())
 }
 
 pub fn configured_market_data_root_dir(

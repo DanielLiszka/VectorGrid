@@ -11,6 +11,25 @@ fn csv_escape(v: &str) -> Cow<'_, str> {
     }
 }
 
+fn csv_cell(v: &str) -> Cow<'_, str> {
+    if is_formula_like_csv_value(v) {
+        let mut sanitized = String::with_capacity(v.len() + 1);
+        sanitized.push('\'');
+        sanitized.push_str(v);
+        Cow::Owned(csv_escape(&sanitized).into_owned())
+    } else {
+        csv_escape(v)
+    }
+}
+
+fn is_formula_like_csv_value(v: &str) -> bool {
+    let trimmed = v.trim_start_matches(' ');
+    matches!(
+        trimmed.as_bytes().first(),
+        Some(b'=') | Some(b'+') | Some(b'-') | Some(b'@') | Some(b'\t') | Some(b'\r') | Some(b'\n')
+    )
+}
+
 fn csv_optional<T: ToString>(value: Option<T>) -> String {
     value.map(|x| x.to_string()).unwrap_or_default()
 }
@@ -44,14 +63,14 @@ pub(super) fn build_validation_shortlist_csv_text(
             out,
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             row.rank,
-            csv_escape(&row.approval_label),
-            csv_escape(&row.approval_reason),
+            csv_cell(&row.approval_label),
+            csv_cell(&row.approval_reason),
             row.hard_gate_passed
                 .map(|x| x.to_string())
                 .unwrap_or_else(|| "".to_string()),
             if row.legacy_shortlisted { 1 } else { 0 },
-            csv_escape(&row.profile_kind),
-            csv_escape(&row.params_summary),
+            csv_cell(&row.profile_kind),
+            csv_cell(&row.params_summary),
             row.robust_score,
             csv_optional(row.psr),
             csv_optional(row.dsr),
@@ -70,10 +89,10 @@ pub(super) fn build_validation_shortlist_csv_text(
             if row.cross_pareto { 1 } else { 0 },
             csv_optional(row.bootstrap_prob_pnl_positive),
             csv_optional(row.perturb_pnl_mean),
-            csv_escape(&row.warning_flags),
-            csv_escape(&row.fail_reasons),
-            csv_escape(&row.params_json),
-            csv_escape(&row.monte_carlo_mode),
+            csv_cell(&row.warning_flags),
+            csv_cell(&row.fail_reasons),
+            csv_cell(&row.params_json),
+            csv_cell(&row.monte_carlo_mode),
             csv_optional(row.monte_carlo_prob_pnl_positive),
             csv_optional(row.monte_carlo_pnl_p05),
             csv_optional(row.monte_carlo_pnl_p50),
@@ -142,6 +161,14 @@ mod tests {
         assert_eq!(csv_escape("a,b"), "\"a,b\"");
         assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
         assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn csv_cell_neutralizes_formula_like_values() {
+        assert_eq!(csv_cell("=cmd"), "'=cmd");
+        assert_eq!(csv_cell(" +SUM(A1:A2)"), "' +SUM(A1:A2)");
+        assert_eq!(csv_cell("@lookup"), "'@lookup");
+        assert_eq!(csv_cell("plain"), "plain");
     }
 
     #[test]
@@ -259,6 +286,33 @@ mod tests {
                 "monte_carlo_sample_count",
             ]
         );
+    }
+
+    #[test]
+    fn shortlist_csv_neutralizes_formula_like_text_fields() {
+        let validation_res = json!({
+          "data_id": "test",
+          "candidates": [{
+            "params": { "profile": "alpha", "note": "=cmd" },
+            "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+            "robust_score": 1.23,
+            "validation_verdict": {
+              "passed": false,
+              "warning_flags": ["=SUM(A1:A2)"],
+              "fail_reasons": ["@unsafe"]
+            },
+            "monte_carlo": { "mode": "+bad" }
+          }]
+        });
+
+        let csv = build_validation_shortlist_csv_text(&validation_res).expect("csv");
+        let records = parse_csv_records(&csv);
+        let row = &records[1];
+
+        assert!(row[2].starts_with("'@unsafe"));
+        assert!(row[25].starts_with("'=SUM"));
+        assert!(row[26].starts_with("'@unsafe"));
+        assert!(row[27].starts_with("{"));
     }
 
     #[test]

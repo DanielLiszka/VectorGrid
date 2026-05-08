@@ -74,7 +74,7 @@ pub fn compare_score_rank_desc(
 }
 
 pub trait BacktestEngine {
-    fn eval_batch(&self, combos: &[DoubleMaParams]) -> Vec<Metrics>;
+    fn eval_batch(&self, combos: &[DoubleMaParams]) -> Result<Vec<Metrics>, String>;
 }
 
 pub struct CpuEngine<'a> {
@@ -85,7 +85,7 @@ pub struct CpuEngine<'a> {
 }
 
 impl<'a> BacktestEngine for CpuEngine<'a> {
-    fn eval_batch(&self, combos: &[DoubleMaParams]) -> Vec<Metrics> {
+    fn eval_batch(&self, combos: &[DoubleMaParams]) -> Result<Vec<Metrics>, String> {
         ta_strategies::double_ma::double_ma_batch_cpu(
             self.candles,
             combos,

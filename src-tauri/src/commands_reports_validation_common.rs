@@ -1332,7 +1332,7 @@ fn parse_cross_summary(validation_res: &Value) -> Option<ExportCrossSummary> {
             if !label.is_empty() {
                 Some(label)
             } else if !path.is_empty() {
-                Some(path)
+                cross_dataset_display_name_from_path(&path)
             } else {
                 None
             }
@@ -1357,6 +1357,13 @@ fn parse_cross_summary(validation_res: &Value) -> Option<ExportCrossSummary> {
         dataset_labels: labels,
         shortlist_count,
     })
+}
+
+fn cross_dataset_display_name_from_path(path: &str) -> Option<String> {
+    path.rsplit(['/', '\\'])
+        .next()
+        .map(|value| normalize_text(Some(value)))
+        .filter(|value| !value.is_empty())
 }
 
 fn is_double_like_strategy(strategy_kind: &str) -> bool {
@@ -3478,6 +3485,29 @@ mod tests {
             .warning_summary
             .contains("Composite cross reruns use full-stack validation modules"));
         assert_eq!(summary.cross_omitted_summary, "-");
+    }
+
+    #[test]
+    fn parse_cross_summary_uses_basename_when_dataset_label_is_missing() {
+        let validation_res = json!({
+            "cross_ticker": {
+                "mode": "lightweight",
+                "datasets": [
+                    { "csv_path": "C:/Users/alice/private/SPY.csv" },
+                    { "csv_path": "D:\\private\\QQQ.csv" },
+                    { "label": "IWM public label", "csv_path": "C:/Users/alice/private/IWM.csv" }
+                ]
+            },
+            "candidates": []
+        });
+
+        let summary = parse_cross_summary(&validation_res).expect("cross summary");
+        assert_eq!(
+            summary.dataset_labels,
+            "SPY.csv | QQQ.csv | IWM public label"
+        );
+        assert!(!summary.dataset_labels.contains("alice"));
+        assert!(!summary.dataset_labels.contains("private"));
     }
 
     #[test]

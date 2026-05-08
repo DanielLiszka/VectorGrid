@@ -15,7 +15,7 @@ describe('ChartEmptyState', () => {
     })
 
     expect(wrapper.text()).toContain('Run an optimization first.')
-    expect(wrapper.attributes('role')).toBe('status')
+    expect(wrapper.get('.chartEmptyMessage').attributes('role')).toBe('status')
     await wrapper.get('button').trigger('click')
     expect(wrapper.emitted('action')).toHaveLength(1)
   })

@@ -152,17 +152,36 @@ impl SearchSpace {
         Ok(())
     }
 
-    pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec<ParamValue> {
+    pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Result<Vec<ParamValue>, String> {
+        self.validate()?;
+        Ok(self.sample_validated(rng))
+    }
+
+    fn sample_validated<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec<ParamValue> {
         self.params
             .iter()
             .map(|p| sample_one(&p.domain, rng))
             .collect()
     }
 
-    pub fn sample_param<R: Rng + ?Sized>(&self, param_idx: usize, rng: &mut R) -> ParamValue {
+    pub fn sample_param<R: Rng + ?Sized>(
+        &self,
+        param_idx: usize,
+        rng: &mut R,
+    ) -> Result<ParamValue, String> {
+        self.validate()?;
+        self.sample_param_validated(param_idx, rng)
+            .ok_or_else(|| format!("param index {param_idx} is out of range"))
+    }
+
+    fn sample_param_validated<R: Rng + ?Sized>(
+        &self,
+        param_idx: usize,
+        rng: &mut R,
+    ) -> Option<ParamValue> {
         match self.params.get(param_idx) {
-            Some(p) => sample_one(&p.domain, rng),
-            None => ParamValue::Bool(rng.gen_bool(0.5)),
+            Some(p) => Some(sample_one(&p.domain, rng)),
+            None => None,
         }
     }
 
@@ -1075,7 +1094,7 @@ where
     let mut all_seen_unique: Vec<MoPoint<T>> = Vec::new();
 
     let mut population_values: Vec<Vec<ParamValue>> = (0..cfg.population_size)
-        .map(|_| space.sample(&mut rng))
+        .map(|_| space.sample_validated(&mut rng))
         .collect();
     for v in &mut population_values {
         repair(v);
@@ -1115,7 +1134,9 @@ where
 
             for i in 0..num_params {
                 if rng.gen_bool(mut_prob) {
-                    child[i] = space.sample_param(i, &mut rng);
+                    child[i] = space
+                        .sample_param_validated(i, &mut rng)
+                        .ok_or_else(|| format!("param index {i} is out of range"))?;
                 }
             }
 
@@ -1270,7 +1291,7 @@ where
     };
 
     for _ in 0..cfg.trials {
-        let mut values = space.sample(&mut rng);
+        let mut values = space.sample_validated(&mut rng);
         repair(&mut values);
         batch_values.push(values);
         if batch_values.len() >= CHUNK_SIZE {
@@ -2212,7 +2233,7 @@ where
     RepairFn: Fn(&mut [ParamValue]),
 {
     let dim = space.params.len();
-    let mut best_values: Vec<ParamValue> = space.sample(rng);
+    let mut best_values: Vec<ParamValue> = space.sample_validated(rng);
     repair(&mut best_values);
     let mut best_score = f64::NEG_INFINITY;
 
@@ -2308,7 +2329,7 @@ where
                 let mut v = if let Some(m) = models.as_ref() {
                     tpe_suggest_one(space, m, &mut rng, &repair, &cfg)
                 } else {
-                    space.sample(&mut rng)
+                    space.sample_validated(&mut rng)
                 };
                 repair(&mut v);
                 let key = param_values_hash(&v);
@@ -2620,6 +2641,34 @@ mod tests {
 
         let err = space.validate().unwrap_err();
         assert!(err.contains("duplicate param name"));
+    }
+
+    #[test]
+    fn public_sampling_rejects_invalid_search_space_without_panicking() {
+        let space = SearchSpace {
+            params: vec![ParamDef {
+                name: "choice".to_string(),
+                domain: ParamDomain::Categorical { choices: vec![] },
+            }],
+        };
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let err = space.sample(&mut rng).unwrap_err();
+        assert!(err.contains("categorical has no choices"));
+    }
+
+    #[test]
+    fn public_sample_param_rejects_out_of_range_index() {
+        let space = SearchSpace {
+            params: vec![ParamDef {
+                name: "flag".to_string(),
+                domain: ParamDomain::Bool,
+            }],
+        };
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let err = space.sample_param(4, &mut rng).unwrap_err();
+        assert!(err.contains("out of range"));
     }
 
     #[test]

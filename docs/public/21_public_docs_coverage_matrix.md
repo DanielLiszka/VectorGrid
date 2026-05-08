@@ -7,7 +7,7 @@ Use this matrix before publishing a website or release page. It maps public docu
 | Product positioning | [Product Overview](01_product_overview.md) | Covered |
 | Requirements | [System Requirements](02_system_requirements.md) | Covered |
 | Install/update/uninstall | [Windows Install Guide](03_windows_install_guide.md) | Covered |
-| Simple Mode | [First Run And Simple Mode](04_first_run_simple_mode.md) | Covered |
+| Simple Mode | [First Run And Simple Mode](04_first_run_simple_mode.md) | Draft; blocked until the shipped UI implements and verifies Simple Mode |
 | CSV data | [Data And Polygon.io Setup](05_data_and_polygon_setup.md) | Covered |
 | Polygon historical/live | [Data And Polygon.io Setup](05_data_and_polygon_setup.md) | Covered |
 | Optimization | [Optimization Workflows](06_optimization_workflows.md) | Covered |
@@ -38,6 +38,7 @@ Before publishing, confirm:
 - Does every download link identify CPU-only vs GPU variant?
 - Are hashes and publisher identity visible?
 - Does the first-run guide match the released UI?
+- If the guide says Simple Mode, does the shipped app actually open into Simple Mode or expose it immediately?
 - Do screenshots avoid secrets, local paths, private datasets, and unpublished evidence?
 - Are GPU claims variant-specific?
 - Are live-execution claims either absent or strongly bounded?

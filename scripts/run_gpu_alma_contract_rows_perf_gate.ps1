@@ -11,10 +11,38 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "Specialized ALMA contract-row GPU perf gate (not the default PR perf authority)." -ForegroundColor Cyan
 
-$root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $root
 
 $gateScript = Join-Path $PSScriptRoot "run_gpu_perf_gate.ps1"
+$criterionRoot = [System.IO.Path]::GetFullPath((Join-Path $root "target/criterion"))
+
+function Resolve-RepoPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if ([System.IO.Path]::IsPathRooted($Path)) {
+    return [System.IO.Path]::GetFullPath($Path)
+  }
+  return [System.IO.Path]::GetFullPath((Join-Path $root $Path))
+}
+
+function Assert-UnderPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$AllowedRoot,
+    [Parameter(Mandatory = $true)][string]$Purpose
+  )
+  $normalizedRoot = $AllowedRoot.TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  $separator = [System.IO.Path]::DirectorySeparatorChar
+  if (
+    $Path -ne $normalizedRoot -and
+    -not $Path.StartsWith($normalizedRoot + $separator, [System.StringComparison]::OrdinalIgnoreCase)
+  ) {
+    throw "$Purpose path must stay under $normalizedRoot; got $Path"
+  }
+}
 
 $specs = @(
   [ordered]@{
@@ -49,9 +77,10 @@ New-Item -ItemType Directory -Force -Path $BaselineDir | Out-Null
 $results = @()
 foreach ($spec in $specs) {
   Write-Host "Running ALMA contract-row GPU perf gate for $($spec.name)..."
-  $criterionCaseDir = Split-Path -Parent (Split-Path -Parent $spec.criterion_estimates_path)
-  if (Test-Path $criterionCaseDir) {
-            Remove-Item -Recurse -Force $criterionCaseDir
+  $criterionCaseDir = Resolve-RepoPath (Split-Path -Parent (Split-Path -Parent $spec.criterion_estimates_path))
+  Assert-UnderPath -Path $criterionCaseDir -AllowedRoot $criterionRoot -Purpose "Criterion cleanup"
+  if (Test-Path -LiteralPath $criterionCaseDir) {
+    Remove-Item -LiteralPath $criterionCaseDir -Recurse -Force
   }
   & $gateScript `
     -Mode $Mode `

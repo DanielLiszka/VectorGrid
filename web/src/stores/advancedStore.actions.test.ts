@@ -83,6 +83,29 @@ describe("advanced store actions", () => {
       defaultName: "all_pairs.csv",
     });
     expect(advanced.exportAllCsvPath).toBe("C:\\exports\\all_pairs.csv");
+    expect(advanced.statusLine).toBe("Selected export-all CSV path.");
+    expect(advanced.source).toBe("vue");
+    expect(advanced.updatedAtUnixMs).toBeGreaterThan(0);
+  });
+
+  it("reports export-all CSV picker cancellation and failures", async () => {
+    const advanced = useAdvancedStore(pinia);
+    invokeCommandMock.mockResolvedValueOnce("");
+
+    advanced.browseExportAll();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(advanced.exportAllCsvPath).toBe("");
+    expect(advanced.statusLine).toBe("Export-all CSV save cancelled.");
+
+    invokeCommandMock.mockRejectedValueOnce(new Error("picker failed"));
+
+    advanced.browseExportAll();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(advanced.statusLine).toContain("picker failed");
     expect(advanced.source).toBe("vue");
     expect(advanced.updatedAtUnixMs).toBeGreaterThan(0);
   });

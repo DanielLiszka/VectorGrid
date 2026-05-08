@@ -1343,11 +1343,28 @@ describe("historyService", () => {
   });
 
   it("deletes saved run via direct command", async () => {
+    const artifacts = useWorkflowArtifactsStore(pinia);
+    artifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-02-25T00:00:00Z",
+        artifact_path: "C:/runs/run1.json",
+        req: { strategy_kind: "DoubleMa" },
+        res: { top: [] },
+      },
+      currentValidation: {
+        ts: "2026-02-25T00:00:00Z",
+        req: { candidates: [] },
+        res: { rows: [] },
+      },
+    });
+
     await deleteSavedRun(" C:/runs/run1.json ");
 
     expect(invokeCommandMock).toHaveBeenCalledWith("delete_run_artifact", {
       path: "C:/runs/run1.json",
     });
+    expect(artifacts.currentRun).toBeNull();
+    expect(artifacts.currentValidation).toBeNull();
   });
 
   it("checks and writes repaired saved-run artifacts through the backend repair command", async () => {
@@ -1456,7 +1473,7 @@ describe("historyService", () => {
       mlScoreScope: "CalibrationSlice",
       mlScoreContractSummary: "Probability • CalibrationSlice",
       mlScoreNote:
-        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • batch 1",
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
       tags: ["aapl", "1m"],
     });
     expect(readArtifactHistoryPerfEntries()).toEqual(
@@ -1466,6 +1483,42 @@ describe("historyService", () => {
           meta: expect.objectContaining({
             runCount: 1,
             validationCount: 1,
+            outcome: "ok",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("rejects malformed saved-run list payloads instead of reporting empty history", async () => {
+    invokeCommandMock.mockResolvedValueOnce({ runs: [] });
+
+    await expect(refreshSavedRuns()).rejects.toThrow(
+      "Saved run artifact list payload was malformed.",
+    );
+  });
+
+  it("parses string false validation flags as false in saved-run summaries", async () => {
+    invokeCommandMock.mockResolvedValueOnce([
+      {
+        ts: "2026-02-25T00:00:00Z",
+        path: "C:/runs/run1.json",
+        bytes: 2048,
+        strategy_kind: "DoubleMa",
+        has_validation: "false",
+        tags: [],
+      },
+    ]);
+
+    const summary = await refreshSavedRuns();
+
+    expect(summary.runs[0]?.hasValidation).toBe(false);
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "historyService.refreshSavedRunsMs",
+          meta: expect.objectContaining({
+            validationCount: 0,
             outcome: "ok",
           }),
         }),
@@ -1593,6 +1646,32 @@ describe("historyService", () => {
     );
   });
 
+  it("rejects malformed saved-run detail payloads", async () => {
+    invokeCommandMock.mockResolvedValueOnce("not an object");
+
+    await expect(loadSavedRunDetail("C:/runs/run1.json")).rejects.toThrow(
+      "Saved run detail payload was malformed.",
+    );
+  });
+
+  it("rejects malformed saved-run hydration before mutating workflow artifacts", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      currentRun: {
+        ts: "2026-02-25T00:00:00Z",
+        req: { strategy_kind: "DoubleMa" },
+      },
+      currentValidation: null,
+    });
+
+    await expect(loadSavedRun("C:/runs/run1.json")).rejects.toThrow(
+      "Saved run hydration currentRun is missing res.",
+    );
+
+    const artifacts = useWorkflowArtifactsStore(pinia);
+    expect(artifacts.currentRun).toBeNull();
+    expect(refreshAnalysisFromWorkflowRunMock).not.toHaveBeenCalled();
+  });
+
   it("loads MlSignal saved-run detail with policy summary", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       ts: "2026-02-25T12:00:00Z",
@@ -1666,7 +1745,7 @@ describe("historyService", () => {
       mlScoreScope: "CalibrationSlice",
       mlScoreContractSummary: "Probability • CalibrationSlice",
       mlScoreNote:
-        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • batch 1",
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
       mlPolicySummary: "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10",
       mlPolicySweepSummary: "size=27 | top_k=4 | best=best_sweep | score=1.44",
       mlRunVerdictSummary: "approved=1 | survived=1 | considered=27",
@@ -1731,75 +1810,18 @@ describe("historyService", () => {
       mlNativeGpuDeviceId: 0,
       mlNativeFallbackReason: "EnableGPUEvaluation unavailable",
       mlScoreNote:
-        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • native backend native_cpu • batch 1 • fallback EnableGPUEvaluation unavailable",
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • native backend native_cpu • fallback EnableGPUEvaluation unavailable",
     });
   });
 
-  it("opens saved report from artifact detail", async () => {
-    invokeCommandMock.mockResolvedValueOnce({
-      reportPath: "C:/runs/report.xlsx",
-      paramsText: "",
-    });
+  it("opens saved reports through the backend artifact-report command", async () => {
     invokeCommandMock.mockResolvedValueOnce(undefined);
 
     await openSavedRunReport(" C:/runs/run1.json ");
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(
-      1,
-      "load_run_artifact_detail",
-      {
-        path: "C:/runs/run1.json",
-      },
-    );
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {
-      path: "C:/runs/report.xlsx",
+    expect(invokeCommandMock).toHaveBeenCalledWith("open_run_artifact_report", {
+      path: "C:/runs/run1.json",
     });
-  });
-
-  it("falls back to reveal when opening a saved report fails", async () => {
-    invokeCommandMock.mockResolvedValueOnce({
-      reportPath: "C:/runs/report.xlsx",
-      paramsText: "",
-    });
-    invokeCommandMock.mockRejectedValueOnce(new Error("blocked"));
-    invokeCommandMock.mockResolvedValueOnce(undefined);
-
-    await openSavedRunReport(" C:/runs/run1.json ");
-
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(
-      1,
-      "load_run_artifact_detail",
-      {
-        path: "C:/runs/run1.json",
-      },
-    );
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {
-      path: "C:/runs/report.xlsx",
-    });
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, "reveal_path", {
-      path: "C:/runs/report.xlsx",
-    });
-  });
-
-  it("does not treat ML attachment paths as a saved run report path", async () => {
-    invokeCommandMock.mockResolvedValueOnce({
-      reportPath: "",
-      mlScoreCachePath: "C:/runs/cache.json",
-      mlFeatureSchemaPath: "C:/runs/schema.json",
-      paramsText: "",
-    });
-
-    await expect(openSavedRunReport("C:/runs/run1.json")).rejects.toThrow(
-      "No report path for this saved run yet",
-    );
-
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(
-      1,
-      "load_run_artifact_detail",
-      {
-        path: "C:/runs/run1.json",
-      },
-    );
     expect(invokeCommandMock).not.toHaveBeenCalledWith(
       "open_path",
       expect.anything(),
@@ -1810,24 +1832,18 @@ describe("historyService", () => {
     );
   });
 
-  it("rejects opening a saved report when the file no longer exists", async () => {
-    invokeCommandMock.mockResolvedValueOnce({
-      reportPath: "C:/runs/report.xlsx",
-      reportPathExists: false,
-      paramsText: "",
-    });
+  it("propagates saved report open failures from the backend", async () => {
+    invokeCommandMock.mockRejectedValueOnce(
+      new Error("Saved run report file no longer exists on disk."),
+    );
 
     await expect(openSavedRunReport("C:/runs/run1.json")).rejects.toThrow(
       "Saved run report file no longer exists on disk.",
     );
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(
-      1,
-      "load_run_artifact_detail",
-      {
-        path: "C:/runs/run1.json",
-      },
-    );
+    expect(invokeCommandMock).toHaveBeenCalledWith("open_run_artifact_report", {
+      path: "C:/runs/run1.json",
+    });
     expect(invokeCommandMock).not.toHaveBeenCalledWith(
       "open_path",
       expect.anything(),

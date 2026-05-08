@@ -27,6 +27,43 @@ describe("MetaWorkspacePanel", () => {
     localStorage.clear();
   });
 
+  it("keeps the setup state inside the active Meta tabpanel", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const historyStore = useHistoryStore(pinia);
+
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("meta", { persist: false });
+    historyStore.savedRunCount = 1;
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const activeTab = document.querySelector<HTMLButtonElement>(
+      "#meta_aggregate_tab_meta",
+    );
+    const tabpanels = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="tabpanel"]'),
+    );
+
+    expect(activeTab?.getAttribute("aria-controls")).toBe(
+      "meta_aggregate_panel_meta_main",
+    );
+    expect(tabpanels).toHaveLength(1);
+    expect(tabpanels[0]?.id).toBe("meta_aggregate_panel_meta_main");
+    expect(tabpanels[0]?.getAttribute("aria-labelledby")).toBe(
+      "meta_aggregate_tab_meta",
+    );
+    expect(tabpanels[0]?.textContent || "").toContain(
+      "Saved runs are available, but no meta artifact is active yet.",
+    );
+    expect(tabpanels[0]?.textContent || "").toContain("Aggregate inventory");
+  });
+
   it("persists visible meta result columns and restores defaults", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

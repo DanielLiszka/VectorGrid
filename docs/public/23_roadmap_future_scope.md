@@ -16,7 +16,7 @@ The highest-value public work is release hardening:
 
 ## Simple Mode Direction
 
-Simple Mode should remain the default public experience.
+Simple Mode should become or remain the default public experience once the shipped UI, tests, clean-machine smoke evidence, and public docs match that claim.
 
 Future improvements should make it easier to:
 
@@ -104,4 +104,3 @@ The website should mature around:
 - benchmark context.
 
 Avoid building a marketing site that overstates release readiness.
-

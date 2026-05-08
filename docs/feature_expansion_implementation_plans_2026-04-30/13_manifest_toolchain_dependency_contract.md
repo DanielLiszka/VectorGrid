@@ -77,11 +77,11 @@ Tauri:
 Existing feature posture:
 
 - `src-tauri/Cargo.toml`
-  - `cuda` forwards to `ta_app_core/cuda`, `vector-ta/cuda`, and optional `cust`;
+  - `cuda` forwards to `ta_app_core/cuda` and `vector-ta/cuda`;
   - `cuda-backtest-kernel` implies `cuda` and forwards to `ta_app_core/cuda-backtest-kernel`;
   - `nvtx-profiling` forwards to `ta_app_core/nvtx-profiling`.
 - `crates/app_core/Cargo.toml`
-  - `cuda` forwards to `vector-ta/cuda` and optional `cust`;
+  - `cuda` forwards to `vector-ta/cuda` and owns optional `cust`;
   - `cuda-backtest-kernel` implies `cuda`;
   - `cli` enables `clap`.
 
@@ -151,11 +151,15 @@ Release manifest expectations:
 - variant applicability;
 - missing-resource policy.
 
-## Proposed Checks
+## Manifest Contract Check
 
-Potential new script:
+Current script:
 
 - `scripts/check_manifest_toolchain_contract.mjs`
+
+Current npm wrapper:
+
+- `npm --prefix web run check:manifest-toolchain`
 
 Inputs:
 
@@ -190,4 +194,3 @@ Initial assertions:
 - Public release variants cannot silently depend on untracked native/PTX resources.
 - Any new npm dependency has a measured bundle/perf plan.
 - Manifest/toolchain drift is visible before release rehearsal.
-

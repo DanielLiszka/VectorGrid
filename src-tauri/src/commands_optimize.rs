@@ -5,6 +5,7 @@ use super::{
 use crate::state::AppState;
 use crate::state::BackgroundTaskState;
 use crate::state::RunGuard;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use ta_optimizer::OptimizationMode;
@@ -94,12 +95,49 @@ fn begin_optimization_run(
     Ok((run_guard, cancel, candles))
 }
 
+fn normalize_export_all_csv_save_path(raw: Option<String>) -> Result<Option<PathBuf>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let path = PathBuf::from(trimmed);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    if file_name.is_empty() {
+        return Err(format!(
+            "export_all_csv_path must point to a file: {}",
+            path.to_string_lossy()
+        ));
+    }
+    crate::local_path_policy::ensure_csv_extension(&path)?;
+    Ok(Some(path))
+}
+
+fn validate_export_all_csv_path_for_command(
+    raw: Option<String>,
+    state: &AppState,
+) -> Result<Option<String>, String> {
+    let Some(path) = normalize_export_all_csv_save_path(raw)? else {
+        return Ok(None);
+    };
+    state.consume_issued_csv_save_path(&path)?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 pub async fn run_double_ma_optimization(
     mut req: DoubleMaRequest,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<BackendOptimizationResult, String> {
+    req.export_all_csv_path =
+        validate_export_all_csv_path_for_command(req.export_all_csv_path.take(), &state)?;
     req.mode = normalize_product_double_ma_optimization_mode(&req);
     let (_run_guard, cancel, candles) = begin_optimization_run(&state, &req.data_id)?;
 
@@ -147,8 +185,9 @@ pub async fn run_composite_cpu_optimization(
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_optimization_run, normalize_product_composite_cpu_optimization_mode,
-        normalize_product_double_ma_optimization_mode,
+        begin_optimization_run, normalize_export_all_csv_save_path,
+        normalize_product_composite_cpu_optimization_mode,
+        normalize_product_double_ma_optimization_mode, validate_export_all_csv_path_for_command,
     };
     use crate::state::AppState;
     use std::sync::atomic::Ordering;
@@ -309,6 +348,74 @@ mod tests {
             normalize_product_composite_cpu_optimization_mode(OptimizationMode::Auto),
             OptimizationMode::Grid
         );
+    }
+
+    #[test]
+    fn export_all_csv_path_normalization_treats_whitespace_as_absent() {
+        assert_eq!(
+            normalize_export_all_csv_save_path(Some("   ".to_string())).expect("normalize"),
+            None
+        );
+        assert_eq!(
+            validate_export_all_csv_path_for_command(Some("   ".to_string()), &AppState::default())
+                .expect("validate"),
+            None
+        );
+    }
+
+    #[test]
+    fn export_all_csv_path_validation_requires_csv_extension() {
+        let err = normalize_export_all_csv_save_path(Some("C:/tmp/out.txt".to_string()))
+            .expect_err("non-csv export path should fail");
+        assert!(err.contains(".csv"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn export_all_csv_path_validation_requires_save_dialog_token() {
+        let temp = std::env::temp_dir().join(format!(
+            "ta_desktop_demo_export_all_unissued_{}_{}.csv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let state = AppState::default();
+        let err = validate_export_all_csv_path_for_command(
+            Some(temp.to_string_lossy().to_string()),
+            &state,
+        )
+        .expect_err("unissued export path should fail");
+        assert!(
+            err.contains("native save dialog"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn export_all_csv_path_validation_consumes_save_dialog_token_once() {
+        let temp = std::env::temp_dir().join(format!(
+            "ta_desktop_demo_export_all_issued_{}_{}.csv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let state = AppState::default();
+        state
+            .record_issued_csv_save_path(temp.clone())
+            .expect("record save token");
+
+        let accepted = validate_export_all_csv_path_for_command(
+            Some(temp.to_string_lossy().to_string()),
+            &state,
+        )
+        .expect("issued export path should pass");
+        assert_eq!(accepted, Some(temp.to_string_lossy().to_string()));
+
+        validate_export_all_csv_path_for_command(Some(temp.to_string_lossy().to_string()), &state)
+            .expect_err("save token should be single-use");
     }
 
     #[test]

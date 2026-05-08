@@ -9,6 +9,8 @@ describe('HeatmapLegend', () => {
       props: { note: 'Sequential plateau scale' },
     })
 
+    expect(wrapper.attributes('role')).toBe('group')
+    expect(wrapper.attributes('aria-label')).toBe('Legend')
     expect(wrapper.find('#heatmapLegendVue').exists()).toBe(true)
     expect(wrapper.find('#heatmapLegendMinVue').exists()).toBe(true)
     expect(wrapper.find('#heatmapLegendMidVue').exists()).toBe(true)

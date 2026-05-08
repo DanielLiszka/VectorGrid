@@ -179,12 +179,24 @@ describe("workflowArtifactsSync", () => {
     );
   });
 
-  it("returns false when invoke throws", async () => {
+  it("propagates invoke failures instead of reporting a no-op sync", async () => {
     invokeCommandMock.mockRejectedValueOnce(new Error("boom"));
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime("vue");
-
-    expect(synced).toBe(false);
+    await expect(syncWorkflowArtifactsFromLegacyRuntime("vue")).rejects.toThrow(
+      "boom",
+    );
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "workflowArtifactsSync.latestRunFastPathMs",
+          meta: expect.objectContaining({
+            source: "vue",
+            hasCurrentIdentity: false,
+            outcome: "error",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("skips the artifact load when the latest identity is already loaded with validation", async () => {

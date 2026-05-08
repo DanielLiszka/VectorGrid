@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -266,4 +269,4 @@ fn bench_double_ma_followup_workflow(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_double_ma_followup_workflow);
-criterion_main!(benches);
+serialized_criterion_main!(benches);

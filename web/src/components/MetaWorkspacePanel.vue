@@ -1474,16 +1474,8 @@ function aggregateTabId(key: string): string {
 }
 
 function aggregatePanelId(key: AggregateTabKey): string {
-  if (key === "meta") {
-    return metaStage.value === "data_loaded_no_run"
-      ? "meta_aggregate_panel_meta_empty"
-      : "meta_aggregate_panel_meta_main";
-  }
-  if (key === "compare") {
-    return metaCompareStage.value === "results_available_no_selection"
-      ? "meta_aggregate_panel_compare_empty"
-      : "meta_aggregate_panel_compare_main";
-  }
+  if (key === "meta") return "meta_aggregate_panel_meta_main";
+  if (key === "compare") return "meta_aggregate_panel_compare_main";
   return `meta_aggregate_panel_${key}`;
 }
 
@@ -1662,67 +1654,6 @@ onBeforeUnmount(() => {
           Build a run library by saving optimizations, then use this workspace
           to generate meta artifacts, compare groups, and rank robust
           candidates.
-        </div>
-        <div
-          class="panelStatus mono panelNumeric"
-          role="status"
-          aria-live="polite"
-        >
-          {{ statusLine }}
-        </div>
-      </section>
-
-      <section
-        v-else-if="
-          metaStage === 'data_loaded_no_run' && activeAggregateTab === 'meta'
-        "
-        id="meta_aggregate_panel_meta_empty"
-        class="emptyState"
-        role="tabpanel"
-        :aria-labelledby="aggregateTabId('meta')"
-      >
-        <img
-          class="emptyStateIllustration"
-          :src="emptyResultsWorkspaceIllustration"
-          alt=""
-          aria-hidden="true"
-          draggable="false"
-        />
-        <div class="emptyTitle">
-          Saved runs are available, but no meta artifact is active yet.
-        </div>
-        <div class="emptyBody">
-          Configure the selection criteria below, then run meta analysis to
-          generate grouped recommendations and reports.
-        </div>
-        <div class="panelMuted mono panelNumeric">
-          {{ aggregateSummarySavedRuns }} saved runs available
-        </div>
-      </section>
-
-      <section
-        v-else-if="
-          metaCompareStage === 'results_available_no_selection' &&
-          compareTabActive
-        "
-        id="meta_aggregate_panel_compare_empty"
-        class="emptyState"
-        role="tabpanel"
-        :aria-labelledby="aggregateTabId('compare')"
-      >
-        <img
-          class="emptyStateIllustration"
-          :src="emptyCompareWorkspaceIllustration"
-          alt=""
-          aria-hidden="true"
-          draggable="false"
-        />
-        <div class="emptyTitle">
-          Select a baseline meta artifact to compare.
-        </div>
-        <div class="emptyBody">
-          Comparison results appear here once you choose a saved meta artifact
-          from the compare selector.
         </div>
         <div
           class="panelStatus mono panelNumeric"
@@ -2282,6 +2213,30 @@ onBeforeUnmount(() => {
         role="tabpanel"
         :aria-labelledby="aggregateTabId('meta')"
       >
+        <section
+          v-if="metaStage === 'data_loaded_no_run'"
+          class="emptyState"
+          aria-label="Meta analysis setup status"
+        >
+          <img
+            class="emptyStateIllustration"
+            :src="emptyResultsWorkspaceIllustration"
+            alt=""
+            aria-hidden="true"
+            draggable="false"
+          />
+          <div class="emptyTitle">
+            Saved runs are available, but no meta artifact is active yet.
+          </div>
+          <div class="emptyBody">
+            Configure the selection criteria below, then run meta analysis to
+            generate grouped recommendations and reports.
+          </div>
+          <div class="panelMuted mono panelNumeric">
+            {{ aggregateSummarySavedRuns }} saved runs available
+          </div>
+        </section>
+
         <section class="pane panelProminentPane">
           <div class="panelSectionHeader">
             <div class="panelHeadCopy">
@@ -3433,6 +3388,34 @@ onBeforeUnmount(() => {
         role="tabpanel"
         :aria-labelledby="aggregateTabId('compare')"
       >
+        <div
+          v-if="metaCompareStage === 'results_available_no_selection'"
+          class="emptyState"
+          aria-label="Meta compare setup status"
+        >
+          <img
+            class="emptyStateIllustration"
+            :src="emptyCompareWorkspaceIllustration"
+            alt=""
+            aria-hidden="true"
+            draggable="false"
+          />
+          <div class="emptyTitle">
+            Select a baseline meta artifact to compare.
+          </div>
+          <div class="emptyBody">
+            Comparison results appear here once you choose a saved meta artifact
+            from the compare selector.
+          </div>
+          <div
+            class="panelStatus mono panelNumeric"
+            role="status"
+            aria-live="polite"
+          >
+            {{ statusLine }}
+          </div>
+        </div>
+
         <div class="panelSectionHeader">
           <div class="panelHeadCopy">
             <div class="panelEyebrow">Comparison</div>

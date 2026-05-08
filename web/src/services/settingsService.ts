@@ -1,10 +1,11 @@
 import { invokeCommand } from "../tauri/invoke";
 import type { WindowEffect } from "../utils/windowEffects";
-import {
-  readCachedCatalog,
-  writeCachedCatalog,
-} from "./catalogReadCache";
+import { readCachedCatalog, writeCachedCatalog } from "./catalogReadCache";
 import { artifactCatalogSummaryQueryKey } from "./catalogQueryKeys";
+import {
+  requireBoundaryArray,
+  requireBoundaryObject,
+} from "./serviceBoundarySchemas";
 
 export const ARTIFACT_RETENTION_FAMILY_ORDER = [
   "run",
@@ -183,20 +184,23 @@ export interface LocalDataInventorySummary {
   warnings: string[];
 }
 
-function normalizePositiveInteger(value: unknown, fallback = 0): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.floor(parsed);
-}
-
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
-function normalizeOptionalPositiveInteger(value: unknown): number | null {
+function normalizeOptionalPositiveInteger(
+  value: unknown,
+  context: string,
+): number | null {
   if (value == null) return null;
+  return requirePositiveInteger(value, context);
+}
+
+function requirePositiveInteger(value: unknown, context: string): number {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${context} must be a positive integer.`);
+  }
   return Math.floor(parsed);
 }
 
@@ -226,13 +230,17 @@ function buildResolvedArtifactRetentionSettings(): ArtifactRetentionResolvedSett
 
 function normalizeOptionalArtifactRetentionSettings(
   raw: unknown,
+  context: string,
 ): ArtifactRetentionConfiguredSettingsSummary {
-  const row =
-    raw && typeof raw === "object" ? (raw as ArtifactRetentionRawSettings) : {};
+  const row = requireBoundaryObject(
+    raw,
+    context,
+  ) as ArtifactRetentionRawSettings;
   const summary = buildOptionalArtifactRetentionSettings();
   for (const family of ARTIFACT_RETENTION_FAMILY_ORDER) {
     summary[family] = normalizeOptionalPositiveInteger(
       row[ARTIFACT_RETENTION_FIELD_BY_FAMILY[family]],
+      `${context}.${ARTIFACT_RETENTION_FIELD_BY_FAMILY[family]}`,
     );
   }
   return summary;
@@ -240,13 +248,17 @@ function normalizeOptionalArtifactRetentionSettings(
 
 function normalizeResolvedArtifactRetentionSettings(
   raw: unknown,
+  context: string,
 ): ArtifactRetentionResolvedSettingsSummary {
-  const row =
-    raw && typeof raw === "object" ? (raw as ArtifactRetentionRawSettings) : {};
+  const row = requireBoundaryObject(
+    raw,
+    context,
+  ) as ArtifactRetentionRawSettings;
   const summary = buildResolvedArtifactRetentionSettings();
   for (const family of ARTIFACT_RETENTION_FAMILY_ORDER) {
-    summary[family] = normalizePositiveInteger(
+    summary[family] = requirePositiveInteger(
       row[ARTIFACT_RETENTION_FIELD_BY_FAMILY[family]],
+      `${context}.${ARTIFACT_RETENTION_FIELD_BY_FAMILY[family]}`,
     );
   }
   return summary;
@@ -255,35 +267,69 @@ function normalizeResolvedArtifactRetentionSettings(
 function normalizeArtifactRetentionInfo(
   raw: unknown,
 ): ArtifactRetentionInfoSummary {
-  const info =
-    raw && typeof raw === "object"
-      ? (raw as ArtifactRetentionInfoResponse)
-      : {};
+  const info = requireBoundaryObject(
+    raw,
+    "artifact retention response",
+  ) as ArtifactRetentionInfoResponse;
   return {
-    defaults: normalizeResolvedArtifactRetentionSettings(info.defaults),
-    configured: normalizeOptionalArtifactRetentionSettings(info.configured),
+    defaults: normalizeResolvedArtifactRetentionSettings(
+      info.defaults,
+      "artifact retention defaults",
+    ),
+    configured: normalizeOptionalArtifactRetentionSettings(
+      info.configured,
+      "artifact retention configured settings",
+    ),
     envOverrides: normalizeOptionalArtifactRetentionSettings(
       info.env_overrides,
+      "artifact retention environment overrides",
     ),
-    effective: normalizeResolvedArtifactRetentionSettings(info.effective),
+    effective: normalizeResolvedArtifactRetentionSettings(
+      info.effective,
+      "artifact retention effective settings",
+    ),
   };
 }
 
-function countArray(value: unknown): number {
-  return Array.isArray(value) ? value.length : 0;
+function countRequiredArray(value: unknown, context: string): number {
+  return requireBoundaryArray(value, context).length;
+}
+
+function countRequiredAliasArray(
+  row: Record<string, unknown>,
+  firstKey: string,
+  secondKey: string,
+  context: string,
+): number {
+  if (row[firstKey] != null)
+    return countRequiredArray(row[firstKey], `${context}.${firstKey}`);
+  if (row[secondKey] != null)
+    return countRequiredArray(row[secondKey], `${context}.${secondKey}`);
+  throw new Error(`${context}.${firstKey} must be an array.`);
 }
 
 function normalizeArtifactCatalogSummary(raw: unknown): ArtifactCatalogSummary {
-  const row =
-    raw && typeof raw === "object"
-      ? (raw as ArtifactLibrarySnapshotResponse)
-      : {};
-  const runs = countArray(row.runs);
-  const meta = countArray(row.meta);
-  const stage5 = countArray(row.stage5);
-  const policyEvals = countArray(row.policyEvals ?? row.policy_evals);
-  const optionsExpression = countArray(
-    row.optionsExpression ?? row.options_expression,
+  const row = requireBoundaryObject(
+    raw,
+    "artifact library response",
+  ) as ArtifactLibrarySnapshotResponse & Record<string, unknown>;
+  const runs = countRequiredArray(row.runs, "artifact library response.runs");
+  const meta = countRequiredArray(row.meta, "artifact library response.meta");
+  const stage5 = countRequiredArray(
+    row.stage5,
+    "artifact library response.stage5",
+  );
+  const policyEvals = countRequiredAliasArray(
+    row,
+    "policyEvals",
+    "policy_evals",
+    "artifact library response",
+  );
+  const optionsExpression = countRequiredAliasArray(
+    row,
+    "optionsExpression",
+    "options_expression",
+    "artifact library response",
   );
   return {
     runs,
@@ -298,8 +344,10 @@ function normalizeArtifactCatalogSummary(raw: unknown): ArtifactCatalogSummary {
 function normalizeMarketDataDirInfo(
   raw: unknown,
 ): LocalDataInventoryPathSummary {
-  const row =
-    raw && typeof raw === "object" ? (raw as MarketDataDirInfoResponse) : {};
+  const row = requireBoundaryObject(
+    raw,
+    "market data directory response",
+  ) as MarketDataDirInfoResponse;
   return {
     defaultRootDir: normalizeText(row.default_root_dir),
     configuredRootDir: normalizeText(row.configured_root_dir),
@@ -313,9 +361,12 @@ function normalizePolygonCredentialStatus(
   fallbackHasApiKey: boolean,
 ): LocalDataInventoryCredentialSummary {
   const row =
-    raw && typeof raw === "object"
-      ? (raw as PolygonCredentialStatusResponse)
-      : {};
+    raw == null
+      ? {}
+      : (requireBoundaryObject(
+          raw,
+          "Polygon credential status response",
+        ) as PolygonCredentialStatusResponse);
   const state =
     normalizeText(row.state) || (fallbackHasApiKey ? "unknown" : "missing");
   return {
@@ -329,15 +380,15 @@ function normalizePolygonCredentialStatus(
   };
 }
 
-function normalizePolygonCacheInventory(
-  raw: unknown,
-): {
+function normalizePolygonCacheInventory(raw: unknown): {
   cacheDir: string;
   credentialSummary: LocalDataInventoryCredentialSummary;
   datasetCount: number;
 } {
-  const row =
-    raw && typeof raw === "object" ? (raw as PolygonCacheInfoResponse) : {};
+  const row = requireBoundaryObject(
+    raw,
+    "Polygon cache response",
+  ) as PolygonCacheInfoResponse;
   const hasApiKey = Boolean(row.has_api_key);
   return {
     cacheDir: normalizeText(row.cache_dir),
@@ -345,7 +396,10 @@ function normalizePolygonCacheInventory(
       row.credential_status,
       hasApiKey,
     ),
-    datasetCount: Array.isArray(row.datasets) ? row.datasets.length : 0,
+    datasetCount: requireBoundaryArray(
+      row.datasets,
+      "Polygon cache response.datasets",
+    ).length,
   };
 }
 
@@ -361,7 +415,9 @@ function buildLocalDataInventoryWarnings(args: {
     args.pathSummary.polygonCacheDir &&
     args.polygonCacheDir !== args.pathSummary.polygonCacheDir
   ) {
-    warnings.push("Polygon cache path differs between directory and cache summaries.");
+    warnings.push(
+      "Polygon cache path differs between directory and cache summaries.",
+    );
   }
   if (args.credentialSummary.polygonCredentialDegraded) {
     warnings.push("Polygon credential storage is degraded.");
@@ -380,7 +436,7 @@ function serializeArtifactRetentionSettings(
     const value = settings[family];
     if (value == null) continue;
     payload[ARTIFACT_RETENTION_FIELD_BY_FAMILY[family]] =
-      normalizePositiveInteger(value);
+      requirePositiveInteger(value, `${family} artifact retention setting`);
   }
   return payload;
 }
@@ -427,7 +483,9 @@ export async function clearArtifactRetentionSettings(): Promise<ArtifactRetentio
 
 export async function loadArtifactCatalogSummary(): Promise<ArtifactCatalogSummary> {
   return readCachedCatalog(artifactCatalogSummaryQueryKey, async () =>
-    normalizeArtifactCatalogSummary(await invokeCommand("list_artifact_library")),
+    normalizeArtifactCatalogSummary(
+      await invokeCommand("list_artifact_library"),
+    ),
   );
 }
 
@@ -455,7 +513,8 @@ export async function buildLocalDataInventoryDryRun(): Promise<LocalDataInventor
   const pathSummary = normalizeMarketDataDirInfo(marketDataInfoRaw);
   const polygonCache = normalizePolygonCacheInventory(polygonCacheInfoRaw);
   const artifactCatalog = normalizeArtifactCatalogSummary(artifactCatalogRaw);
-  const artifactRetention = normalizeArtifactRetentionInfo(artifactRetentionRaw);
+  const artifactRetention =
+    normalizeArtifactRetentionInfo(artifactRetentionRaw);
 
   return {
     generatedAtUnixMs: Date.now(),

@@ -617,6 +617,29 @@ describe("data store actions", () => {
     expect(store.dataTimeframeHint).toContain("Relative timeline detected");
   });
 
+  it("clears the browse CSV busy status when the picker is cancelled", async () => {
+    browseCsvMock.mockResolvedValueOnce(null);
+    const store = useDataStore();
+
+    store.browseCsv();
+    expect(store.statusLine).toBe("Loading data...");
+    await flushAsync();
+
+    expect(store.statusLine).toBe("CSV selection cancelled.");
+    expect(store.canBrowseCsv).toBe(true);
+  });
+
+  it("surfaces browse CSV picker failures", async () => {
+    browseCsvMock.mockRejectedValueOnce(new Error("picker unavailable"));
+    const store = useDataStore();
+
+    store.browseCsv();
+    await flushAsync();
+
+    expect(store.statusLine).toContain("picker unavailable");
+    expect(store.canBrowseCsv).toBe(true);
+  });
+
   it("dispatches market-data directory and sample actions through data service", async () => {
     const store = useDataStore();
     store.browseCsv();

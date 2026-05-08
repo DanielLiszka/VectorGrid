@@ -8499,8 +8499,8 @@ fn grid_search_double_ma_gpu(
         fn eval_batch(
             &self,
             combos: &[ta_strategies::double_ma::DoubleMaParams],
-        ) -> Vec<ta_strategies::double_ma::Metrics> {
-            combos
+        ) -> Result<Vec<ta_strategies::double_ma::Metrics>, String> {
+            Ok(combos
                 .par_iter()
                 .map(|p| {
                     let fast_type = self
@@ -8522,7 +8522,7 @@ fn grid_search_double_ma_gpu(
                         .unwrap_or(self.nan_row);
                     eval_double_ma_metrics(self.prices, fast, slow)
                 })
-                .collect()
+                .collect())
         }
     }
 
@@ -8535,7 +8535,7 @@ fn grid_search_double_ma_gpu(
         slow_ma_types,
     };
 
-    ta_optimizer::grid::grid_search(&engine, combos, objective, num_candles, top_k, include_all)
+    ta_optimizer::grid::grid_search(&engine, combos, objective, num_candles, top_k, include_all)?
         .ok_or_else(|| "grid search produced no result".to_string())
 }
 

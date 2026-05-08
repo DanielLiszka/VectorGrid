@@ -1558,6 +1558,10 @@ function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function errorMessage(value: unknown): string {
+  return normalizeText(value instanceof Error ? value.message : value);
+}
+
 function normalizeBoolean(value: unknown): boolean {
   if (typeof value === "boolean") return value;
   const text = normalizeText(value).toLowerCase();
@@ -2788,11 +2792,12 @@ async function persistRunArtifact(
       saved: path.length > 0,
       warning: path.length > 0 ? "" : "artifact=unsaved",
     };
-  } catch {
+  } catch (error) {
+    const detail = errorMessage(error);
     return {
       path: "",
       saved: false,
-      warning: "artifact=unsaved",
+      warning: detail ? `artifact=unsaved (${detail})` : "artifact=unsaved",
     };
   }
 }

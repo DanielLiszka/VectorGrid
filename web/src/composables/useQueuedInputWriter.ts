@@ -1,4 +1,4 @@
-import { useDebounceFn } from '@vueuse/core'
+import { tryOnScopeDispose, useDebounceFn } from '@vueuse/core'
 
 interface UseQueuedInputWriterOptions {
   waitMs?: number
@@ -56,6 +56,10 @@ export function useQueuedInputWriter(
     if (!key) return
     queuedInputValues.delete(key)
   }
+
+  tryOnScopeDispose(() => {
+    flushQueuedInputValuesNow()
+  })
 
   return {
     queueInputValue,

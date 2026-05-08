@@ -16,7 +16,7 @@ const EXPECTED_MAIN_PERMISSIONS = [
   'core:window:allow-close',
   'clipboard-manager:allow-write-text',
   'updater:default',
-  'process:default',
+  'process:allow-restart',
   'log:default',
   'notification:default',
   'window-state:default',

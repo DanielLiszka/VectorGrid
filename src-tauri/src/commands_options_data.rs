@@ -1,6 +1,6 @@
-use crate::{polygon, redaction::redact_sensitive_text_with_values, settings};
+use crate::{polygon, redaction::redact_sensitive_text_with_values, settings, state::AppState};
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
-use reqwest::blocking::Client;
+use reqwest::{blocking::Client, Url};
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -420,6 +420,24 @@ fn polygon_options_contracts_url() -> String {
     format!("{POLYGON_API_BASE}/v3/reference/options/contracts")
 }
 
+fn polygon_options_pagination_url(raw: &str) -> Result<Url, String> {
+    let mut url = Url::parse(raw.trim())
+        .map_err(|_| "Polygon.io options pagination URL was malformed".to_string())?;
+    if url.scheme() != "https" || url.host_str() != Some("api.polygon.io") {
+        return Err(
+            "Polygon.io options pagination URL must stay on https://api.polygon.io".to_string(),
+        );
+    }
+
+    let query_pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("apiKey"))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.query_pairs_mut().clear().extend_pairs(query_pairs);
+    Ok(url)
+}
+
 fn encode_polygon_path_segment(seg: &str) -> String {
     seg.replace(':', "%3A")
 }
@@ -683,10 +701,10 @@ fn fetch_polygon_option_contracts(
     as_of: &NaiveDate,
 ) -> Result<Vec<PolygonOptionContractRef>, String> {
     let mut out = Vec::new();
-    let mut next_url: Option<String> = None;
+    let mut next_url: Option<Url> = None;
     loop {
         let response: OptionsContractsResponse = if let Some(url) = next_url.as_ref() {
-            send_json_with_retry(|| client.get(url).query(&[("apiKey", api_key)]))?
+            send_json_with_retry(|| client.get(url.clone()).query(&[("apiKey", api_key)]))?
         } else {
             send_json_with_retry(|| {
                 let mut req = client.get(polygon_options_contracts_url()).query(&[
@@ -723,7 +741,9 @@ fn fetch_polygon_option_contracts(
             out.extend(results);
         }
         match response.next_url {
-            Some(url) if !url.trim().is_empty() => next_url = Some(url),
+            Some(url) if !url.trim().is_empty() => {
+                next_url = Some(polygon_options_pagination_url(&url)?)
+            }
             _ => break,
         }
     }
@@ -1184,6 +1204,57 @@ fn copy_dataset_into_store(
     import_result
 }
 
+fn validate_options_import_csv_path(
+    raw: &str,
+    app_local_data_dir: &std::path::Path,
+    state: &AppState,
+) -> Result<std::path::PathBuf, String> {
+    let validated = crate::local_path_policy::canonical_existing_path(raw)?;
+    crate::local_path_policy::ensure_csv_extension(&validated.canonical)?;
+    if !validated.canonical.is_file() {
+        return Err(format!(
+            "options dataset import path must be a CSV file: {}",
+            validated.original.to_string_lossy()
+        ));
+    }
+    if state
+        .consume_issued_csv_load_path(&validated.canonical)
+        .is_ok()
+    {
+        return Ok(validated.canonical);
+    }
+
+    let market_root = settings::resolve_market_data_root_dir(app_local_data_dir)?;
+    let roots = canonical_existing_roots(vec![
+        app_local_data_dir.to_path_buf(),
+        market_root.clone(),
+        polygon::polygon_cache_dir(&market_root),
+    ]);
+    if roots
+        .iter()
+        .any(|root| validated.canonical == *root || validated.canonical.starts_with(root))
+    {
+        return Ok(validated.canonical);
+    }
+
+    Err(format!(
+        "options dataset import path was not issued by the native open dialog and is outside allowed data roots: {}",
+        validated.original.to_string_lossy()
+    ))
+}
+
+fn canonical_existing_roots(roots: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    roots
+        .into_iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .fold(Vec::new(), |mut out, root| {
+            if !out.iter().any(|existing| existing == &root) {
+                out.push(root);
+            }
+            out
+        })
+}
+
 pub fn import_options_dataset_blocking_headless(
     req: OptionsDatasetImportRequest,
     app_local_data_dir: &std::path::Path,
@@ -1195,13 +1266,15 @@ pub fn import_options_dataset_blocking_headless(
 pub async fn import_options_dataset(
     req: OptionsDatasetImportRequest,
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
 ) -> Result<OptionsDatasetManifestV1, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        copy_dataset_into_store(&req, &app_local_data_dir)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let source_csv = validate_options_import_csv_path(&req.csv_path, &app_local_data_dir, &state)?;
+    let mut req = req;
+    req.csv_path = source_csv.to_string_lossy().to_string();
+    tauri::async_runtime::spawn_blocking(move || copy_dataset_into_store(&req, &app_local_data_dir))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1508,6 +1581,90 @@ mod tests {
         let redacted = redact_sensitive_text_with_values("apiKey=poly_secret_123", []);
         assert!(redacted.contains("[redacted]"));
         assert!(!redacted.contains("poly_secret_123"));
+    }
+
+    #[test]
+    fn polygon_options_pagination_url_rejects_key_exfiltration_hosts() {
+        let evil = polygon_options_pagination_url(
+            "https://evil.test/v3/reference/options/contracts?cursor=abc",
+        )
+        .expect_err("non-Polygon pagination URL must be rejected");
+        assert!(evil.contains("https://api.polygon.io"));
+
+        let insecure = polygon_options_pagination_url(
+            "http://api.polygon.io/v3/reference/options/contracts?cursor=abc",
+        )
+        .expect_err("non-HTTPS pagination URL must be rejected");
+        assert!(insecure.contains("https://api.polygon.io"));
+
+        let valid = polygon_options_pagination_url(
+            "https://api.polygon.io/v3/reference/options/contracts?cursor=abc&apiKey=leaked",
+        )
+        .expect("valid Polygon pagination URL");
+        assert_eq!(valid.host_str(), Some("api.polygon.io"));
+        assert_eq!(valid.scheme(), "https");
+        assert!(!valid.query().unwrap_or_default().contains("apiKey="));
+        assert!(valid.query().unwrap_or_default().contains("cursor=abc"));
+    }
+
+    #[test]
+    fn options_import_csv_path_requires_dialog_token_or_allowed_root() {
+        let app_local_data_dir = temp_app_local_data_dir("options_import_path_policy");
+        let external_dir = temp_app_local_data_dir("options_import_external");
+        let external_csv = external_dir.join("options.csv");
+        std::fs::write(
+            &external_csv,
+            "timestamp,root_symbol,contract_ticker,option_type,strike,expiration,bid,ask,last,volume,open_interest\n",
+        )
+        .expect("write external csv");
+        let state = AppState::default();
+
+        let err = validate_options_import_csv_path(
+            external_csv.to_string_lossy().as_ref(),
+            &app_local_data_dir,
+            &state,
+        )
+        .expect_err("arbitrary external options CSV should be rejected");
+        assert!(err.contains("native open dialog"));
+
+        let canonical = external_csv.canonicalize().expect("canonical external csv");
+        state
+            .record_issued_csv_load_path(canonical.clone())
+            .expect("record issued path");
+        let accepted = validate_options_import_csv_path(
+            external_csv.to_string_lossy().as_ref(),
+            &app_local_data_dir,
+            &state,
+        )
+        .expect("dialog-issued options CSV should be accepted once");
+        assert_eq!(accepted, canonical);
+
+        validate_options_import_csv_path(
+            external_csv.to_string_lossy().as_ref(),
+            &app_local_data_dir,
+            &state,
+        )
+        .expect_err("dialog-issued options CSV token should be single use");
+
+        let app_csv = app_local_data_dir.join("allowed_options.csv");
+        std::fs::write(
+            &app_csv,
+            "timestamp,root_symbol,contract_ticker,option_type,strike,expiration,bid,ask,last,volume,open_interest\n",
+        )
+        .expect("write app csv");
+        let accepted_app_root = validate_options_import_csv_path(
+            app_csv.to_string_lossy().as_ref(),
+            &app_local_data_dir,
+            &state,
+        )
+        .expect("app-local options CSV should be accepted");
+        assert_eq!(
+            accepted_app_root,
+            app_csv.canonicalize().expect("canonical app csv")
+        );
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+        let _ = std::fs::remove_dir_all(external_dir);
     }
 
     #[test]

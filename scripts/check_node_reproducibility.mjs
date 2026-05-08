@@ -55,10 +55,10 @@ function satisfiesEngine(version, expression) {
 }
 
 function runVersion(command, args = ['--version']) {
-  const result =
-    process.platform === 'win32'
-      ? spawnSync([command, ...args].join(' '), { encoding: 'utf8', shell: true })
-      : spawnSync(command, args, { encoding: 'utf8', shell: false })
+  const isWindowsCmd = process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')
+  const spawnCommand = isWindowsCmd ? 'cmd.exe' : command
+  const spawnArgs = isWindowsCmd ? ['/d', '/s', '/c', command, ...args] : args
+  const result = spawnSync(spawnCommand, spawnArgs, { encoding: 'utf8', shell: false })
   if (result.error) fail(`failed to run ${command} ${args.join(' ')}: ${result.error.message}`)
   if ((result.status ?? 1) !== 0) {
     fail(`${command} ${args.join(' ')} exited with status ${result.status}: ${result.stderr || ''}`)

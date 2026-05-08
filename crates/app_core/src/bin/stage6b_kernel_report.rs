@@ -12,6 +12,11 @@ use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 const FAST_RANGE: (u32, u32, u32) = (5, 120, 1);
 const SLOW_RANGE: (u32, u32, u32) = (10, 260, 2);
 const TOP_K: usize = 20;
@@ -326,6 +331,10 @@ fn cuda_available() -> bool {
 
 fn main() {
     let output_path = std::env::args().nth(1);
+    let _benchmark_guard = benchmark_lock::acquire("stage6b kernel report").unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
     let cancel = AtomicBool::new(false);
     let cuda_ok = cuda_available();
     let mut strategy_reports: Vec<StrategyReport> = Vec::new();
@@ -403,7 +412,7 @@ fn main() {
 
     let json = serde_json::to_string_pretty(&report).expect("serialize report");
     if let Some(path) = output_path {
-        if let Err(e) = std::fs::write(&path, json.as_bytes()) {
+        if let Err(e) = atomic_output::write_str(std::path::Path::new(&path), &json) {
             eprintln!("failed to write report to '{}': {}", path, e);
             std::process::exit(1);
         }

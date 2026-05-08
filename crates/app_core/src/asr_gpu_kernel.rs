@@ -526,11 +526,7 @@ fn ensure_resident_close_lr<'a>(
     close_f64: &[f64],
     close_device_ptr: u64,
 ) -> Result<&'a ResidentCloseReturns, String> {
-    let key = CloseSeriesKey {
-        len: close_f64.len(),
-        host_ptr: close_f64.as_ptr() as usize,
-        device_ptr: close_device_ptr,
-    };
+    let key = CloseSeriesKey::from_host_f64_and_device(close_f64, close_device_ptr);
     let needs_refresh = rt
         .resident_series
         .as_ref()

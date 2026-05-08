@@ -48,10 +48,12 @@ const stripStyle = computed<CSSProperties>(() => ({
     >
       <dt class="appMetricLabel">{{ item.label }}</dt>
       <dd class="appMetricValue mono" :title="item.title || item.value">
-        <span class="appMetricPrimaryValue">{{ item.value || '—' }}</span>
-        <span v-if="item.trend" class="appMetricTrend">{{ item.trend }}</span>
+        <span class="appMetricValueRow">
+          <span class="appMetricPrimaryValue">{{ item.value || '—' }}</span>
+          <span v-if="item.trend" class="appMetricTrend">{{ item.trend }}</span>
+        </span>
+        <small v-if="item.detail" class="appMetricDetail" :title="item.detail">{{ item.detail }}</small>
       </dd>
-      <small v-if="item.detail" class="appMetricDetail" :title="item.detail">{{ item.detail }}</small>
     </div>
   </dl>
 </template>
@@ -97,12 +99,18 @@ const stripStyle = computed<CSSProperties>(() => ({
 .appMetricValue {
   margin: 0.12rem 0 0;
   min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 0.35rem;
+  display: grid;
+  gap: 0.16rem;
   overflow: hidden;
   font-size: 0.78rem;
   color: var(--text);
+}
+
+.appMetricValueRow {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
 }
 
 .appMetricPrimaryValue,
@@ -125,7 +133,6 @@ const stripStyle = computed<CSSProperties>(() => ({
 
 .appMetricDetail {
   display: block;
-  margin-top: 0.16rem;
   color: var(--muted-strong);
   font-size: 0.72rem;
   line-height: 1.35;

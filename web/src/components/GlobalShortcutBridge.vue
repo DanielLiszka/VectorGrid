@@ -48,6 +48,22 @@ function isMultilineEditorTarget(el: Element | null): boolean {
   return !!(el as HTMLElement | null)?.isContentEditable
 }
 
+function isInteractiveShortcutTarget(el: Element | null): boolean {
+  const target = el as HTMLElement | null
+  if (!target) return false
+  if (target.isContentEditable) return true
+  return !!target.closest(
+    'input, textarea, select, button, a[href], [role="button"], [role="textbox"], [role="combobox"], [role="listbox"], [role="menuitem"], [role="option"]',
+  )
+}
+
+function shortcutEventTarget(e: KeyboardEvent): Element | null {
+  const pathTarget = e.composedPath().find((entry): entry is Element => entry instanceof Element)
+  if (pathTarget) return pathTarget
+  if (e.target instanceof Element) return e.target
+  return document.activeElement instanceof Element ? document.activeElement : null
+}
+
 function isCommandPaletteOpen(): boolean {
   return commandPaletteOpen.value
 }
@@ -155,9 +171,11 @@ async function syncNativeMenuCommandStates(
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.defaultPrevented) return
+  if (e.isComposing || e.key === 'Process') return
   const key = String(e.key || '')
   const lower = key.toLowerCase()
   const mod = e.ctrlKey || e.metaKey
+  const shortcutTarget = shortcutEventTarget(e)
 
   if (key === 'Escape') {
     if (isCommandPaletteOpen()) {
@@ -171,9 +189,6 @@ function onKeydown(e: KeyboardEvent): void {
       return
     }
     commandActionStore.clearDrillTradeSelection()
-    if (canCancel.value) {
-      commandActionStore.cancelOptimization()
-    }
     return
   }
 
@@ -186,12 +201,13 @@ function onKeydown(e: KeyboardEvent): void {
   }
 
   if (mod && key === 'Enter') {
-    if (isMultilineEditorTarget(document.activeElement as Element | null) && !e.shiftKey) return
+    if (isMultilineEditorTarget(shortcutTarget) && !e.shiftKey) return
   }
 
   if (dispatchSharedShellShortcut(e, sharedShellShortcutContext())) return
 
   if (!mod) {
+    if (isInteractiveShortcutTarget(shortcutTarget)) return
     const isPrev = lower === 'k' || key === 'ArrowUp'
     const isNext = lower === 'j' || key === 'ArrowDown'
     if (isPrev) {

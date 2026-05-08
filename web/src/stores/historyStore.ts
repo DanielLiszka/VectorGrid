@@ -1359,9 +1359,8 @@ export const useHistoryStore = defineStore("history", {
       if (!nextPath) return;
       if (this.savedRunDetailLoadingPath === nextPath) return;
 
-      const seq =
+      this.savedRunDetailSeq =
         Math.max(0, Math.floor(Number(this.savedRunDetailSeq || 0))) + 1;
-      this.savedRunDetailSeq = seq;
       this.savedRunDetailLoadingPath = nextPath;
 
       void loadHistoryService()
@@ -1436,9 +1435,8 @@ export const useHistoryStore = defineStore("history", {
               normalizeText(detail?.paramsText) || "Request unavailable.",
           };
           if (
-            this.savedRunDetailSeq === seq &&
-            (this.savedSelectedValue === nextPath ||
-              this.savedRunCompareSelected === nextPath)
+            this.savedSelectedValue === nextPath ||
+            this.savedRunCompareSelected === nextPath
           ) {
             this.syncSavedRunsView(this.savedSelectedValue);
             this.source = "vue";
@@ -1447,9 +1445,8 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           if (
-            this.savedRunDetailSeq !== seq ||
-            (this.savedSelectedValue !== nextPath &&
-              this.savedRunCompareSelected !== nextPath)
+            this.savedSelectedValue !== nextPath &&
+            this.savedRunCompareSelected !== nextPath
           )
             return;
           if (this.savedSelectedValue === nextPath) {

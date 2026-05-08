@@ -1,10 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 const PAPER_BROKER_VERSION: u32 = 1;
 const DEFAULT_STARTING_CASH: f64 = 100_000.0;
+static PAPER_BROKER_STATE_LOCK: Mutex<()> = Mutex::new(());
+static PAPER_BROKER_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -199,7 +205,141 @@ pub fn paper_broker_state_path(app_local_data_dir: &Path) -> PathBuf {
         .join("state.json")
 }
 
-pub fn load_or_default(
+fn paper_broker_state_backup_path(path: &Path) -> PathBuf {
+    let backup_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|name| format!("{name}.bak"))
+        .unwrap_or_else(|| "state.json.bak".to_string());
+    path.with_file_name(backup_name)
+}
+
+fn paper_broker_state_lock() -> Result<MutexGuard<'static, ()>, String> {
+    PAPER_BROKER_STATE_LOCK
+        .lock()
+        .map_err(|_| "paper broker state lock is poisoned".to_string())
+}
+
+fn paper_broker_temp_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("paper broker state path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("state.json");
+    let seq = PAPER_BROKER_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Ok(parent.join(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nonce,
+        seq
+    )))
+}
+
+#[cfg(windows)]
+fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let replaced = wide_null(path);
+    let replacement = wide_null(temp_path);
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
+    fs::rename(temp_path, path).map_err(|e| e.to_string())
+}
+
+fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create paper broker state directory: {e}"))?;
+    }
+    let temp_path = paper_broker_temp_path(path)?;
+    let write_temp_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())
+    })();
+    if let Err(error) = write_temp_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    let replace_result = if path.exists() {
+        replace_existing_file_with_temp(path, &temp_path)
+    } else {
+        fs::rename(&temp_path, path).map_err(|e| e.to_string())
+    };
+    if let Err(error) = replace_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn encode_state_doc(doc: &PaperBrokerStateDoc) -> Result<Vec<u8>, String> {
+    serde_json::to_vec_pretty(doc).map_err(|e| format!("failed to encode paper broker state: {e}"))
+}
+
+fn decode_state_doc(path: &Path, bytes: &[u8]) -> Result<PaperBrokerStateDoc, String> {
+    let doc: PaperBrokerStateDoc = serde_json::from_slice(bytes).map_err(|e| {
+        format!(
+            "failed to decode paper broker state {}: {e}",
+            path.to_string_lossy()
+        )
+    })?;
+    if doc.version != PAPER_BROKER_VERSION {
+        return Err(format!(
+            "unsupported paper broker state version {} in {}",
+            doc.version,
+            path.to_string_lossy()
+        ));
+    }
+    Ok(doc)
+}
+
+fn read_state_doc(path: &Path, now_unix_ms: i64) -> Result<PaperBrokerStateDoc, String> {
+    let bytes = fs::read(path).map_err(|e| {
+        format!(
+            "failed to read paper broker state {}: {e}",
+            path.to_string_lossy()
+        )
+    })?;
+    let mut doc = decode_state_doc(path, &bytes)?;
+    doc.recompute_account(now_unix_ms);
+    Ok(doc)
+}
+
+fn load_or_default_unlocked(
     app_local_data_dir: &Path,
     now_unix_ms: i64,
 ) -> Result<PaperBrokerStateDoc, String> {
@@ -207,33 +347,64 @@ pub fn load_or_default(
     if !path.exists() {
         return Ok(PaperBrokerStateDoc::new(now_unix_ms));
     }
-    let bytes = fs::read(&path).map_err(|e| format!("failed to read paper broker state: {e}"))?;
-    let mut doc: PaperBrokerStateDoc = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("failed to decode paper broker state: {e}"))?;
-    if doc.version != PAPER_BROKER_VERSION {
-        return Err(format!(
-            "unsupported paper broker state version {}",
-            doc.version
-        ));
+
+    match read_state_doc(&path, now_unix_ms) {
+        Ok(doc) => Ok(doc),
+        Err(primary_error) => {
+            let backup_path = paper_broker_state_backup_path(&path);
+            if !backup_path.exists() {
+                return Err(primary_error);
+            }
+            let doc = read_state_doc(&backup_path, now_unix_ms).map_err(|backup_error| {
+                format!("{primary_error}; backup recovery failed: {backup_error}")
+            })?;
+            let bytes = encode_state_doc(&doc)?;
+            write_bytes_atomically(&path, &bytes).map_err(|restore_error| {
+                format!(
+                    "recovered paper broker state from backup, but failed to restore {}: {restore_error}",
+                    path.to_string_lossy()
+                )
+            })?;
+            Ok(doc)
+        }
     }
-    doc.recompute_account(now_unix_ms);
-    Ok(doc)
+}
+
+fn save_unlocked(app_local_data_dir: &Path, doc: &PaperBrokerStateDoc) -> Result<(), String> {
+    let path = paper_broker_state_path(app_local_data_dir);
+    if path.exists() {
+        let current = fs::read(&path)
+            .map_err(|e| format!("failed to read existing paper broker state for backup: {e}"))?;
+        let backup_path = paper_broker_state_backup_path(&path);
+        write_bytes_atomically(&backup_path, &current).map_err(|e| {
+            format!(
+                "failed to update paper broker state backup {}: {e}",
+                backup_path.to_string_lossy()
+            )
+        })?;
+    }
+    let bytes = encode_state_doc(doc)?;
+    write_bytes_atomically(&path, &bytes)
+        .map_err(|e| format!("failed to write paper broker state: {e}"))
+}
+
+pub fn load_or_default(
+    app_local_data_dir: &Path,
+    now_unix_ms: i64,
+) -> Result<PaperBrokerStateDoc, String> {
+    let _guard = paper_broker_state_lock()?;
+    load_or_default_unlocked(app_local_data_dir, now_unix_ms)
 }
 
 pub fn save(app_local_data_dir: &Path, doc: &PaperBrokerStateDoc) -> Result<(), String> {
-    let path = paper_broker_state_path(app_local_data_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create paper broker state directory: {e}"))?;
-    }
-    let bytes = serde_json::to_vec_pretty(doc)
-        .map_err(|e| format!("failed to encode paper broker state: {e}"))?;
-    fs::write(&path, bytes).map_err(|e| format!("failed to write paper broker state: {e}"))
+    let _guard = paper_broker_state_lock()?;
+    save_unlocked(app_local_data_dir, doc)
 }
 
 pub fn reset(app_local_data_dir: &Path, now_unix_ms: i64) -> Result<PaperBrokerStateDoc, String> {
+    let _guard = paper_broker_state_lock()?;
     let doc = PaperBrokerStateDoc::new(now_unix_ms);
-    save(app_local_data_dir, &doc)?;
+    save_unlocked(app_local_data_dir, &doc)?;
     Ok(doc)
 }
 
@@ -245,7 +416,8 @@ pub fn submit_market_order(
     if let Some(bracket) = order.bracket.as_ref() {
         validate_bracket_spec(&order, bracket)?;
     }
-    let mut doc = load_or_default(app_local_data_dir, order.at_unix_ms)?;
+    let _guard = paper_broker_state_lock()?;
+    let mut doc = load_or_default_unlocked(app_local_data_dir, order.at_unix_ms)?;
     let order_id = format!("paper_ord_{:012}", doc.next_order_seq);
     let fill_id = format!("paper_fill_{:012}", doc.next_fill_seq);
     doc.next_order_seq = doc.next_order_seq.saturating_add(1);
@@ -317,7 +489,7 @@ pub fn submit_market_order(
         Vec::new()
     };
     doc.recompute_account(order.at_unix_ms);
-    save(app_local_data_dir, &doc)?;
+    save_unlocked(app_local_data_dir, &doc)?;
 
     Ok(PaperBrokerExecution {
         order: stored_order,
@@ -333,7 +505,8 @@ pub fn advance_brackets_for_bar(
     bar: PaperBrokerBracketAdvanceBar,
 ) -> Result<PaperBrokerBracketAdvanceResult, String> {
     validate_advance_bar(&bar)?;
-    let mut doc = load_or_default(app_local_data_dir, bar.at_unix_ms)?;
+    let _guard = paper_broker_state_lock()?;
+    let mut doc = load_or_default_unlocked(app_local_data_dir, bar.at_unix_ms)?;
     let symbol = canonical_symbol(&bar.symbol);
     let open_order_count_before = doc
         .orders
@@ -415,7 +588,7 @@ pub fn advance_brackets_for_bar(
     }
 
     doc.recompute_account(bar.at_unix_ms);
-    save(app_local_data_dir, &doc)?;
+    save_unlocked(app_local_data_dir, &doc)?;
     Ok(PaperBrokerBracketAdvanceResult {
         open_order_count_before,
         filled_orders,
@@ -431,7 +604,8 @@ pub fn cancel_open_orders_for_symbol(
     symbol: &str,
     now_unix_ms: i64,
 ) -> Result<PaperBrokerCancelOpenOrdersResult, String> {
-    let mut doc = load_or_default(app_local_data_dir, now_unix_ms)?;
+    let _guard = paper_broker_state_lock()?;
+    let mut doc = load_or_default_unlocked(app_local_data_dir, now_unix_ms)?;
     let symbol = canonical_symbol(symbol);
     let indices = doc
         .orders
@@ -447,7 +621,7 @@ pub fn cancel_open_orders_for_symbol(
         cancelled_orders.push(cancel_open_order_at_index(&mut doc, idx, now_unix_ms)?);
     }
     doc.recompute_account(now_unix_ms);
-    save(app_local_data_dir, &doc)?;
+    save_unlocked(app_local_data_dir, &doc)?;
     Ok(PaperBrokerCancelOpenOrdersResult {
         open_order_count_before,
         cancelled_orders,
@@ -935,6 +1109,70 @@ mod tests {
         assert!(doc.positions.is_empty());
         assert!(doc.orders.is_empty());
         assert_eq!(doc.account.cash, DEFAULT_STARTING_CASH);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_market_orders_allocate_unique_sequences() {
+        let dir = temp_app_local_data_dir("concurrent_orders");
+        let workers = 12usize;
+        let mut handles = Vec::with_capacity(workers);
+        for idx in 0..workers {
+            let dir = dir.clone();
+            handles.push(std::thread::spawn(move || {
+                submit_market_order(
+                    &dir,
+                    PaperBrokerMarketOrder {
+                        symbol: "AAPL".to_string(),
+                        side: PaperOrderSide::Buy,
+                        qty: 1.0,
+                        price: 100.0 + idx as f64,
+                        at_unix_ms: 1_000 + idx as i64,
+                        fee_bps: 0.0,
+                        slippage_bps: 0.0,
+                        client_order_id: Some(format!("client-{idx}")),
+                        bracket: None,
+                    },
+                )
+                .expect("paper fill")
+                .order
+                .id
+            }));
+        }
+
+        let mut ids = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("worker should not panic"))
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), workers);
+
+        let doc = load_or_default(&dir, 10_000).expect("reload");
+        assert_eq!(doc.orders.len(), workers);
+        assert_eq!(doc.fills.len(), workers);
+        assert_eq!(doc.next_order_seq, workers as u64 + 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_recovers_from_corrupt_state_using_backup() {
+        let dir = temp_app_local_data_dir("corrupt_recovery");
+        let mut doc = PaperBrokerStateDoc::new(1_000);
+        doc.next_order_seq = 42;
+        save(&dir, &doc).expect("initial save");
+        doc.next_order_seq = 43;
+        save(&dir, &doc).expect("second save should create backup");
+
+        let path = paper_broker_state_path(&dir);
+        let backup_path = paper_broker_state_backup_path(&path);
+        assert!(backup_path.is_file(), "backup should exist");
+        fs::write(&path, b"{\"version\":").expect("corrupt primary state");
+
+        let recovered = load_or_default(&dir, 3_000).expect("recover from backup");
+        assert_eq!(recovered.next_order_seq, 42);
+        let restored_bytes = fs::read(&path).expect("read restored primary");
+        decode_state_doc(&path, &restored_bytes).expect("restored primary should decode");
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, useId } from 'vue'
 import { CircleHelp } from '@lucide/vue'
 import {
-  HoverCardContent,
-  HoverCardPortal,
-  HoverCardRoot,
-  HoverCardTrigger,
+  PopoverContent,
+  PopoverPortal,
+  PopoverRoot,
+  PopoverTrigger,
   TooltipContent,
   TooltipPortal,
   TooltipProvider,
@@ -35,42 +35,85 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { mode, isFull, isOff } = useHelpMode()
 
-const fullHelpOpenDelayMs = 700
 const conciseTooltipDelayMs = 450
+const fullHelpOpen = ref(false)
+const componentId = useId()
 
 const label = computed(() => String(props.ariaLabel || props.title || 'Help').trim() || 'Help')
 const detailBody = computed(() => String(props.detail || '').trim())
 const textBadge = computed(() => String(props.badge || '').trim())
+const idBase = computed(() => `context_help_${componentId.replace(/[^a-zA-Z0-9_-]+/g, '_')}`)
+const fullTriggerId = computed(() => `${idBase.value}_full_trigger`)
+const fullContentId = computed(() => `${idBase.value}_full_content`)
+const fullTitleId = computed(() => `${idBase.value}_full_title`)
+const fullSummaryId = computed(() => `${idBase.value}_full_summary`)
+const fullDetailId = computed(() => `${idBase.value}_full_detail`)
+const conciseContentId = computed(() => `${idBase.value}_concise_content`)
+const fullDescriptionIds = computed(() =>
+  detailBody.value ? `${fullSummaryId.value} ${fullDetailId.value}` : fullSummaryId.value,
+)
 </script>
 
 <template>
   <span v-if="!isOff" class="contextHelpRoot" :data-help-mode="mode">
-    <HoverCardRoot v-if="isFull" :open-delay="fullHelpOpenDelayMs" :close-delay="180">
-      <HoverCardTrigger as-child>
-        <button type="button" class="contextHelpTrigger" :aria-label="label">
+    <PopoverRoot v-if="isFull" v-model:open="fullHelpOpen">
+      <PopoverTrigger as-child>
+        <button
+          :id="fullTriggerId"
+          type="button"
+          class="contextHelpTrigger"
+          :aria-label="label"
+          :aria-expanded="fullHelpOpen ? 'true' : 'false'"
+          :aria-controls="fullContentId"
+        >
           <span v-if="textBadge" class="contextHelpBadgeText">{{ textBadge }}</span>
           <CircleHelp v-else class="contextHelpIcon" aria-hidden="true" />
         </button>
-      </HoverCardTrigger>
-      <HoverCardPortal>
-        <HoverCardContent role="tooltip" class="contextHelpCard" :side="side" :align="align" :side-offset="10" :collision-padding="12">
-          <div v-if="title" class="contextHelpTitle">{{ title }}</div>
-          <div class="contextHelpSummary">{{ summary }}</div>
-          <div v-if="detailBody" class="contextHelpDetail">{{ detailBody }}</div>
-        </HoverCardContent>
-      </HoverCardPortal>
-    </HoverCardRoot>
+      </PopoverTrigger>
+      <PopoverPortal>
+        <PopoverContent
+          :id="fullContentId"
+          role="dialog"
+          aria-modal="false"
+          class="contextHelpCard"
+          :aria-labelledby="title ? fullTitleId : undefined"
+          :aria-label="title ? undefined : label"
+          :aria-describedby="fullDescriptionIds"
+          :side="side"
+          :align="align"
+          :side-offset="10"
+          :collision-padding="12"
+        >
+          <div v-if="title" :id="fullTitleId" class="contextHelpTitle">{{ title }}</div>
+          <div :id="fullSummaryId" class="contextHelpSummary">{{ summary }}</div>
+          <div v-if="detailBody" :id="fullDetailId" class="contextHelpDetail">{{ detailBody }}</div>
+        </PopoverContent>
+      </PopoverPortal>
+    </PopoverRoot>
 
     <TooltipProvider v-else>
       <TooltipRoot :delay-duration="conciseTooltipDelayMs">
         <TooltipTrigger as-child>
-          <button type="button" class="contextHelpTrigger" :aria-label="label">
+          <button
+            type="button"
+            class="contextHelpTrigger"
+            :aria-label="label"
+            :aria-describedby="conciseContentId"
+          >
             <span v-if="textBadge" class="contextHelpBadgeText">{{ textBadge }}</span>
             <CircleHelp v-else class="contextHelpIcon" aria-hidden="true" />
           </button>
         </TooltipTrigger>
         <TooltipPortal>
-          <TooltipContent class="contextHelpCard contextHelpTooltip" :side="side" :align="align" :side-offset="8" :collision-padding="12">
+          <TooltipContent
+            :id="conciseContentId"
+            role="tooltip"
+            class="contextHelpCard contextHelpTooltip"
+            :side="side"
+            :align="align"
+            :side-offset="8"
+            :collision-padding="12"
+          >
             <div class="contextHelpSummary">{{ summary }}</div>
           </TooltipContent>
         </TooltipPortal>

@@ -35,5 +35,6 @@ describe('AppMetricStrip', () => {
     expect(wrapper.attributes('style')).toContain('--app-metric-min-width: 6rem')
     expect(wrapper.find('.appMetricItem-accent').exists()).toBe(true)
     expect(wrapper.findAll('dd')[1]?.attributes('title')).toBe('2023-01 -> 2024-01')
+    expect(wrapper.findAll('dd')[1]?.find('.appMetricDetail').exists()).toBe(true)
   })
 })

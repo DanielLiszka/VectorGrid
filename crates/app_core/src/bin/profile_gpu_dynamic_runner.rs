@@ -25,6 +25,9 @@ use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::indicators::moving_averages::ma::{ma, MaData};
 use vector_ta::utilities::data_loader::Candles;
 
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Clone, Copy)]
 enum StrategyKind {
     DoubleMa,
@@ -1334,10 +1337,20 @@ fn main() {
         std::process::exit(2);
     });
 
+    if !cfg!(all(feature = "cuda", feature = "cuda-backtest-kernel")) {
+        eprintln!("profile_gpu_dynamic_runner requires --features cuda,cuda-backtest-kernel");
+        std::process::exit(1);
+    }
+
     if !cuda_available() {
         eprintln!("CUDA device not available");
         std::process::exit(1);
     }
+    let _benchmark_guard =
+        benchmark_lock::acquire("GPU dynamic strategy profile").unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
 
     if dynamic_enabled {
         std::env::set_var("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "1");

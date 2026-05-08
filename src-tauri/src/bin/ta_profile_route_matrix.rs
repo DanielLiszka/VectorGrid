@@ -14,6 +14,11 @@ use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Clone, Debug, Serialize)]
 struct EnvironmentFingerprint {
     hostname: String,
@@ -452,6 +457,7 @@ fn run_case(
 }
 
 fn main() -> Result<(), String> {
+    let _benchmark_guard = benchmark_lock::acquire("ta_profile_route_matrix")?;
     let csv_path = parse_csv();
     let timeframe = parse_timeframe();
     let out_path = parse_out_path(&timeframe);
@@ -494,11 +500,8 @@ fn main() -> Result<(), String> {
         cases,
     };
 
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let json = serde_json::to_string_pretty(&artifact).map_err(|e| e.to_string())?;
-    std::fs::write(&out_path, json).map_err(|e| e.to_string())?;
+    atomic_output::write_str(&out_path, &json)?;
     println!(
         "Wrote route/runtime artifact to {}",
         out_path.to_string_lossy()

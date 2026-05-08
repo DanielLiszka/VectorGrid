@@ -20,6 +20,7 @@ describe('ResearchCockpit', () => {
     expect(wrapper.get('[data-qa-panel="workbench.researchCockpit"]').text()).toContain('Research Cockpit')
     expect(wrapper.find('[data-qa-state="workbench.cockpit.card.dataset"]').exists()).toBe(true)
     expect(wrapper.find('[data-qa-action="workbench.cockpit.step.configure"]').exists()).toBe(true)
+    expect(wrapper.find('[data-state="active"]').attributes('aria-current')).toBe('step')
 
     wrapper.unmount()
   })

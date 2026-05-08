@@ -46,6 +46,7 @@ pub fn validate_shell_open_path<R: tauri::Runtime>(
         .iter()
         .any(|root| validated.canonical == *root || validated.canonical.starts_with(root))
     {
+        validate_shell_open_shape(&validated.canonical, purpose)?;
         return Ok(validated.canonical);
     }
 
@@ -96,7 +97,7 @@ fn allowed_shell_roots<R: tauri::Runtime>(
 
     let candidates = match purpose {
         ShellOpenPurpose::GenericOpen | ShellOpenPurpose::GenericReveal => {
-            vec![reports, runs, data_cache, market_root, polygon_cache]
+            vec![reports, runs, data_cache]
         }
         ShellOpenPurpose::ReportOpen => vec![reports],
         ShellOpenPurpose::RunArtifactReveal => vec![runs],
@@ -104,6 +105,67 @@ fn allowed_shell_roots<R: tauri::Runtime>(
     };
 
     Ok(canonical_existing_roots(candidates))
+}
+
+fn validate_shell_open_shape(path: &Path, purpose: ShellOpenPurpose) -> Result<(), String> {
+    match purpose {
+        ShellOpenPurpose::GenericOpen | ShellOpenPurpose::GenericReveal => {
+            ensure_regular_file(path, purpose)?;
+            ensure_allowed_generic_open_extension(path)
+        }
+        ShellOpenPurpose::ReportOpen => {
+            ensure_regular_file(path, purpose)?;
+            ensure_xlsx_extension(path)
+        }
+        ShellOpenPurpose::RunArtifactReveal => {
+            ensure_regular_file(path, purpose)?;
+            ensure_json_extension(path)
+        }
+        ShellOpenPurpose::MarketDataFolderOpen => ensure_directory(path, purpose),
+    }
+}
+
+fn ensure_regular_file(path: &Path, purpose: ShellOpenPurpose) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if metadata.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "path must be a file for {:?}: {}",
+            purpose,
+            path.to_string_lossy()
+        ))
+    }
+}
+
+fn ensure_directory(path: &Path, purpose: ShellOpenPurpose) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if metadata.is_dir() {
+        Ok(())
+    } else {
+        Err(format!(
+            "path must be a directory for {:?}: {}",
+            purpose,
+            path.to_string_lossy()
+        ))
+    }
+}
+
+fn ensure_allowed_generic_open_extension(path: &Path) -> Result<(), String> {
+    let actual = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if matches!(
+        actual.to_ascii_lowercase().as_str(),
+        "csv" | "json" | "log" | "md" | "txt" | "xlsx"
+    ) {
+        return Ok(());
+    }
+    Err(format!(
+        "path extension is not allowed for shell open/reveal: {}",
+        path.to_string_lossy()
+    ))
 }
 
 fn canonical_existing_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -203,6 +265,54 @@ mod tests {
         )
         .expect_err("external file should fail");
         assert!(err.contains("outside allowed VectorGrid roots"));
+    }
+
+    #[test]
+    fn validate_shell_open_path_rejects_market_root_files_for_generic_open() {
+        let app = build_mock_app();
+        let handle = app.handle();
+        let base = handle.path().app_local_data_dir().expect("app data dir");
+        let market_root = make_target_dir("vectorgrid_market_root");
+        crate::settings::set_market_data_root_dir(&base, Some(&market_root))
+            .expect("set market root");
+        let market_file = market_root.join("prices.csv");
+        std::fs::write(&market_file, b"date,close\n").expect("market data file");
+
+        let err = validate_shell_open_path(
+            handle,
+            market_file.to_string_lossy().as_ref(),
+            ShellOpenPurpose::GenericOpen,
+        )
+        .expect_err("generic open should not accept market root files");
+        assert!(err.contains("outside allowed VectorGrid roots"));
+    }
+
+    #[test]
+    fn validate_shell_open_path_accepts_market_root_directory_only_for_market_open() {
+        let app = build_mock_app();
+        let handle = app.handle();
+        let base = handle.path().app_local_data_dir().expect("app data dir");
+        let market_root = make_target_dir("vectorgrid_market_dir");
+        crate::settings::set_market_data_root_dir(&base, Some(&market_root))
+            .expect("set market root");
+        let market_file = market_root.join("prices.csv");
+        std::fs::write(&market_file, b"date,close\n").expect("market data file");
+
+        let opened = validate_shell_open_path(
+            handle,
+            market_root.to_string_lossy().as_ref(),
+            ShellOpenPurpose::MarketDataFolderOpen,
+        )
+        .expect("market root directory accepted");
+        assert_eq!(opened, market_root.canonicalize().expect("market root"));
+
+        let err = validate_shell_open_path(
+            handle,
+            market_file.to_string_lossy().as_ref(),
+            ShellOpenPurpose::MarketDataFolderOpen,
+        )
+        .expect_err("market folder open should reject files");
+        assert!(err.contains("must be a directory"));
     }
 
     #[test]

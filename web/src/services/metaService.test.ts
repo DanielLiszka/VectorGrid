@@ -1996,4 +1996,39 @@ describe("meta service", () => {
       path: "C:/runs/vectorgrid_campaign_1.json",
     });
   });
+
+  it("keeps local batch datasets and reports Polygon refresh failures", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "polygon_get_cache_info") {
+        throw new Error("polygon unavailable");
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await batchRefresh();
+
+    const analysisStore = useAnalysisStore(pinia);
+    expect(analysisStore.batchDatasets.map((row) => row.path)).toEqual([
+      "C:/b.csv",
+    ]);
+    expect(analysisStore.batchMeta).toContain("polygon error");
+    expect(analysisStore.batchMeta).toContain("local=data");
+  });
+
+  it("keeps Polygon batch datasets and reports local repo-data refresh failures", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "list_repo_data_csvs") {
+        throw new Error("repo data unavailable");
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await batchRefresh();
+
+    const analysisStore = useAnalysisStore(pinia);
+    expect(analysisStore.batchDatasets.map((row) => row.path)).toEqual([
+      "C:/a.csv",
+    ]);
+    expect(analysisStore.batchMeta).toContain("local data error");
+  });
 });

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -136,6 +136,9 @@ pub struct AppState {
     cancel: Arc<AtomicBool>,
     live_candle_stream: Mutex<Option<LiveCandleStreamTask>>,
     live_candle_stream_status: Mutex<Option<LiveCandleStreamInfo>>,
+    issued_csv_load_paths: Mutex<HashSet<PathBuf>>,
+    issued_csv_save_paths: Mutex<HashSet<PathBuf>>,
+    issued_json_save_paths: Mutex<HashSet<PathBuf>>,
 }
 
 pub struct LiveCandleStreamTask {
@@ -222,6 +225,9 @@ impl Default for AppState {
             cancel: Arc::new(AtomicBool::new(false)),
             live_candle_stream: Mutex::new(None),
             live_candle_stream_status: Mutex::new(None),
+            issued_csv_load_paths: Mutex::new(HashSet::new()),
+            issued_csv_save_paths: Mutex::new(HashSet::new()),
+            issued_json_save_paths: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -244,6 +250,66 @@ impl AppState {
 
     fn next_access_seq(&self) -> u64 {
         self.access_seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn record_issued_csv_save_path(&self, path: PathBuf) -> Result<(), String> {
+        self.issued_csv_save_paths
+            .lock()
+            .map_err(|_| "failed to lock issued CSV save paths".to_string())?
+            .insert(path);
+        Ok(())
+    }
+
+    pub fn consume_issued_csv_save_path(&self, path: &Path) -> Result<(), String> {
+        let mut issued = self
+            .issued_csv_save_paths
+            .lock()
+            .map_err(|_| "failed to lock issued CSV save paths".to_string())?;
+        if issued.remove(path) {
+            Ok(())
+        } else {
+            Err("CSV save path was not issued by the native save dialog.".to_string())
+        }
+    }
+
+    pub fn record_issued_json_save_path(&self, path: PathBuf) -> Result<(), String> {
+        self.issued_json_save_paths
+            .lock()
+            .map_err(|_| "failed to lock issued JSON save paths".to_string())?
+            .insert(path);
+        Ok(())
+    }
+
+    pub fn consume_issued_json_save_path(&self, path: &Path) -> Result<(), String> {
+        let mut issued = self
+            .issued_json_save_paths
+            .lock()
+            .map_err(|_| "failed to lock issued JSON save paths".to_string())?;
+        if issued.remove(path) {
+            Ok(())
+        } else {
+            Err("JSON save path was not issued by the native save dialog.".to_string())
+        }
+    }
+
+    pub fn record_issued_csv_load_path(&self, path: PathBuf) -> Result<(), String> {
+        self.issued_csv_load_paths
+            .lock()
+            .map_err(|_| "failed to lock issued CSV load paths".to_string())?
+            .insert(path);
+        Ok(())
+    }
+
+    pub fn consume_issued_csv_load_path(&self, path: &Path) -> Result<(), String> {
+        let mut issued = self
+            .issued_csv_load_paths
+            .lock()
+            .map_err(|_| "failed to lock issued CSV load paths".to_string())?;
+        if issued.remove(path) {
+            Ok(())
+        } else {
+            Err("CSV load path was not issued by the native open dialog.".to_string())
+        }
     }
 
     pub fn dataset_version(&self, id: &str) -> Result<u64, String> {
@@ -340,6 +406,7 @@ impl AppState {
         let cache_path = outcome
             .cache_path
             .as_ref()
+            .and_then(|p| p.file_name())
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let load_source = if outcome.cache_hit {
@@ -1318,6 +1385,48 @@ mod state_residency_tests {
     }
 
     #[test]
+    fn issued_csv_save_paths_are_single_use() {
+        let temp = make_temp_dir("state_issued_csv_save_paths");
+        let path = temp.join("export.csv");
+        let state = AppState::default();
+
+        state
+            .record_issued_csv_save_path(path.clone())
+            .expect("record issued path");
+        state
+            .consume_issued_csv_save_path(&path)
+            .expect("first consume succeeds");
+        let err = state
+            .consume_issued_csv_save_path(&path)
+            .expect_err("second consume should fail");
+
+        assert!(err.contains("native save dialog"));
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn issued_csv_load_paths_are_single_use() {
+        let temp = make_temp_dir("state_issued_csv_load_paths");
+        let path = temp.join("input.csv");
+        let state = AppState::default();
+
+        state
+            .record_issued_csv_load_path(path.clone())
+            .expect("record issued path");
+        state
+            .consume_issued_csv_load_path(&path)
+            .expect("first consume succeeds");
+        let err = state
+            .consume_issued_csv_load_path(&path)
+            .expect_err("second consume should fail");
+
+        assert!(err.contains("native open dialog"));
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn load_normalizes_second_based_csv_timestamps_to_millis() {
         let _env_guard = residency_env_lock().lock().expect("lock env");
         let temp = make_temp_dir("state_load_normalize_seconds");
@@ -1520,6 +1629,29 @@ mod state_residency_tests {
             loaded.source_identity,
             Some(data_cache::identity_for_source(&csv).expect("source identity"))
         );
+    }
+
+    #[test]
+    fn base_load_response_exposes_only_cache_file_name() {
+        let temp = make_temp_dir("state_cache_path_redaction");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(20, 0.1));
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+
+        assert!(!load.cache_path.is_empty());
+        assert!(
+            !load.cache_path.contains('/') && !load.cache_path.contains('\\'),
+            "cache_path should be a redacted filename, got {}",
+            load.cache_path
+        );
+        assert!(load.cache_path.ends_with(".vta"));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 # GPT-5.5 Pro Review Prompt And Manifest
 
+Status/provenance: dated internal review prompt pack snapshot. Use the root `README.md`, `docs/REPO_MAP.md`, `docs/PUBLIC_RELEASE.md`, and `docs/public/README.md` as current public-status authorities when they differ from copied files in this folder.
+
 Use this file as the main prompt. The other files in this folder are the capped context pack for the review. This pack is intentionally flat and limited to 18 files total.
 
 ## Prompt

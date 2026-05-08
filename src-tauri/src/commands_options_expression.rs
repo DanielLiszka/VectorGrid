@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::collections::{hash_map::DefaultHasher, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use ta_app_core::options_types::{
@@ -3057,11 +3057,16 @@ fn analyze_options_expression_validation_feasibility_blocking_impl(
 pub fn save_options_csv_blocking_headless(
     req: SaveOptionsCsvRequest,
 ) -> Result<SaveOptionsCsvResponse, String> {
-    let normalized_path = req.path.trim();
+    let output_path = normalize_options_csv_save_path(&req.path)?;
+    write_options_csv_to_path(&output_path, &req.csv_text)
+}
+
+fn normalize_options_csv_save_path(raw_path: &str) -> Result<PathBuf, String> {
+    let normalized_path = raw_path.trim();
     if normalized_path.is_empty() {
         return Err("CSV save path is required.".to_string());
     }
-    let output_path = std::path::Path::new(normalized_path);
+    let output_path = PathBuf::from(normalized_path);
     let file_name = output_path
         .file_name()
         .and_then(|value| value.to_str())
@@ -3073,6 +3078,28 @@ pub fn save_options_csv_blocking_headless(
             output_path.display()
         ));
     }
+    match output_path.extension().and_then(|value| value.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("csv") => {}
+        Some(_) => {
+            return Err(format!(
+                "CSV save path must use a .csv extension: {}",
+                output_path.display()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "CSV save path must use a .csv extension: {}",
+                output_path.display()
+            ));
+        }
+    }
+    Ok(output_path)
+}
+
+fn write_options_csv_to_path(
+    output_path: &Path,
+    csv_text: &str,
+) -> Result<SaveOptionsCsvResponse, String> {
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -3083,11 +3110,11 @@ pub fn save_options_csv_blocking_headless(
             })?;
         }
     }
-    std::fs::write(output_path, req.csv_text.as_bytes())
+    std::fs::write(output_path, csv_text.as_bytes())
         .map_err(|e| format!("failed to write CSV export {}: {e}", output_path.display()))?;
     Ok(SaveOptionsCsvResponse {
         path: output_path.to_string_lossy().to_string(),
-        bytes: req.csv_text.as_bytes().len(),
+        bytes: csv_text.as_bytes().len(),
     })
 }
 
@@ -3185,7 +3212,14 @@ pub async fn load_options_expression_artifact(
 #[tauri::command]
 pub async fn save_options_csv(
     req: SaveOptionsCsvRequest,
+    state: tauri::State<'_, AppState>,
 ) -> Result<SaveOptionsCsvResponse, String> {
+    let output_path = normalize_options_csv_save_path(&req.path)?;
+    state.consume_issued_csv_save_path(&output_path)?;
+    let req = SaveOptionsCsvRequest {
+        path: output_path.to_string_lossy().to_string(),
+        csv_text: req.csv_text,
+    };
     tauri::async_runtime::spawn_blocking(move || save_options_csv_blocking_headless(req))
         .await
         .map_err(|e| e.to_string())?
@@ -3962,6 +3996,23 @@ mod tests {
         assert_eq!(response.bytes, "col_a,col_b\r\n1,2\r\n".len());
         let saved = std::fs::read_to_string(&output_path).expect("read saved csv");
         assert_eq!(saved, "col_a,col_b\r\n1,2\r\n");
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn save_options_csv_blocking_headless_rejects_non_csv_paths() {
+        let temp_root = temp_app_local_data_dir("save_options_csv_rejects_non_csv");
+        let output_path = temp_root.join("exports").join("options_results.txt");
+        let req = SaveOptionsCsvRequest {
+            path: output_path.to_string_lossy().to_string(),
+            csv_text: "col_a,col_b\r\n1,2\r\n".to_string(),
+        };
+
+        let err = save_options_csv_blocking_headless(req).expect_err("non-csv path");
+
+        assert!(err.contains(".csv"));
+        assert!(!output_path.exists());
 
         let _ = std::fs::remove_dir_all(temp_root);
     }

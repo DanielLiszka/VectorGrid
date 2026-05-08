@@ -19,7 +19,10 @@ const REQUIRED_DOUBLE_CROSSOVER_SYMBOLS: &[&str] = &[
     "gather_topk_pairs_tm_f32",
     "pack_metric_rows_f32",
 ];
-const REQUIRED_OPTIONS_EXPRESSION_SYMBOLS: &[&str] = &["options_expression_score_split_f64"];
+const REQUIRED_OPTIONS_EXPRESSION_SYMBOLS: &[&str] = &[
+    "options_expression_score_split_f64",
+    "options_expression_score_search_holdout_stress_f64",
+];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

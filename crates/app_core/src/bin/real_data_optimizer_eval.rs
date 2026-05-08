@@ -17,6 +17,11 @@ use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Clone, Debug)]
 struct CliConfig {
     csv_path: PathBuf,
@@ -121,6 +126,7 @@ struct CandidateKey {
 
 fn main() -> Result<(), String> {
     let cfg = parse_args()?;
+    let _benchmark_guard = benchmark_lock::acquire("real-data optimizer evaluation")?;
     let base = read_candles_from_csv_compat(cfg.csv_path.to_string_lossy().as_ref())?;
     let cancel = AtomicBool::new(false);
     let strategy_cases = [
@@ -284,15 +290,12 @@ fn main() -> Result<(), String> {
     }
 
     let artifact = EvalArtifact {
-        csv_path: cfg.csv_path.to_string_lossy().to_string(),
+        csv_path: artifact_path_label(&cfg.csv_path),
         timeframes: timeframe_results,
     };
 
-    if let Some(parent) = cfg.out_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let json = serde_json::to_string_pretty(&artifact).map_err(|e| e.to_string())?;
-    std::fs::write(&cfg.out_path, json).map_err(|e| e.to_string())?;
+    atomic_output::write_str(&cfg.out_path, &json)?;
     println!(
         "Wrote evaluation artifact to {}",
         cfg.out_path.to_string_lossy()
@@ -421,7 +424,29 @@ fn parse_range_arg(raw: &str, name: &str) -> Result<(u32, u32, u32), String> {
     let step = parts[2]
         .parse::<u32>()
         .map_err(|_| format!("invalid {name} step"))?;
+    if start == 0 || end == 0 || step == 0 || start > end {
+        return Err(format!(
+            "invalid {name} '{raw}': expected positive start:end:step with start <= end"
+        ));
+    }
     Ok((start, end, step))
+}
+
+fn artifact_path_label(path: &std::path::Path) -> String {
+    let cwd = std::env::current_dir().ok();
+    let absolute = path.canonicalize().unwrap_or_else(|_| {
+        cwd.as_ref()
+            .map_or_else(|| path.to_path_buf(), |base| base.join(path))
+    });
+    if let Some(cwd) = cwd.and_then(|value| value.canonicalize().ok()) {
+        if let Ok(relative) = absolute.strip_prefix(&cwd) {
+            return relative.to_string_lossy().replace('\\', "/");
+        }
+    }
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|name| format!("<external>/{name}"))
+        .unwrap_or_else(|| "<external>".to_string())
 }
 
 fn split_candles_chronological(
@@ -916,4 +941,17 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
         total = total.saturating_add(s_len.saturating_sub(idx));
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_range_arg_rejects_invalid_ranges() {
+        for raw in ["0:10:1", "10:0:1", "10:5:1", "5:10:0"] {
+            let err = parse_range_arg(raw, "fast-range").unwrap_err();
+            assert!(err.contains("expected positive start:end:step with start <= end"));
+        }
+    }
 }

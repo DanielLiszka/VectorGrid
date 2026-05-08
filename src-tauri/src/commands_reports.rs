@@ -69,16 +69,6 @@ pub fn build_report_xlsx_bytes_headless(
     )
 }
 
-fn write_report_xlsx_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(path, bytes).map_err(|e| {
-        format!(
-            "failed to write report workbook at {}: {}",
-            path.to_string_lossy(),
-            e
-        )
-    })
-}
-
 pub(crate) fn save_report_xlsx_for_base(
     report: Value,
     max_rows: Option<u32>,
@@ -86,8 +76,7 @@ pub(crate) fn save_report_xlsx_for_base(
 ) -> Result<SaveReportXlsxResponse, String> {
     let max_rows = normalize_max_rows_u32(max_rows);
     let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
-    let path = commands_reports_shared::suggest_report_path_for_base(&report, base)?;
-    write_report_xlsx_file(&path, &bytes)?;
+    let path = commands_reports_shared::persist_report_bytes_for_base(&report, base, &bytes)?;
     Ok(SaveReportXlsxResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
@@ -265,13 +254,15 @@ pub(crate) fn save_report_xlsx_from_artifact_blocking(
 }
 
 #[allow(dead_code)]
+// Retired legacy builder retained for binary compatibility while the validation
+// report exporter owns current XLSX generation.
 fn build_report_xlsx_analysis_v2(
     report: &Value,
     max_rows: Option<usize>,
 ) -> Result<Vec<u8>, String> {
     use rust_xlsxwriter::{
         Chart, ChartLegendPosition, ChartMarker, ChartMarkerType, ChartType, Color, Format,
-        FormatAlign, FormatBorder, Image, Workbook, XlsxError,
+        FormatAlign, FormatBorder, Workbook, XlsxError,
     };
 
     const CSCV_RANK_FRAC_MIN: f64 = 0.55;
@@ -1744,12 +1735,6 @@ fn build_report_xlsx_analysis_v2(
             )
             .map_err(|e: XlsxError| e.to_string())?;
     }
-
-    let report_image = Image::new_from_buffer(include_bytes!("../assets/report_image.png"))
-        .map_err(|e: XlsxError| e.to_string())?;
-    worksheet
-        .insert_image(49, 28, &report_image)
-        .map_err(|e: XlsxError| e.to_string())?;
 
     worksheet
         .write_string(198, 43, " ")
@@ -3431,15 +3416,6 @@ mod tests {
             .ends_with(&format!("vectorgrid_report_{ts}_2.xlsx")));
         assert!(Path::new(&saved.path).is_file());
         assert!(saved.bytes > 0);
-    }
-
-    #[test]
-    fn write_report_xlsx_file_rejects_directory_targets() {
-        let target = make_temp_dir("write_report_xlsx_dir_target");
-        let err =
-            write_report_xlsx_file(&target, b"not-an-xlsx").expect_err("directory write error");
-        assert!(err.contains("failed to write report workbook at"));
-        assert!(err.contains(&target.to_string_lossy().to_string()));
     }
 
     #[test]

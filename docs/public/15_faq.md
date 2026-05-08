@@ -6,7 +6,7 @@ No. VectorGrid is research and analysis software. It is not financial advice, in
 
 ## What should I try first?
 
-Install the CPU-only release, open Simple Mode, load the bundled synthetic sample, run Double MA optimization, then run optional validation.
+For a release that implements Simple Mode, install the CPU-only release, open Simple Mode, load the bundled synthetic sample, run Double MA optimization, then run optional validation. If the release notes say the app ships the Advanced workbench first, follow that release's first-run instructions instead.
 
 ## Do I need a GPU?
 
@@ -73,4 +73,3 @@ The public desktop target is Windows x64.
 ## How do I report a bug?
 
 Use GitHub Issues for normal bugs and support questions. Include version, release variant, Windows version, workflow, error text, and logs/screenshots with secrets redacted. Use private vulnerability reporting for security issues.
-

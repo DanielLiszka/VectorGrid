@@ -86,6 +86,7 @@ describe('ParetoScatter', () => {
     })
     const chartSurface = wrapper.find('.paretoChartSurface')
 
+    expect(chartSurface.attributes('role')).toBe('group')
     await chartSurface.trigger('keydown', { key: 'ArrowRight' })
     expect(wrapper.text()).toContain('#2 - max_dd=0.1 - pnl=0.12')
 

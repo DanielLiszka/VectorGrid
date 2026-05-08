@@ -638,9 +638,21 @@ export const useAdvancedStore = defineStore('advanced', {
         try {
           const picked = await invokeCommand('pick_save_csv', { defaultName: 'all_pairs.csv' })
           const path = String(picked || '').trim()
-          if (!path) return
+          if (!path) {
+            this.statusLine = 'Export-all CSV save cancelled.'
+            this.source = 'vue'
+            this.updatedAtUnixMs = Date.now()
+            return
+          }
           this.setInputField('exportAllCsvPath', path)
-        } catch {}
+          this.statusLine = 'Selected export-all CSV path.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        } catch (error) {
+          this.statusLine = `Export-all CSV picker failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        }
       })()
     },
 

@@ -284,15 +284,45 @@ function buildOperand(operand: DynamicBuilderOperand): Record<string, unknown> {
   return { kind: 'indicator', id }
 }
 
+function buildIndicatorParamValue(
+  key: string,
+  param: DynamicIndicatorParamValue,
+): Record<string, unknown> {
+  const kind = normalizeText(param?.kind)
+  if (kind === 'int' || kind === 'float') {
+    const numeric = parseFinite(param?.value)
+    if (numeric == null) {
+      throw new Error(`Indicator parameter '${key}' is not a finite number.`)
+    }
+    return {
+      kind,
+      value: kind === 'int' ? Math.round(numeric) : numeric,
+    }
+  }
+  if (kind === 'bool') {
+    if (typeof param?.value !== 'boolean') {
+      throw new Error(`Indicator parameter '${key}' must be a boolean.`)
+    }
+    return { kind, value: param.value }
+  }
+  if (kind === 'enum_string') {
+    const text = normalizeText(param?.value)
+    if (!text) {
+      throw new Error(
+        `Indicator parameter '${key}' must be a non-empty option.`,
+      )
+    }
+    return { kind, value: text }
+  }
+  throw new Error(`Indicator parameter '${key}' has an unsupported kind.`)
+}
+
 function buildIndicatorParamKvs(params: Record<string, DynamicIndicatorParamValue>): Array<Record<string, unknown>> {
   return Object.entries(params)
     .filter(([key]) => normalizeText(key).length > 0)
     .map(([key, value]) => ({
       key,
-      value: {
-        kind: value.kind,
-        value: value.value,
-      },
+      value: buildIndicatorParamValue(key, value),
     }))
 }
 
@@ -303,7 +333,13 @@ function parseOptionalPct(value: string): number | null {
   if (numeric == null) {
     throw new Error(`Risk field '${value}' is not a finite number.`)
   }
-  return numeric
+  const normalized = numeric > 1 ? numeric / 100 : numeric
+  if (normalized <= 0 || normalized >= 1) {
+    throw new Error(
+      `Risk field '${value}' must be greater than 0 and less than 100%.`,
+    )
+  }
+  return normalized
 }
 
 export function buildDynamicDoubleMaStrategyIrFromBuilder(input: {

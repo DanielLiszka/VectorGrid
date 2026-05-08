@@ -947,11 +947,24 @@ const currentArtifactStageSummary = computed(() => {
 });
 
 async function browseSaveCsv(
-  field: "mlSignalDatasetExportPath" | "mlSignalScoreCachePath",
+  field: "mlSignalDatasetExportPath",
   defaultName: string,
 ): Promise<void> {
   if (!hasTauriRuntime.value) return;
   const picked = await invokeCommand<string | null>("pick_save_csv", {
+    defaultName,
+  });
+  const path = String(picked || "").trim();
+  if (!path) return;
+  optimizeStore.setInputField(field, path);
+}
+
+async function browseSaveJson(
+  field: "mlSignalScoreCachePath",
+  defaultName: string,
+): Promise<void> {
+  if (!hasTauriRuntime.value) return;
+  const picked = await invokeCommand<string | null>("pick_save_json", {
     defaultName,
   });
   const path = String(picked || "").trim();
@@ -1635,7 +1648,7 @@ onMounted(() => {
           type="button"
           :disabled="!hasTauriRuntime"
           @click="
-            void browseSaveCsv(
+            void browseSaveJson(
               'mlSignalScoreCachePath',
               'ml_signal_score_cache.json',
             )

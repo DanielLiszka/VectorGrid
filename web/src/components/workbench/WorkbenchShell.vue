@@ -1065,7 +1065,11 @@ function onResultsKeydown(
           <div id="portfolioVueShellMount"></div>
         </section>
 
-        <section v-show="settingsWorkspaceActive" id="settingsShellGrid">
+        <section
+          v-show="settingsWorkspaceActive"
+          id="settingsShellGrid"
+          aria-label="Settings workspace shell"
+        >
           <div id="settingsVueShellMount"></div>
         </section>
       </main>

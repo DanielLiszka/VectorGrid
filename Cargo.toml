@@ -7,5 +7,10 @@ members = [
 ]
 resolver = "2"
 
+# `vector-ta` is vendored from the upstream VectorTA 0.2.4 package.
+# The vendored package metadata records upstream git sha
+# 59dc31af77632c5d0ce0b9c89821296e98a5cdb5 in
+# vendor/vector-ta-0.2.4/.cargo_vcs_info.json.
+# Treat vendor/vector-ta-0.2.4 changes as first-party review scope.
 [patch.crates-io]
 vector-ta = { path = "vendor/vector-ta-0.2.4" }

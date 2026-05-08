@@ -1,7 +1,7 @@
 use std::fs;
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::mem::{self, MaybeUninit};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,8 +14,6 @@ const VERSION: u32 = 2;
 const HEADER_LEN: usize = 64;
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV1A64_PRIME: u64 = 0x100000001b3;
-const CONTENT_FP_FULL_MAX_BYTES: u64 = 256 * 1024 * 1024;
-const CONTENT_FP_SAMPLE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceIdentity {
@@ -59,22 +57,14 @@ fn fnv1a64_update(mut h: u64, bytes: &[u8]) -> u64 {
     h
 }
 
-fn hash_file_range(file: &mut fs::File, start: u64, len: u64, mut h: u64) -> Result<u64, String> {
-    if len == 0 {
-        return Ok(h);
-    }
-    file.seek(SeekFrom::Start(start))
-        .map_err(|e| e.to_string())?;
-    let mut left = len;
+fn hash_file_contents(file: &mut fs::File, mut h: u64) -> Result<u64, String> {
     let mut buf = [0u8; 64 * 1024];
-    while left > 0 {
-        let take = left.min(buf.len() as u64) as usize;
-        let n = file.read(&mut buf[..take]).map_err(|e| e.to_string())?;
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
         h = fnv1a64_update(h, &buf[..n]);
-        left = left.saturating_sub(n as u64);
     }
     Ok(h)
 }
@@ -86,26 +76,8 @@ fn content_fingerprint_parts_for_source(path: &Path) -> Result<(&'static str, u6
 
     let mut h = FNV1A64_OFFSET_BASIS;
     h = fnv1a64_update(h, &size.to_le_bytes());
-
-    if size <= CONTENT_FP_FULL_MAX_BYTES {
-        h = hash_file_range(&mut file, 0, size, h)?;
-        return Ok(("full", h));
-    }
-
-    let w = CONTENT_FP_SAMPLE_BYTES.min(size);
-    h = hash_file_range(&mut file, 0, w, h)?;
-
-    if size > w {
-        let tail_start = size.saturating_sub(w);
-        h = hash_file_range(&mut file, tail_start, w, h)?;
-    }
-
-    if size > 2 * w {
-        let mid_start = (size / 2).saturating_sub(w / 2);
-        h = hash_file_range(&mut file, mid_start, w, h)?;
-    }
-
-    Ok(("sampled", h))
+    h = hash_file_contents(&mut file, h)?;
+    Ok(("full", h))
 }
 
 fn content_fingerprint_hash_for_source(path: &Path) -> Result<u64, String> {

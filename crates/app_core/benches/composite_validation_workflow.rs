@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -1101,4 +1104,4 @@ criterion_group!(
     bench_composite_validation_workflow,
     bench_composite_validation_gpu_workflow
 );
-criterion_main!(benches);
+serialized_criterion_main!(benches);

@@ -1,4 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{black_box, criterion_group, Criterion};
 use std::collections::HashMap;
 use std::time::Duration;
 #[cfg(feature = "cuda")]
@@ -913,4 +916,4 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_dynamic_cpu_eval);
-criterion_main!(benches);
+serialized_criterion_main!(benches);

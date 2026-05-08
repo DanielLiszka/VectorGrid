@@ -1,4 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{black_box, criterion_group, Criterion};
 use csv::WriterBuilder;
 use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -359,4 +362,4 @@ fn bench_ml_signal_validation(c: &mut Criterion) {
 }
 
 criterion_group!(ml_signal_validation_benches, bench_ml_signal_validation);
-criterion_main!(ml_signal_validation_benches);
+serialized_criterion_main!(ml_signal_validation_benches);

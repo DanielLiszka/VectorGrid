@@ -78,7 +78,7 @@ describe("priceSeriesModel", () => {
       ]),
     ).toEqual([
       { time: 1, fast: null, slow: 20 },
-      { time: 3, fast: 10.5, slow: 0 },
+      { time: 3, fast: 10.5, slow: null },
     ]);
 
     expect(
@@ -87,7 +87,7 @@ describe("priceSeriesModel", () => {
         { time: 1, halftrend: null, macz: "0.3" },
       ]),
     ).toEqual([
-      { time: 1, halftrend: 0, macz: 0.3 },
+      { time: 1, halftrend: null, macz: 0.3 },
       { time: 2, halftrend: 101, macz: -0.2 },
     ]);
   });

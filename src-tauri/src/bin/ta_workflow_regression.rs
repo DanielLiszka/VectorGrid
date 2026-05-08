@@ -19,6 +19,11 @@ use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Parser, Debug)]
 #[command(name = "ta_workflow_regression")]
 #[command(about = "Deterministic optimize->validate->meta->holdout workflow regression gate")]
@@ -657,6 +662,7 @@ fn run_workflow_once(
 }
 
 fn main() -> Result<(), String> {
+    let _benchmark_guard = benchmark_lock::acquire("ta_workflow_regression")?;
     let cli = Cli::parse();
     let cancel = AtomicBool::new(false);
     let summary = run_workflow_once(
@@ -666,11 +672,8 @@ fn main() -> Result<(), String> {
         &cancel,
     )?;
 
-    if let Some(parent) = cli.out.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let txt = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
-    std::fs::write(&cli.out, txt).map_err(|e| e.to_string())?;
+    atomic_output::write_str(&cli.out, &txt)?;
     println!("Saved summary: {}", cli.out.to_string_lossy());
 
     if let Some(base_path) = cli.baseline.as_ref() {

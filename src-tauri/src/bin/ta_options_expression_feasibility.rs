@@ -27,10 +27,15 @@ use ta_desktop_demo_app::commands::{
 use ta_desktop_demo_app::settings;
 use tauri::Manager;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
 #[derive(Parser, Debug)]
 #[command(name = "ta_options_expression_feasibility")]
 #[command(
-    about = "Headless Phase 0.5 feasibility preview for Polygon/Massive options-expression artifacts"
+    about = "Headless Phase 0.5 feasibility preview for Polygon options-expression artifacts"
 )]
 struct Cli {
     #[arg(long)]
@@ -41,11 +46,11 @@ struct Cli {
 
     #[arg(
         long,
-        help = "Import a normalized Polygon/Massive options CSV into the local dataset store before running the preview"
+        help = "Import a normalized Polygon options CSV into the local dataset store before running the preview"
     )]
     import_csv: Option<PathBuf>,
 
-    #[arg(long, help = "Root symbol for the imported Polygon/Massive dataset")]
+    #[arg(long, help = "Root symbol for the imported Polygon dataset")]
     import_root_symbol: Option<String>,
 
     #[arg(long)]
@@ -1448,12 +1453,7 @@ fn select_dataset_manifest(
             .iter()
             .find(|entry| entry.options_dataset_id == explicit)
             .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "Polygon/Massive options dataset '{}' is not imported",
-                    explicit
-                )
-            });
+            .ok_or_else(|| format!("Polygon options dataset '{}' is not imported", explicit));
     }
 
     if let Some(root) = root_hint
@@ -1470,7 +1470,7 @@ fn select_dataset_manifest(
         }
         if matches.len() > 1 {
             return Err(format!(
-                "multiple imported Polygon/Massive options datasets match root '{}'; pass --dataset-id explicitly",
+                "multiple imported Polygon options datasets match root '{}'; pass --dataset-id explicitly",
                 root
             ));
         }
@@ -1481,7 +1481,7 @@ fn select_dataset_manifest(
     }
 
     Err(
-        "unable to select a Polygon/Massive options dataset automatically; pass --dataset-id explicitly"
+        "unable to select a Polygon options dataset automatically; pass --dataset-id explicitly"
             .to_string(),
     )
 }
@@ -1540,6 +1540,7 @@ fn parse_split_assignment_mode(raw: &str) -> Result<OptionsSplitAssignmentMode, 
 }
 
 fn main() -> Result<(), String> {
+    let _benchmark_guard = benchmark_lock::acquire("ta_options_expression_feasibility")?;
     let cli = Cli::parse();
     let app = tauri::Builder::default()
         .build(tauri::generate_context!())
@@ -1560,7 +1561,7 @@ fn main() -> Result<(), String> {
                 csv_path: import_csv.to_string_lossy().to_string(),
                 options_dataset_id: cli.dataset_id.clone(),
                 root_symbol: cli.import_root_symbol.clone(),
-                provider_name: "massive".to_string(),
+                provider_name: "polygon".to_string(),
                 provider_source_surface: "minute_aggregate".to_string(),
                 provider_entitlement_profile: None,
                 quote_resolution: "1m".to_string(),
@@ -1570,7 +1571,7 @@ fn main() -> Result<(), String> {
                 normalization_version: None,
                 quote_semantics_version: None,
                 corporate_action_mapping_version: None,
-                contract_reference_source: "massive_contract_reference".to_string(),
+                contract_reference_source: "polygon_contract_reference".to_string(),
                 contract_reference_as_of_utc: None,
                 underlier_reference_source: "underlying_dataset".to_string(),
                 aggregate_price_field: Some("close".to_string()),
@@ -1698,20 +1699,14 @@ fn main() -> Result<(), String> {
         .map(|_| render_markdown_summary(&output));
 
     if let Some(out_path) = cli.out_json.as_ref() {
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        fs::write(out_path, &json)
+        atomic_output::write_str(out_path, &json)
             .map_err(|e| format!("failed to write {}: {e}", out_path.display()))?;
     }
     if let Some(out_path) = cli.out_markdown.as_ref() {
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
         let markdown = markdown
             .as_ref()
             .ok_or_else(|| "failed to build markdown summary".to_string())?;
-        fs::write(out_path, markdown)
+        atomic_output::write_str(out_path, markdown)
             .map_err(|e| format!("failed to write {}: {e}", out_path.display()))?;
     }
 

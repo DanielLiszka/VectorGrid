@@ -15,6 +15,8 @@ const QUERY_SECRET_FIELD_RE = new RegExp(
   `([?&](?:${SENSITIVE_KEY_PATTERN})=)([^&#\\s]+)`,
   "gi",
 );
+const AUTHORIZATION_HEADER_RE =
+  /\b(authorization\s*[:=]\s*)(?:Bearer\s+)?[^\s,;&]+/gi;
 const BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 function stringifyRedactionInput(value: unknown): string {
@@ -49,6 +51,7 @@ export function redactKnownSecrets(
   }
 
   return text
+    .replace(AUTHORIZATION_HEADER_RE, `$1${REDACTED}`)
     .replace(BEARER_RE, `Bearer ${REDACTED}`)
     .replace(JSON_SECRET_FIELD_RE, `$1${REDACTED}$3`)
     .replace(QUERY_SECRET_FIELD_RE, `$1${REDACTED}`)

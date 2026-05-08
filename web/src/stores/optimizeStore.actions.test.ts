@@ -172,6 +172,46 @@ describe("optimize store actions", () => {
     expect(store.source).toBe("vue");
   });
 
+  it("keeps optimize run and utility rejections inside store state", async () => {
+    const store = useOptimizeStore(pinia);
+
+    runOptimizationMock.mockRejectedValueOnce(new Error("engine offline"));
+    store.runOptimization();
+    await flushServiceImports();
+    expect(store.statusLine).toBe(
+      "Optimization failed: Error: engine offline",
+    );
+
+    applyPresetMock.mockRejectedValueOnce(new Error("preset unavailable"));
+    store.applyPreset();
+    await flushServiceImports();
+    expect(store.statusLine).toBe(
+      "Preset failed: Error: preset unavailable",
+    );
+
+    presetKernelMock.mockRejectedValueOnce(new Error("kernel unsupported"));
+    store.presetKernel();
+    await flushServiceImports();
+    expect(store.statusLine).toBe(
+      "GPU-kernel preset failed: Error: kernel unsupported",
+    );
+
+    previewDynamicStrategyIrMock.mockRejectedValueOnce(new Error("bad ir"));
+    store.previewDynamicStrategyIr();
+    await flushServiceImports();
+    expect(store.statusLine).toBe(
+      "Dynamic strategy preview failed: Error: bad ir",
+    );
+
+    runGpuParityCheckMock.mockRejectedValueOnce(new Error("parity mismatch"));
+    store.runGpuParityCheck();
+    await flushServiceImports();
+    expect(store.statusLine).toBe(
+      "GPU parity check failed: Error: parity mismatch",
+    );
+    expect(store.source).toBe("vue");
+  });
+
   it("routes the shared MlSignal primary action by workflow step", async () => {
     const store = useOptimizeStore(pinia);
     const data = useDataStore(pinia);

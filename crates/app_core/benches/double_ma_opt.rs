@@ -1,4 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{black_box, criterion_group, Criterion};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -2223,4 +2226,4 @@ criterion_group!(
     bench_double_ma_dynamic_program_execution,
     bench_double_ma_gpu_kernel_vdps
 );
-criterion_main!(benches);
+serialized_criterion_main!(benches);

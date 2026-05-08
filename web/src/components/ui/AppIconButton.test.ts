@@ -36,4 +36,18 @@ describe('AppIconButton', () => {
     expect(button.attributes('aria-label')).toBe('Run')
     expect(button.attributes('title')).toBe('Load data first.')
   })
+
+  it('falls back to the title for the accessible name when label text is empty', () => {
+    const wrapper = mount(AppIconButton, {
+      props: {
+        icon: Info,
+        label: ' ',
+        title: 'Inspect details',
+      },
+    })
+
+    const button = wrapper.get('button')
+    expect(button.attributes('aria-label')).toBe('Inspect details')
+    expect(button.attributes('title')).toBe('Inspect details')
+  })
 })

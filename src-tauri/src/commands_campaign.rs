@@ -1056,6 +1056,23 @@ fn should_load_existing_artifacts(
     skip_existing || execution_mode == ResearchCampaignExecutionMode::ValidateOnly
 }
 
+fn load_existing_campaign_artifacts<F>(
+    skip_existing: bool,
+    execution_mode: ResearchCampaignExecutionMode,
+    load: F,
+) -> Result<Vec<run_artifacts::RunArtifactSummary>, String>
+where
+    F: FnOnce() -> Result<Vec<run_artifacts::RunArtifactSummary>, String>,
+{
+    if !should_load_existing_artifacts(skip_existing, execution_mode) {
+        return Ok(Vec::new());
+    }
+
+    load().map_err(|error| {
+        format!("failed to load existing run artifacts for campaign reuse: {error}")
+    })
+}
+
 fn failed_item(
     csv_path: String,
     label: String,
@@ -3022,11 +3039,9 @@ fn run_research_campaign_blocking_with_mode(
     }
     let manifest_hash = initial_manifest.manifest_hash.clone();
 
-    let existing = if should_load_existing_artifacts(req.skip_existing, execution_mode) {
-        run_artifacts::list_run_artifacts_blocking(app.clone()).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let existing = load_existing_campaign_artifacts(req.skip_existing, execution_mode, || {
+        run_artifacts::list_run_artifacts_blocking(app.clone())
+    })?;
 
     let dataset_total = req.datasets.len();
     let using_preloaded_pack = preloaded_pack.is_some();
@@ -4831,9 +4846,9 @@ mod tests {
         can_reuse_optimization_artifact_for_validation, candidate_selection_from_optimization,
         candidate_values_from_optimization, classify_run_artifact_for_campaign,
         existing_optimization_match, existing_validation_match, is_double_like_kind,
-        normalize_backend_value, normalize_campaign_datasets, optimization_family_for_kind,
-        optimization_result_from_artifact_value, push_unique_warning, record_prefetch_feedback,
-        requested_gpu_device_id, resolve_campaign_strategy_kind,
+        load_existing_campaign_artifacts, normalize_backend_value, normalize_campaign_datasets,
+        optimization_family_for_kind, optimization_result_from_artifact_value, push_unique_warning,
+        record_prefetch_feedback, requested_gpu_device_id, resolve_campaign_strategy_kind,
         save_campaign_summary_checkpoint_blocking, should_load_existing_artifacts, Backend,
         CampaignArtifactMatchDecision, CampaignDoubleMaVramPrefetchConfig, CampaignEvidenceState,
         CampaignOptimizationFamily, CampaignOptimizationResult, CampaignPrefetchDiagnostics,
@@ -5535,6 +5550,27 @@ mod tests {
             false,
             ResearchCampaignExecutionMode::Full
         ));
+    }
+
+    #[test]
+    fn existing_artifact_listing_failure_is_not_treated_as_empty_reuse_set() {
+        let err =
+            load_existing_campaign_artifacts(true, ResearchCampaignExecutionMode::Full, || {
+                Err("catalog unavailable".to_string())
+            })
+            .expect_err("listing failures should fail closed");
+        assert!(err.contains("failed to load existing run artifacts"));
+        assert!(err.contains("catalog unavailable"));
+
+        let mut called = false;
+        let existing =
+            load_existing_campaign_artifacts(false, ResearchCampaignExecutionMode::Full, || {
+                called = true;
+                Ok(Vec::new())
+            })
+            .expect("skip disabled should not load artifacts");
+        assert!(existing.is_empty());
+        assert!(!called);
     }
 
     #[test]

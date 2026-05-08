@@ -2342,11 +2342,7 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
           currentArtifact?.thresholdPolicy,
         ),
       ) || null,
-    source_bundle_manifest_path:
-      normalizeText(
-        currentArtifact?.source_bundle_manifest_path ??
-          currentArtifact?.sourceBundleManifestPath,
-      ) || null,
+    source_bundle_manifest_path: null,
     producer_kind:
       normalizeText(
         firstMeaningfulValue(
@@ -2373,20 +2369,14 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
       ? normalizeText(optimize.mlSignalNativeBackend || "native_cpu") ||
         "native_cpu"
       : "score_cache_only",
-    native_library_path: nativeScoreSource
-      ? normalizeText(optimize.mlSignalNativeLibraryPath) || null
-      : null,
+    native_library_path: null,
     native_gpu_device_id: nativeScoreSource
       ? parseOptionalInteger(optimize.mlSignalNativeGpuDeviceId)
       : null,
     native_prediction_batch_size: nativeScoreSource
       ? parseOptionalInteger(optimize.mlSignalNativePredictionBatchSize)
       : null,
-    native_library_discovery_policy: nativeScoreSource
-      ? normalizeText(optimize.mlSignalNativeLibraryPath)
-        ? "developer_debug"
-        : "production"
-      : "production",
+    native_library_discovery_policy: "production",
     strategy_kind: "MlSignal",
   };
   const runTs = new Date().toISOString();

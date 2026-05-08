@@ -1,6 +1,9 @@
+#[macro_use]
+mod bench_support;
+
 mod options_expression_bench_support;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, Criterion};
 use std::time::Duration;
 use ta_app_core::run_options_expression_blocking;
 
@@ -35,4 +38,4 @@ fn bench_options_expression_cpu_score(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_options_expression_cpu_score);
-criterion_main!(benches);
+serialized_criterion_main!(benches);

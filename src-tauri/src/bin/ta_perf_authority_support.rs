@@ -1,7 +1,7 @@
 use clap::Parser;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -21,6 +21,11 @@ use ta_desktop_demo_app::state::{AppState, BackgroundTaskState};
 use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::StrategyConfig;
 use tauri::Manager;
+
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
 
 #[derive(Parser, Debug)]
 #[command(name = "ta_perf_authority_support")]
@@ -50,7 +55,7 @@ struct Cli {
     #[arg(long)]
     case: Vec<String>,
 
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     cleanup_app_data: bool,
 }
 
@@ -155,72 +160,68 @@ fn measure_step<T>(
 }
 
 fn write_synthetic_ohlcv_csv(path: &Path, rows: usize) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let file = File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    let mut out = BufWriter::new(file);
-    writeln!(out, "timestamp,open,high,low,close,volume").map_err(|e| e.to_string())?;
-    let base_ts = 1_700_000_000_000i64;
-    for i in 0..rows {
-        let ts = base_ts + (i as i64) * 60_000;
-        let trend = 100.0 + (i as f64) * 0.001;
-        let wave = ((i as f64) * 0.037).sin() * 0.4;
-        let close = trend + wave;
-        let open = close - 0.05;
-        let high = close + 0.15;
-        let low = close - 0.20;
-        let volume = 10_000.0 + (i % 97) as f64;
-        writeln!(
-            out,
-            "{ts},{open:.6},{high:.6},{low:.6},{close:.6},{volume:.2}"
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    out.flush().map_err(|e| e.to_string())
+    atomic_output::write_with(path, |file| {
+        let mut out = BufWriter::new(file);
+        writeln!(out, "timestamp,open,high,low,close,volume").map_err(|e| e.to_string())?;
+        let base_ts = 1_700_000_000_000i64;
+        for i in 0..rows {
+            let ts = base_ts + (i as i64) * 60_000;
+            let trend = 100.0 + (i as f64) * 0.001;
+            let wave = ((i as f64) * 0.037).sin() * 0.4;
+            let close = trend + wave;
+            let open = close - 0.05;
+            let high = close + 0.15;
+            let low = close - 0.20;
+            let volume = 10_000.0 + (i % 97) as f64;
+            writeln!(
+                out,
+                "{ts},{open:.6},{high:.6},{low:.6},{close:.6},{volume:.2}"
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        out.flush().map_err(|e| e.to_string())
+    })
 }
 
 fn write_synthetic_options_csv(path: &Path, rows: usize) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let file = File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    let mut out = BufWriter::new(file);
-    writeln!(
-        out,
-        "root_symbol,contract_id,option_type,expiration_date,expiration_timestamp_ms,strike,multiplier,timestamp_ms,open,high,low,close,underlying_price,bid,ask,mid,volume,open_interest,quote_age_ms,session_id"
-    )
-    .map_err(|e| e.to_string())?;
-    let base_ts = 1_700_000_000_000i64;
-    let expiration_ts = base_ts + 14 * 24 * 60 * 60 * 1000;
-    let contract_count = 6usize;
-    for i in 0..rows {
-        let c = i % contract_count;
-        let side = if c % 2 == 0 { "call" } else { "put" };
-        let strike = 98.0 + (c as f64) * 2.0;
-        let ts = base_ts + (i / contract_count) as i64 * 60_000;
-        let underlying = 100.0 + ((i / contract_count) as f64 * 0.011).sin();
-        let intrinsic = if side == "call" {
-            (underlying - strike).max(0.0)
-        } else {
-            (strike - underlying).max(0.0)
-        };
-        let close = (intrinsic + 1.0 + (c as f64) * 0.08).max(0.05);
-        let bid = (close - 0.03).max(0.01);
-        let ask = close + 0.03;
-        let mid = (bid + ask) * 0.5;
+    atomic_output::write_with(path, |file| {
+        let mut out = BufWriter::new(file);
         writeln!(
             out,
-            "SPY,SPY_{side}_{c:03},{side},2023-11-28,{expiration_ts},{strike:.2},100,{ts},{:.4},{:.4},{:.4},{close:.4},{underlying:.4},{bid:.4},{ask:.4},{mid:.4},{},{},250,regular",
-            close - 0.02,
-            close + 0.04,
-            (close - 0.05).max(0.01),
-            10 + (i % 13),
-            1000 + c
+            "root_symbol,contract_id,option_type,expiration_date,expiration_timestamp_ms,strike,multiplier,timestamp_ms,open,high,low,close,underlying_price,bid,ask,mid,volume,open_interest,quote_age_ms,session_id"
         )
         .map_err(|e| e.to_string())?;
-    }
-    out.flush().map_err(|e| e.to_string())
+        let base_ts = 1_700_000_000_000i64;
+        let expiration_ts = base_ts + 14 * 24 * 60 * 60 * 1000;
+        let contract_count = 6usize;
+        for i in 0..rows {
+            let c = i % contract_count;
+            let side = if c % 2 == 0 { "call" } else { "put" };
+            let strike = 98.0 + (c as f64) * 2.0;
+            let ts = base_ts + (i / contract_count) as i64 * 60_000;
+            let underlying = 100.0 + ((i / contract_count) as f64 * 0.011).sin();
+            let intrinsic = if side == "call" {
+                (underlying - strike).max(0.0)
+            } else {
+                (strike - underlying).max(0.0)
+            };
+            let close = (intrinsic + 1.0 + (c as f64) * 0.08).max(0.05);
+            let bid = (close - 0.03).max(0.01);
+            let ask = close + 0.03;
+            let mid = (bid + ask) * 0.5;
+            writeln!(
+                out,
+                "SPY,SPY_{side}_{c:03},{side},2023-11-28,{expiration_ts},{strike:.2},100,{ts},{:.4},{:.4},{:.4},{close:.4},{underlying:.4},{bid:.4},{ask:.4},{mid:.4},{},{},250,regular",
+                close - 0.02,
+                close + 0.04,
+                (close - 0.05).max(0.01),
+                10 + (i % 13),
+                1000 + c
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        out.flush().map_err(|e| e.to_string())
+    })
 }
 
 fn build_isolated_app() -> Result<tauri::App, String> {
@@ -243,6 +244,24 @@ fn build_isolated_app() -> Result<tauri::App, String> {
         .manage(BackgroundTaskState::default())
         .build(context)
         .map_err(|e| e.to_string())
+}
+
+fn cleanup_perf_authority_app_data_dir(dir: &Path) -> Result<(), String> {
+    let normalized = dir.to_string_lossy().to_ascii_lowercase();
+    if !normalized.contains("perfauthority") && !normalized.contains("perf_authority") {
+        return Err(format!(
+            "refusing to cleanup app data dir that does not look perf-authority-owned: {}",
+            dir.display()
+        ));
+    }
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "failed to remove app data dir {}: {error}",
+            dir.display()
+        )),
+    }
 }
 
 fn validation_candidate(index: usize) -> Value {
@@ -394,7 +413,7 @@ fn run_options_data_case(work_dir: &Path, cli: &Cli) -> Result<CaseSummary, Stri
         csv_path: csv_path.to_string_lossy().to_string(),
         options_dataset_id: Some(dataset_id.clone()),
         root_symbol: Some("SPY".to_string()),
-        provider_name: "massive".to_string(),
+        provider_name: "synthetic".to_string(),
         provider_source_surface: "minute_aggregate".to_string(),
         provider_entitlement_profile: None,
         quote_resolution: "1m".to_string(),
@@ -404,7 +423,7 @@ fn run_options_data_case(work_dir: &Path, cli: &Cli) -> Result<CaseSummary, Stri
         normalization_version: Some(1),
         quote_semantics_version: Some(1),
         corporate_action_mapping_version: Some(1),
-        contract_reference_source: "massive_contract_reference".to_string(),
+        contract_reference_source: "synthetic_contract_reference".to_string(),
         contract_reference_as_of_utc: None,
         underlier_reference_source: "underlying_dataset".to_string(),
         aggregate_price_field: Some("close".to_string()),
@@ -529,21 +548,18 @@ fn run_reports_case(cli: &Cli, app_handle: tauri::AppHandle) -> Result<CaseSumma
         .join("runs");
     fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
     let artifact_path = runs_dir.join("vectorgrid_run_support_perf_report.json");
-    fs::write(
-        &artifact_path,
-        serde_json::to_vec_pretty(&json!({
-            "kind": "vectorgrid_run_artifact",
-            "ts": "2026-05-07T00:00:00Z",
-            "dataset_meta": { "csv_path": "support.csv", "symbol": "SPY", "timeframe": "1m" },
-            "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
-            "validation": {
-                "req": { "candidates": [] },
-                "res": report.pointer("/validation/res").cloned().unwrap_or(Value::Null)
-            }
-        }))
-        .map_err(|e| e.to_string())?,
-    )
+    let artifact_json = serde_json::to_string_pretty(&json!({
+        "kind": "vectorgrid_run_artifact",
+        "ts": "2026-05-07T00:00:00Z",
+        "dataset_meta": { "csv_path": "support.csv", "symbol": "SPY", "timeframe": "1m" },
+        "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
+        "validation": {
+            "req": { "candidates": [] },
+            "res": report.pointer("/validation/res").cloned().unwrap_or(Value::Null)
+        }
+    }))
     .map_err(|e| e.to_string())?;
+    atomic_output::write_str(&artifact_path, &artifact_json).map_err(|e| e.to_string())?;
 
     let (_, step) = measure_step("save_report_xlsx_from_artifact", || {
         let saved = tauri::async_runtime::block_on(save_report_xlsx_from_artifact(
@@ -850,6 +866,7 @@ fn run_execution_case(app_handle: tauri::AppHandle) -> Result<CaseSummary, Strin
 }
 
 fn main() -> Result<(), String> {
+    let _benchmark_guard = benchmark_lock::acquire("ta_perf_authority_support")?;
     let cli = Cli::parse();
     let requested_cases = normalize_requested_cases(&cli.case)?;
     let work_dir = cli.work_dir.clone().unwrap_or(default_work_dir()?);
@@ -932,18 +949,13 @@ fn main() -> Result<(), String> {
         cases,
     };
 
-    if let Some(parent) = cli.out.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(
-        &cli.out,
-        serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("write {}: {e}", cli.out.display()))?;
+    let summary_json = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
+    atomic_output::write_str(&cli.out, &summary_json)
+        .map_err(|e| format!("write {}: {e}", cli.out.display()))?;
 
     if cli.cleanup_app_data {
         if let Some(dir) = app_data_dir {
-            let _ = fs::remove_dir_all(dir);
+            cleanup_perf_authority_app_data_dir(&dir)?;
         }
     }
 
@@ -953,7 +965,7 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_requested_cases;
+    use super::{cleanup_perf_authority_app_data_dir, normalize_requested_cases};
 
     #[test]
     fn normalize_requested_cases_rejects_unknown_case() {
@@ -966,5 +978,33 @@ mod tests {
         let cases = normalize_requested_cases(&["DATA".to_string(), " dynamic ".to_string()])
             .expect("known cases should parse");
         assert_eq!(cases, vec!["data".to_string(), "dynamic".to_string()]);
+    }
+
+    #[test]
+    fn cleanup_perf_authority_app_data_dir_requires_owned_path_marker() {
+        let temp_root = std::env::temp_dir()
+            .join("vectorgrid_support_cleanup_test")
+            .join(format!("{}", std::process::id()));
+        let unrelated = temp_root.join("app_local_data");
+        std::fs::create_dir_all(&unrelated).expect("unrelated dir");
+
+        let err = cleanup_perf_authority_app_data_dir(&unrelated)
+            .expect_err("unrelated app data should not be removed");
+        assert!(err.contains("does not look perf-authority-owned"));
+        assert!(unrelated.exists());
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn cleanup_perf_authority_app_data_dir_removes_owned_path() {
+        let temp_root = std::env::temp_dir()
+            .join("vectorgrid_support_cleanup_owned_test")
+            .join(format!("{}", std::process::id()));
+        let owned = temp_root.join("VectorGridPerfAuthority123");
+        std::fs::create_dir_all(&owned).expect("owned dir");
+
+        cleanup_perf_authority_app_data_dir(&owned).expect("cleanup owned");
+        assert!(!owned.exists());
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 }

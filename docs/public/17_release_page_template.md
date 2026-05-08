@@ -2,6 +2,8 @@
 
 Use this template for a public VectorGrid Windows release page.
 
+Before using the Simple Mode wording below, confirm the release implements and verifies Simple Mode as the shipped first-run surface. Replace those sections with Advanced-workbench first-run instructions if that is what the release actually ships.
+
 ```markdown
 # VectorGrid <version>
 
@@ -33,7 +35,7 @@ Publisher/signature: `<publisher>`
 2. Verify the SHA-256 hash.
 3. Confirm the Windows publisher/signature.
 4. Run the setup executable.
-5. Start in Simple Mode.
+5. Start in <Simple Mode / the documented first-run workspace>.
 
 Install guide: <link>
 
@@ -42,13 +44,13 @@ Install guide: <link>
 Recommended first workflow:
 
 1. Load the bundled synthetic sample.
-2. Run Double MA optimization in Simple Mode.
+2. Run Double MA optimization in <Simple Mode / the documented first-run workspace>.
 3. Optionally run validation.
 4. Copy or save the Simple Markdown summary.
 
 ## What's Included
 
-- Simple Mode workflow for data -> optimize -> validate -> summary.
+- <Simple Mode / documented first-run> workflow for data -> optimize -> validate -> summary.
 - Local CSV loading.
 - Bundled synthetic sample.
 - Polygon.io historical cache workflows for supported markets.

@@ -5,6 +5,13 @@ fn main() {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 mod real {
     use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::{c_char, c_void, CStr, CString};
@@ -151,6 +158,8 @@ mod real {
         kernel_filter: String,
         output_dir: PathBuf,
         enable_lazy_patching: bool,
+        include_local_paths: bool,
+        include_command_line: bool,
     }
 
     #[derive(Clone)]
@@ -458,6 +467,55 @@ mod real {
                 Ok(())
             } else {
                 Err(format!("{op} failed: {}", self.result_string(code)))
+            }
+        }
+    }
+
+    struct SassMetricsEnableGuard<'a> {
+        api: &'a CuptiApi,
+        ctx: cuda::CUcontext,
+        disabled: bool,
+    }
+
+    impl<'a> SassMetricsEnableGuard<'a> {
+        fn enable(
+            api: &'a CuptiApi,
+            ctx: cuda::CUcontext,
+            enable_lazy_patching: bool,
+        ) -> Result<Self, String> {
+            let mut enable_params = metric_enable_params(ctx, enable_lazy_patching);
+            api.check(
+                unsafe { (api.cupti_sass_metrics_enable)(&mut enable_params as *mut _) },
+                "cuptiSassMetricsEnable",
+            )?;
+            Ok(Self {
+                api,
+                ctx,
+                disabled: false,
+            })
+        }
+
+        fn disable(&mut self) -> Result<usize, String> {
+            if self.disabled {
+                return Ok(0);
+            }
+            let mut disable_params = metric_disable_params(self.ctx);
+            self.api.check(
+                unsafe { (self.api.cupti_sass_metrics_disable)(&mut disable_params as *mut _) },
+                "cuptiSassMetricsDisable",
+            )?;
+            self.disabled = true;
+            Ok(disable_params.num_of_dropped_records)
+        }
+    }
+
+    impl Drop for SassMetricsEnableGuard<'_> {
+        fn drop(&mut self) {
+            if !self.disabled {
+                let mut disable_params = metric_disable_params(self.ctx);
+                let _ =
+                    unsafe { (self.api.cupti_sass_metrics_disable)(&mut disable_params as *mut _) };
+                self.disabled = true;
             }
         }
     }
@@ -808,6 +866,8 @@ mod real {
             kernel_filter: parse_kernel_filter(),
             output_dir: parse_output_dir(),
             enable_lazy_patching: !has_flag("--disable-lazy-patching"),
+            include_local_paths: has_flag("--include-local-paths"),
+            include_command_line: has_flag("--include-command-line"),
         })
     }
 
@@ -1101,7 +1161,8 @@ mod real {
     fn write_json_file<T: Serialize>(path: &Path, payload: &T) -> Result<(), String> {
         let text = serde_json::to_string_pretty(payload)
             .map_err(|e| format!("failed to serialize JSON for '{}': {e}", path.display()))?;
-        fs::write(path, text).map_err(|e| format!("failed to write '{}': {e}", path.display()))
+        crate::atomic_output::write_str(path, &text)
+            .map_err(|e| format!("failed to write '{}': {e}", path.display()))
     }
 
     fn run_inventory(config: &ProbeConfig) -> Result<PathBuf, String> {
@@ -1118,8 +1179,8 @@ mod real {
             },
             gpu_name,
             driver_version,
-            cuda_path: api.cuda_path.clone(),
-            cupti_dll_path: api.dll_path.display().to_string(),
+            cuda_path: artifact_path_label(Path::new(&api.cuda_path), config.include_local_paths),
+            cupti_dll_path: artifact_path_label(&api.dll_path, config.include_local_paths),
             chip_name: catalog.chip_name,
             device_supported: support.overall == CUPTI_PROFILER_CONFIGURATION_SUPPORTED,
             support_flags: support_map(&support),
@@ -1214,11 +1275,8 @@ mod real {
         )?;
 
         let capture_result = (|| -> Result<CaptureOutput, String> {
-            let mut enable_params = metric_enable_params(ctx, config.enable_lazy_patching);
-            api.check(
-                unsafe { (api.cupti_sass_metrics_enable)(&mut enable_params as *mut _) },
-                "cuptiSassMetricsEnable",
-            )?;
+            let mut enable_guard =
+                SassMetricsEnableGuard::enable(&api, ctx, config.enable_lazy_patching)?;
 
             let runtime_summary = run_surface(config)?;
 
@@ -1241,21 +1299,23 @@ mod real {
             if data_props.num_of_patched_instruction_records == 0
                 || data_props.num_of_instances == 0
             {
-                let mut disable_params = metric_disable_params(ctx);
-                api.check(
-                    unsafe { (api.cupti_sass_metrics_disable)(&mut disable_params as *mut _) },
-                    "cuptiSassMetricsDisable",
-                )?;
+                let dropped_records = enable_guard.disable()?;
                 notes.push(
                     "CUPTI reported no patched instruction records for the capture window."
                         .to_string(),
                 );
+                notes.push(format!(
+                    "Dropped records reported at disable: {dropped_records}."
+                ));
                 return Ok(CaptureOutput {
                     run_id: new_run_id("cupti-capture"),
                     gpu_name,
                     driver_version,
-                    cuda_path: api.cuda_path.clone(),
-                    cupti_dll_path: api.dll_path.display().to_string(),
+                    cuda_path: artifact_path_label(
+                        Path::new(&api.cuda_path),
+                        config.include_local_paths,
+                    ),
+                    cupti_dll_path: artifact_path_label(&api.dll_path, config.include_local_paths),
                     chip_name: catalog.chip_name.clone(),
                     target_surface: SurfaceSpec {
                         strategy: "double_ma".to_string(),
@@ -1320,14 +1380,10 @@ mod real {
                 "cuptiSassMetricsFlushData",
             )?;
 
-            let mut disable_params = metric_disable_params(ctx);
-            api.check(
-                unsafe { (api.cupti_sass_metrics_disable)(&mut disable_params as *mut _) },
-                "cuptiSassMetricsDisable",
-            )?;
+            let dropped_records = enable_guard.disable()?;
             notes.push(format!(
                 "Dropped records reported at disable: {}.",
-                disable_params.num_of_dropped_records
+                dropped_records
             ));
 
             let metric_id_to_name = catalog
@@ -1399,8 +1455,11 @@ mod real {
                 run_id: new_run_id("cupti-capture"),
                 gpu_name,
                 driver_version,
-                cuda_path: api.cuda_path.clone(),
-                cupti_dll_path: api.dll_path.display().to_string(),
+                cuda_path: artifact_path_label(
+                    Path::new(&api.cuda_path),
+                    config.include_local_paths,
+                ),
+                cupti_dll_path: artifact_path_label(&api.dll_path, config.include_local_paths),
                 chip_name: catalog.chip_name.clone(),
                 target_surface: SurfaceSpec {
                     strategy: "double_ma".to_string(),
@@ -1456,10 +1515,12 @@ mod real {
     }
 
     fn save_metadata(config: &ProbeConfig, artifact_path: &Path) -> Result<(), String> {
-        let command = std::env::args().collect::<Vec<_>>().join(" ");
+        let command = config
+            .include_command_line
+            .then(|| std::env::args().collect::<Vec<_>>().join(" "));
         let payload = json!({
             "command": command,
-            "artifact_path": artifact_path.display().to_string(),
+            "artifact_path": artifact_path_label(artifact_path, config.include_local_paths),
             "mode": match config.mode {
                 CommandMode::Inventory => "inventory",
                 CommandMode::Capture => "capture",
@@ -1469,7 +1530,32 @@ mod real {
         write_json_file(&path, &payload)
     }
 
+    fn artifact_path_label(path: &Path, include_local_paths: bool) -> String {
+        if include_local_paths {
+            return path.display().to_string();
+        }
+        let cwd = std::env::current_dir().ok();
+        let absolute = path.canonicalize().unwrap_or_else(|_| {
+            cwd.as_ref()
+                .map_or_else(|| path.to_path_buf(), |base| base.join(path))
+        });
+        if let Some(cwd) = cwd.and_then(|value| value.canonicalize().ok()) {
+            if let Ok(relative) = absolute.strip_prefix(&cwd) {
+                return relative.to_string_lossy().replace('\\', "/");
+            }
+        }
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .map(|name| format!("<external>/{name}"))
+            .unwrap_or_else(|| "<external>".to_string())
+    }
+
     pub fn main() {
+        let _benchmark_guard =
+            crate::benchmark_lock::acquire("CUPTI SASS probe").unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
         let config = build_probe_config().unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(2);

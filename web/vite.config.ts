@@ -29,7 +29,7 @@ const jsdomTestInclude = [
   'src/visualizations/*.test.ts',
 ]
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
     ...(mode === 'development'
@@ -113,7 +113,7 @@ const jsdomTestInclude = [
           if (
             normalized.includes('/node_modules/@vueuse/')
             || normalized.includes('/node_modules/fuse.js/')
-            || normalized.includes('/node_modules/lucide-vue-next/')
+            || normalized.includes('/node_modules/@lucide/vue/')
             || normalized.includes('/node_modules/zod/')
           ) {
             return 'vendor-utilities'

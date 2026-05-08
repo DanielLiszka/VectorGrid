@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -405,4 +408,4 @@ fn bench_meta_select(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_meta_select);
-criterion_main!(benches);
+serialized_criterion_main!(benches);

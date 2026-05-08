@@ -56,7 +56,7 @@ describe('paretoModel', () => {
     expect(range.max).toBeGreaterThan(5)
   })
 
-  it('filters non-finite points and caps source rows before modeling', () => {
+  it('filters non-finite points, caps source rows, and keeps only non-dominated frontier points', () => {
     const model = buildParetoViewModel({
       rows,
       xKey: 'max_dd',
@@ -69,12 +69,13 @@ describe('paretoModel', () => {
 
     expect(model.status).toBe('ready')
     expect(model.points).toHaveLength(2)
-    expect(model.frontier.map((point) => point.rank)).toEqual([2, 1])
+    expect(model.frontier.map((point) => point.rank)).toEqual([2])
+    expect(model.points.find((point) => point.rank === 1)?.frontier).toBe(false)
     expect(model.meta).toContain('2 points')
     expect(model.meta).toContain('x=max_dd')
   })
 
-  it('summarizes representative and selected points', () => {
+  it('summarizes representative and selected frontier points', () => {
     const model = buildParetoViewModel({
       rows,
       xKey: 'max_dd',
@@ -91,6 +92,21 @@ describe('paretoModel', () => {
     expect(model.representativeSummary).toContain('y-extreme #2')
     expect(model.representativeSummary).toContain('selected #2')
     expect(model.confidenceNote).toContain('Validation adds admission evidence')
+  })
+
+  it('summarizes selected modeled rows that are dominated as off-frontier', () => {
+    const model = buildParetoViewModel({
+      rows,
+      xKey: 'max_dd',
+      yKey: 'pnl',
+      axisValueFor: (row, key) => paretoAxisValue(row, key),
+      rowIdFor: (_row, index) => `row-${index + 1}`,
+      rankFor: (row) => row.rank,
+      selectedRowId: 'row-1',
+      selectedRank: 1,
+    })
+
+    expect(model.representativeSummary).toContain('selected off-frontier #1')
   })
 
   it('preserves selected off-frontier context', () => {

@@ -2,6 +2,8 @@
 
 Use this guide when building a dedicated VectorGrid website.
 
+Do not publish Simple Mode as the website's current first-run path unless the signed release being promoted actually implements, tests, and verifies Simple Mode. If the release ships the Advanced workbench first, update the website structure and copy before launch.
+
 ## Primary Website Goal
 
 The website should help a new user understand:

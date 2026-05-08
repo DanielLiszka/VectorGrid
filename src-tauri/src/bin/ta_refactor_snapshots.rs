@@ -10,6 +10,9 @@ use ta_app_core::{
 use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::StrategyConfig;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+
 fn data_csv(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -36,11 +39,8 @@ fn canonicalize_json(v: &Value) -> Value {
 }
 
 fn write_json(path: &Path, v: &Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let txt = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
-    std::fs::write(path, txt).map_err(|e| e.to_string())
+    atomic_output::write_str(path, &txt)
 }
 
 fn to_report_artifact(

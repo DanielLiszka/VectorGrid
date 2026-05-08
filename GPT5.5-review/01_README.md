@@ -1,5 +1,7 @@
 # VectorGrid
 
+Status/provenance: copied into `GPT5.5-review/` as review-pack context. The root `README.md` remains the current public-facing README authority.
+
 GPU-accelerated Rust backend and CLI for exact-grid trading strategy optimization and validation.
 
 The original desktop product and the benchmarked execution engine are both referred to as **VectorGrid** in this repository. `VectorBT` is mentioned only for explicit external benchmark comparisons.
@@ -13,7 +15,7 @@ This repository is currently published as a **backend/CLI preview**.
 - Do not treat `web/`, `npm run dev`, `npm run build`, `cargo run -p ta_desktop_demo_app`, or Tauri packaging as the public quick-start path for this release.
 - No financial, trading, broker, paper-trading, or live-execution workflow in this repo should be treated as production advice or a production trading system.
 
-Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases. For those signed desktop artifacts, the intended first-run path is Simple Mode: load the bundled synthetic sample or a local CSV, run a CPU-safe optimization, optionally validate, copy the compact summary, or switch to Advanced Mode for detailed exports.
+Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases. The current frontend code defaults to the Advanced workbench and ignores legacy guided/simple mode requests, so the staged Simple Mode release docs are blocked until the UI, tests, runbooks, and public copy are realigned around the actual shipped first-run path.
 
 Website-ready end-user documentation for that signed desktop release path is staged under `docs/public/`. Start with `docs/public/README.md` for the public documentation index, first-run guide, data setup, validation guide, troubleshooting, FAQ, and release-page template.
 
@@ -221,7 +223,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run_vectorbt_vs_vectorgrid_face
 
 Scenario file:
 
-- [scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json](scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json)
+- [scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json](../scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json)
 
 The saved artifacts currently reflected in the README are historical snapshots. Rerun the matching scenario before repeating the numbers as current.
 

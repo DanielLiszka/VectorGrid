@@ -14,6 +14,17 @@ export function parseBoundaryObject(value: unknown): BoundaryObject {
   return parsed.success ? parsed.data : {};
 }
 
+export function requireBoundaryObject(
+  value: unknown,
+  context = "IPC response",
+): BoundaryObject {
+  const parsed = boundaryObjectSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`${context} must be an object.`);
+  }
+  return parsed.data;
+}
+
 export function parseOptionalBoundaryObject(
   value: unknown,
 ): BoundaryObject | null {
@@ -24,4 +35,15 @@ export function parseOptionalBoundaryObject(
 export function parseBoundaryArray(value: unknown): unknown[] {
   const parsed = boundaryArraySchema.safeParse(value);
   return parsed.success ? parsed.data : [];
+}
+
+export function requireBoundaryArray(
+  value: unknown,
+  context = "IPC response",
+): unknown[] {
+  const parsed = boundaryArraySchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`${context} must be an array.`);
+  }
+  return parsed.data;
 }

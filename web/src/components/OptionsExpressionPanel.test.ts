@@ -2353,8 +2353,13 @@ describe("OptionsExpressionPanel", () => {
       ".resultCard > .tableWrap .resultTable tbody tr",
     );
     expect(rows).toHaveLength(2);
+    expect(rows[0]?.attributes("tabindex")).toBe("0");
+    expect(rows.some((entry) => entry.attributes("aria-selected") === "true")).toBe(
+      true,
+    );
     const promotedRow = rows.find((entry) => entry.text().includes("otm_1"));
     expect(promotedRow).toBeTruthy();
+    expect(promotedRow?.attributes("aria-label")).toContain("Select tuple #2");
     await promotedRow!.trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -2363,6 +2368,13 @@ describe("OptionsExpressionPanel", () => {
       expect(wrapper.text()).toContain("quote_mid");
       expect(wrapper.text()).toContain("126.0000");
     });
+
+    const originalRow = rows.find((entry) => entry.text().includes("atm"));
+    expect(originalRow).toBeTruthy();
+    await originalRow!.trigger("keydown", { key: "Enter" });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("fixed_hold_or_target_stop");
+    expect(wrapper.text()).toContain("aggregate_research");
   });
 
   it("surfaces explicit validation verdicts for selected tuples", async () => {
@@ -4109,6 +4121,11 @@ describe("OptionsExpressionPanel", () => {
 
     const inspectionRows = wrapper.findAll(".inspectionTable tbody tr");
     expect(inspectionRows).toHaveLength(2);
+    expect(inspectionRows[0]?.attributes("tabindex")).toBe("0");
+    expect(inspectionRows[0]?.attributes("aria-selected")).toBe("true");
+    expect(inspectionRows[1]?.attributes("aria-label")).toBe(
+      "Select inspection event event-2",
+    );
     await inspectionRows[1]!.trigger("click");
 
     expect(wrapper.text()).toContain("event-2 / holdout / bearish");
@@ -4116,6 +4133,10 @@ describe("OptionsExpressionPanel", () => {
       "candidate_missing / no_expiration_in_bucket",
     );
     expect(wrapper.text()).not.toContain("Event path replay");
+
+    await inspectionRows[0]!.trigger("keydown", { key: " " });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("event-1 / search / bullish");
   });
 
   it("adds validation interpretation drift rows, monotonicity cues, and scope labels for the selected tuple", async () => {

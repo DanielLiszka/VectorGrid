@@ -6,6 +6,7 @@ import type {
   OptionsExpressionCoverageAdequacyVerdict,
   OptionsExpressionArtifactSummary,
   OptionsExpressionDatasetQuoteQualitySummary,
+  OptionsExpressionEventInspectionRow,
   OptionsExpressionMetricsSummary,
   OptionsExpressionTupleSummary,
   OptionsExpressionValidationVerdict,
@@ -3778,6 +3779,16 @@ function selectTuple(index: number): void {
   selectedTupleIndex.value = index;
 }
 
+function onTupleRowKeydown(event: KeyboardEvent, index: number): void {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  selectTuple(index);
+}
+
+function tupleRowLabel(row: OptionsExpressionTupleSummary, index: number): string {
+  return `Select tuple #${index + 1}: ${row.dteDays} DTE, ${row.moneynessBucket}, ${row.holdMinutes} minute hold`;
+}
+
 function loadSelectedTupleInspection(): void {
   if (!selectedTuple.value) return;
   void store.loadTupleInspection(selectedTupleIndex.value);
@@ -3792,6 +3803,16 @@ function loadSelectedEventPath(): void {
 function selectInspectionRow(eventId: string): void {
   selectedInspectionEventId.value = normalizeText(eventId);
   store.clearEventPathInspection();
+}
+
+function onInspectionRowKeydown(event: KeyboardEvent, eventId: string): void {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  selectInspectionRow(eventId);
+}
+
+function inspectionRowLabel(row: OptionsExpressionEventInspectionRow): string {
+  return `Select inspection event ${normalizeText(row.eventId) || row.eventIndex + 1}`;
 }
 
 function formatTupleIdentityShort(
@@ -6385,7 +6406,13 @@ function focusTupleIndex(index: number): void {
                 v-for="{ row, originalIndex } in displayedRowsWithIndex"
                 :key="`${originalIndex}-${row.dteDays}-${row.moneynessBucket}-${row.delayMinutes}-${row.holdMinutes}-${row.targetReturn}-${row.stopReturn}`"
                 :class="{ isSelected: originalIndex === selectedTupleIndex }"
+                tabindex="0"
+                :aria-selected="
+                  originalIndex === selectedTupleIndex ? 'true' : 'false'
+                "
+                :aria-label="tupleRowLabel(row, originalIndex)"
                 @click="selectTuple(originalIndex)"
+                @keydown="onTupleRowKeydown($event, originalIndex)"
               >
                 <td class="mono">{{ row.dteDays }}</td>
                 <td class="mono">{{ row.moneynessBucket }}</td>
@@ -7046,7 +7073,15 @@ function focusTupleIndex(index: number): void {
                         isSelected:
                           selectedInspectionRow?.eventId === row.eventId,
                       }"
+                      tabindex="0"
+                      :aria-selected="
+                        selectedInspectionRow?.eventId === row.eventId
+                          ? 'true'
+                          : 'false'
+                      "
+                      :aria-label="inspectionRowLabel(row)"
                       @click="selectInspectionRow(row.eventId)"
+                      @keydown="onInspectionRowKeydown($event, row.eventId)"
                     >
                       <td class="mono">{{ row.eventId }}</td>
                       <td class="mono">{{ row.split }}</td>

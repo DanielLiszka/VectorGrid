@@ -23,6 +23,8 @@ Provider credentials should be stored through the operating system credential st
 
 Network access is used only for workflows the user configures or invokes, such as provider data access, live/delayed market streams, updater checks when enabled, and links opened by the operating system.
 
+The Windows installer may also download or repair Microsoft Edge WebView2 Runtime through Tauri's configured WebView2 bootstrapper when WebView2 is missing.
+
 The updater is disabled by default unless a signed release explicitly enables it and documents its HTTPS update endpoint.
 
 ## Reports And Artifacts

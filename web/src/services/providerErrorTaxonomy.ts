@@ -1,3 +1,5 @@
+import { redactKnownSecrets } from "../utils/redaction";
+
 export type PolygonProviderErrorKind =
   | "auth_missing_or_invalid"
   | "entitlement_or_plan_limit"
@@ -16,7 +18,7 @@ export interface PolygonProviderErrorClassification {
 }
 
 function normalizeProviderErrorText(value: unknown): string {
-  return String(value || "").trim();
+  return redactKnownSecrets(value).trim();
 }
 
 export function classifyPolygonProviderError(
@@ -154,7 +156,9 @@ export function formatPolygonProviderErrorMessage(
 ): string {
   const classification = classifyPolygonProviderError(raw);
   if (
-    classification.rawText.toLowerCase().includes("to date must be >= from date")
+    classification.rawText
+      .toLowerCase()
+      .includes("to date must be >= from date")
   ) {
     return "Polygon end date must be on or after the start date.";
   }

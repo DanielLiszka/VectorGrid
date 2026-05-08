@@ -56,15 +56,19 @@ describe('WorkflowQuickSwitch', () => {
     expect(libraryButton?.getAttribute('tabindex')).toBe('-1')
 
     libraryButton?.focus()
-    libraryButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    const arrowEvent = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    libraryButton?.dispatchEvent(arrowEvent)
     await nextTick()
+    expect(arrowEvent.defaultPrevented).toBe(true)
     expect(aggregateButton?.getAttribute('aria-current')).toBe('page')
     expect(document.activeElement).toBe(aggregateButton)
 
     expect(stepGroup?.getAttribute('aria-label')).toBe('Workflow step quick switch')
     validateButton?.focus()
-    validateButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    const endEvent = new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })
+    validateButton?.dispatchEvent(endEvent)
     await nextTick()
+    expect(endEvent.defaultPrevented).toBe(true)
     expect(finalizeButton?.getAttribute('aria-current')).toBe('step')
     expect(document.activeElement).toBe(finalizeButton)
 

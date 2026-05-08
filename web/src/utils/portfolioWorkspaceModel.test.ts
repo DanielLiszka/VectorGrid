@@ -209,6 +209,42 @@ describe("portfolioWorkspaceModel", () => {
     expect(csv).toContain("Collect covariance evidence.");
   });
 
+  it("neutralizes spreadsheet formulas in CSV exports", () => {
+    const source = buildCurrentRunPortfolioSource({
+      ...runArtifact(),
+      artifactPath: '=HYPERLINK("https://example.invalid")',
+      req: { strategy_kind: "+DoubleMa", timeframe: "5m" },
+    });
+    expect(source).not.toBeNull();
+    const result = {
+      version: 1,
+      status: "insufficient_covariance_evidence" as const,
+      sourceArtifactsSeen: 1,
+      eligibleCandidates: [],
+      rejectedCandidates: [
+        {
+          candidateId: "=cmd",
+          sourceArtifactIndex: 0,
+          sourceRole: "validation_artifact" as const,
+          reason: "@blocked",
+        },
+      ],
+      missingEvidence: [],
+      warnings: [],
+      nextRequiredStep: "-review",
+    };
+
+    const csv = buildPortfolioFeasibilityCsv(result, [source!], {
+      maxCandidates: 50,
+    });
+
+    expect(csv).toContain('"\'=HYPERLINK(""https://example.invalid"")"');
+    expect(csv).toContain("'+DoubleMa");
+    expect(csv).toContain("rejected,0,'=cmd");
+    expect(csv).toContain("'-review");
+    expect(csv).not.toContain(",=cmd,");
+  });
+
   it("keeps construction readiness diagnostic-only", () => {
     expect(buildPortfolioConstructionReadiness(null).status).toBe("blocked");
     const readiness = buildPortfolioConstructionReadiness({

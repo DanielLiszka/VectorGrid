@@ -1,4 +1,11 @@
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[path = "../bin_support/benchmark_lock.rs"]
+mod benchmark_lock;
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 mod imp {
     use serde::Serialize;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -599,15 +606,12 @@ mod imp {
 
     pub(crate) fn main() -> Result<(), String> {
         let cfg = parse_config()?;
+        let _benchmark_guard =
+            crate::benchmark_lock::acquire("double-MA campaign prefetch profile")?;
         let summary = run_profile(&cfg)?;
         let rendered = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
         if let Some(output_json) = cfg.output_json.as_deref() {
-            if let Some(parent) = std::path::Path::new(output_json).parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-            }
-            std::fs::write(output_json, rendered.as_bytes()).map_err(|e| e.to_string())?;
+            crate::atomic_output::write_str(std::path::Path::new(output_json), &rendered)?;
             println!("wrote {}", output_json);
         } else {
             println!("{rendered}");

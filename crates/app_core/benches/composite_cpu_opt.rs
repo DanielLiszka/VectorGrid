@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -298,4 +301,4 @@ criterion_group!(
     bench_composite_cpu_engine_heatmap,
     bench_composite_cpu_engine_stage0_prescan_double_ma
 );
-criterion_main!(benches);
+serialized_criterion_main!(benches);

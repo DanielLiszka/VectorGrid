@@ -20,6 +20,7 @@ describe('PriceChartPanel', () => {
     expect(wrapper.get('.chartTitle').text()).toContain('Price + trades')
     expect(wrapper.get('#drillTvChartVue').attributes('role')).toBe('img')
     expect(wrapper.get('#drillTvChartVue').attributes('aria-label')).toBe('Backtest price chart')
+    expect(wrapper.get('.tvChartFrame').attributes('role')).toBe('group')
     expect(wrapper.get('.tvChartFrame').attributes('aria-describedby')).toBe('drillKeyboardHint')
     expect(wrapper.get('#drillTvChartMetaVue').text()).toContain('OHLC')
   })

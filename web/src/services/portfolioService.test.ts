@@ -65,17 +65,32 @@ describe("portfolioService", () => {
     expect(JSON.stringify(result)).not.toContain("allocationFrontier");
   });
 
-  it("falls back safely for unknown and partial payloads", () => {
-    const result = normalizePortfolioFeasibilityResult({
-      status: "unexpected",
-      eligible_candidates: [{ source_role: "not-real", asset_class: "nope" }],
-      missing_evidence: "not-array",
-    });
-
-    expect(result.status).toBe("insufficient_covariance_evidence");
-    expect(result.eligibleCandidates[0]?.sourceRole).toBe("unknown");
-    expect(result.eligibleCandidates[0]?.assetClass).toBe("unknown");
-    expect(result.missingEvidence).toEqual([]);
+  it("rejects malformed portfolio feasibility payloads instead of falling back", () => {
+    expect(() => normalizePortfolioFeasibilityResult("not-object")).toThrow(
+      "portfolio feasibility response must be an object",
+    );
+    expect(() =>
+      normalizePortfolioFeasibilityResult({
+        version: 1,
+        status: "unexpected",
+        source_artifacts_seen: 1,
+        eligible_candidates: [],
+        rejected_candidates: [],
+        missing_evidence: [],
+        warnings: [],
+      }),
+    ).toThrow("Unknown portfolio feasibility status");
+    expect(() =>
+      normalizePortfolioFeasibilityResult({
+        version: 1,
+        status: "insufficient_covariance_evidence",
+        source_artifacts_seen: 1,
+        eligible_candidates: [],
+        rejected_candidates: [],
+        missing_evidence: "not-array",
+        warnings: [],
+      }),
+    ).toThrow("portfolio missing_evidence must be an array");
   });
 
   it("invokes only the read-only portfolio feasibility command", async () => {
@@ -118,4 +133,3 @@ describe("portfolioService", () => {
     );
   });
 });
-

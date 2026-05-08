@@ -5,6 +5,9 @@ use ta_desktop_demo_app::release_readiness::{
 };
 use tauri::Manager;
 
+#[path = "../bin_support/atomic_output.rs"]
+mod atomic_output;
+
 #[derive(Parser, Debug)]
 #[command(name = "ta_release_readiness")]
 #[command(about = "Report local release-readiness facts for a VectorGrid release variant")]
@@ -20,6 +23,9 @@ struct Cli {
 
     #[arg(long, default_value_t = false)]
     require_packaged_smoke: bool,
+
+    #[arg(long, default_value_t = false)]
+    require_public_signing: bool,
 }
 
 fn parse_release_variant(raw: &str) -> Result<ReleaseVariant, String> {
@@ -59,14 +65,12 @@ fn main() -> Result<(), String> {
         variant,
         &ReleaseReadinessOptions {
             require_packaged_smoke: cli.require_packaged_smoke,
+            require_public_signing: cli.require_public_signing,
         },
     )?;
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     if let Some(path) = cli.json {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(path, &json).map_err(|e| e.to_string())?;
+        atomic_output::write_str(&path, &json)?;
     }
     println!("{json}");
     Ok(())

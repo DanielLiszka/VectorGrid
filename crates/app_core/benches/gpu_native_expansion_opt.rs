@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, Criterion};
 use std::env;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -590,4 +593,4 @@ criterion_group!(
     bench_mkcs_cpu,
     bench_mkcs_gpu_kernel
 );
-criterion_main!(gpu_native_expansion_benches);
+serialized_criterion_main!(gpu_native_expansion_benches);

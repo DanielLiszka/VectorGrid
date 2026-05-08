@@ -241,92 +241,88 @@ function latestSummaryMatchesCurrentStore(
 export async function syncWorkflowArtifactsFromLegacyRuntime(
   source: WorkflowArtifactsSource = "vue",
 ): Promise<boolean> {
-  try {
-    const currentIdentity = readLatestWorkflowRunIdentitySnapshot();
-    if (!currentIdentity) {
-      return await measureArtifactHistoryPerf(
-        "workflowArtifactsSync.latestRunFastPathMs",
-        async () => {
-          const latestHydrationRaw = (await invokeCommand(
-            "load_latest_run_artifact_hydration",
-          )) as unknown;
-          const latestHydration = asRecord(latestHydrationRaw);
-          const payload = asRecord(latestHydration?.hydration);
-          if (!payload) return false;
+  const currentIdentity = readLatestWorkflowRunIdentitySnapshot();
+  if (!currentIdentity) {
+    return await measureArtifactHistoryPerf(
+      "workflowArtifactsSync.latestRunFastPathMs",
+      async () => {
+        const latestHydrationRaw = (await invokeCommand(
+          "load_latest_run_artifact_hydration",
+        )) as unknown;
+        const latestHydration = asRecord(latestHydrationRaw);
+        const payload = asRecord(latestHydration?.hydration);
+        if (!payload) return false;
 
-          const applied = applyWorkflowArtifactsPayload(payload, source);
-          const meaningfullyApplied =
-            applied.runChanged || applied.validationChanged;
-          if (meaningfullyApplied) {
-            realignShellStateFromCurrentArtifacts();
-            refreshAnalysisFromWorkflowRun();
-          }
-          return meaningfullyApplied;
-        },
-        {
-          meta: {
-            source,
-            hasCurrentIdentity: false,
-          },
-          onSuccessMeta: (synced) => ({ synced }),
-        },
-      );
-    }
-
-    const latestRaw = (await measureArtifactHistoryPerf(
-      "workflowArtifactsSync.latestRunSummaryCheckMs",
-      () => invokeCommand("load_latest_run_artifact_summary"),
+        const applied = applyWorkflowArtifactsPayload(payload, source);
+        const meaningfullyApplied =
+          applied.runChanged || applied.validationChanged;
+        if (meaningfullyApplied) {
+          realignShellStateFromCurrentArtifacts();
+          refreshAnalysisFromWorkflowRun();
+        }
+        return meaningfullyApplied;
+      },
       {
         meta: {
           source,
-          hasCurrentIdentity: true,
+          hasCurrentIdentity: false,
         },
-        onSuccessMeta: (raw) => ({
-          hasLatestPath: !!normalizeText(asRecord(raw)?.path),
-        }),
+        onSuccessMeta: (synced) => ({ synced }),
       },
-    )) as unknown;
-    const latest = asRecord(latestRaw);
-    const latestPath = normalizeText(latest?.path);
-    const latestTs = normalizeText(latest?.ts);
-    if (!latest || !latestPath) return false;
-
-    const canSkipLoad = !!(
-      currentIdentity &&
-      currentIdentity.artifactPath === latestPath &&
-      currentIdentity.ts === latestTs &&
-      currentIdentity.hasValidation &&
-      latestSummaryMatchesCurrentStore(latest)
     );
-    if (canSkipLoad) {
-      syncSourceIfStoreBound(source);
-      return false;
-    }
+  }
 
-    const payloadRaw = (await measureArtifactHistoryPerf(
-      "workflowArtifactsSync.latestRunRehydrationMs",
-      () =>
-        invokeCommand("load_run_artifact_hydration", {
-          path: latestPath,
-        }),
-      {
-        meta: {
-          source,
-          path: latestPath,
-        },
+  const latestRaw = (await measureArtifactHistoryPerf(
+    "workflowArtifactsSync.latestRunSummaryCheckMs",
+    () => invokeCommand("load_latest_run_artifact_summary"),
+    {
+      meta: {
+        source,
+        hasCurrentIdentity: true,
       },
-    )) as unknown;
-    const payload = asRecord(payloadRaw);
-    if (!payload) return false;
+      onSuccessMeta: (raw) => ({
+        hasLatestPath: !!normalizeText(asRecord(raw)?.path),
+      }),
+    },
+  )) as unknown;
+  const latest = asRecord(latestRaw);
+  const latestPath = normalizeText(latest?.path);
+  const latestTs = normalizeText(latest?.ts);
+  if (!latest || !latestPath) return false;
 
-    const applied = applyWorkflowArtifactsPayload(payload, source);
-    const meaningfullyApplied = applied.runChanged || applied.validationChanged;
-    if (meaningfullyApplied) {
-      realignShellStateFromCurrentArtifacts();
-      refreshAnalysisFromWorkflowRun();
-    }
-    return meaningfullyApplied;
-  } catch {
+  const canSkipLoad = !!(
+    currentIdentity &&
+    currentIdentity.artifactPath === latestPath &&
+    currentIdentity.ts === latestTs &&
+    currentIdentity.hasValidation &&
+    latestSummaryMatchesCurrentStore(latest)
+  );
+  if (canSkipLoad) {
+    syncSourceIfStoreBound(source);
     return false;
   }
+
+  const payloadRaw = (await measureArtifactHistoryPerf(
+    "workflowArtifactsSync.latestRunRehydrationMs",
+    () =>
+      invokeCommand("load_run_artifact_hydration", {
+        path: latestPath,
+      }),
+    {
+      meta: {
+        source,
+        path: latestPath,
+      },
+    },
+  )) as unknown;
+  const payload = asRecord(payloadRaw);
+  if (!payload) return false;
+
+  const applied = applyWorkflowArtifactsPayload(payload, source);
+  const meaningfullyApplied = applied.runChanged || applied.validationChanged;
+  if (meaningfullyApplied) {
+    realignShellStateFromCurrentArtifacts();
+    refreshAnalysisFromWorkflowRun();
+  }
+  return meaningfullyApplied;
 }

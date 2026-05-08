@@ -96,6 +96,7 @@ function moveGroupSelection(
 
   const nextKey = items[nextIndex]?.key
   if (!nextKey) return
+  event.preventDefault()
   selectValue(nextKey)
 }
 

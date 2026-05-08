@@ -19,6 +19,11 @@ function loadValidationService(): Promise<
   return validationServicePromise;
 }
 
+function formatActionError(prefix: string, error: unknown): string {
+  const detail = String(error || "").trim();
+  return detail ? `${prefix}: ${detail}` : prefix;
+}
+
 function rawArray<T>(value: unknown, fallback: T[]): T[] {
   return Array.isArray(value) ? markRaw(value as T[]) : fallback;
 }
@@ -723,7 +728,7 @@ export const useValidationStore = defineStore("validation", {
       this.wfWindow =
         String(snapshot.wfWindow ?? this.wfWindow ?? "20000").trim() || "20000";
       this.wfStep =
-        String(snapshot.wfStep ?? this.wfStep ?? "20000").trim() || "20000";
+        String(snapshot.wfStep ?? this.wfStep ?? "5000").trim() || "5000";
       this.perturbEnable = Boolean(
         snapshot.perturbEnable ?? this.perturbEnable,
       );
@@ -829,7 +834,7 @@ export const useValidationStore = defineStore("validation", {
       void loadValidationService()
         .then((service) => service.runValidation())
         .catch((error: unknown) => {
-          const message = `Validation failed: ${String(error || "")}`.trim();
+          const message = formatActionError("Validation failed", error);
           this.statusLine = message;
           this.validationHint = message;
           this.validationAccelerationStatus = "Validation failed.";
@@ -839,27 +844,55 @@ export const useValidationStore = defineStore("validation", {
     },
 
     exportShortlistCsv(): void {
-      void loadValidationService().then((service) =>
-        service.exportShortlistCsv(),
-      );
+      void loadValidationService()
+        .then((service) => service.exportShortlistCsv())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError(
+            "Shortlist CSV export failed",
+            error,
+          );
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     exportValidationJson(): void {
-      void loadValidationService().then((service) =>
-        service.exportValidationJson(),
-      );
+      void loadValidationService()
+        .then((service) => service.exportValidationJson())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError(
+            "Validation JSON export failed",
+            error,
+          );
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     exportReportJson(): void {
-      void loadValidationService().then((service) =>
-        service.exportReportJson(),
-      );
+      void loadValidationService()
+        .then((service) => service.exportReportJson())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError(
+            "Report JSON export failed",
+            error,
+          );
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     exportReportXlsx(): void {
-      void loadValidationService().then((service) =>
-        service.exportReportXlsx(),
-      );
+      void loadValidationService()
+        .then((service) => service.exportReportXlsx())
+        .catch((error: unknown) => {
+          this.statusLine = formatActionError(
+            "Report XLSX export failed",
+            error,
+          );
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     openReportsDir(): void {

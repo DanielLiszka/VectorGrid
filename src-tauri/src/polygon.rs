@@ -1081,20 +1081,11 @@ pub fn validate_cached_dataset(
     cache_dir: &Path,
     csv_path: &str,
 ) -> Result<PolygonDatasetMeta, String> {
-    let p = Path::new(csv_path);
-    if !p.exists() {
-        return Err(format!("dataset file does not exist: {csv_path}"));
-    }
+    let (p, cache_root) = canonical_cached_dataset_csv_path(cache_dir, csv_path)?;
 
     let mut manifest = load_manifest(cache_dir)?;
-    let mut key: Option<String> = None;
-    for (k, ds) in &manifest.datasets {
-        if ds.csv_path == csv_path {
-            key = Some(k.clone());
-            break;
-        }
-    }
-    let Some(key) = key else {
+    let Some(key) = find_manifest_dataset_key_by_canonical_csv_path(&manifest, &cache_root, &p)
+    else {
         return Err("dataset not found in Polygon manifest".to_string());
     };
 
@@ -1104,11 +1095,12 @@ pub fn validate_cached_dataset(
         .map(|d| d.timeframe.as_str())
         .unwrap_or("1m");
     let tf = parse_timeframe(Some(tf_label))?;
-    let (rows, min_ts, max_ts, integrity) = scan_csv_integrity(p, tf.interval_ms)?;
+    let (rows, min_ts, max_ts, integrity) = scan_csv_integrity(&p, tf.interval_ms)?;
     let Some(ds) = manifest.datasets.get_mut(&key) else {
         return Err("dataset not found in Polygon manifest".to_string());
     };
 
+    ds.csv_path = p.to_string_lossy().to_string();
     ds.row_count = rows;
     ds.min_ts = min_ts;
     ds.max_ts = max_ts;
@@ -1124,20 +1116,11 @@ pub fn repair_cached_dataset(
     cache_dir: &Path,
     csv_path: &str,
 ) -> Result<PolygonDatasetMeta, String> {
-    let p = Path::new(csv_path);
-    if !p.exists() {
-        return Err(format!("dataset file does not exist: {csv_path}"));
-    }
+    let (p, cache_root) = canonical_cached_dataset_csv_path(cache_dir, csv_path)?;
 
     let mut manifest = load_manifest(cache_dir)?;
-    let mut key: Option<String> = None;
-    for (k, ds) in &manifest.datasets {
-        if ds.csv_path == csv_path {
-            key = Some(k.clone());
-            break;
-        }
-    }
-    let Some(key) = key else {
+    let Some(key) = find_manifest_dataset_key_by_canonical_csv_path(&manifest, &cache_root, &p)
+    else {
         return Err("dataset not found in Polygon manifest".to_string());
     };
 
@@ -1152,7 +1135,7 @@ pub fn repair_cached_dataset(
     let polygon_ticker = ds0.polygon_ticker.clone();
     let adjusted = market == Market::Stocks && ds0.adjusted;
 
-    let f = fs::File::open(p).map_err(|e| e.to_string())?;
+    let f = fs::File::open(&p).map_err(|e| e.to_string())?;
     let r = BufReader::new(f);
 
     const MAX_REPAIR_ROWS: usize = 2_000_000;
@@ -1221,11 +1204,12 @@ pub fn repair_cached_dataset(
     }
 
     let gaps = compute_same_day_gaps_gt_threshold(&bars, gap_threshold_ms);
-    let (wrote, new_min, new_max) = overwrite_bars(p, &bars)?;
+    let (wrote, new_min, new_max) = overwrite_bars(&p, &bars)?;
 
     let Some(ds) = manifest.datasets.get_mut(&key) else {
         return Err("dataset not found in Polygon manifest".to_string());
     };
+    ds.csv_path = p.to_string_lossy().to_string();
     ds.row_count = wrote as u64;
     ds.min_ts = new_min;
     ds.max_ts = new_max;
@@ -1243,18 +1227,53 @@ pub fn repair_cached_dataset(
     Ok(out)
 }
 
-fn find_manifest_dataset_by_csv_path<'a>(
-    manifest: &'a PolygonCacheManifest,
+fn canonical_cached_dataset_csv_path(
+    cache_dir: &Path,
     csv_path: &str,
-) -> Option<&'a PolygonDatasetMeta> {
-    let target = csv_path.trim();
-    if target.is_empty() {
-        return None;
+) -> Result<(PathBuf, PathBuf), String> {
+    let trimmed = csv_path.trim();
+    if trimmed.is_empty() {
+        return Err("dataset CSV path is empty".to_string());
     }
-    manifest
-        .datasets
-        .values()
-        .find(|ds| ds.csv_path.trim() == target)
+
+    let canonical_cache_dir = fs::canonicalize(cache_dir)
+        .map_err(|e| format!("Polygon cache directory is inaccessible: {e}"))?;
+    let canonical_csv_path = fs::canonicalize(Path::new(trimmed))
+        .map_err(|_| format!("dataset file does not exist: {trimmed}"))?;
+
+    if !canonical_csv_path.starts_with(&canonical_cache_dir) {
+        return Err("dataset CSV must be inside the Polygon cache directory".to_string());
+    }
+    if !canonical_csv_path.is_file() {
+        return Err("dataset path is not a file".to_string());
+    }
+    let is_csv = canonical_csv_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"));
+    if !is_csv {
+        return Err("dataset path must reference a CSV file".to_string());
+    }
+
+    Ok((canonical_csv_path, canonical_cache_dir))
+}
+
+fn find_manifest_dataset_key_by_canonical_csv_path(
+    manifest: &PolygonCacheManifest,
+    canonical_cache_dir: &Path,
+    canonical_csv_path: &Path,
+) -> Option<String> {
+    manifest.datasets.iter().find_map(|(key, ds)| {
+        let raw = ds.csv_path.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let entry = fs::canonicalize(Path::new(raw)).ok()?;
+        if !entry.starts_with(canonical_cache_dir) || entry != canonical_csv_path {
+            return None;
+        }
+        Some(key.clone())
+    })
 }
 
 fn build_top_off_request_for_dataset(
@@ -1297,8 +1316,13 @@ pub fn top_off_cached_dataset(
     csv_path: &str,
     cancel: Option<&AtomicBool>,
 ) -> Result<PolygonDownloadResult, String> {
+    let (p, cache_root) = canonical_cached_dataset_csv_path(cache_dir, csv_path)?;
     let manifest = load_manifest(cache_dir)?;
-    let dataset = find_manifest_dataset_by_csv_path(&manifest, csv_path)
+    let key = find_manifest_dataset_key_by_canonical_csv_path(&manifest, &cache_root, &p)
+        .ok_or_else(|| "dataset not found in Polygon manifest".to_string())?;
+    let dataset = manifest
+        .datasets
+        .get(&key)
         .cloned()
         .ok_or_else(|| "dataset not found in Polygon manifest".to_string())?;
     let now_date = chrono::Utc::now().date_naive();
@@ -2079,33 +2103,6 @@ badline\n",
     }
 
     #[test]
-    fn find_manifest_dataset_by_csv_path_matches_trimmed_paths() {
-        let mut manifest = PolygonCacheManifest::default();
-        manifest.datasets.insert(
-            "stocks:AAPL:1m".to_string(),
-            PolygonDatasetMeta {
-                market: "stocks".to_string(),
-                display_symbol: "AAPL".to_string(),
-                polygon_ticker: "AAPL".to_string(),
-                timeframe: "1m".to_string(),
-                csv_path: "C:/cache/AAPL.csv".to_string(),
-                min_ts: 1,
-                max_ts: 2,
-                last_updated_utc_ms: 0,
-                row_count: 2,
-                adjusted: true,
-                integrity: None,
-            },
-        );
-
-        let found =
-            find_manifest_dataset_by_csv_path(&manifest, "  C:/cache/AAPL.csv  ").expect("match");
-        assert_eq!(found.display_symbol, "AAPL");
-        assert!(find_manifest_dataset_by_csv_path(&manifest, "   ").is_none());
-        assert!(find_manifest_dataset_by_csv_path(&manifest, "C:/cache/MSFT.csv").is_none());
-    }
-
-    #[test]
     fn validate_and_repair_require_manifest_membership() {
         let cache_dir = make_temp_dir("vectorta_polygon_manifest_requirement");
         let csv_path = cache_dir.join("detached.csv");
@@ -2123,5 +2120,48 @@ badline\n",
 
         assert!(validate_err.contains("dataset not found in Polygon manifest"));
         assert!(repair_err.contains("dataset not found in Polygon manifest"));
+    }
+
+    #[test]
+    fn cached_dataset_commands_reject_manifest_paths_outside_cache() {
+        let cache_dir = make_temp_dir("vectorta_polygon_cache_root");
+        let external_dir = make_temp_dir("vectorta_polygon_external");
+        let csv_path = external_dir.join("outside.csv");
+        let csv_path_s = csv_path.to_string_lossy().to_string();
+        fs::write(
+            &csv_path,
+            "timestamp,open,close,high,low,volume\n1700000000000,1,1,1,1,1\n",
+        )
+        .expect("write outside csv");
+
+        let mut manifest = PolygonCacheManifest::default();
+        manifest.datasets.insert(
+            "stocks:TEST:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "TEST".to_string(),
+                polygon_ticker: "TEST".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: csv_path_s.clone(),
+                min_ts: 1_700_000_000_000,
+                max_ts: 1_700_000_000_000,
+                last_updated_utc_ms: 1,
+                row_count: 1,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+        save_manifest(&cache_dir, &manifest).expect("save manifest");
+
+        let validate_err =
+            validate_cached_dataset(&cache_dir, &csv_path_s).expect_err("validate should fail");
+        let repair_err = repair_cached_dataset("vectorta_test", &cache_dir, &csv_path_s)
+            .expect_err("repair should fail");
+        let top_off_err = top_off_cached_dataset("vectorta_test", &cache_dir, &csv_path_s, None)
+            .expect_err("top-off should fail");
+
+        assert!(validate_err.contains("inside the Polygon cache directory"));
+        assert!(repair_err.contains("inside the Polygon cache directory"));
+        assert!(top_off_err.contains("inside the Polygon cache directory"));
     }
 }

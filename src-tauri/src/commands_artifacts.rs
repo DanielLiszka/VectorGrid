@@ -6,6 +6,7 @@ use super::run_artifacts::{
     SaveBatchSummaryResponse, SaveRunArtifactResponse, Stage4ArtifactSummary,
     Stage5ArtifactReplayResponse, Stage5ArtifactSummary, WorkflowArtifactsHydrationPayload,
 };
+use crate::local_path_policy::{validate_shell_open_path, ShellOpenPurpose};
 use serde_json::Value;
 
 #[tauri::command]
@@ -184,6 +185,50 @@ pub async fn load_run_artifact_detail(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_run_artifact_report(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let app_for_load = app.clone();
+    let report_path = tauri::async_runtime::spawn_blocking(move || {
+        let detail = run_artifacts::load_run_artifact_detail_blocking(path, app_for_load.clone())?;
+        if detail.report_path_exists == Some(false) {
+            return Err("Saved run report file no longer exists on disk.".to_string());
+        }
+        let raw_report_path = if detail.report_path.trim().is_empty() {
+            detail.report_xlsx_path
+        } else {
+            detail.report_path
+        };
+        if raw_report_path.trim().is_empty() {
+            return Err(
+                "No report path for this saved run yet (run validation + export XLSX).".to_string(),
+            );
+        }
+        validate_shell_open_path(
+            &app_for_load,
+            &raw_report_path,
+            ShellOpenPurpose::ReportOpen,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    use tauri_plugin_opener::OpenerExt;
+    match app
+        .opener()
+        .open_path(report_path.to_string_lossy().to_string(), None::<&str>)
+    {
+        Ok(()) => Ok(()),
+        Err(open_error) => app
+            .opener()
+            .reveal_item_in_dir(report_path)
+            .map_err(|reveal_error| {
+                format!(
+                    "failed to open report: {open_error}; reveal fallback failed: {reveal_error}"
+                )
+            }),
+    }
 }
 
 #[tauri::command]

@@ -99,6 +99,8 @@ const MO_AXIS_OPTIONS: ParetoAxisOption[] = [
   { value: 'violation', label: 'Violation', disabled: false },
 ]
 
+const LOWER_BETTER_AXIS_KEYS = new Set(['max_dd', 'violation', 'minimize_value'])
+
 export const PARETO_TRUTH_NOTE =
   'Pareto points are non-dominated under the selected axes. They visualize tradeoffs, not validation approval.'
 
@@ -217,6 +219,46 @@ export function buildParetoRepresentativeSummary<T>(
   return parts.join(' • ')
 }
 
+function paretoAxisDirection(key: string): 1 | -1 {
+  return LOWER_BETTER_AXIS_KEYS.has(key) ? -1 : 1
+}
+
+function paretoDominates<T>(
+  left: ParetoPoint<T>,
+  right: ParetoPoint<T>,
+  xDirection: 1 | -1,
+  yDirection: 1 | -1,
+): boolean {
+  const leftX = left.x * xDirection
+  const rightX = right.x * xDirection
+  const leftY = left.y * yDirection
+  const rightY = right.y * yDirection
+  return leftX >= rightX && leftY >= rightY && (leftX > rightX || leftY > rightY)
+}
+
+function paretoFrontier<T>(
+  points: ParetoPoint<T>[],
+  xKey: string,
+  yKey: string,
+): ParetoPoint<T>[] {
+  const xDirection = paretoAxisDirection(xKey)
+  const yDirection = paretoAxisDirection(yKey)
+  const frontier: ParetoPoint<T>[] = []
+  for (const point of points) {
+    let dominated = false
+    for (const candidate of points) {
+      if (candidate === point) continue
+      if (paretoDominates(candidate, point, xDirection, yDirection)) {
+        dominated = true
+        break
+      }
+    }
+    point.frontier = !dominated
+    if (!dominated) frontier.push(point)
+  }
+  return frontier.sort((left, right) => left.x - right.x || left.y - right.y || left.rank - right.rank)
+}
+
 export function buildParetoViewModel<T>({
   rows,
   xKey,
@@ -280,16 +322,17 @@ export function buildParetoViewModel<T>({
 
   const xRange = paddedParetoRangeFromBounds(xMin, xMax)
   const yRange = paddedParetoRangeFromBounds(yMin, yMax)
+  const frontier = paretoFrontier(points, normalizedXKey, normalizedYKey)
   return {
     xKey: normalizedXKey,
     yKey: normalizedYKey,
     points,
-    frontier: [...points].sort((left, right) => left.x - right.x),
+    frontier,
     xRange,
     yRange,
     meta: `${points.length} points • x=${normalizedXKey} (${formatValue(xRange.min, 3)} to ${formatValue(xRange.max, 3)}) • y=${normalizedYKey} (${formatValue(yRange.min, 3)} to ${formatValue(yRange.max, 3)})`,
     truthNote: PARETO_TRUTH_NOTE,
-    representativeSummary: buildParetoRepresentativeSummary(points, selectedRowId, selectedRank),
+    representativeSummary: buildParetoRepresentativeSummary(frontier, selectedRowId, selectedRank),
     confidenceNote,
     status: 'ready',
   }

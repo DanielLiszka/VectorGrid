@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+#[macro_use]
+mod bench_support;
+
+use criterion::{criterion_group, BatchSize, Criterion};
 use csv::WriterBuilder;
 use std::fs;
 use std::sync::atomic::AtomicBool;
@@ -396,4 +399,4 @@ fn bench_ml_signal_workflow(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_ml_signal_workflow);
-criterion_main!(benches);
+serialized_criterion_main!(benches);

@@ -18,6 +18,31 @@ vi.mock("../tauri/invoke", () => ({
 
 const invokeCommandMock = vi.mocked(invokeCommand);
 
+function artifactRetentionResponse() {
+  return {
+    defaults: {
+      run_keep_newest: 200,
+      meta_keep_newest: 100,
+      stage5_keep_newest: 100,
+      ml_policy_eval_keep_newest: 100,
+      batch_summary_keep_newest: 100,
+      campaign_summary_keep_newest: 100,
+      options_expression_keep_newest: 100,
+    },
+    configured: {},
+    env_overrides: {},
+    effective: {
+      run_keep_newest: 200,
+      meta_keep_newest: 100,
+      stage5_keep_newest: 100,
+      ml_policy_eval_keep_newest: 100,
+      batch_summary_keep_newest: 100,
+      campaign_summary_keep_newest: 100,
+      options_expression_keep_newest: 100,
+    },
+  };
+}
+
 describe("settings service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -130,6 +155,8 @@ describe("settings service", () => {
   });
 
   it("serializes artifact-retention settings with snake_case backend fields", async () => {
+    invokeCommandMock.mockResolvedValueOnce(artifactRetentionResponse());
+
     await setArtifactRetentionSettings({
       run: 140,
       meta: null,
@@ -153,11 +180,45 @@ describe("settings service", () => {
     );
   });
 
+  it("rejects invalid artifact-retention settings before invoking the backend", async () => {
+    await expect(
+      setArtifactRetentionSettings({
+        run: -1,
+        meta: null,
+        stage5: null,
+        mlPolicyEval: null,
+        batchSummary: null,
+        campaignSummary: null,
+        optionsExpression: null,
+      }),
+    ).rejects.toThrow(
+      "run artifact retention setting must be a positive integer.",
+    );
+
+    expect(invokeCommandMock).not.toHaveBeenCalled();
+  });
+
   it("clears persisted artifact-retention settings", async () => {
+    invokeCommandMock.mockResolvedValueOnce(artifactRetentionResponse());
+
     await clearArtifactRetentionSettings();
 
     expect(invokeCommandMock).toHaveBeenCalledWith(
       "clear_artifact_retention_settings",
+    );
+  });
+
+  it("rejects malformed settings command responses instead of showing fabricated defaults", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      runs: [],
+      meta: [],
+      stage5: [],
+      policy_evals: "not-array",
+      options_expression: [],
+    });
+
+    await expect(loadArtifactCatalogSummary()).rejects.toThrow(
+      "artifact library response.policy_evals must be an array.",
     );
   });
 
@@ -195,8 +256,14 @@ describe("settings service", () => {
       total: 4,
     });
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "list_artifact_library");
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "rebuild_artifact_catalog");
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "list_artifact_library",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "rebuild_artifact_catalog",
+    );
   });
 
   it("builds a redacted local data inventory dry run from existing read-only commands", async () => {
@@ -318,9 +385,21 @@ describe("settings service", () => {
       warnings: [],
     });
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "get_market_data_dir_info");
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "polygon_get_cache_info");
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, "get_artifact_retention_info");
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(4, "list_artifact_library");
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "get_market_data_dir_info",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "polygon_get_cache_info",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      3,
+      "get_artifact_retention_info",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      4,
+      "list_artifact_library",
+    );
   });
 });
