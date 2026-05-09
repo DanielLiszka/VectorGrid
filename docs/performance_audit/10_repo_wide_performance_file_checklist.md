@@ -877,6 +877,3 @@ Final verification completed:
 - [x] changed | action: streamed Pareto point construction and axis bounds instead of slicing/mapping/filtering then spreading min/max arrays | evidence: frontend scatter/rendering guidance; Pareto workspace tests passed | file: `web/src/visualizations/paretoModel.ts`
 - [x] verified | file: `web/src/visualizations/priceSeriesModel.test.ts` | action: added/ran coverage for already-sorted price-bar normalization and dedupe behavior | evidence: `npm --prefix web run test -- src/visualizations/priceSeriesModel.test.ts` passed
 - [x] changed | action: optimized price-series normalization for chart payloads with explicit loops and fewer intermediate arrays | evidence: frontend chart rendering guidance; `npm --prefix web run test -- src/visualizations/priceSeriesModel.test.ts` and price chart panel tests passed | file: `web/src/visualizations/priceSeriesModel.ts`
-
-
-

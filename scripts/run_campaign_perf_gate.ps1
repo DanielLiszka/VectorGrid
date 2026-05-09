@@ -26,6 +26,45 @@ function Resolve-RepoPath {
   return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
 }
 
+function Assert-DisposableCampaignDatasetPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$AllowedRoot
+  )
+
+  $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+  $resolvedRoot = [System.IO.Path]::GetFullPath($AllowedRoot).TrimEnd(
+    [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  )
+  $rootPrefix = $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar
+  $isUnderRoot = -not [string]::Equals($resolvedPath, $resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+    $resolvedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+  if (-not $isUnderRoot) {
+    throw "Campaign perf synthetic dataset path must be under disposable root '$resolvedRoot': $resolvedPath"
+  }
+  if (-not [string]::Equals([System.IO.Path]::GetExtension($resolvedPath), ".csv", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Campaign perf synthetic dataset path must use a .csv extension: $resolvedPath"
+  }
+
+  $cursor = $resolvedPath
+  while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+    if (Test-Path -LiteralPath $cursor) {
+      $item = Get-Item -LiteralPath $cursor -Force
+      if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Campaign perf synthetic dataset path cannot traverse or overwrite a reparse point: $cursor"
+      }
+    }
+    if ([string]::Equals($cursor, $resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+      break
+    }
+    $next = Split-Path -Parent $cursor
+    if ([string]::Equals($next, $cursor, [System.StringComparison]::OrdinalIgnoreCase)) {
+      break
+    }
+    $cursor = $next
+  }
+}
+
 function Read-JsonFile {
   param([Parameter(Mandatory = $true)][string]$Path)
   return Get-Content -Raw $Path | ConvertFrom-Json
@@ -109,10 +148,13 @@ function Assert-TimingNotRegressed {
 
 $resolvedOut = Resolve-RepoPath $OutPath
 $resolvedDataset = Resolve-RepoPath $DatasetPath
+$resolvedDatasetRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "_write_test/perf_authority_support"))
+Assert-DisposableCampaignDatasetPath -Path $resolvedDataset -AllowedRoot $resolvedDatasetRoot
 $resolvedDataset2 = [System.IO.Path]::Combine(
   [System.IO.Path]::GetDirectoryName($resolvedDataset),
   ([System.IO.Path]::GetFileNameWithoutExtension($resolvedDataset) + "_b" + [System.IO.Path]::GetExtension($resolvedDataset))
 )
+Assert-DisposableCampaignDatasetPath -Path $resolvedDataset2 -AllowedRoot $resolvedDatasetRoot
 $outDir = Split-Path -Parent $resolvedOut
 if ($outDir) {
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
