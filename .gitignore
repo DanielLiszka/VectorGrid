@@ -39,44 +39,23 @@ data/*.csv
 /msedgedriver
 /nvlog.config
 
-# Local-only documentation and AI/research working notes
+# Local-only documentation and AI/research working notes.
+# Existing tracked docs stay tracked, but new Markdown docs are not release-visible
+# unless they are explicitly promoted to a root public document below.
 /docs/
-!/docs/
-/docs/*
-!/docs/REPO_MAP.md
-!/docs/RELEASE.md
-!/docs/PUBLIC_RELEASE.md
-!/docs/WINDOWS_INSTALL.md
-!/docs/frontend_end_to_end_qa_automation_plan.md
-!/docs/frontend_premium_desktop_ui_ux_implementation_plan_2026-04-26.md
-!/docs/frontend_workflow_evidence_decision_authority.md
-!/docs/verification_benchmark_release_authority.md
-!/docs/master_code_review_tracker.md
-!/docs/autonomous_agent_regression_attribution_plan.md
-!/docs/gpt55_pro_hard_problem_meta_research_plan_2026-04-27.md
-!/docs/gpt55_pro_hard_problem_atlas_2026-04-27.md
-!/docs/gpt55_pro_final_prompt_dossiers_2026-04-27.md
-!/docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md
-!/docs/repo_wide_deep_dive_2026-04-30/
-!/docs/repo_wide_deep_dive_2026-04-30/**
-!/docs/public/
-!/docs/public/**
-!/docs/NUMERICAL_REPRODUCIBILITY.md
-!/docs/artifact_replay_report_evidence_contract.md
-!/docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md
-!/docs/frontend_trading_technology_additions_implementation_plan_2026-04-27.md
-!/docs/feature_expansion_implementation_plans_2026-04-30/
-!/docs/feature_expansion_implementation_plans_2026-04-30/**
-!/docs/trade22_cuda_device_shortlist_implementation_guide.md
-!/docs/stage_completion_reporting_implementation_plan_2026-04-28.md
-!/docs/hard_problem_decisions/
-!/docs/hard_problem_decisions/**
-!/docs/long_running_feature_tasks/
-!/docs/long_running_feature_tasks/**
-!/docs/performance_audit/
-!/docs/performance_audit/**
-!/docs/ui_qa_pass/
-!/docs/ui_qa_pass/**
+*.md
+*.MD
+!/README.md
+!/CHANGELOG.md
+!/CODE_OF_CONDUCT.md
+!/CONTRIBUTING.md
+!/DISCLAIMER.md
+!/LICENSE.md
+!/LICENCE.md
+!/NOTICE.md
+!/PRIVACY.md
+!/SECURITY.md
+!/SUPPORT.md
 /.github/workflows.disabled/
 /Archive/
 /research/
