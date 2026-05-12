@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" role="img" aria-labelledby="title desc">
   <title id="title">VectorGrid vs VectorBT stored benchmark snapshots</title>
   <desc id="desc">Historical warm app-path benchmark comparisons for Double MA ALMA over 200,000 bars. VectorGrid GPU is 1,295 times faster than the stored VectorBT CPU reference on 58,300 pairs and 2,452 times faster on 250,000 pairs.</desc>
-  <!-- Static public benchmark summary; rerun scripts before treating values as current. -->
   <defs>
     <style>
       .bg { fill: #f8fafc; }
@@ -31,11 +30,9 @@
   <text class="section" x="82" y="196">Runtime comparison, logarithmic scale</text>
   <text class="small" x="82" y="220">Milliseconds, lower is better</text>
 
-  <!-- Chart frame -->
   <line class="axis" x1="250" y1="535" x2="1260" y2="535"/>
   <line class="axis" x1="250" y1="248" x2="250" y2="535"/>
 
-  <!-- log10 grid ticks for 10, 100, 1,000, 10,000, 100,000 ms -->
   <line class="grid" x1="453" y1="248" x2="453" y2="535"/>
   <line class="grid" x1="656" y1="248" x2="656" y2="535"/>
   <line class="grid" x1="859" y1="248" x2="859" y2="535"/>
@@ -49,7 +46,6 @@
   <text class="small" x="1062" y="562" text-anchor="middle">100k</text>
   <text class="small" x="1260" y="562" text-anchor="middle">1M</text>
 
-  <!-- Legend -->
   <rect class="gpu" x="1016" y="184" width="18" height="18" rx="3"/>
   <text class="small" x="1042" y="198">VectorGrid GPU kernel</text>
   <rect class="cpu" x="1016" y="211" width="18" height="18" rx="3"/>
@@ -57,11 +53,9 @@
   <rect class="vbt" x="1016" y="238" width="18" height="18" rx="3"/>
   <text class="small" x="1042" y="252">VectorBT CPU reference</text>
 
-  <!-- Row labels -->
   <text class="label" x="82" y="314">58,300 pairs</text>
   <text class="label" x="82" y="439">250,000 pairs</text>
 
-  <!-- 58,300 pair bars: x = 250 + 203 * (log10(ms)-1) -->
   <rect class="gpu" x="250" y="274" width="174" height="24" rx="4"/>
   <text class="mono" x="438" y="292">71.329 ms</text>
   <rect class="cpu" x="250" y="308" width="545" height="24" rx="4"/>
@@ -69,7 +63,6 @@
   <rect class="vbt" x="250" y="342" width="806" height="24" rx="4"/>
   <text class="mono" x="1070" y="360">92,377.801 ms</text>
 
-  <!-- 250,000 pair bars -->
   <rect class="gpu" x="250" y="399" width="251" height="24" rx="4"/>
   <text class="mono" x="515" y="417">172.519 ms</text>
   <rect class="cpu" x="250" y="433" width="691" height="24" rx="4"/>
@@ -77,7 +70,6 @@
   <rect class="vbt" x="250" y="467" width="938" height="24" rx="4"/>
   <text class="mono" x="1202" y="485">422,945.901 ms</text>
 
-  <!-- Speedup cards -->
   <rect class="panel" x="50" y="626" width="630" height="160" rx="8"/>
   <text class="section" x="82" y="668">58,300-pair snapshot</text>
   <rect class="badge" x="82" y="688" width="164" height="40" rx="20"/>

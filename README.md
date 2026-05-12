@@ -1,10 +1,14 @@
 # VectorGrid
 
-Rust backend and CLI for exact-grid trading strategy optimization and validation.
+This is an upcoming open-source release of a backtest optimization Tauri desktop application capable of near instantaneous backtest optimization execution (including indicator calculation), intended to be primarily executed on a CUDA capable GPU.
 
-This public release is backend-only. The supported surface is the Rust backend crates, CLI commands, benchmark harnesses, and backend verification scripts. The frontend/Tauri desktop app is not the public run path for this release.
+It will feature a complete workflow allowing for full backtest optimization of one of several available strategies (or one defined by the user), followed by subsequent extensive validation, analysis, and reporting of all results.
 
-VectorGrid is research software. It is not financial advice, investment advice, or a production trading system.
+The focus is primarily on stock tickers, but backtest optimization will be possible with stock options as well.
+
+For a basic double moving average strategy, the speedup can be up to 2,451x faster relative to VectorBT (inclusive of indicator calculation time), and only slightly slower for more complex strategies.
+
+Currently, the backend is nearly complete, while work is still ongoing with the frontend. Operations are currently limited to a backend CLI interface at the moment.
 
 ## Quick Start
 
@@ -36,23 +40,10 @@ cargo run -p ta_app_core --release --features cli,cuda,cuda-backtest-kernel --bi
   --top-k 10
 ```
 
-## Verify
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_backend_release_gate.ps1
-```
-
-Compile benchmark harnesses without running benchmarks:
-
-```powershell
-cargo bench -p ta_app_core --no-run
-```
-
 ## Benchmarks
 
 ![VectorGrid vs VectorBT stored benchmark snapshots](assets/benchmarks/vectorbt-faceoff.svg)
 
-Treat those numbers as historical snapshots. Rerun the matching benchmark scripts before presenting them as current results.
 
 ## License
 

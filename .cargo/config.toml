@@ -1,4 +1,2 @@
 [env]
-# Keep the cache-size hint for contributors who opt into sccache locally.
-# Backend release checks clear compiler wrappers when deterministic local runs matter.
 SCCACHE_CACHE_SIZE = "20G"

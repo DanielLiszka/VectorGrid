@@ -15,8 +15,6 @@ path = "src/main.rs"
 test = false
 required-features = ["desktop-ui"]
 
-# Public/support CLIs are listed explicitly so maintainer-only harnesses don't
-# become release-visible by accidental file discovery.
 [[bin]]
 name = "ta_release_readiness"
 path = "src/bin/ta_release_readiness.rs"
@@ -64,8 +62,6 @@ path = "src/bin/ta_options_parent_artifact.rs"
 test = false
 required-features = ["desktop-ui"]
 
-# Internal harnesses remain buildable by name but are intentionally not
-# auto-discovered.
 [[bin]]
 name = "ta_app_path_faceoff"
 path = "src/bin/ta_app_path_faceoff.rs"
@@ -109,7 +105,6 @@ test = false
 required-features = ["desktop-ui"]
 
 [features]
-# Default features preserve the desktop maintainer path; backend-only checks use --no-default-features.
 default = ["custom-protocol", "desktop-ui"]
 desktop-ui = []
 custom-protocol = ["tauri/custom-protocol"]

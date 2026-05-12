@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-# Keep CLI support opt-in so backend libraries stay usable without command dependencies.
 default = []
 cuda = ["vector-ta/cuda", "dep:cust"]
 cuda-backtest-kernel = ["cuda"]

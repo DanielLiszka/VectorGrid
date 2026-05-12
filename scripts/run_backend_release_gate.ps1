@@ -74,7 +74,6 @@ try {
   }
 
   Write-Host "Backend release gate: Rust-only validation for the backend/CLI preview surface."
-  Write-Host "Scope: backend crates, CLI targets, benchmark harnesses, and headless validation."
   Write-Host "This gate intentionally does not call npm, inspect web/, build web/dist, or run Tauri packaging."
   Write-Host "Variant: $Variant"
 
