@@ -6,16 +6,17 @@ The original desktop product and the benchmarked execution engine are both refer
 
 ## Public Status
 
-This repository is currently published as a **backend/CLI preview**.
+This repository is currently published as a **backend/CLI-only preview**.
 
-- The supported public surface is the Rust backend, CLI entry points, benchmark harnesses, and verification scripts.
-- The Vue/Tauri frontend source remains in the tree for transparency and future development, but it is not a supported public application yet.
+- The supported public surface is the Rust backend crates, CLI entry points, benchmark harnesses, and backend verification scripts.
+- Backend-only source distributions may omit `web/`, generated frontend bindings, frontend tests, and staged desktop documentation.
+- Full maintainer checkouts may still contain Vue/Tauri frontend source for transparency and future development, but it is not a supported public application yet.
 - Do not treat `web/`, `npm run dev`, `npm run build`, `cargo run -p ta_desktop_demo_app`, or Tauri packaging as the public quick-start path for this release.
 - No financial, trading, broker, paper-trading, or live-execution workflow in this repo should be treated as production advice or a production trading system.
 
-Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases. The current frontend code defaults to the Advanced workbench and ignores legacy guided/simple mode requests, so the staged Simple Mode release docs are blocked until the UI, tests, runbooks, and public copy are realigned around the actual shipped first-run path.
+Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use the full-source maintainer gates, including frontend and Tauri checks; only artifacts that pass those gates from a clean, signed release environment should be treated as public desktop releases.
 
-Website-ready end-user documentation for that signed desktop release path is staged under `docs/public/`. Start with `docs/public/README.md` for the public documentation index, first-run guide, data setup, validation guide, troubleshooting, FAQ, and release-page template.
+For this backend-only release, `README.md`, `LICENSE`, `NOTICE`, and `SECURITY.md` are the intended public metadata files. Other planning notes, QA records, and staged desktop documents are maintainer material rather than part of the backend public surface.
 
 ## Stored Benchmark Snapshots
 
@@ -144,6 +145,14 @@ cargo run -p ta_app_core --release --features cli,cuda,cuda-backtest-kernel --bi
 
 The Tauri desktop app can still be built by maintainers, but it is intentionally not documented as a supported public run path in this backend-preview release.
 
+## Release Notes
+
+- License and notices: see `LICENSE` and `NOTICE`.
+- Security reports: see `SECURITY.md`.
+- Support: use GitHub Issues for reproducible backend bugs, scoped backend feature requests, and command-line usage questions.
+- Privacy: the backend CLI is local software; do not publish private datasets, credentials, generated reports, logs, benchmark outputs, or local machine paths.
+- Trading disclaimer: VectorGrid is research and analysis software. It is not financial advice, investment advice, legal advice, tax advice, or a recommendation to trade any instrument.
+
 ## Local Quality Gate
 
 For backend-preview changes, start with the Rust backend checks:
@@ -163,7 +172,7 @@ This gate intentionally does not call npm, inspect `web/`, build `web/dist`, or 
 
 Backend-only source distributions can omit `web/`. In that layout, use the backend gate above, `cargo test -p ta_app_core`, or `cargo bench -p ta_app_core --no-run`; reserve the desktop release gates and default Tauri app build for full checkouts that include frontend assets.
 
-Use the repo-level quality gate before handoff for broad maintainer changes and public-facing cleanup:
+Use the repo-level quality gate only for broad full-source maintainer changes:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1

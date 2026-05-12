@@ -46,16 +46,7 @@ data/*.csv
 *.md
 *.MD
 !/README.md
-!/CHANGELOG.md
-!/CODE_OF_CONDUCT.md
-!/CONTRIBUTING.md
-!/DISCLAIMER.md
-!/LICENSE.md
-!/LICENCE.md
-!/NOTICE.md
-!/PRIVACY.md
 !/SECURITY.md
-!/SUPPORT.md
 /.github/workflows.disabled/
 /Archive/
 /research/
