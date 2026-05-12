@@ -109,6 +109,7 @@ test = false
 required-features = ["desktop-ui"]
 
 [features]
+# Default features preserve the desktop maintainer path; backend-only checks use --no-default-features.
 default = ["custom-protocol", "desktop-ui"]
 desktop-ui = []
 custom-protocol = ["tauri/custom-protocol"]

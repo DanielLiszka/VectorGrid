@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" role="img" aria-labelledby="title desc">
+  <title id="title">VectorGrid vs VectorBT stored benchmark snapshots</title>
+  <desc id="desc">Historical warm app-path benchmark comparisons for Double MA ALMA over 200,000 bars. VectorGrid GPU is 1,295 times faster than the stored VectorBT CPU reference on 58,300 pairs and 2,452 times faster on 250,000 pairs.</desc>
+  <!-- Static public benchmark summary; rerun scripts before treating values as current. -->
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #d7dee8; stroke-width: 1.5; }
+      .title { fill: #121826; font: 700 34px Arial, Helvetica, sans-serif; }
+      .subtitle { fill: #475569; font: 400 18px Arial, Helvetica, sans-serif; }
+      .section { fill: #121826; font: 700 21px Arial, Helvetica, sans-serif; }
+      .label { fill: #334155; font: 600 16px Arial, Helvetica, sans-serif; }
+      .small { fill: #64748b; font: 400 13px Arial, Helvetica, sans-serif; }
+      .mono { fill: #0f172a; font: 600 15px Consolas, "Courier New", monospace; }
+      .axis { stroke: #cbd5e1; stroke-width: 1; }
+      .grid { stroke: #e2e8f0; stroke-width: 1; }
+      .gpu { fill: #2563eb; }
+      .cpu { fill: #14b8a6; }
+      .vbt { fill: #ef4444; }
+      .badge { fill: #eef2ff; stroke: #c7d2fe; }
+      .note { fill: #334155; font: 400 15px Arial, Helvetica, sans-serif; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1400" height="860"/>
+
+  <text class="title" x="58" y="66">VectorGrid vs VectorBT</text>
+  <text class="subtitle" x="58" y="98">Stored warm app-path snapshots for Double MA ALMA exact-grid optimization over 200,000 bars</text>
+  <text class="small" x="58" y="124">VectorGrid refresh date: 2026-04-16. VectorBT references are historical saved artifacts. Rerun before presenting as current.</text>
+
+  <rect class="panel" x="50" y="156" width="1300" height="444" rx="8"/>
+  <text class="section" x="82" y="196">Runtime comparison, logarithmic scale</text>
+  <text class="small" x="82" y="220">Milliseconds, lower is better</text>
+
+  <!-- Chart frame -->
+  <line class="axis" x1="250" y1="535" x2="1260" y2="535"/>
+  <line class="axis" x1="250" y1="248" x2="250" y2="535"/>
+
+  <!-- log10 grid ticks for 10, 100, 1,000, 10,000, 100,000 ms -->
+  <line class="grid" x1="453" y1="248" x2="453" y2="535"/>
+  <line class="grid" x1="656" y1="248" x2="656" y2="535"/>
+  <line class="grid" x1="859" y1="248" x2="859" y2="535"/>
+  <line class="grid" x1="1062" y1="248" x2="1062" y2="535"/>
+  <line class="grid" x1="1260" y1="248" x2="1260" y2="535"/>
+
+  <text class="small" x="243" y="562" text-anchor="middle">10</text>
+  <text class="small" x="453" y="562" text-anchor="middle">100</text>
+  <text class="small" x="656" y="562" text-anchor="middle">1k</text>
+  <text class="small" x="859" y="562" text-anchor="middle">10k</text>
+  <text class="small" x="1062" y="562" text-anchor="middle">100k</text>
+  <text class="small" x="1260" y="562" text-anchor="middle">1M</text>
+
+  <!-- Legend -->
+  <rect class="gpu" x="1016" y="184" width="18" height="18" rx="3"/>
+  <text class="small" x="1042" y="198">VectorGrid GPU kernel</text>
+  <rect class="cpu" x="1016" y="211" width="18" height="18" rx="3"/>
+  <text class="small" x="1042" y="225">VectorGrid CPU</text>
+  <rect class="vbt" x="1016" y="238" width="18" height="18" rx="3"/>
+  <text class="small" x="1042" y="252">VectorBT CPU reference</text>
+
+  <!-- Row labels -->
+  <text class="label" x="82" y="314">58,300 pairs</text>
+  <text class="small" x="82" y="337">VectorBT artifact: 2026-03-13</text>
+  <text class="label" x="82" y="439">250,000 pairs</text>
+  <text class="small" x="82" y="462">VectorBT artifact: 2026-04-03</text>
+
+  <!-- 58,300 pair bars: x = 250 + 203 * (log10(ms)-1) -->
+  <rect class="gpu" x="250" y="274" width="174" height="24" rx="4"/>
+  <text class="mono" x="438" y="292">71.329 ms</text>
+  <rect class="cpu" x="250" y="308" width="545" height="24" rx="4"/>
+  <text class="mono" x="809" y="326">4,852.416 ms</text>
+  <rect class="vbt" x="250" y="342" width="806" height="24" rx="4"/>
+  <text class="mono" x="1070" y="360">92,377.801 ms</text>
+
+  <!-- 250,000 pair bars -->
+  <rect class="gpu" x="250" y="399" width="251" height="24" rx="4"/>
+  <text class="mono" x="515" y="417">172.519 ms</text>
+  <rect class="cpu" x="250" y="433" width="691" height="24" rx="4"/>
+  <text class="mono" x="955" y="451">25,472.924 ms</text>
+  <rect class="vbt" x="250" y="467" width="938" height="24" rx="4"/>
+  <text class="mono" x="1202" y="485">422,945.901 ms</text>
+
+  <!-- Speedup cards -->
+  <rect class="panel" x="50" y="626" width="630" height="160" rx="8"/>
+  <text class="section" x="82" y="668">58,300-pair snapshot</text>
+  <rect class="badge" x="82" y="688" width="164" height="40" rx="20"/>
+  <text class="mono" x="164" y="714" text-anchor="middle">1,295x</text>
+  <text class="note" x="268" y="713">VectorGrid GPU kernel vs stored VectorBT CPU reference</text>
+  <text class="small" x="82" y="758">VectorGrid CPU is 68x slower than VectorGrid GPU on the same snapshot.</text>
+
+  <rect class="panel" x="720" y="626" width="630" height="160" rx="8"/>
+  <text class="section" x="752" y="668">250,000-pair snapshot</text>
+  <rect class="badge" x="752" y="688" width="164" height="40" rx="20"/>
+  <text class="mono" x="834" y="714" text-anchor="middle">2,452x</text>
+  <text class="note" x="938" y="713">VectorGrid GPU kernel vs stored VectorBT CPU reference</text>
+  <text class="small" x="752" y="758">VectorGrid CPU is 148x slower than VectorGrid GPU on the same snapshot.</text>
+
+  <text class="small" x="58" y="826">Scope: historical stored benchmark snapshots, not current perf-gate output. Hardware: AMD Ryzen 9 9950X and NVIDIA GeForce RTX 4090.</text>
+</svg>
