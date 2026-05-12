@@ -26,7 +26,6 @@
 
   <text class="title" x="58" y="66">VectorGrid vs VectorBT</text>
   <text class="subtitle" x="58" y="98">Stored warm app-path snapshots for Double MA ALMA exact-grid optimization over 200,000 bars</text>
-  <text class="small" x="58" y="124">VectorGrid refresh date: 2026-04-16. VectorBT references are historical saved artifacts. Rerun before presenting as current.</text>
 
   <rect class="panel" x="50" y="156" width="1300" height="444" rx="8"/>
   <text class="section" x="82" y="196">Runtime comparison, logarithmic scale</text>
@@ -60,9 +59,7 @@
 
   <!-- Row labels -->
   <text class="label" x="82" y="314">58,300 pairs</text>
-  <text class="small" x="82" y="337">VectorBT artifact: 2026-03-13</text>
   <text class="label" x="82" y="439">250,000 pairs</text>
-  <text class="small" x="82" y="462">VectorBT artifact: 2026-04-03</text>
 
   <!-- 58,300 pair bars: x = 250 + 203 * (log10(ms)-1) -->
   <rect class="gpu" x="250" y="274" width="174" height="24" rx="4"/>
@@ -95,5 +92,5 @@
   <text class="note" x="938" y="713">VectorGrid GPU kernel vs stored VectorBT CPU reference</text>
   <text class="small" x="752" y="758">VectorGrid CPU is 148x slower than VectorGrid GPU on the same snapshot.</text>
 
-  <text class="small" x="58" y="826">Scope: historical stored benchmark snapshots, not current perf-gate output. Hardware: AMD Ryzen 9 9950X and NVIDIA GeForce RTX 4090.</text>
+  <text class="small" x="58" y="826">Hardware: AMD Ryzen 9 9950X and NVIDIA GeForce RTX 4090.</text>
 </svg>

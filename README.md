@@ -50,7 +50,7 @@ cargo bench -p ta_app_core --no-run
 
 ## Benchmarks
 
-Stored VectorBT comparison snapshots are summarized in [assets/benchmarks/vectorbt-faceoff.svg](assets/benchmarks/vectorbt-faceoff.svg).
+![VectorGrid vs VectorBT stored benchmark snapshots](assets/benchmarks/vectorbt-faceoff.svg)
 
 Treat those numbers as historical snapshots. Rerun the matching benchmark scripts before presenting them as current results.
 
