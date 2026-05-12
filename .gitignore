@@ -43,6 +43,7 @@ data/*.csv
 # The docs tree is intentionally ignored with no exceptions for the
 # backend-only public release surface.
 /docs/
+/GPT5.5-review/
 *.md
 *.MD
 !/README.md
@@ -88,6 +89,8 @@ data/*.csv
 /web/e2e/
 !/web/e2e/
 !/web/e2e/**
+/web/**/*.md
+/web/**/*.MD
 
 # JS dependency/build outputs
 /node_modules/
