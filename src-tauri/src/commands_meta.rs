@@ -5338,7 +5338,7 @@ mod tests {
         let app = build_mock_app();
         let reports = super::reports_dir(app.handle()).expect("reports dir");
         let ts = "2026-04-16T00:00:00Z";
-        let safe_ts = crate::sanitize_filename_component(ts);
+        let safe_ts = super::sanitize_filename_component(ts);
         let base_name = format!("vectorgrid_meta_{safe_ts}");
         fs::write(reports.join(format!("{base_name}.xlsx")), b"base").expect("base report");
         for i in 2..=999u32 {

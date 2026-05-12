@@ -245,6 +245,9 @@ These crates are smaller than `app_core`, but they are part of the real executio
   - Node toolchain requirements, frontend scripts, generated-command checks, parity scripts, and request-builder benchmark entrypoints
 - `scripts/run_repo_quality_gate.ps1`
   - canonical local-first static-analysis lane for broad non-options work: Rust fmt/check/clippy plus web lint/typecheck, with optional desktop typecheck, browser E2E QA, desktop smoke, and workspace tests
+- `scripts/run_backend_release_gate.ps1`
+  - backend/CLI-preview release lane: Rust-only checks, workspace tests, backend/headless CLI release builds, optional benchmark compilation, and optional perf gates
+  - intentionally does not call npm, require `web/`, build `web/dist`, or run Tauri packaging; use this lane for backend-only checkouts where frontend sources are omitted or ignored
 - `scripts/run_frontend_e2e_gate.ps1`
   - build-once frontend browser QA lane for workbench smoke, action coverage, core workflow E2E, and optional responsive/regression/a11y/baseline/exploratory slices; `-IncludeFullWorkflow` runs the full browser spec set instead of the sliced lane
 - `web/scripts/check-a11y-smoke.mjs`
@@ -1699,6 +1702,7 @@ For claim-level authority, benchmark boundaries, baseline policy, and release ev
 
 | Area                                  | Commands                                                                                                                                                     |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| backend-only release rehearsal        | `powershell -File scripts/run_backend_release_gate.ps1`                                                                                                      |
 | broad backend confidence              | `cargo test --workspace`, `cargo test -p ta_app_core`                                                                                                        |
 | frontend confidence                   | `npm --prefix web run test`, `npm --prefix web run typecheck`, `npm --prefix web run lint`, `npm --prefix web run parity`, `npm --prefix web run a11y:smoke`, `npm --prefix web run test:browser:ux`, `npm --prefix web run test:e2e:workflow`, `npm --prefix web run test:e2e:workflow:full` |
 | artifact/report shape                 | `node scripts/run_output_parity_check.mjs`                                                                                                                   |

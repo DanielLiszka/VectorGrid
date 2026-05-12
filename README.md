@@ -153,6 +153,16 @@ cargo check -p ta_app_core --features cli
 cargo test -p ta_app_core
 ```
 
+For a backend-only release rehearsal, use the Rust-only release gate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_backend_release_gate.ps1
+```
+
+This gate intentionally does not call npm, inspect `web/`, build `web/dist`, or run Tauri packaging. Add `-IncludeBenchBuilds` to prove the backend benchmark harnesses compile, and add the CPU/GPU perf switches only when refreshing local performance evidence.
+
+Backend-only source distributions can omit `web/`. In that layout, use the backend gate above, `cargo test -p ta_app_core`, or `cargo bench -p ta_app_core --no-run`; reserve the desktop release gates and default Tauri app build for full checkouts that include frontend assets.
+
 Use the repo-level quality gate before handoff for broad maintainer changes and public-facing cleanup:
 
 ```powershell

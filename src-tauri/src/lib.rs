@@ -15,20 +15,32 @@ pub mod release_readiness;
 pub mod settings;
 pub mod state;
 
+#[cfg(feature = "desktop-ui")]
 use commands::*;
+#[cfg(feature = "desktop-ui")]
 use log::LevelFilter;
+#[cfg(feature = "desktop-ui")]
 use state::AppState;
+#[cfg(feature = "desktop-ui")]
 use state::BackgroundTaskState;
+#[cfg(feature = "desktop-ui")]
 use tauri::Manager;
+#[cfg(feature = "desktop-ui")]
 use tauri_plugin_log::{Target, TargetKind};
-use tauri_plugin_window_state::{StateFlags, WindowExt};
+#[cfg(any(feature = "desktop-ui", test))]
+use tauri_plugin_window_state::StateFlags;
+#[cfg(feature = "desktop-ui")]
+use tauri_plugin_window_state::WindowExt;
 
+#[cfg(feature = "desktop-ui")]
 const MAIN_WINDOW_LABEL: &str = "main";
 
+#[cfg(any(feature = "desktop-ui", test))]
 fn main_window_restore_flags() -> StateFlags {
     StateFlags::all() & !StateFlags::VISIBLE
 }
 
+#[cfg(feature = "desktop-ui")]
 fn focus_existing_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         log::warn!("single-instance focus requested before the main window existed");
@@ -45,7 +57,11 @@ fn focus_existing_main_window(app: &tauri::AppHandle) {
     }
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[cfg(all(
+    feature = "desktop-ui",
+    feature = "cuda",
+    feature = "cuda-backtest-kernel"
+))]
 fn spawn_options_expression_gpu_prewarm() {
     let builder = std::thread::Builder::new().name("options-expression-gpu-prewarm".to_string());
     if let Err(error) = builder.spawn(|| match ta_app_core::preferred_cuda_device_id_result() {
@@ -67,6 +83,7 @@ fn spawn_options_expression_gpu_prewarm() {
     }
 }
 
+#[cfg(feature = "desktop-ui")]
 pub fn run_tauri() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -272,6 +289,11 @@ pub fn run_tauri() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(not(feature = "desktop-ui"))]
+pub fn run_tauri() {
+    eprintln!("desktop UI is disabled; rebuild with default features to run the Tauri shell");
 }
 
 #[cfg(test)]

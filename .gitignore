@@ -75,6 +75,8 @@ data/*.csv
 !/docs/long_running_feature_tasks/**
 !/docs/performance_audit/
 !/docs/performance_audit/**
+!/docs/ui_qa_pass/
+!/docs/ui_qa_pass/**
 /.github/workflows.disabled/
 /Archive/
 /research/

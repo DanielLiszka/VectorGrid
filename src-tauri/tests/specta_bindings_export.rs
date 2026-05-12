@@ -14,15 +14,41 @@ fn unique_temp_bindings_path() -> PathBuf {
     ))
 }
 
+fn read_expected_bindings_or_skip() -> Option<String> {
+    let expected_path = command_bindings::default_bindings_path();
+    match std::fs::read_to_string(&expected_path) {
+        Ok(expected) => Some(expected),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let web_root = expected_path
+                .ancestors()
+                .nth(3)
+                .unwrap_or(expected_path.as_path());
+            if !web_root.exists() {
+                eprintln!(
+                    "skipping frontend Specta binding parity; {} is not present in this checkout",
+                    web_root.display()
+                );
+                return None;
+            }
+            panic!(
+                "failed to read {}; run npm --prefix web run gen:bindings first: {error}",
+                expected_path.display()
+            )
+        }
+        Err(error) => {
+            panic!(
+                "failed to read {}; run npm --prefix web run gen:bindings first: {error}",
+                expected_path.display()
+            )
+        }
+    }
+}
+
 #[test]
 fn specta_bindings_are_current() {
-    let expected_path = command_bindings::default_bindings_path();
-    let expected = std::fs::read_to_string(&expected_path).unwrap_or_else(|error| {
-        panic!(
-            "failed to read {}; run npm --prefix web run gen:bindings first: {error}",
-            expected_path.display()
-        )
-    });
+    let Some(expected) = read_expected_bindings_or_skip() else {
+        return;
+    };
 
     let generated_path = unique_temp_bindings_path();
     command_bindings::export_bindings(&generated_path).expect("export temporary Specta bindings");
@@ -38,13 +64,9 @@ fn specta_bindings_are_current() {
 
 #[test]
 fn specta_binding_allowlist_is_documented_by_generated_output() {
-    let expected_path = command_bindings::default_bindings_path();
-    let expected = std::fs::read_to_string(&expected_path).unwrap_or_else(|error| {
-        panic!(
-            "failed to read {}; run npm --prefix web run gen:bindings first: {error}",
-            expected_path.display()
-        )
-    });
+    let Some(expected) = read_expected_bindings_or_skip() else {
+        return;
+    };
 
     for command in command_bindings::TYPED_BINDING_COMMANDS {
         assert!(
