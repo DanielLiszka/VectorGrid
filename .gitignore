@@ -40,13 +40,12 @@ data/*.csv
 /nvlog.config
 
 # Local-only documentation and AI/research working notes.
-# Existing tracked docs stay tracked, but new Markdown docs are not release-visible
-# unless they are explicitly promoted to a root public document below.
+# The docs tree is intentionally ignored with no exceptions for the
+# backend-only public release surface.
 /docs/
 *.md
 *.MD
 !/README.md
-!/SECURITY.md
 /.github/workflows.disabled/
 /Archive/
 /research/

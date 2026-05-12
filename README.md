@@ -16,7 +16,7 @@ This repository is currently published as a **backend/CLI-only preview**.
 
 Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use the full-source maintainer gates, including frontend and Tauri checks; only artifacts that pass those gates from a clean, signed release environment should be treated as public desktop releases.
 
-For this backend-only release, `README.md`, `LICENSE`, `NOTICE`, and `SECURITY.md` are the intended public metadata files. Other planning notes, QA records, and staged desktop documents are maintainer material rather than part of the backend public surface.
+For this backend-only release, `README.md` and `LICENSE` are the intended public metadata files. Other planning notes, QA records, and staged desktop documents are maintainer material rather than part of the backend public surface.
 
 ## Stored Benchmark Snapshots
 
@@ -100,7 +100,7 @@ Broadly, the repo is in a good backend state for the current target set.
 - `VCC` remains parity-gated.
 - `CompositeMo` remains CPU-bound.
 
-The README tracks the public backend coverage status. Planning records, tracker history, and research notes are not part of the supported public surface, even when they remain visible in the repository for transparency.
+The README tracks the public backend coverage status. Planning records, tracker history, and research notes are not part of the supported public surface.
 
 ## Backend Quick Start
 
@@ -147,8 +147,8 @@ The Tauri desktop app can still be built by maintainers, but it is intentionally
 
 ## Release Notes
 
-- License and notices: see `LICENSE` and `NOTICE`.
-- Security reports: see `SECURITY.md`.
+- License: see `LICENSE`.
+- Security reports: do not disclose vulnerabilities through public issues; open an issue asking for a private contact if GitHub private vulnerability reporting is unavailable.
 - Support: use GitHub Issues for reproducible backend bugs, scoped backend feature requests, and command-line usage questions.
 - Privacy: the backend CLI is local software; do not publish private datasets, credentials, generated reports, logs, benchmark outputs, or local machine paths.
 - Trading disclaimer: VectorGrid is research and analysis software. It is not financial advice, investment advice, legal advice, tax advice, or a recommendation to trade any instrument.
@@ -215,9 +215,8 @@ For paper/live trading changes that do not need benchmarks or real credentials, 
 powershell -ExecutionPolicy Bypass -File scripts/run_execution_safety_gate.ps1
 ```
 
-For maintainer performance work, use the performance audit docs and baseline-pack runner. These are internal evidence tools, not public desktop support promises:
+For maintainer performance work, use the baseline-pack runner and related support gates. These are internal evidence tools, not public desktop support promises:
 
-- `docs/performance_audit/README.md`
 - `scripts/run_performance_audit_baseline_pack.ps1`
 - `scripts/run_support_perf_gate.ps1`
 - `scripts/run_campaign_perf_gate.ps1`
@@ -230,7 +229,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run_performance_audit_baseline_
 
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 
-For public contribution, support, security-reporting, privacy, disclaimer, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, `PRIVACY.md`, `DISCLAIMER.md`, `LICENSE`, and `NOTICE`.
+For public contribution, support, security-reporting, privacy, disclaimer, and license terms, use this README and `LICENSE`.
 
 ## Reproduce The Benchmark
 
