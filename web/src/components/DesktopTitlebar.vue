@@ -7,12 +7,12 @@ import VectorAlphaLogo from './VectorAlphaLogo.vue'
 import ConfirmationDialog from './ConfirmationDialog.vue'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
-import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { type TrackedTask, shouldGuardDesktopCloseForTask, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { invokeCommand, tauriRuntimeAvailable } from '../tauri/invoke'
+import { useUiReadiness } from '../composables/useUiReadiness'
 import {
   WORKSPACE_SUBTITLES,
   mlSignalPrimaryActionForStep,
@@ -26,11 +26,11 @@ import { mlSignalScoreCacheDisabledReason } from '../utils/workbenchActionModel'
 
 const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
-const dataStore = useDataStore()
 const executionStore = useExecutionStore()
 const optimizeStore = useOptimizeStore()
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
+const { datasetReady } = useUiReadiness()
 
 const { runnerActive } = storeToRefs(executionStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
@@ -54,6 +54,8 @@ const workspaceLabel = computed(() => {
   return 'Research'
 })
 const showWorkflowStepLabel = computed(() => normalizeWorkspaceTab(workspace.value) === 'workflow')
+const workflowWorkspaceActive = computed(() => normalizeWorkspaceTab(workspace.value) === 'workflow')
+const dataLoaded = computed(() => datasetReady.value)
 
 const workflowStepLabel = computed(() => {
   const normalizedStep = normalizeWorkflowStep(workflowStep.value) || 'data'
@@ -75,14 +77,14 @@ const mlSignalPrimaryAction = computed(() =>
 const validateStepActive = computed(() => normalizeWorkflowStep(workflowStep.value) === 'validate')
 const mlSignalPrimaryActionDisabled = computed(() => {
   if (canCancel.value) return false
-  const dataLoaded = String(dataStore.dataId || '').trim().length > 0
+  const hasDataset = dataLoaded.value
   switch (mlSignalPrimaryAction.value.kind) {
     case 'dataset_export':
-      return !dataLoaded
+      return !hasDataset
         || !String(optimizeStore.mlSignalDatasetExportPath || '').trim()
         || !!runDisabled.value
     case 'score_cache':
-      return !dataLoaded
+      return !hasDataset
         || !!mlSignalScoreCacheDisabledReason({
           mlSignalModelBundleId: optimizeStore.mlSignalModelBundleId,
           mlSignalScoreCachePath: optimizeStore.mlSignalScoreCachePath,
@@ -91,11 +93,11 @@ const mlSignalPrimaryActionDisabled = computed(() => {
         })
         || !!runDisabled.value
     case 'validation':
-      return !dataLoaded
+      return !hasDataset
         || !String(optimizeStore.mlSignalScoreCachePath || '').trim()
         || !!validateDisabled.value
     case 'policy_sweep':
-      return !dataLoaded
+      return !hasDataset
         || !String(optimizeStore.mlSignalScoreCachePath || '').trim()
         || !!validateDisabled.value
     case 'artifacts':
@@ -104,6 +106,7 @@ const mlSignalPrimaryActionDisabled = computed(() => {
 })
 const actionLabel = computed(() => {
   if (canCancel.value) return 'Stop run'
+  if (!workflowWorkspaceActive.value) return 'Open research'
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.label
   }
@@ -112,6 +115,7 @@ const actionLabel = computed(() => {
 })
 const actionShortLabel = computed(() => {
   if (canCancel.value) return 'Stop'
+  if (!workflowWorkspaceActive.value) return 'Research'
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.shortLabel
   }
@@ -120,11 +124,12 @@ const actionShortLabel = computed(() => {
 })
 const actionDisabled = computed(() => {
   if (canCancel.value) return false
+  if (!workflowWorkspaceActive.value) return false
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryActionDisabled.value
   }
-  if (validateStepActive.value) return !!validateDisabled.value
-  return !!runDisabled.value
+  if (validateStepActive.value) return !!validateDisabled.value || !dataLoaded.value
+  return !!runDisabled.value || !dataLoaded.value
 })
 const actionTitle = computed(() => {
   if (!actionDisabled.value) return actionLabel.value
@@ -184,6 +189,10 @@ function openSettings(): void {
 function triggerPrimaryAction(): void {
   if (canCancel.value) {
     commandActionStore.cancelOptimization()
+    return
+  }
+  if (!workflowWorkspaceActive.value) {
+    workflowStore.selectWorkspace('workflow')
     return
   }
   if (shellModeLabel(mode.value) === 'ML Signal') {

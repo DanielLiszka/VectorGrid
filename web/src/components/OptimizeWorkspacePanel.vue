@@ -11,6 +11,7 @@ import {
 import { storeToRefs } from "pinia";
 import { useOptimizeCatalogQueries } from "../composables/useOptimizeCatalogQueries";
 import { useShellMount } from "../composables/useShellMount";
+import { useUiReadiness } from "../composables/useUiReadiness";
 import { useOptimizeStore, type OptimizeOption } from "../stores/optimizeStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
@@ -162,6 +163,7 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(optimizeStore);
 const { controlsTab } = storeToRefs(workflowStore);
+const { datasetReady } = useUiReadiness();
 
 const { mountReady } = useShellMount("#optVueShellMount", {
   paneSelector: '[data-vue-panel="opt"]',
@@ -208,6 +210,10 @@ const visible = computed(
   () => String(controlsTab.value || "").trim() === "opt",
 );
 const hasTauriRuntime = computed(() => tauriRuntimeAvailable());
+const optimizeRunDisabled = computed(() => !!runDisabled.value || !datasetReady.value);
+const optimizeValidationDisabled = computed(
+  () => !!validateDisabled.value || !datasetReady.value,
+);
 const catalogQueries = useOptimizeCatalogQueries({ enabled: hasTauriRuntime });
 const strategyCapabilities = computed(() =>
   describeStrategyOptimizationCapabilities(
@@ -2698,7 +2704,7 @@ onBeforeUnmount(() => {
               type="button"
               class="primary"
               data-qa-action="optimize.run"
-              :disabled="runDisabled"
+              :disabled="optimizeRunDisabled"
               @click="runOptimizationAction"
             >
               Run optimization
@@ -2706,7 +2712,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               data-qa-action="optimize.validation.run"
-              :disabled="validateDisabled"
+              :disabled="optimizeValidationDisabled"
               @click="runValidationAction"
             >
               Run validation

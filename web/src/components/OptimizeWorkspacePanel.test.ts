@@ -4,6 +4,7 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import OptimizeWorkspacePanel from "./OptimizeWorkspacePanel.vue";
+import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
@@ -195,8 +196,10 @@ describe("OptimizeWorkspacePanel", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const workflow = useWorkflowStore(pinia);
+    const data = useDataStore(pinia);
     const optimize = useOptimizeStore(pinia);
     workflow.selectControlsTab("opt", { persist: false });
+    data.dataId = "data-1";
     optimize.strategyKind = "DoubleMa";
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
@@ -216,8 +219,10 @@ describe("OptimizeWorkspacePanel", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const workflow = useWorkflowStore(pinia);
+    const data = useDataStore(pinia);
     const optimize = useOptimizeStore(pinia);
     workflow.selectControlsTab("opt", { persist: false });
+    data.dataId = "data-1";
     optimize.strategyKind = "DoubleMa";
     optimize.backend = "Auto";
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
@@ -543,8 +548,10 @@ describe("OptimizeWorkspacePanel", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const workflow = useWorkflowStore(pinia);
+    const data = useDataStore(pinia);
     const optimize = useOptimizeStore(pinia);
     workflow.selectControlsTab("opt", { persist: false });
+    data.dataId = "data-1";
     optimize.strategyKind = "DoubleMa";
     optimize.strategyHint = "Live strategy hint.";
     optimize.pairsPreview = "Pairs: 120";

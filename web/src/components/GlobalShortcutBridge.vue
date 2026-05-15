@@ -9,6 +9,7 @@ import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { openTaskCenter, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
+import { useUiReadiness } from '../composables/useUiReadiness'
 import {
   createSharedShellShortcutCommandEnabledStates,
   createSharedShellShortcutCommands,
@@ -38,9 +39,10 @@ const { open: commandPaletteOpen } = storeToRefs(commandPaletteStore)
 const { canBrowseCsv, canPolygonOpen, polygonOpen } = storeToRefs(dataStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
 const { controlsCollapsed } = storeToRefs(settingsStore)
+const { datasetReady } = useUiReadiness()
 
-const canRun = computed(() => !runDisabled.value)
-const canValidate = computed(() => !validateDisabled.value)
+const canRun = computed(() => !runDisabled.value && datasetReady.value)
+const canValidate = computed(() => !validateDisabled.value && datasetReady.value)
 
 function isMultilineEditorTarget(el: Element | null): boolean {
   const tag = String((el as HTMLElement | null)?.tagName || '').toLowerCase()

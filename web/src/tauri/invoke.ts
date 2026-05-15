@@ -1,9 +1,9 @@
 import { invoke as tauriApiInvoke, isTauri } from '@tauri-apps/api/core'
 import { isTauriCommand, type TauriCommand } from './commands'
 import { TauriRuntimeError, normalizeTauriRuntimeError } from './runtimeError'
-    // Lifecycle hooks are observational; command results should not depend on them.
+
 export type InvokeArgs = Record<string, unknown> | undefined
-    // Lifecycle hooks are observational; command errors should not depend on them.
+
 export interface InvokeLifecycleHooks {
   beforeInvoke?: (command: TauriCommand, args?: InvokeArgs) => unknown
   afterSuccess?: (
@@ -72,11 +72,27 @@ function safeAfterError(
   try {
     invokeLifecycleHooks?.afterError?.(token, command, args, error)
   } catch {
-      }
+  }
+}
+
+function humanizeCommand(command: TauriCommand): string {
+  return String(command || '')
+    .split('_')
+    .filter((part) => part.length > 0)
+    .join(' ')
 }
 
 export async function invokeCommand<T>(command: TauriCommand, args?: InvokeArgs): Promise<T> {
   const token = safeBeforeInvoke(command, args)
+  if (!tauriRuntimeAvailable()) {
+    const error = new TauriRuntimeError({
+      code: 'TAURI_INVOKE_FAILED',
+      operation: `invoke:${command}`,
+      message: `Desktop runtime unavailable for ${humanizeCommand(command)}. Open this action in the Tauri desktop app.`,
+    })
+    safeAfterError(token, command, args, error)
+    throw error
+  }
   try {
     const result = await tauriApiInvoke<T>(command, args)
     safeAfterSuccess(token, command, args, result)

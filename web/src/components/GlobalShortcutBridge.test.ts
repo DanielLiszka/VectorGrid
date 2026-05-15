@@ -202,6 +202,7 @@ describe('GlobalShortcutBridge', () => {
       latestReportPath: 'C:/reports/latest.xlsx',
       latestMetaReportPath: 'C:/reports/meta.json',
     })
+    dataStore.dataId = 'data-1'
     dataStore.canPolygonOpen = true
     optimizeStore.$patch({ runDisabled: false, validateDisabled: false })
 
@@ -257,9 +258,11 @@ describe('GlobalShortcutBridge', () => {
   it('routes native shell-command events through the shared command inventory', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
+    const dataStore = useDataStore(pinia)
     const optimizeStore = useOptimizeStore(pinia)
     const paletteStore = useCommandPaletteStore(pinia)
     const actionStore = useCommandActionStore(pinia)
+    dataStore.dataId = 'data-1'
     optimizeStore.$patch({ runDisabled: false })
     const openPaletteSpy = vi.spyOn(paletteStore, 'openPalette')
     const runSpy = vi.spyOn(actionStore, 'runOptimization').mockImplementation(() => {})
@@ -312,8 +315,10 @@ describe('GlobalShortcutBridge', () => {
     tauriInvokeMock.tauriRuntimeAvailable.mockReturnValue(true)
     const pinia = createPinia()
     setActivePinia(pinia)
+    const dataStore = useDataStore(pinia)
     const optimizeStore = useOptimizeStore(pinia)
     const settingsStore = useSettingsStore(pinia)
+    dataStore.dataId = 'data-1'
     optimizeStore.$patch({ runDisabled: false, validateDisabled: true })
     optimizeStore.canCancel = true
     settingsStore.controlsCollapsed = true

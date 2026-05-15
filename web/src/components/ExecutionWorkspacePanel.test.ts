@@ -242,7 +242,7 @@ describe('ExecutionWorkspacePanel', () => {
 
     const text = document.body.textContent || ''
     expect(text).toContain('Broker order activity')
-    expect(text).toContain('No broker orders for current symbol.')
+    expect(text).toContain('No broker orders for selected instrument.')
   })
 
   it('renders unknown review metadata distinctly before broker refresh confirms flat state', async () => {

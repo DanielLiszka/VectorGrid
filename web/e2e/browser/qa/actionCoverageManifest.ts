@@ -768,6 +768,13 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     coveredBy: ["workbench.shell.firstSlice"],
   },
   {
+    actionId: "workbench.cockpit.step.finalize",
+    surface: "workbench",
+    required: true,
+    priority: "important",
+    coveredBy: ["workbench.shell.firstSlice"],
+  },
+  {
     actionId: "footer.taskCenter.details",
     surface: "footer",
     required: true,

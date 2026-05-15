@@ -1527,8 +1527,8 @@ watch(
             :row-count="executionOrderTableRows.length"
             :viewport="false"
             aria-label="Broker order activity table shell"
-            empty-title="No broker orders for current symbol."
-            empty-body="Refresh broker review after selecting a symbol to populate broker-confirmed order activity."
+            empty-title="No broker orders for selected instrument."
+            empty-body="Refresh broker review after selecting an execution instrument to populate broker-confirmed order activity."
             keyboard-hint="Broker order rows are virtualized; spacer rows are hidden from assistive technology."
           >
             <div

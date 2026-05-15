@@ -248,6 +248,7 @@ const primaryActionPreview = computed(() =>
     runReadinessHint: runReadinessHint.value,
     validationHint: validationHint.value,
     validationStage: validationStage.value,
+    workspace: currentWorkspace.value,
     mlSignalDatasetExportPath: mlSignalDatasetExportPath.value,
     mlSignalModelBundleId: mlSignalModelBundleId.value,
     mlSignalScoreInputPath: mlSignalScoreInputPath.value,

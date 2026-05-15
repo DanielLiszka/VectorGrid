@@ -13,6 +13,7 @@ import {
   type WorkbenchPrimaryAction,
 } from "../utils/workbenchActionModel";
 import { buildWorkbenchNavigationState } from "../utils/workbenchNavigationModel";
+import { ML_SIGNAL_WORKFLOW_STEP_LABELS } from "../utils/core/workflowModel";
 import {
   latestStageCompletionForStage,
   stageCompletionIsComplete,
@@ -35,7 +36,8 @@ export type ResearchCockpitStepId =
   | "configure"
   | "optimize"
   | "validate"
-  | "analyze";
+  | "analyze"
+  | "finalize";
 
 export interface ResearchCockpitContextItem {
   key: string;
@@ -325,6 +327,70 @@ export function useResearchCockpitModel() {
   const steps = computed<ResearchCockpitStep[]>(() => {
     const currentStep = navState.value.activeWorkflowStep;
     const activeControls = navState.value.activeControlsTab;
+    if (navState.value.mode === "ml-signal") {
+      const scoreCacheReady = hasUsefulText(mlSignalScoreCachePath.value);
+      const exportReady = hasUsefulText(mlSignalDatasetExportPath.value);
+      return [
+        step(
+          "data",
+          ML_SIGNAL_WORKFLOW_STEP_LABELS.data,
+          datasetReady.value ? "Dataset loaded" : "Load dataset",
+          currentStep === "data"
+            ? "active"
+            : datasetReady.value
+              ? "complete"
+              : "available",
+        ),
+        step(
+          "optimize",
+          ML_SIGNAL_WORKFLOW_STEP_LABELS.optimize,
+          scoreCacheReady
+            ? "Cache selected"
+            : exportReady
+              ? "Build cache"
+              : "Choose output",
+          currentStep === "optimize"
+            ? "active"
+            : scoreCacheReady
+              ? "complete"
+              : datasetReady.value
+                ? "available"
+                : "blocked",
+        ),
+        step(
+          "validate",
+          ML_SIGNAL_WORKFLOW_STEP_LABELS.validate,
+          validationComplete.value ? "Evidence available" : "Run policy",
+          currentStep === "validate"
+            ? "active"
+            : validationComplete.value
+              ? "complete"
+              : scoreCacheReady
+                ? "available"
+                : "blocked",
+        ),
+        step(
+          "analyze",
+          ML_SIGNAL_WORKFLOW_STEP_LABELS.analyze,
+          scoreCacheReady ? "Sweep thresholds" : "Await cache",
+          currentStep === "analyze"
+            ? "active"
+            : scoreCacheReady
+              ? "available"
+              : "blocked",
+        ),
+        step(
+          "finalize",
+          ML_SIGNAL_WORKFLOW_STEP_LABELS.finalize,
+          scoreCacheReady ? "Inspect artifacts" : "Await outputs",
+          currentStep === "finalize"
+            ? "active"
+            : scoreCacheReady
+              ? "available"
+              : "blocked",
+        ),
+      ];
+    }
     return [
       step(
         "data",
@@ -524,6 +590,10 @@ export function useResearchCockpitModel() {
     }
     if (id === "validate") {
       workflowStore.selectWorkflowStep("validate");
+      return;
+    }
+    if (id === "finalize") {
+      workflowStore.selectWorkflowStep("finalize");
       return;
     }
     workflowStore.selectWorkflowStep("analyze");

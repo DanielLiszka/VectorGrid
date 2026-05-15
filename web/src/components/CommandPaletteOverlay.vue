@@ -22,6 +22,7 @@ import {
   openTaskCenter,
   useTaskCenterVisibility,
 } from "../composables/useTaskCenterVisibility";
+import { useUiReadiness } from "../composables/useUiReadiness";
 import { vMotionList } from "../directives/motionList";
 import {
   createSharedShellShortcutCommands,
@@ -73,6 +74,7 @@ const { open, query, selectedIndex } = storeToRefs(commandPaletteStore);
 const { canBrowseCsv, canPolygonOpen } = storeToRefs(dataStore);
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore);
 const { workspace, workflowStep } = storeToRefs(workflowStore);
+const { datasetReady } = useUiReadiness();
 const commandListId = "commandPaletteListbox";
 
 const commandGroupMeta: Record<PaletteCommand["group"], string> = {
@@ -108,7 +110,7 @@ const inputRef = ref<HTMLInputElement | null>(null);
 
 const sharedShortcutCommands = computed<PaletteCommand[]>(() =>
   createSharedShellShortcutCommands({
-    canRun: !runDisabled.value,
+    canRun: !runDisabled.value && datasetReady.value,
     canCancel: canCancel.value,
     canValidate: !validateDisabled.value,
     canBrowseCsv: canBrowseCsv.value,

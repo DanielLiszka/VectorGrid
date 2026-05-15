@@ -24,6 +24,22 @@ describe('workbenchActionModel', () => {
     expect(action.disabledReason).toBe('Load a dataset before running optimization.')
   })
 
+  it('does not project workflow run actions into non-workflow workspaces', () => {
+    const action = resolveWorkbenchPrimaryAction({
+      workspace: 'live',
+      mode: 'ml-signal',
+      workflowStep: 'data',
+      dataLoaded: true,
+      runDisabled: false,
+      mlSignalDatasetExportPath: 'C:/exports/ml.csv',
+    })
+
+    expect(action.kind).toBe('inspect')
+    expect(action.label).toBe('Review workspace')
+    expect(action.disabled).toBe(true)
+    expect(action.disabledReason).toBe('Primary run actions are available from the Research workspace.')
+  })
+
   it('returns a validation action on the validation step', () => {
     const action = resolveWorkbenchPrimaryAction({
       workflowStep: 'validate',

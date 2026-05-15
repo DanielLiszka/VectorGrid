@@ -25,6 +25,7 @@ export interface WorkbenchPrimaryActionInput {
   mlSignalScoreCachePath?: string
   mlSignalScoreSource?: string
   mlSignalModelBundleId?: string
+  workspace?: unknown
 }
 
 export interface WorkbenchPrimaryAction {
@@ -98,6 +99,16 @@ export function resolveWorkbenchPrimaryAction(input: WorkbenchPrimaryActionInput
       disabled: false,
       disabledReason: '',
       tone: 'danger',
+    }
+  }
+
+  if (hasText(input.workspace) && String(input.workspace).trim().toLowerCase() !== 'workflow') {
+    return {
+      kind: 'inspect',
+      label: 'Review workspace',
+      disabled: true,
+      disabledReason: 'Primary run actions are available from the Research workspace.',
+      tone: 'subtle',
     }
   }
 

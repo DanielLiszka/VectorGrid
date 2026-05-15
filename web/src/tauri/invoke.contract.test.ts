@@ -59,6 +59,16 @@ describe('tauri invoke contract smoke', () => {
     expect(tauriRuntimeAvailable()).toBe(false)
   })
 
+  it('returns a user-facing desktop-runtime message when commands run outside Tauri', async () => {
+    isTauriMock.mockReturnValue(false)
+
+    await expect(invokeCommand('polygon_get_cache_info')).rejects.toMatchObject({
+      message: 'Desktop runtime unavailable for polygon get cache info. Open this action in the Tauri desktop app.',
+      operation: 'invoke:polygon_get_cache_info',
+    })
+    expect(calls).toEqual([])
+  })
+
   it('rejects unknown command names before they reach the raw invoke path', async () => {
     await expect(invokeByName('unknown_command')).rejects.toBeInstanceOf(TauriRuntimeError)
     expect(calls).toEqual([])

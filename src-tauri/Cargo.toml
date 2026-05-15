@@ -105,7 +105,7 @@ test = false
 required-features = ["desktop-ui"]
 
 [features]
-default = ["custom-protocol", "desktop-ui"]
+default = ["custom-protocol"]
 desktop-ui = []
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["ta_app_core/cuda", "vector-ta/cuda"]

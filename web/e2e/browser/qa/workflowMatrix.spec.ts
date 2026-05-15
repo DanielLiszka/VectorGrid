@@ -100,15 +100,12 @@ defineWorkflow({
   scenario: emptyAppScenario,
   run: async ({ page, action }) => {
     await action('shell.workflowStep.optimize').click()
-    await expect(action('optimize.run')).toBeEnabled()
-    await expect(action('shell.primaryAction.run')).toBeEnabled()
+    await expect(action('optimize.run')).toBeDisabled()
+    await expect(action('shell.primaryAction.run')).toBeDisabled()
     await expect(action('footer.primaryAction.run')).toBeDisabled()
     await expect(page.getByText(/Load a dataset before running optimization/i).first()).toBeVisible()
 
-    await action('shell.primaryAction.run').click()
-    await expect(page.getByText(/Load data first, then configure/i).first()).toBeVisible()
-    await action('optimize.run').click()
-    await expect(page.getByText(/Load data first, then configure/i).first()).toBeVisible()
+    await expect(page.getByText(/Load data first, then configure/i).first()).toHaveCount(0)
 
     await action('optimize.preset.apply').click()
     await expect(page.getByText(/Applied preset:/i).first()).toBeVisible()
@@ -121,11 +118,13 @@ defineWorkflow({
     await expect(page.locator('.cmdPaletteDialog')).toBeVisible()
     await page.getByLabel('Command search').fill('run')
     await expect(action('commandPalette.command.run')).toBeVisible()
+    await expect(action('commandPalette.command.run')).toHaveAttribute('aria-disabled', 'true')
     await page.keyboard.press('Enter')
-    await expect(page.locator('.cmdPaletteDialog')).toBeHidden()
-    await expect(page.getByText(/Load data first, then configure/i).first()).toBeVisible()
+    await expect(page.locator('.cmdPaletteDialog')).toBeVisible()
 
-    await expect(action('optimize.run')).toBeEnabled()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.cmdPaletteDialog')).toBeHidden()
+    await expect(action('optimize.run')).toBeDisabled()
     await expectNoStuckBusyState(page)
     await expectNoHorizontalDocumentOverflow(page)
   },

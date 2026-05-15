@@ -131,7 +131,9 @@ describe('DesktopTitlebar', () => {
   it('routes shell actions through the existing stores', async () => {
     const commandPaletteStore = useCommandPaletteStore()
     const commandActionStore = useCommandActionStore()
+    const dataStore = useDataStore()
     const workflowStore = useWorkflowStore()
+    dataStore.dataId = 'data-1'
 
     const openPaletteSpy = vi.spyOn(commandPaletteStore, 'openPalette')
     const runSpy = vi.spyOn(commandActionStore, 'runOptimization')
@@ -140,19 +142,40 @@ describe('DesktopTitlebar', () => {
     const wrapper = mount(DesktopTitlebar)
 
     await wrapper.get('button[aria-label="Open command palette"]').trigger('click')
+    await wrapper.get('.titlebarPrimary').trigger('click')
     await wrapper.get('button[aria-label="Open settings workspace"]').trigger('click')
     await wrapper.get('.titlebarPrimary').trigger('click')
 
     expect(openPaletteSpy).toHaveBeenCalledTimes(1)
     expect(settingsSpy).toHaveBeenCalledWith('settings')
+    expect(settingsSpy).toHaveBeenCalledWith('workflow')
     expect(runSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses a workspace action instead of leaking the last workflow action outside Research', async () => {
+    const workflowStore = useWorkflowStore()
+    workflowStore.selectMode('ml-signal', { persist: false })
+    workflowStore.selectWorkflowStep('data', { persist: false })
+    workflowStore.selectWorkspace('live')
+
+    const wrapper = mount(DesktopTitlebar)
+    const primary = wrapper.get('.titlebarPrimary')
+
+    expect(primary.attributes('aria-label')).toBe('Open research')
+    expect(primary.text()).toContain('Research')
+
+    await primary.trigger('click')
+
+    expect(workflowStore.workspace).toBe('workflow')
   })
 
   it('routes the conventional primary action to validation on the Validate step', async () => {
     const commandActionStore = useCommandActionStore()
+    const dataStore = useDataStore()
     const optimizeStore = useOptimizeStore()
     const workflowStore = useWorkflowStore()
     workflowStore.selectWorkflowStep('validate', { persist: false })
+    dataStore.dataId = 'data-1'
     optimizeStore.$patch({ validateDisabled: false, runDisabled: false })
     const validateSpy = vi.spyOn(commandActionStore, 'validateOptimization')
     const runSpy = vi.spyOn(commandActionStore, 'runOptimization')

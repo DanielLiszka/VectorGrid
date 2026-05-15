@@ -149,6 +149,7 @@ describe('command action store', () => {
     const artifactsStore = useWorkflowArtifactsStore()
     artifactsStore.applyVueRuntimePayload({
       currentRun: {
+        ts: '2026-01-01T00:00:00.000Z',
         report_xlsx_path: 'C:/reports/from_artifacts.xlsx',
         req: {},
         res: {},
@@ -167,6 +168,7 @@ describe('command action store', () => {
     const artifactsStore = useWorkflowArtifactsStore()
     artifactsStore.applyVueRuntimePayload({
       currentRun: {
+        ts: '2026-01-01T00:00:00.000Z',
         report_xlsx_path: 'C:/reports/from_artifacts.xlsx',
         report_xlsx_exists: false,
         req: {},
@@ -228,6 +230,7 @@ describe('command action store', () => {
     const artifactsStore = useWorkflowArtifactsStore()
     artifactsStore.applyVueRuntimePayload({
       currentRun: {
+        ts: '2026-01-01T00:00:00.000Z',
         report_xlsx_path: 'C:/reports/from_artifacts.xlsx',
         req: {},
         res: {},

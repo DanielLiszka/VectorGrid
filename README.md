@@ -8,9 +8,24 @@ The focus is primarily on stock tickers, but backtest optimization will be possi
 
 For a basic double moving average strategy, the speedup can be up to 2,451x faster relative to VectorBT (inclusive of indicator calculation time), and only slightly slower for more complex strategies.
 
-Currently, the backend is nearly complete, while work is still ongoing with the frontend. Operations are currently limited to a backend CLI interface at the moment.
+The full desktop UI is included in this repository and is the primary application surface. Backend CLI commands remain available for direct engine runs, benchmarks, and lower-level validation.
 
 ## Quick Start
+
+Build the frontend assets:
+
+```powershell
+npm --prefix web ci
+npm --prefix web run build
+```
+
+Run the full Tauri desktop app:
+
+```powershell
+cargo run -p ta_desktop_demo_app --release
+```
+
+## Backend CLI
 
 CPU-only synthetic `Double MA` run:
 

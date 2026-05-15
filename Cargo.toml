@@ -14,3 +14,6 @@ resolver = "2"
 # Treat vendor/vector-ta-0.2.4 changes as first-party review scope.
 [patch.crates-io]
 vector-ta = { path = "vendor/vector-ta-0.2.4" }
+
+[profile.test]
+debug = "line-tables-only"

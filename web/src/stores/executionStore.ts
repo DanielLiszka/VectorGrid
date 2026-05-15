@@ -253,6 +253,25 @@ function redactExecutionCredentialText(
   return redactKnownSecrets(raw, [state.apiKey, state.apiSecret]);
 }
 
+function executionErrorInput(error: unknown): unknown {
+  if (error instanceof Error && error.name === "TauriRuntimeError") {
+    return error.message;
+  }
+  return error;
+}
+
+function executionFailureMessage(
+  state: ExecutionState,
+  error: unknown,
+): string {
+  const raw = redactExecutionCredentialText(state, executionErrorInput(error));
+  return (
+    normalizeExecutionOperatorError(raw) ||
+    raw ||
+    "Unknown execution error."
+  );
+}
+
 function normalizedOrderRows(values: unknown): ExecutionOrderRow[] {
   if (!Array.isArray(values)) return [];
   const rows: ExecutionOrderRow[] = [];
@@ -2181,11 +2200,7 @@ export const useExecutionStore = defineStore("execution", {
     },
 
     failAction(prefix: string, error: unknown): void {
-      const raw = redactExecutionCredentialText(this, error);
-      const msg =
-        normalizeExecutionOperatorError(raw) ||
-        raw ||
-        "Unknown execution error.";
+      const msg = executionFailureMessage(this, error);
       this.statusLine = `${prefix}: ${msg}`;
       this.statusHint = this.statusLine;
       this.outputPreview = msg;
@@ -2404,7 +2419,10 @@ export const useExecutionStore = defineStore("execution", {
         this.statusLine = "Execution risk policy loaded.";
         this.statusHint = this.riskPolicyStatusHint;
       } catch (error) {
-        this.failAction("Risk policy load failed", error);
+        const msg = executionFailureMessage(this, error);
+        this.statusLine = `Risk policy load failed: ${msg}`;
+        this.statusHint = this.statusLine;
+        markVue(this);
       } finally {
         this.finishAction("loadRiskPolicy");
       }

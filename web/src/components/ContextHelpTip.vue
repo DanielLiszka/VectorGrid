@@ -1,11 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, useId } from 'vue'
+import { computed, useId } from 'vue'
 import { CircleHelp } from '@lucide/vue'
 import {
-  PopoverContent,
-  PopoverPortal,
-  PopoverRoot,
-  PopoverTrigger,
   TooltipContent,
   TooltipPortal,
   TooltipProvider,
@@ -36,7 +32,6 @@ const props = withDefaults(defineProps<Props>(), {
 const { mode, isFull, isOff } = useHelpMode()
 
 const conciseTooltipDelayMs = 450
-const fullHelpOpen = ref(false)
 const componentId = useId()
 
 const label = computed(() => String(props.ariaLabel || props.title || 'Help').trim() || 'Help')
@@ -52,53 +47,20 @@ const conciseContentId = computed(() => `${idBase.value}_concise_content`)
 const fullDescriptionIds = computed(() =>
   detailBody.value ? `${fullSummaryId.value} ${fullDetailId.value}` : fullSummaryId.value,
 )
+const tooltipId = computed(() => (isFull.value ? fullContentId.value : conciseContentId.value))
 </script>
 
 <template>
   <span v-if="!isOff" class="contextHelpRoot" :data-help-mode="mode">
-    <PopoverRoot v-if="isFull" v-model:open="fullHelpOpen">
-      <PopoverTrigger as-child>
-        <button
-          :id="fullTriggerId"
-          type="button"
-          class="contextHelpTrigger"
-          :aria-label="label"
-          :aria-expanded="fullHelpOpen ? 'true' : 'false'"
-          :aria-controls="fullContentId"
-        >
-          <span v-if="textBadge" class="contextHelpBadgeText">{{ textBadge }}</span>
-          <CircleHelp v-else class="contextHelpIcon" aria-hidden="true" />
-        </button>
-      </PopoverTrigger>
-      <PopoverPortal>
-        <PopoverContent
-          :id="fullContentId"
-          role="dialog"
-          aria-modal="false"
-          class="contextHelpCard"
-          :aria-labelledby="title ? fullTitleId : undefined"
-          :aria-label="title ? undefined : label"
-          :aria-describedby="fullDescriptionIds"
-          :side="side"
-          :align="align"
-          :side-offset="10"
-          :collision-padding="12"
-        >
-          <div v-if="title" :id="fullTitleId" class="contextHelpTitle">{{ title }}</div>
-          <div :id="fullSummaryId" class="contextHelpSummary">{{ summary }}</div>
-          <div v-if="detailBody" :id="fullDetailId" class="contextHelpDetail">{{ detailBody }}</div>
-        </PopoverContent>
-      </PopoverPortal>
-    </PopoverRoot>
-
-    <TooltipProvider v-else>
+    <TooltipProvider>
       <TooltipRoot :delay-duration="conciseTooltipDelayMs">
         <TooltipTrigger as-child>
           <button
+            :id="isFull ? fullTriggerId : undefined"
             type="button"
             class="contextHelpTrigger"
             :aria-label="label"
-            :aria-describedby="conciseContentId"
+            :aria-describedby="tooltipId"
           >
             <span v-if="textBadge" class="contextHelpBadgeText">{{ textBadge }}</span>
             <CircleHelp v-else class="contextHelpIcon" aria-hidden="true" />
@@ -106,15 +68,20 @@ const fullDescriptionIds = computed(() =>
         </TooltipTrigger>
         <TooltipPortal>
           <TooltipContent
-            :id="conciseContentId"
-            role="tooltip"
-            class="contextHelpCard contextHelpTooltip"
+            :id="tooltipId"
+            class="contextHelpCard"
+            :class="{ contextHelpTooltip: !isFull }"
+            :aria-labelledby="isFull && title ? fullTitleId : undefined"
+            :aria-label="isFull && !title ? label : undefined"
+            :aria-describedby="isFull ? fullDescriptionIds : undefined"
             :side="side"
             :align="align"
             :side-offset="8"
             :collision-padding="12"
           >
-            <div class="contextHelpSummary">{{ summary }}</div>
+            <div v-if="isFull && title" :id="fullTitleId" class="contextHelpTitle">{{ title }}</div>
+            <div :id="isFull ? fullSummaryId : undefined" class="contextHelpSummary">{{ summary }}</div>
+            <div v-if="isFull && detailBody" :id="fullDetailId" class="contextHelpDetail">{{ detailBody }}</div>
           </TooltipContent>
         </TooltipPortal>
       </TooltipRoot>

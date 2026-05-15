@@ -47,6 +47,10 @@ data/*.csv
 *.md
 *.MD
 !/README.md
+!/docs/
+/docs/**
+!/docs/feature_expansion_implementation_plans_2026-04-30/
+!/docs/feature_expansion_implementation_plans_2026-04-30/**
 /.github/workflows.disabled/
 /Archive/
 /research/
