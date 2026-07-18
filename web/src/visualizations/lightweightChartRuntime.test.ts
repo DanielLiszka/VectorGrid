@@ -4,6 +4,9 @@ import {
   applyLightweightChartSize,
   createCandlestickRuntime,
   createDrillSeriesRuntime,
+  fitLightweightChartContent,
+  panLightweightChart,
+  visibleLogicalRangeLabel,
   type LightweightChartModule,
 } from './lightweightChartRuntime'
 
@@ -49,7 +52,38 @@ describe('lightweightChartRuntime', () => {
 
     expect(runtime?.candleSeries).toBe(candle)
     expect(chart.addLineSeries).toHaveBeenCalledTimes(3)
+    expect(runtime?.halftrendSeries).toBeNull()
     expect(runtime?.maczSeries).toBeNull()
+  })
+
+  it('creates HalfTrend and MAC-Z on independent histogram price scales', () => {
+    const applyOptions = vi.fn()
+    const makeSeries = () => ({ setData: vi.fn(), priceScale: () => ({ applyOptions }) })
+    const addSeries = vi.fn(() => makeSeries())
+    const chart = { addSeries, remove: vi.fn() }
+    const module: LightweightChartModule = {
+      CandlestickSeries: { type: 'candle' },
+      HistogramSeries: { type: 'histogram' },
+      LineSeries: { type: 'line' },
+      createChart: vi.fn(() => chart),
+    }
+
+    const runtime = createDrillSeriesRuntime(host(), module)
+
+    expect(runtime?.halftrendSeries).toBeTruthy()
+    expect(runtime?.maczSeries).toBeTruthy()
+    expect(addSeries).toHaveBeenCalledWith(module.HistogramSeries, expect.objectContaining({
+      priceScaleId: 'halftrend',
+    }))
+    expect(addSeries).toHaveBeenCalledWith(module.HistogramSeries, expect.objectContaining({
+      priceScaleId: 'macz',
+    }))
+    expect(applyOptions).toHaveBeenCalledWith(expect.objectContaining({
+      scaleMargins: { top: 0.18, bottom: 0.70 },
+    }))
+    expect(applyOptions).toHaveBeenCalledWith(expect.objectContaining({
+      scaleMargins: { top: 0.78, bottom: 0.03 },
+    }))
   })
 
   it('removes the chart when no candle series can be created', () => {
@@ -68,5 +102,28 @@ describe('lightweightChartRuntime', () => {
     applyLightweightChartSize({ applyOptions }, 10, 20)
 
     expect(applyOptions).toHaveBeenCalledWith({ width: 240, height: 220 })
+  })
+
+  it('fits, pans, and labels visible logical ranges defensively', () => {
+    const range = { from: 10, to: 50 }
+    const fitContent = vi.fn()
+    const setVisibleLogicalRange = vi.fn((nextRange) => {
+      range.from = nextRange.from
+      range.to = nextRange.to
+    })
+    const chart = {
+      timeScale: () => ({
+        fitContent,
+        getVisibleLogicalRange: () => ({ ...range }),
+        setVisibleLogicalRange,
+      }),
+    }
+
+    expect(visibleLogicalRangeLabel(chart)).toBe('10.0..50.0')
+    expect(panLightweightChart(chart, 'left')).toBe(true)
+    expect(setVisibleLogicalRange).toHaveBeenCalled()
+    expect(range.from).toBeLessThan(10)
+    expect(fitLightweightChartContent(chart)).toBe(true)
+    expect(fitContent).toHaveBeenCalled()
   })
 })

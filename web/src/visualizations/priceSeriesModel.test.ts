@@ -83,12 +83,12 @@ describe("priceSeriesModel", () => {
 
     expect(
       normalizeCompositeIndicatorBars([
-        { time: 2, halftrend: "101", macz_hist: "-0.2" },
+        { time: 2, halftrend: "1", macz_hist: "-0.2", ott_line: "100.8" },
         { time: 1, halftrend: null, macz: "0.3" },
       ]),
     ).toEqual([
-      { time: 1, halftrend: null, macz: 0.3 },
-      { time: 2, halftrend: 101, macz: -0.2 },
+      { time: 1, halftrend: null, macz: 0.3, ottLine: null, ottPrice: null },
+      { time: 2, halftrend: 1, macz: -0.2, ottLine: 100.8, ottPrice: null },
     ]);
   });
 });

@@ -39,6 +39,7 @@ import { useAnalysisStore } from "../stores/analysisStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useValidationStore } from "../stores/validationStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => undefined),
@@ -1067,6 +1068,29 @@ describe("meta service", () => {
     await freshMlApply();
     expect(analysisStore.statusLine).toBe("Timeframe required for ML apply.");
     expect(freshInvokeCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("formats aggregate runtime rejections without constructor prefixes", async () => {
+    const analysisStore = useAnalysisStore(pinia);
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: "CompositeMo",
+      metaTimeframe: "1m",
+    });
+    invokeCommandMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: "TAURI_COMMAND_UNKNOWN",
+        operation: "ml_confidence_model_status",
+        message:
+          "Desktop runtime unavailable for ML confidence status. Open this action in the Tauri desktop app.",
+      }),
+    );
+
+    await mlRefresh();
+
+    expect(analysisStore.statusLine).toBe(
+      "Desktop runtime unavailable for ML confidence status. Open this action in the Tauri desktop app.",
+    );
+    expect(analysisStore.statusLine).not.toContain("TauriRuntimeError:");
   });
 
   it("refreshes ML status after stage5 auto-trains a model", async () => {

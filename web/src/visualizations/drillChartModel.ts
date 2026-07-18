@@ -58,7 +58,8 @@ export interface DrillChartModel {
   candleData: DrillCandlePoint[];
   fastData: DrillLinePoint[];
   slowData: DrillLinePoint[];
-  halftrendData: DrillLinePoint[];
+  halftrendData: DrillHistogramPoint[];
+  ottData: DrillLinePoint[];
   maczData: DrillHistogramPoint[];
   trades: Record<string, unknown>[];
   tradeStats: Record<string, unknown>;
@@ -107,11 +108,22 @@ export function buildDrillChartModel(
   const compositeBars = normalizeCompositeIndicatorBars(
     curves.composite_indicator_bars,
   );
-  const halftrendData: DrillLinePoint[] = [];
+  const halftrendData: DrillHistogramPoint[] = [];
+  const ottData: DrillLinePoint[] = [];
   const maczData: DrillHistogramPoint[] = [];
   for (const row of compositeBars) {
     if (Number.isFinite(row.halftrend ?? Number.NaN)) {
-      halftrendData.push({ time: row.time, value: Number(row.halftrend) });
+      const isShortRegime = Number(row.halftrend) >= 0.5;
+      halftrendData.push({
+        time: row.time,
+        value: isShortRegime ? -1 : 1,
+        color: isShortRegime
+          ? "rgba(244, 63, 94, 0.38)"
+          : "rgba(34, 197, 94, 0.38)",
+      });
+    }
+    if (Number.isFinite(row.ottLine ?? Number.NaN)) {
+      ottData.push({ time: row.time, value: Number(row.ottLine) });
     }
     if (Number.isFinite(row.macz ?? Number.NaN)) {
       const value = Number(row.macz);
@@ -136,6 +148,7 @@ export function buildDrillChartModel(
     fastData,
     slowData,
     halftrendData,
+    ottData,
     maczData,
     trades: Array.isArray(curves.trades)
       ? curves.trades.map((trade) => asRecord(trade))
@@ -243,6 +256,7 @@ export function buildDrillTradeMarkers(
 
     const open = !!trade.open;
     const exitT = num(trade.exit_t, Number.NaN);
+    const pnl = num(trade.pnl, Number.NaN);
     const exitTime =
       !open && Number.isFinite(exitT) ? resolveTradeTime(exitT) : null;
     if (Number.isFinite(exitTime ?? Number.NaN)) {
@@ -253,8 +267,13 @@ export function buildDrillTradeMarkers(
         shape: "circle",
         color: selected
           ? "rgba(250, 204, 21, 0.98)"
-          : "rgba(148, 163, 184, 0.9)",
+          : Number.isFinite(pnl)
+            ? pnl >= 0
+              ? "rgba(34, 197, 94, 0.9)"
+              : "rgba(244, 63, 94, 0.9)"
+            : "rgba(148, 163, 184, 0.9)",
         size: selected ? 1.2 : 0.8,
+        text: `X${tradeIdx + 1}`,
       });
     }
   }

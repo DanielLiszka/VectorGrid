@@ -3647,6 +3647,7 @@ fn build_prepared_holdout_batches(
                         data_id: String::new(),
                         backend: ta_app_core::Backend::CpuOnly,
                         ma_source: g0.ma_source.clone(),
+                        dynamic_strategy_ir: None,
                         fast_ma_params: g0.fast_ma_params.clone(),
                         slow_ma_params: g0.slow_ma_params.clone(),
                         candidates,

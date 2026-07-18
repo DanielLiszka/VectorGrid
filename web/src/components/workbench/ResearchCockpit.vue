@@ -115,7 +115,7 @@ function selectStep(id: ResearchCockpitStepId): void {
   grid-area: steps;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(6.4rem, 1fr));
   gap: 0.32rem;
 }
 
@@ -265,7 +265,7 @@ function selectStep(id: ResearchCockpitStepId): void {
 
   .cockpitSteps {
     overflow-x: auto;
-    grid-template-columns: repeat(5, minmax(7.5rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(7.2rem, 1fr));
     scrollbar-width: thin;
   }
 

@@ -3,7 +3,10 @@ import { useLightweightChart } from './useLightweightChart'
 import {
   applyLightweightChartSize,
   createDrillSeriesRuntime,
+  fitLightweightChartContent,
+  panLightweightChart,
   type LightweightChartModule,
+  visibleLogicalRangeLabel,
 } from '../visualizations/lightweightChartRuntime'
 import {
   buildDrillTradeMarkers,
@@ -19,6 +22,7 @@ interface DrillChartContext {
   fast: any
   slow: any
   halftrend: any
+  ott: any
   macz: any
   markerApi: any
 }
@@ -31,7 +35,8 @@ interface DrillChartRenderPayload {
   candleData: DrillCandlePoint[]
   fastData: DrillLinePoint[]
   slowData: DrillLinePoint[]
-  halftrendData: DrillLinePoint[]
+  halftrendData: DrillHistogramPoint[]
+  ottData: DrillLinePoint[]
   maczData: DrillHistogramPoint[]
 }
 
@@ -39,6 +44,8 @@ export interface DrillPriceChartRuntime {
   setHost: (host: HTMLElement | null) => void
   render: (model: DrillChartModel | null, selectedTradeIdx: number) => Promise<void>
   updateSelectedTrade: (model: DrillChartModel | null, selectedTradeIdx: number) => void
+  fitContent: () => boolean
+  pan: (direction: 'left' | 'right') => boolean
   clear: (message?: string) => void
   dispose: () => void
 }
@@ -46,6 +53,7 @@ export interface DrillPriceChartRuntime {
 export interface DrillPriceChartRuntimeOptions {
   onTradeMarkerSelect?: (tradeIdx: number) => void
   onMetaChange?: (message: string) => void
+  onViewChange?: (label: string) => void
 }
 
 function text(value: unknown): string {
@@ -71,6 +79,30 @@ function clearSeries(series: any): void {
   setSeriesData(series, [])
 }
 
+function buildRenderMeta(model: DrillChartModel, selectedTradeIdx: number): string {
+  const tradeMarkers = buildDrillTradeMarkers(model, selectedTradeIdx)
+  const markers = tradeMarkers.length
+  const entries = tradeMarkers.filter((marker) => marker.id.endsWith('-entry')).length
+  const exits = tradeMarkers.filter((marker) => marker.id.endsWith('-exit')).length
+  const selected =
+    selectedTradeIdx >= 0 && selectedTradeIdx < model.trades.length
+      ? `trade-${selectedTradeIdx + 1}`
+      : 'none'
+  return [
+    `candles=${model.candleData.length}`,
+    `fast=${model.fastData.length}`,
+    `slow=${model.slowData.length}`,
+    `halftrend=${model.halftrendData.length}`,
+    `ott=${model.ottData.length}`,
+    `macz=${model.maczData.length}`,
+    `trades=${model.trades.length}`,
+    `entries=${entries}`,
+    `exits=${exits}`,
+    `markers=${markers}`,
+    `selected=${selected}`,
+  ].join(' ')
+}
+
 export function useDrillPriceChartRuntime(
   options: DrillPriceChartRuntimeOptions = {},
 ): DrillPriceChartRuntime {
@@ -80,9 +112,11 @@ export function useDrillPriceChartRuntime(
   let fastSeries: any = null
   let slowSeries: any = null
   let halftrendSeries: any = null
+  let ottSeries: any = null
   let maczSeries: any = null
   let markerApi: any = null
   let clickHandler: ((param: unknown) => void) | null = null
+  let rangeHandler: (() => void) | null = null
   let renderFrame = 0
   let pendingPayload: DrillChartRenderPayload | null = null
   let renderToken = 0
@@ -91,6 +125,10 @@ export function useDrillPriceChartRuntime(
 
   function setMeta(message: string): void {
     options.onMetaChange?.(message)
+  }
+
+  function publishViewLabel(): void {
+    options.onViewChange?.(visibleLogicalRangeLabel(chartRuntime.chartRef.value))
   }
 
   async function loadModule(): Promise<LightweightChartModule | null> {
@@ -129,9 +167,28 @@ export function useDrillPriceChartRuntime(
     clickHandler = null
   }
 
+  function removeRangeHandler(): void {
+    const chart = chartRuntime.chartRef.value
+    if (
+      chart &&
+      rangeHandler &&
+      typeof (chart as { timeScale?: unknown }).timeScale === 'function'
+    ) {
+      try {
+        const timeScale = (chart as { timeScale: () => unknown }).timeScale()
+        if (timeScale && typeof (timeScale as { unsubscribeVisibleLogicalRangeChange?: unknown }).unsubscribeVisibleLogicalRangeChange === 'function') {
+          ;(timeScale as { unsubscribeVisibleLogicalRangeChange: (handler: () => void) => void })
+            .unsubscribeVisibleLogicalRangeChange(rangeHandler)
+        }
+      } catch {}
+    }
+    rangeHandler = null
+  }
+
   function dispose(): void {
     cancelRenderFrame()
     removeClickHandler()
+    removeRangeHandler()
     chartRuntime.dispose((chart) => {
       if (chart && typeof (chart as { remove?: unknown }).remove === 'function') {
         ;(chart as { remove: () => void }).remove()
@@ -141,10 +198,12 @@ export function useDrillPriceChartRuntime(
     fastSeries = null
     slowSeries = null
     halftrendSeries = null
+    ottSeries = null
     maczSeries = null
     markerApi = null
     currentModel = null
     currentSelectedTradeIdx = -1
+    options.onViewChange?.('')
   }
 
   function setHost(host: HTMLElement | null): void {
@@ -164,10 +223,13 @@ export function useDrillPriceChartRuntime(
   ): void {
     currentModel = model
     currentSelectedTradeIdx = selectedTradeIdx
-    if (!markerApi || typeof markerApi.setMarkers !== 'function' || !model) return
-    try {
-      markerApi.setMarkers(buildDrillTradeMarkers(model, selectedTradeIdx))
-    } catch {}
+    if (!model) return
+    if (markerApi && typeof markerApi.setMarkers === 'function') {
+      try {
+        markerApi.setMarkers(buildDrillTradeMarkers(model, selectedTradeIdx))
+      } catch {}
+    }
+    setMeta(buildRenderMeta(model, selectedTradeIdx))
   }
 
   function flushRenderFrame(): void {
@@ -183,17 +245,14 @@ export function useDrillPriceChartRuntime(
     setSeriesData(ctx.fast, payload.fastData)
     setSeriesData(ctx.slow, payload.slowData)
     setSeriesData(ctx.halftrend, payload.halftrendData)
+    setSeriesData(ctx.ott, payload.ottData)
     setSeriesData(ctx.macz, payload.maczData)
     updateSelectedTrade(model, selectedTradeIdx)
 
-    try {
-      const timeScale = ctx.chart.timeScale && ctx.chart.timeScale()
-      if (timeScale && typeof timeScale.fitContent === 'function') timeScale.fitContent()
-    } catch {}
+    fitLightweightChartContent(ctx.chart)
+    publishViewLabel()
 
-    setMeta(
-      `candles=${payload.candleData.length} fast=${payload.fastData.length} slow=${payload.slowData.length} trades=${model.trades.length} markers=${buildDrillTradeMarkers(model, selectedTradeIdx).length}`,
-    )
+    setMeta(buildRenderMeta(model, selectedTradeIdx))
   }
 
   function scheduleRenderFrame(payload: DrillChartRenderPayload): void {
@@ -221,6 +280,7 @@ export function useDrillPriceChartRuntime(
         fast: fastSeries,
         slow: slowSeries,
         halftrend: halftrendSeries,
+        ott: ottSeries,
         macz: maczSeries,
         markerApi,
       }
@@ -236,6 +296,7 @@ export function useDrillPriceChartRuntime(
     fastSeries = markRawEntity(runtime.fastSeries)
     slowSeries = markRawEntity(runtime.slowSeries)
     halftrendSeries = markRawEntity(runtime.halftrendSeries)
+    ottSeries = markRawEntity(runtime.ottSeries)
     maczSeries = markRawEntity(runtime.maczSeries)
     markerApi = markRawEntity(runtime.markerApi)
     chartRuntime.setChart(markRawEntity(chartAny))
@@ -253,6 +314,14 @@ export function useDrillPriceChartRuntime(
       } catch {}
     }
 
+    try {
+      const timeScale = chartAny.timeScale && chartAny.timeScale()
+      if (timeScale && typeof timeScale.subscribeVisibleLogicalRangeChange === 'function') {
+        rangeHandler = () => publishViewLabel()
+        timeScale.subscribeVisibleLogicalRangeChange(rangeHandler)
+      }
+    } catch {}
+
     chartRuntime.observeHostResize((rect) => {
       const chartRef = chartRuntime.chartRef.value
       if (!chartRef || !rect.width || !rect.height) return
@@ -267,6 +336,7 @@ export function useDrillPriceChartRuntime(
       fast: fastSeries,
       slow: slowSeries,
       halftrend: halftrendSeries,
+      ott: ottSeries,
       macz: maczSeries,
       markerApi,
     }
@@ -282,6 +352,7 @@ export function useDrillPriceChartRuntime(
     clearSeries(fastSeries)
     clearSeries(slowSeries)
     clearSeries(halftrendSeries)
+    clearSeries(ottSeries)
     clearSeries(maczSeries)
     if (markerApi && typeof markerApi.setMarkers === 'function') {
       try {
@@ -290,6 +361,19 @@ export function useDrillPriceChartRuntime(
     }
     currentModel = null
     currentSelectedTradeIdx = -1
+    options.onViewChange?.('')
+  }
+
+  function fitContent(): boolean {
+    const ok = fitLightweightChartContent(chartRuntime.chartRef.value)
+    publishViewLabel()
+    return ok
+  }
+
+  function pan(direction: 'left' | 'right'): boolean {
+    const ok = panLightweightChart(chartRuntime.chartRef.value, direction)
+    publishViewLabel()
+    return ok
   }
 
   async function render(
@@ -323,6 +407,7 @@ export function useDrillPriceChartRuntime(
       fastData: model.fastData,
       slowData: model.slowData,
       halftrendData: model.halftrendData,
+      ottData: model.ottData,
       maczData: model.maczData,
     })
   }
@@ -331,6 +416,8 @@ export function useDrillPriceChartRuntime(
     setHost,
     render,
     updateSelectedTrade,
+    fitContent,
+    pan,
     clear,
     dispose,
   }

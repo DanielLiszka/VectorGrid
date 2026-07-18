@@ -6,6 +6,7 @@ import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore"
 import { invokeCommand } from "../tauri/invoke";
 import { copyTextToDesktopClipboard } from "./desktopClipboard";
 import { csvLine } from "../utils/csv";
+import { storeErrorText } from "../utils/storeErrorText";
 import {
   buildRunCompareSummary,
   parseArtifactLineage,
@@ -306,6 +307,11 @@ const drillPriceBarsPending = new Map<string, Promise<DrillPriceBar[]>>();
 let drillRenderState: DrillRenderState | null = null;
 let heatmapRenderState: HeatmapCanvasRenderModel | null = null;
 let lastAnalysisRunIdentity = "";
+
+function formatAnalysisActionError(prefix: string, error: unknown): string {
+  const detail = storeErrorText(error);
+  return detail ? `${prefix}: ${detail}` : prefix;
+}
 
 function text(v: unknown): string {
   return String(v ?? "").trim();
@@ -2404,7 +2410,7 @@ async function runVueDrillPipeline(row: TopRowModel): Promise<boolean> {
   } catch (error) {
     if (seq !== drillSeq) return true;
     drillRenderState = null;
-    const message = `Candidate detail failed: ${String(error)}`;
+    const message = formatAnalysisActionError("Candidate detail failed", error);
     if (store) {
       store.drillStatus = message;
       markAnalysisVue(store);
@@ -4607,7 +4613,7 @@ export async function refreshCompareSummary(): Promise<void> {
     markAnalysisVue(store);
   } catch (error) {
     if (seq !== compareSeq) return;
-    store.compareSummary = `Compare failed: ${String(error)}`;
+    store.compareSummary = formatAnalysisActionError("Compare failed", error);
     markAnalysisVue(store);
   }
 }

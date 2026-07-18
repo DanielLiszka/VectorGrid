@@ -338,6 +338,7 @@ function exportFeasibilityCsv(): void {
             <button
               type="button"
               class="ghostButton compact"
+              data-qa-action="portfolio.saved.selectLatest"
               @click="selectLatestSavedRuns"
             >
               Latest 5
@@ -346,6 +347,7 @@ function exportFeasibilityCsv(): void {
               type="button"
               class="ghostButton compact"
               :disabled="selectedSavedCount === 0"
+              data-qa-action="portfolio.saved.clear"
               @click="clearSavedRuns"
             >
               Clear

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ML_SIGNAL_WORKFLOW_ALLOWED,
+  OPTIONS_WORKFLOW_ALLOWED,
   WORKFLOW_ALLOWED,
   WORKFLOW_STEPS,
   WORKFLOW_TABS,
@@ -70,13 +71,15 @@ describe('workflowModel', () => {
 
   it('normalizes shell modes and resolves mode-scoped defaults and allowed tabs', () => {
     expect(normalizeShellMode('ML-SIGNAL')).toBe('ml-signal')
+    expect(normalizeShellMode('OPTIONS')).toBe('options')
     expect(normalizeShellMode(' conventional ')).toBe('conventional')
-    expect(normalizeShellMode('options')).toBe('')
+    expect(normalizeShellMode('options_followup')).toBe('')
 
     const conventionalDefaults = workflowDefaultsForMode('conventional')
     const mlDefaults = workflowDefaultsForMode('ml-signal')
     const conventionalAllowed = workflowAllowedForMode('conventional')
     const mlAllowed = workflowAllowedForMode('ml-signal')
+    const optionsAllowed = workflowAllowedForMode('options')
 
     expect(conventionalDefaults.optimize).toEqual({
       controls: 'opt',
@@ -93,6 +96,8 @@ describe('workflowModel', () => {
     ])
     expect(mlAllowed.optimize.controls).toEqual(['opt'])
     expect(mlAllowed.analyze.results).toEqual(['overview'])
+    expect(optionsAllowed.optimize.results).toEqual(['options'])
+    expect(optionsAllowed.validate.controls).toEqual([])
   })
 
   it('keeps conventional and ML Signal allowed-tab maps intentionally different', () => {
@@ -103,6 +108,18 @@ describe('workflowModel', () => {
     expect(WORKFLOW_ALLOWED.optimize).toEqual({
       controls: ['opt', 'strategy', 'advanced'],
       results: ['overview', 'top', 'pareto', 'heatmap'],
+    })
+    expect(WORKFLOW_ALLOWED.validate).toEqual({
+      controls: [],
+      results: ['validate'],
+    })
+    expect(WORKFLOW_ALLOWED.analyze).toEqual({
+      controls: [],
+      results: ['drill', 'top', 'pareto', 'heatmap', 'overview'],
+    })
+    expect(WORKFLOW_ALLOWED.finalize).toEqual({
+      controls: [],
+      results: ['final', 'meta'],
     })
     expect(WORKFLOW_ALLOWED.settings).toEqual({
       controls: ['advanced'],
@@ -120,15 +137,27 @@ describe('workflowModel', () => {
       controls: ['advanced'],
       results: ['meta', 'debug'],
     })
+    expect(OPTIONS_WORKFLOW_ALLOWED.data).toEqual({
+      controls: ['data'],
+      results: ['options'],
+    })
+    expect(OPTIONS_WORKFLOW_ALLOWED.finalize).toEqual({
+      controls: [],
+      results: ['options'],
+    })
   })
 
   it('derives mode-aware labels and subtitles while keeping conventional fallback intact', () => {
     expect(shellModeLabel('ml-signal')).toBe('ML Signal')
+    expect(shellModeLabel('options')).toBe('Options')
     expect(shellModeLabel('conventional')).toBe('Conventional')
     expect(workflowStepLabelForMode('validate', 'conventional')).toBe('Validation')
     expect(workflowStepLabelForMode('validate', 'ml-signal')).toBe('Policy Validation')
+    expect(workflowStepLabelForMode('validate', 'options')).toBe('Expression Run')
     expect(workflowStepSubtitleForMode('optimize', 'ml-signal')).toContain('score cache')
-    expect(workflowStepSubtitleForMode('finalize', 'conventional')).toContain('Stage 5')
+    expect(workflowStepSubtitleForMode('optimize', 'options')).toContain('options data')
+    expect(workflowStepLabelForMode('finalize', 'conventional')).toBe('Final Review')
+    expect(workflowStepSubtitleForMode('finalize', 'conventional')).toContain('evidence')
   })
 
   it('maps ML workflow steps and saved stages to truthful shared primary actions', () => {

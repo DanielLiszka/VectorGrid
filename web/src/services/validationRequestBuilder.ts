@@ -121,6 +121,7 @@ export interface ValidationRequestPayload {
     device_id?: number;
   };
   ma_source: string;
+  dynamic_strategy_ir: unknown | null;
   fast_ma_params: unknown;
   slow_ma_params: unknown;
   candidates: ValidationCandidateLike[];
@@ -251,6 +252,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === "Orc") return "Orc";
   if (kind === "Marrt") return "Marrt";
   if (kind === "Vfct") return "Vfct";
+  if (kind === "DynamicDoubleMa") return "DynamicDoubleMa";
   if (kind === "Rocb") return "Rocb";
   if (kind === "Vcet") return "Vcet";
   if (kind === "Asr") return "Asr";
@@ -285,6 +287,7 @@ function isDoubleLikeKind(kind: string): boolean {
     nextKind === "Orc" ||
     nextKind === "Marrt" ||
     nextKind === "Vfct" ||
+    nextKind === "DynamicDoubleMa" ||
     nextKind === "CompositeTrend" ||
     nextKind === "RegimeHybrid" ||
     nextKind === "BreakoutMomentum"
@@ -1302,16 +1305,19 @@ export function buildValidationRequest(
   const currentRunReq = asRecord(inputs.currentRunReq);
   if (!currentRunReq || !inputs.currentRunRes)
     throw new Error("Run an optimization first.");
-  const rawStrategyKind = normalizeText(
-    currentRunReq.strategy_kind ?? currentRunReq.strategyKind,
-  );
-  if (rawStrategyKind === "DynamicDoubleMa") {
+  const kind = kindFromReq(currentRunReq);
+  const dynamicStrategyIr =
+    kind === "DynamicDoubleMa"
+      ? (currentRunReq.dynamic_strategy_ir ??
+        currentRunReq.dynamicStrategyIr ??
+        null)
+      : null;
+  if (kind === "DynamicDoubleMa" && !dynamicStrategyIr) {
     throw new Error(
-      "DynamicDoubleMa validation is not supported yet because validation does not preserve its dynamic strategy IR.",
+      "DynamicDoubleMa validation requires dynamic_strategy_ir from the optimization request.",
     );
   }
 
-  const kind = kindFromReq(currentRunReq);
   const dataId = normalizeText(currentRunReq.data_id);
   if (!dataId) throw new Error("Missing data id (run an optimization first).");
 
@@ -1765,6 +1771,7 @@ export function buildValidationRequest(
     data_id: dataId,
     backend: normalizeValidationBackend(currentRunReq.backend, kind),
     ma_source: normalizeText(currentRunReq.ma_source || "close") || "close",
+    dynamic_strategy_ir: dynamicStrategyIr,
     fast_ma_params: currentRunReq.fast_ma_params || null,
     slow_ma_params: currentRunReq.slow_ma_params || null,
     candidates,

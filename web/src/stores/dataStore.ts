@@ -30,6 +30,7 @@ import { formatPolygonProviderErrorMessage } from "../services/providerErrorTaxo
 import { DATA_STARTUP_SNAPSHOT_KEY } from "../utils/core/storageKeys";
 import { formatMarketDate, parsePolygonDateInput } from "../utils/marketTime";
 import { redactKnownSecrets } from "../utils/redaction";
+import { storeErrorText } from "../utils/storeErrorText";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import { resolveRuntimePinia } from "./runtimePinia";
 import { useWorkflowArtifactsStore } from "./workflowArtifactsStore";
@@ -593,7 +594,7 @@ function redactDataStoreText(
   state: Pick<DataState, "polygonApiKey">,
   raw: unknown,
 ): string {
-  return redactKnownSecrets(raw, [state.polygonApiKey]);
+  return redactKnownSecrets(storeErrorText(raw), [state.polygonApiKey]);
 }
 
 function polygonDownloadPreflightMessage(
@@ -1156,7 +1157,7 @@ export const useDataStore = defineStore("data", {
             } catch (error: unknown) {
               applyEmptyDatasetState(
                 this,
-                `Startup restore failed: ${String(error || "").trim() || "restore failed."}`,
+                `Startup restore failed: ${storeErrorText(error) || "restore failed."}`,
               );
               markVueUpdate(this);
             }
@@ -1825,6 +1826,7 @@ export const useDataStore = defineStore("data", {
         markVueUpdate(this);
       });
       applyEmptyDatasetState(this, "Cleared data.");
+      this.csvPath = "";
       persistStartupSnapshot(this);
       const pinia =
         (this as unknown as { $pinia?: Pinia }).$pinia ?? resolveRuntimePinia();

@@ -563,6 +563,7 @@ fn main() -> Result<(), String> {
         data_id,
         backend: validation_backend.clone(),
         ma_source: cli.ma_source.clone(),
+        dynamic_strategy_ir: None,
         fast_ma_params: fast_ma_params.clone(),
         slow_ma_params: slow_ma_params.clone(),
         candidates,

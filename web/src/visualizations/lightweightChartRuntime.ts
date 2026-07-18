@@ -1,9 +1,11 @@
 import {
   baseLightweightChartOptions,
   candlestickSeriesOptions,
+  histogramPriceScaleOptions,
   histogramSeriesOptions,
   lineSeriesOptions,
   normalizeChartSize,
+  type HistogramSeriesKind,
 } from './chartTheme'
 
 export interface LightweightChartModule {
@@ -24,6 +26,7 @@ export interface DrillSeriesRuntime extends CandlestickRuntime {
   fastSeries: any
   slowSeries: any
   halftrendSeries: any
+  ottSeries: any
   maczSeries: any
 }
 
@@ -88,7 +91,7 @@ export function createCandlestickRuntime(
   return { chart, candleSeries, markerApi }
 }
 
-function addLineSeries(chart: any, chartModule: LightweightChartModule, kind: 'fast' | 'slow' | 'halftrend'): any {
+function addLineSeries(chart: any, chartModule: LightweightChartModule, kind: 'fast' | 'slow' | 'ott'): any {
   const options = lineSeriesOptions(kind)
   if (typeof chart.addSeries === 'function' && chartModule.LineSeries) {
     try {
@@ -103,14 +106,31 @@ function addLineSeries(chart: any, chartModule: LightweightChartModule, kind: 'f
   return null
 }
 
-function addHistogramSeries(chart: any, chartModule: LightweightChartModule): any {
-  const options = histogramSeriesOptions()
+function applyHistogramPriceScale(series: any, kind: HistogramSeriesKind): void {
+  if (!series || typeof series.priceScale !== 'function') return
+  try {
+    const priceScale = series.priceScale()
+    if (priceScale && typeof priceScale.applyOptions === 'function') {
+      priceScale.applyOptions(histogramPriceScaleOptions(kind))
+    }
+  } catch {}
+}
+
+function addHistogramSeries(chart: any, chartModule: LightweightChartModule, kind: HistogramSeriesKind): any {
+  const options = histogramSeriesOptions(kind)
+  let series: any = null
   if (typeof chart.addSeries === 'function' && chartModule.HistogramSeries) {
     try {
-      return chart.addSeries(chartModule.HistogramSeries, options)
+      series = chart.addSeries(chartModule.HistogramSeries, options)
     } catch {}
   }
-  return null
+  if (!series && typeof chart.addHistogramSeries === 'function') {
+    try {
+      series = chart.addHistogramSeries(options)
+    } catch {}
+  }
+  applyHistogramPriceScale(series, kind)
+  return series
 }
 
 export function createDrillSeriesRuntime(
@@ -121,14 +141,69 @@ export function createDrillSeriesRuntime(
   if (!base) return null
   const fastSeries = addLineSeries(base.chart, chartModule, 'fast')
   const slowSeries = addLineSeries(base.chart, chartModule, 'slow')
-  const halftrendSeries = addLineSeries(base.chart, chartModule, 'halftrend')
-  const maczSeries = addHistogramSeries(base.chart, chartModule)
+  const halftrendSeries = addHistogramSeries(base.chart, chartModule, 'halftrend')
+  const ottSeries = addLineSeries(base.chart, chartModule, 'ott')
+  const maczSeries = addHistogramSeries(base.chart, chartModule, 'macz')
 
   return {
     ...base,
     fastSeries,
     slowSeries,
     halftrendSeries,
+    ottSeries,
     maczSeries,
+  }
+}
+
+function chartTimeScale(chart: unknown): any | null {
+  if (!chart || typeof (chart as { timeScale?: unknown }).timeScale !== 'function') return null
+  try {
+    return (chart as { timeScale: () => unknown }).timeScale()
+  } catch {
+    return null
+  }
+}
+
+export function fitLightweightChartContent(chart: unknown): boolean {
+  const timeScale = chartTimeScale(chart)
+  if (!timeScale || typeof timeScale.fitContent !== 'function') return false
+  try {
+    timeScale.fitContent()
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function visibleLogicalRangeLabel(chart: unknown): string {
+  const timeScale = chartTimeScale(chart)
+  if (!timeScale || typeof timeScale.getVisibleLogicalRange !== 'function') return ''
+  try {
+    const range = timeScale.getVisibleLogicalRange()
+    if (!range || !Number.isFinite(range.from) || !Number.isFinite(range.to)) return ''
+    return `${Number(range.from).toFixed(1)}..${Number(range.to).toFixed(1)}`
+  } catch {
+    return ''
+  }
+}
+
+export function panLightweightChart(
+  chart: unknown,
+  direction: 'left' | 'right',
+  fraction = 0.55,
+): boolean {
+  const timeScale = chartTimeScale(chart)
+  if (!timeScale || typeof timeScale.getVisibleLogicalRange !== 'function' || typeof timeScale.setVisibleLogicalRange !== 'function') {
+    return false
+  }
+  try {
+    const range = timeScale.getVisibleLogicalRange()
+    if (!range || !Number.isFinite(range.from) || !Number.isFinite(range.to)) return false
+    const width = Math.max(1, Number(range.to) - Number(range.from))
+    const delta = width * Math.max(0.1, Math.min(1, fraction)) * (direction === 'left' ? -1 : 1)
+    timeScale.setVisibleLogicalRange({ from: Number(range.from) + delta, to: Number(range.to) + delta })
+    return true
+  } catch {
+    return false
   }
 }

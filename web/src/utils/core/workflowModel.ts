@@ -1,6 +1,6 @@
 import { match } from 'ts-pattern'
 
-export const SHELL_MODES = ['conventional', 'ml-signal'] as const
+export const SHELL_MODES = ['conventional', 'options', 'ml-signal'] as const
 export type ShellMode = (typeof SHELL_MODES)[number]
 export const SHELL_MODE_SET: ReadonlySet<string> = new Set(SHELL_MODES)
 
@@ -13,7 +13,7 @@ export const WORKFLOW_DEFAULTS = {
   optimize: { controls: 'opt', results: 'overview' },
   validate: { controls: 'opt', results: 'validate' },
   analyze: { controls: 'opt', results: 'drill' },
-  finalize: { controls: 'advanced', results: 'meta' },
+  finalize: { controls: 'advanced', results: 'final' },
   history: { controls: 'data', results: 'history' },
   settings: { controls: 'advanced', results: 'meta' },
 } as const
@@ -28,9 +28,9 @@ export type WorkflowDefaultMap = Record<WorkflowTab, WorkflowDefaultEntry>
 export const WORKFLOW_ALLOWED = {
   data: { controls: ['data'], results: ['overview'] },
   optimize: { controls: ['opt', 'strategy', 'advanced'], results: ['overview', 'top', 'pareto', 'heatmap'] },
-  validate: { controls: ['opt'], results: ['validate'] },
-  analyze: { controls: ['opt'], results: ['overview', 'top', 'pareto', 'drill', 'heatmap'] },
-  finalize: { controls: ['advanced'], results: ['meta'] },
+  validate: { controls: [], results: ['validate'] },
+  analyze: { controls: [], results: ['drill', 'top', 'pareto', 'heatmap', 'overview'] },
+  finalize: { controls: [], results: ['final', 'meta'] },
   history: { controls: ['data'], results: ['history'] },
   settings: { controls: ['advanced'], results: ['meta', 'debug'] },
 } as const
@@ -62,12 +62,32 @@ export const ML_SIGNAL_WORKFLOW_ALLOWED = {
   settings: { controls: ['advanced'], results: ['meta', 'debug'] },
 } as const
 
+export const OPTIONS_WORKFLOW_DEFAULTS = {
+  data: { controls: 'data', results: 'options' },
+  optimize: { controls: 'data', results: 'options' },
+  validate: { controls: 'data', results: 'options' },
+  analyze: { controls: 'data', results: 'options' },
+  finalize: { controls: 'data', results: 'options' },
+  history: { controls: 'data', results: 'history' },
+  settings: { controls: 'advanced', results: 'meta' },
+} as const
+
+export const OPTIONS_WORKFLOW_ALLOWED = {
+  data: { controls: ['data'], results: ['options'] },
+  optimize: { controls: [], results: ['options'] },
+  validate: { controls: [], results: ['options'] },
+  analyze: { controls: [], results: ['options'] },
+  finalize: { controls: [], results: ['options'] },
+  history: { controls: ['data'], results: ['history'] },
+  settings: { controls: ['advanced'], results: ['meta', 'debug'] },
+} as const
+
 export const WORKFLOW_SUBTITLES = {
   data: 'Load a dataset (CSV or Polygon) and select the optimization timeframe.',
   optimize: 'Configure strategy + search space, then run an optimization.',
   validate: 'Run robustness checks on the current run’s candidates.',
   analyze: 'Inspect results via candidate detail curves and heatmaps.',
-  finalize: 'Run post-meta ML confidence, Stage 5 ranking, and policy evaluation on saved meta artifacts.',
+  finalize: 'Review dataset, optimization, validation, meta-analysis, and handoff evidence before promotion.',
   history: 'Review, compare, and rerun saved optimizations.',
   settings: 'Advanced tools, meta selection, and debug output.',
 } as const
@@ -89,7 +109,7 @@ export const WORKFLOW_STEP_SUBTITLES = {
   optimize: 'Strategy setup: configure ranges, backend, and run optimization.',
   validate: 'Validation: run robustness checks on the selected optimization.',
   analyze: 'Summary: inspect top results, Pareto, candidate detail, and heatmap.',
-  finalize: 'Stage 5: apply ML confidence, run Stage 5 ranking, evaluate policy quality, and manage saved finalizer artifacts.',
+  finalize: 'Final review: confirm evidence completeness, open meta-analysis, and hand off accepted artifacts.',
 } as const
 
 export const WORKFLOW_STEP_LABELS = {
@@ -97,7 +117,7 @@ export const WORKFLOW_STEP_LABELS = {
   optimize: 'Strategy Setup',
   validate: 'Validation',
   analyze: 'Summary',
-  finalize: 'Finalizer',
+  finalize: 'Final Review',
 } as const
 
 export const ML_SIGNAL_WORKFLOW_STEP_LABELS = {
@@ -108,12 +128,28 @@ export const ML_SIGNAL_WORKFLOW_STEP_LABELS = {
   finalize: 'Artifacts',
 } as const
 
+export const OPTIONS_WORKFLOW_STEP_LABELS = {
+  data: 'Underlying Data',
+  optimize: 'Options Data',
+  validate: 'Expression Run',
+  analyze: 'Validation',
+  finalize: 'Final Review',
+} as const
+
 export const ML_SIGNAL_WORKFLOW_STEP_SUBTITLES = {
   data: 'Load the parent dataset and confirm timeframe before exporting ML datasets or score-cache inputs.',
   optimize: 'Stage 2: build the ML score cache from exported data and model-bundle inputs.',
   validate: 'Stage 3: validate one policy against the current score cache and execution settings.',
   analyze: 'Stage 4: sweep policy thresholds and hold settings across the score cache.',
   finalize: 'Stage 5: inspect the current ML artifact, bundle, sweep, and verdict outputs.',
+} as const
+
+export const OPTIONS_WORKFLOW_STEP_SUBTITLES = {
+  data: 'Load or confirm the underlying candle dataset before options expression research.',
+  optimize: 'Import or download options data and choose the options realism lane.',
+  validate: 'Run the constrained options expression search against the selected parent artifact and dataset.',
+  analyze: 'Validate options expression artifacts and inspect scenario robustness.',
+  finalize: 'Review options finalist evidence, exports, and replay provenance.',
 } as const
 
 export interface MlSignalPrimaryActionDescriptor {
@@ -170,7 +206,7 @@ export const CONTROLS_TAB_VALUES = ['data', 'opt', 'strategy', 'advanced'] as co
 export type ControlsTab = (typeof CONTROLS_TAB_VALUES)[number]
 export const CONTROLS_TAB_SET: ReadonlySet<string> = new Set(CONTROLS_TAB_VALUES)
 
-export const RESULTS_TAB_VALUES = ['overview', 'top', 'pareto', 'validate', 'drill', 'heatmap', 'history', 'meta', 'debug'] as const
+export const RESULTS_TAB_VALUES = ['overview', 'top', 'pareto', 'validate', 'drill', 'heatmap', 'history', 'meta', 'debug', 'options', 'final'] as const
 export type ResultsTab = (typeof RESULTS_TAB_VALUES)[number]
 export const RESULTS_TAB_SET: ReadonlySet<string> = new Set(RESULTS_TAB_VALUES)
 
@@ -191,6 +227,8 @@ export const TAB_LABELS = {
     history: 'History',
     meta: 'Meta',
     debug: 'Debug',
+    options: 'Options',
+    final: 'Final Review',
   },
 } as const
 
@@ -235,29 +273,46 @@ export function workflowStepFromWorkflow(workflow: unknown): string {
 }
 
 export function shellModeLabel(mode: unknown): string {
-  return normalizeShellMode(mode) === 'ml-signal' ? 'ML Signal' : 'Conventional'
+  const normalized = normalizeShellMode(mode)
+  if (normalized === 'ml-signal') return 'ML Signal'
+  if (normalized === 'options') return 'Options'
+  return 'Conventional'
 }
 
 export function workflowDefaultsForMode(mode: unknown): WorkflowDefaultMap {
-  return normalizeShellMode(mode) === 'ml-signal' ? ML_SIGNAL_WORKFLOW_DEFAULTS : WORKFLOW_DEFAULTS
+  const normalized = normalizeShellMode(mode)
+  if (normalized === 'ml-signal') return ML_SIGNAL_WORKFLOW_DEFAULTS
+  if (normalized === 'options') return OPTIONS_WORKFLOW_DEFAULTS
+  return WORKFLOW_DEFAULTS
 }
 
 export function workflowAllowedForMode(mode: unknown): WorkflowAllowedMap {
-  return normalizeShellMode(mode) === 'ml-signal' ? ML_SIGNAL_WORKFLOW_ALLOWED : WORKFLOW_ALLOWED
+  const normalized = normalizeShellMode(mode)
+  if (normalized === 'ml-signal') return ML_SIGNAL_WORKFLOW_ALLOWED
+  if (normalized === 'options') return OPTIONS_WORKFLOW_ALLOWED
+  return WORKFLOW_ALLOWED
 }
 
 export function workflowStepLabelForMode(step: unknown, mode: unknown): string {
   const normalizedStep = normalizeWorkflowStep(step) || 'data'
-  if (normalizeShellMode(mode) === 'ml-signal') {
+  const normalizedMode = normalizeShellMode(mode)
+  if (normalizedMode === 'ml-signal') {
     return ML_SIGNAL_WORKFLOW_STEP_LABELS[normalizedStep]
+  }
+  if (normalizedMode === 'options') {
+    return OPTIONS_WORKFLOW_STEP_LABELS[normalizedStep]
   }
   return WORKFLOW_STEP_LABELS[normalizedStep]
 }
 
 export function workflowStepSubtitleForMode(step: unknown, mode: unknown): string {
   const normalizedStep = normalizeWorkflowStep(step) || 'data'
-  if (normalizeShellMode(mode) === 'ml-signal') {
+  const normalizedMode = normalizeShellMode(mode)
+  if (normalizedMode === 'ml-signal') {
     return ML_SIGNAL_WORKFLOW_STEP_SUBTITLES[normalizedStep]
+  }
+  if (normalizedMode === 'options') {
+    return OPTIONS_WORKFLOW_STEP_SUBTITLES[normalizedStep]
   }
   return WORKFLOW_STEP_SUBTITLES[normalizedStep]
 }

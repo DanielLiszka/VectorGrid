@@ -9,6 +9,7 @@ import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
 import { computeConfigFingerprint } from "../utils/core/artifactIdentity";
 import { buildDatasetMetaForArtifact } from "../utils/core/datasetMeta";
+import { storeErrorText } from "../utils/storeErrorText";
 
 interface SaveRunArtifactResponse {
   path?: unknown;
@@ -196,6 +197,11 @@ interface MlSignalArtifactLike {
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+function formatMlActionError(prefix: string, error: unknown): string {
+  const detail = storeErrorText(error);
+  return detail ? `${prefix}: ${detail}` : prefix;
 }
 
 function parseNumber(value: unknown, fallback: number): number {
@@ -2278,7 +2284,7 @@ export async function exportMlSignalDataset(): Promise<unknown> {
     return res;
   } catch (error) {
     patchOptimizeState({
-      statusLine: `ML dataset export failed: ${String(error || "")}`.trim(),
+      statusLine: formatMlActionError("ML dataset export failed", error),
     });
     throw error;
   } finally {
@@ -2420,7 +2426,7 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
   } catch (error) {
     patchOptimizeState({
       statusLine:
-        `ML score cache generation failed: ${String(error || "")}`.trim(),
+        formatMlActionError("ML score cache generation failed", error),
     });
     throw error;
   } finally {
@@ -2488,7 +2494,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
     };
   } catch (error) {
     patchOptimizeState({
-      statusLine: `ML validation failed: ${String(error || "")}`.trim(),
+      statusLine: formatMlActionError("ML validation failed", error),
     });
     throw error;
   }
@@ -2558,7 +2564,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
     return validationRes;
   } catch (error) {
     patchOptimizeState({
-      statusLine: `ML validation failed: ${String(error || "")}`.trim(),
+      statusLine: formatMlActionError("ML validation failed", error),
     });
     throw error;
   } finally {
@@ -2626,7 +2632,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
     };
   } catch (error) {
     patchOptimizeState({
-      statusLine: `ML policy sweep failed: ${String(error || "")}`.trim(),
+      statusLine: formatMlActionError("ML policy sweep failed", error),
     });
     throw error;
   }
@@ -2778,7 +2784,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
     return sweepRes;
   } catch (error) {
     patchOptimizeState({
-      statusLine: `ML policy sweep failed: ${String(error || "")}`.trim(),
+      statusLine: formatMlActionError("ML policy sweep failed", error),
     });
     throw error;
   } finally {

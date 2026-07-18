@@ -128,9 +128,11 @@ describe('HeatmapCanvas', () => {
     expect(wrapper.get('#heatmapCanvasStackVue').attributes('aria-label')).toContain('Optimization heatmap')
     expect(wrapper.get('#heatmapCanvasStackVue').attributes('role')).toBe('group')
     expect(wrapper.get('#heatmapCanvasStackVue').attributes('tabindex')).toBe('0')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-render-ready')).toBe('false')
     expect(wrapper.find('#heatmapCanvasVue').exists()).toBe(true)
     expect(wrapper.find('#heatmapOverlayVue').exists()).toBe(true)
     expect(wrapper.find('#heatmapTooltipVue').exists()).toBe(true)
+    expect(wrapper.get('.heatmapDetails').text()).toContain('Heatmap requirements')
     expect(wrapper.get('#heatmapSelectedCellSummaryVue').text()).toContain('fast 12')
   })
 
@@ -141,7 +143,7 @@ describe('HeatmapCanvas', () => {
       },
     })
 
-    await wrapper.get('button').trigger('click')
+    await wrapper.get('[data-qa-action="heatmap.reviewTop"]').trigger('click')
 
     expect(wrapper.emitted('review-top-results')).toHaveLength(1)
   })
@@ -158,6 +160,12 @@ describe('HeatmapCanvas', () => {
     setElementRect(overlay)
 
     expect(wrapper.get('#heatmapMetaVue').text()).toContain('Sharpe heatmap')
+    expect(wrapper.find('.heatmapDetails').exists()).toBe(false)
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-render-ready')).toBe('true')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-finite-cells')).toBe('4')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-total-cells')).toBe('4')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-finite-coverage')).toBe('1.000')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-axis-summary')).toBe('EMA 5-9; EMA 20-30')
 
     await wrapper.get('#heatmapOverlayVue').trigger('mousemove', { clientX: 128, clientY: 128 })
     expect(wrapper.get('#heatmapTooltipVue').attributes('style') || '').toContain('display: block')
@@ -187,6 +195,8 @@ describe('HeatmapCanvas', () => {
 
     expect(wrapper.get('#heatmapDomainSummaryVue').text()).toContain('2 of 4 bins are unavailable')
     expect(wrapper.get('#heatmapDomainSummaryVue').text()).toContain('invalid or unscored parameter pairs')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-finite-cells')).toBe('2')
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-finite-coverage')).toBe('0.500')
   })
 
   it('supports keyboard cell selection with a persistent selected-cell summary', async () => {

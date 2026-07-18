@@ -86,6 +86,20 @@ const totalCellCount = computed(() => {
   const model = props.renderModel?.model
   return model ? Math.max(0, model.binsFast * model.binsSlow) : 0
 })
+const finiteCellCount = computed(() => Math.max(0, totalCellCount.value - unavailableCellCount.value))
+const finiteCoverageData = computed(() => {
+  const total = totalCellCount.value
+  if (!total) return '0.000'
+  return (finiteCellCount.value / total).toFixed(3)
+})
+const axisDataSummary = computed(() => {
+  const renderModel = props.renderModel
+  const model = renderModel?.model
+  if (!renderModel || !model) return ''
+  const fastLabel = String(renderModel.request.fastMaType || 'fast').trim().toUpperCase()
+  const slowLabel = String(renderModel.request.slowMaType || 'slow').trim().toUpperCase()
+  return `${fastLabel} ${model.fastMin}-${model.fastMax}; ${slowLabel} ${model.slowMin}-${model.slowMax}`
+})
 const unavailableDomainSummary = computed(() => {
   const unavailable = unavailableCellCount.value
   const total = totalCellCount.value
@@ -582,13 +596,13 @@ defineExpose({ exportPng, repaint })
     </div>
     <div class="chartAssist">
       <div id="heatmapKeyboardHint" class="panelMuted">
-        Click a populated cell or use arrow keys and Enter. Top results remains the exact candidate path.
+        Click a populated cell, or use arrow keys and Enter. Top results keeps exact ranked candidates.
       </div>
       <div class="actions">
-        <button type="button" @click="$emit('review-top-results')">Review Top results</button>
+        <button type="button" data-qa-action="heatmap.reviewTop" @click="$emit('review-top-results')">Review Top results</button>
       </div>
     </div>
-    <details class="heatmapDetails">
+    <details v-if="!renderModel" class="heatmapDetails">
       <summary>Heatmap requirements</summary>
       <p>
         Heatmaps require a scored optimization run with Heatmap bins above 0. If the renderer stays empty,
@@ -627,6 +641,11 @@ defineExpose({ exportPng, repaint })
         :data-viewport-scale="viewportScaleData"
         :data-viewport-offset-x="viewportOffsetXData"
         :data-viewport-offset-y="viewportOffsetYData"
+        :data-render-ready="renderModel ? 'true' : 'false'"
+        :data-finite-cells="String(finiteCellCount)"
+        :data-total-cells="String(totalCellCount)"
+        :data-finite-coverage="finiteCoverageData"
+        :data-axis-summary="axisDataSummary"
         tabindex="0"
         @keydown="handleKeydown"
         @wheel="handleWheel"
@@ -653,7 +672,7 @@ defineExpose({ exportPng, repaint })
         <div>
           <div class="heatmapLegendSpacer" aria-hidden="true"></div>
           <div class="panelMuted heatmapLegendNote">
-            Select a Top result for exact retained candidates, or click a populated cell for representative heatmap-region candidate detail. Markers and crosshair stay on for both paths.
+            Click a populated cell for representative detail; Top results keeps exact ranked candidates.
           </div>
         </div>
       </div>
@@ -707,8 +726,16 @@ defineExpose({ exportPng, repaint })
 }
 
 .chartAssist {
-  display: grid;
-  gap: 0.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.chartAssist .panelMuted {
+  flex: 1 1 22rem;
+  margin: 0;
 }
 
 .heatmapDetails {
@@ -768,7 +795,8 @@ defineExpose({ exportPng, repaint })
 
 .heatmapCanvasStack {
   position: relative;
-  width: min(100%, clamp(30rem, 82vmin, 58rem));
+  inline-size: min(100%, 72rem);
+  width: min(100%, 72rem);
   aspect-ratio: 1 / 1;
   margin-inline: auto;
   overflow: hidden;
@@ -826,6 +854,10 @@ defineExpose({ exportPng, repaint })
 
   .heatmapLegendRow {
     grid-template-columns: 1fr;
+  }
+
+  .chartAssist {
+    align-items: flex-start;
   }
 
   .heatmapCanvasStack {

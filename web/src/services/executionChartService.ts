@@ -3,7 +3,10 @@ import { formatUtcDateTimeFromUnixMs } from '../utils/uiFormat'
 import {
   applyLightweightChartSize,
   createCandlestickRuntime,
+  fitLightweightChartContent,
+  panLightweightChart,
   type LightweightChartModule,
+  visibleLogicalRangeLabel,
 } from '../visualizations/lightweightChartRuntime'
 import { normalizePriceBars, type PriceBar } from '../visualizations/priceSeriesModel'
 import type { ExecutionOrderRow } from './executionService'
@@ -38,6 +41,8 @@ export interface ExecutionChartSurfaceResult {
   datasetSymbol: string
   fetchedAtUnixMs: number | null
   markerCount: number
+  barCount: number
+  visibleRangeLabel: string
 }
 
 type ExecutionPriceBar = PriceBar
@@ -158,6 +163,8 @@ export function summarizeExecutionChartSurface(
       datasetSymbol,
       fetchedAtUnixMs: input.fetchedAtUnixMs,
       markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
   if (!datasetId) {
@@ -170,6 +177,8 @@ export function summarizeExecutionChartSurface(
       datasetSymbol,
       fetchedAtUnixMs: input.fetchedAtUnixMs,
       markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
   if (datasetSymbol && datasetSymbol !== symbol) {
@@ -182,6 +191,8 @@ export function summarizeExecutionChartSurface(
       datasetSymbol,
       fetchedAtUnixMs: input.fetchedAtUnixMs,
       markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
   if (!input.brokerReviewLoaded) {
@@ -194,6 +205,8 @@ export function summarizeExecutionChartSurface(
       datasetSymbol,
       fetchedAtUnixMs: null,
       markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
   const stale =
@@ -210,6 +223,8 @@ export function summarizeExecutionChartSurface(
       datasetSymbol,
       fetchedAtUnixMs: input.fetchedAtUnixMs,
       markerCount: brokerMarkers.length,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
   if (!brokerMarkers.length) {
@@ -222,6 +237,8 @@ export function summarizeExecutionChartSurface(
       datasetSymbol,
       fetchedAtUnixMs: input.fetchedAtUnixMs,
       markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
   return {
@@ -233,6 +250,8 @@ export function summarizeExecutionChartSurface(
     datasetSymbol,
     fetchedAtUnixMs: input.fetchedAtUnixMs,
     markerCount: brokerMarkers.length,
+    barCount: 0,
+    visibleRangeLabel: '',
   }
 }
 
@@ -384,6 +403,16 @@ export function disposeExecutionChart(): void {
   chartRuntime.markerApi = null
 }
 
+export function fitExecutionChartContent(): string {
+  fitLightweightChartContent(chartRuntime.chart)
+  return visibleLogicalRangeLabel(chartRuntime.chart)
+}
+
+export function panExecutionChart(direction: 'left' | 'right'): string {
+  panLightweightChart(chartRuntime.chart, direction)
+  return visibleLogicalRangeLabel(chartRuntime.chart)
+}
+
 async function ensureExecutionChart(host: HTMLElement): Promise<boolean> {
   if (chartRuntime.chart && chartRuntime.host === host && chartRuntime.candleSeries) return true
   if (chartRuntime.chart && chartRuntime.host !== host) disposeExecutionChart()
@@ -433,6 +462,8 @@ export async function syncExecutionChart(
       state: 'broker_review_loaded_chart_unavailable',
       summary: `Execution chart unavailable: no price bars loaded for ${summary.datasetLabel || summary.datasetId || summary.symbol}.`,
       markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
   const ready = await ensureExecutionChart(host)
@@ -442,6 +473,8 @@ export async function syncExecutionChart(
       state: 'broker_review_loaded_chart_unavailable',
       summary: `Execution chart unavailable: chart runtime could not be created for ${summary.symbol || summary.datasetLabel || summary.datasetId || '-'}.`,
       markerCount: 0,
+      barCount: bars.length,
+      visibleRangeLabel: '',
     }
   }
   try {
@@ -470,7 +503,13 @@ export async function syncExecutionChart(
       state: 'broker_review_loaded_chart_unavailable',
       summary: `Execution chart unavailable: render failed for ${summary.symbol || '-'} on ${summary.datasetLabel || summary.datasetId || '-'}.`,
       markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
     }
   }
-  return summary
+  return {
+    ...summary,
+    barCount: bars.length,
+    visibleRangeLabel: visibleLogicalRangeLabel(chartRuntime.chart),
+  }
 }

@@ -2299,6 +2299,47 @@ describe("optimizeRequestBuilder", () => {
     });
   });
 
+  it("uses product defaults for blank CompositeCpu numeric fields", () => {
+    const req = buildCompositeCpuOptimizationRequest({
+      context: {
+        strategy_kind: "CompositeCpu",
+        data_id: "data-composite-blank-defaults",
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      topK: "20",
+      includeAll: "false",
+      compositeSignalMode: "hard_gate",
+      halfTrendAmplitude: "",
+      halfTrendAtrPeriod: "",
+      halfTrendChannelDev: "",
+    });
+
+    expect(req).toBeTruthy();
+    expect(req).toMatchObject({
+      halftrend: {
+        amplitude: 2,
+        atr_period: 100,
+        channel_deviation: 2,
+      },
+    });
+  });
+
   it("builds a VCET optimization request from typed inputs", () => {
     const req = buildCompositeCpuOptimizationRequest({
       context: {
@@ -2673,6 +2714,47 @@ describe("optimizeRequestBuilder", () => {
     expect((breakoutReq as Record<string, unknown>)?.strategy_kind).toBe(
       "BreakoutMomentum",
     );
+  });
+
+  it("uses product defaults for blank BreakoutMomentum MACD fields", () => {
+    const breakoutReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "BreakoutMomentum",
+        data_id: "data-breakout-blank-defaults",
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "64",
+      exportAllCsvPath: "",
+      breakoutMacdFast: "",
+      breakoutMacdSlow: "",
+      breakoutMacdSignal: "",
+    });
+
+    expect(breakoutReq?.strategy).toMatchObject({
+      breakout_macd_fast_period: 12,
+      breakout_macd_slow_period: 26,
+      breakout_macd_signal_period: 9,
+    });
   });
 
   it("keeps CompositeTrend, RegimeHybrid, and BreakoutMomentum on the double-MA path with CpuOnly fallback when requested", () => {
@@ -4027,7 +4109,7 @@ describe("optimizeRequestBuilder", () => {
 
     expect(req?.sampler).toEqual({
       sampler: "Random",
-      config: { seed: 1, trials: 1 },
+      config: { seed: 1, trials: 4 },
     });
   });
 

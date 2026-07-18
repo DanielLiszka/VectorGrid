@@ -11,6 +11,8 @@ import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import {
   disposeExecutionChart,
+  fitExecutionChartContent,
+  panExecutionChart,
   syncExecutionChart,
   type ExecutionChartSurfaceResult,
 } from '../services/executionChartService'
@@ -191,6 +193,8 @@ const chartSurface = ref<ExecutionChartSurfaceResult>({
   datasetSymbol: '',
   fetchedAtUnixMs: null,
   markerCount: 0,
+  barCount: 0,
+  visibleRangeLabel: '',
 })
 
 const visible = computed(() => String(workspace.value || '').trim() === 'live')
@@ -751,6 +755,27 @@ const canConfirmPendingAction = computed(() => {
   return false
 })
 const chartSurfaceMeta = computed(() => effectiveChartSurface.value.summary || chartMeta.value)
+const executionChartRenderReady = computed(() => effectiveChartSurface.value.barCount > 0)
+const executionChartStateLabel = computed(() => {
+  const surface = effectiveChartSurface.value
+  if (!surface.barCount) return 'Awaiting chart'
+  return surface.markerCount > 0 ? `${surface.markerCount} order marker${surface.markerCount === 1 ? '' : 's'}` : 'Chart ready'
+})
+const executionChartSummaryItems = computed(() => {
+  const surface = effectiveChartSurface.value
+  const items: string[] = []
+  if (surface.barCount > 0) items.push(`${surface.barCount} price bars`)
+  if (surface.markerCount > 0) items.push(`${surface.markerCount} broker markers`)
+  if (surface.state) items.push(surface.state.replace(/_/g, ' '))
+  return items
+})
+const executionChartLegendItems = computed(() => {
+  const surface = effectiveChartSurface.value
+  const items: Array<{ label: string; color: string; value?: string }> = []
+  if (surface.barCount > 0) items.push({ label: 'Candles', color: '#16a34a', value: String(surface.barCount) })
+  if (surface.markerCount > 0) items.push({ label: 'Orders', color: '#e11d48', value: String(surface.markerCount) })
+  return items
+})
 
 function surfaceFromBrokerReviewChart(chart: ExecutionChartReview): ExecutionChartSurfaceResult {
   return {
@@ -762,6 +787,8 @@ function surfaceFromBrokerReviewChart(chart: ExecutionChartReview): ExecutionCha
     datasetSymbol: chart.datasetSymbol || '',
     fetchedAtUnixMs: chart.fetchedAtUnixMs,
     markerCount: chart.orderCount,
+    barCount: 0,
+    visibleRangeLabel: '',
   }
 }
 
@@ -780,6 +807,8 @@ function surfaceFromMissingDataset(symbolValue: string, fetchedAtUnixMs: number 
     datasetSymbol: '',
     fetchedAtUnixMs,
     markerCount: 0,
+    barCount: 0,
+    visibleRangeLabel: '',
   }
 }
 
@@ -1018,6 +1047,27 @@ function setExecutionChartHost(element: HTMLElement | null): void {
   void syncExecutionChartSurface()
 }
 
+function fitExecutionChart(): void {
+  chartSurface.value = {
+    ...chartSurface.value,
+    visibleRangeLabel: fitExecutionChartContent(),
+  }
+}
+
+function panExecutionChartLeft(): void {
+  chartSurface.value = {
+    ...chartSurface.value,
+    visibleRangeLabel: panExecutionChart('left'),
+  }
+}
+
+function panExecutionChartRight(): void {
+  chartSurface.value = {
+    ...chartSurface.value,
+    visibleRangeLabel: panExecutionChart('right'),
+  }
+}
+
 async function syncExecutionChartSurface(): Promise<void> {
   const token = chartSyncToken.value + 1
   chartSyncToken.value = token
@@ -1056,6 +1106,8 @@ async function syncExecutionChartSurface(): Promise<void> {
         datasetSymbol: '',
         fetchedAtUnixMs: review?.fetchedAtUnixMs ?? null,
         markerCount: 0,
+        barCount: 0,
+        visibleRangeLabel: '',
       }
       return
     }
@@ -1511,10 +1563,20 @@ watch(
               meta-id="execTvChartMetaVue"
               title="Execution chart (loaded dataset + broker orders)"
               :meta-text="chartSurfaceMeta"
+              :summary-items="executionChartSummaryItems"
+              :legend-items="executionChartLegendItems"
+              :state-label="executionChartStateLabel"
+              :render-ready="executionChartRenderReady"
+              :view-label="effectiveChartSurface.visibleRangeLabel"
+              :navigation="true"
+              qa-prefix="executionChart"
               advisory="If this chart remains blank, confirm the current dataset matches the selected symbol and refresh broker review before relying on marker overlays."
               frame-aria-label="Execution chart for the loaded dataset with broker order markers."
               host-aria-label="Execution chart"
               @host-ready="setExecutionChartHost"
+              @fit-content="fitExecutionChart"
+              @pan-left="panExecutionChartLeft"
+              @pan-right="panExecutionChartRight"
             />
           </div>
         </section>

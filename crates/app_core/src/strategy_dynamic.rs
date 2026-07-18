@@ -2227,7 +2227,7 @@ fn eval_double_ma_compiled_group(
     }
 }
 
-fn build_dynamic_double_ma_desired_positions(
+pub(crate) fn build_dynamic_double_ma_desired_positions(
     plan: &CompiledStrategyPlan,
     context: &PreparedDynamicCpuContext,
     fast: &[f64],

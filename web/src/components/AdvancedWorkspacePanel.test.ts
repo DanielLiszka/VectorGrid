@@ -142,7 +142,7 @@ describe('AdvancedWorkspacePanel', () => {
     })
     await flushPanelTimers()
 
-    const mode = document.querySelector<HTMLSelectElement>('#vueMode')
+    const mode = document.querySelector<HTMLSelectElement>('#vueAdvanced_mode')
     expect(Array.from(mode?.options || []).map((option) => option.value)).toContain('GpuVdps')
     expect(document.querySelector('#vueAdvanced_vdpsEta')).not.toBeNull()
     expect(document.querySelector('#vueAdvanced_vdpsDeterministic')).not.toBeNull()

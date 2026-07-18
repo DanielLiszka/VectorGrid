@@ -34,6 +34,11 @@ const props = withDefaults(
 )
 
 const tableDensity = computed(() => normalizeTableDensity(props.density))
+const resolvedRowCount = computed(() => {
+  const value = Number(props.rowCount)
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.floor(value))
+})
 const controlsLabel = computed(() => props.toolbarLabel || `${props.title} controls`)
 const tableContentRef = ref<HTMLElement | null>(null)
 
@@ -173,6 +178,9 @@ function onShellGridKeydown(event: KeyboardEvent): void {
     :aria-label="ariaLabel || title"
     :aria-busy="busy ? 'true' : undefined"
     :data-table-density="tableDensity"
+    :data-table-row-count="resolvedRowCount"
+    :data-table-has-rows="resolvedRowCount > 0 ? 'true' : 'false'"
+    :data-table-summary="summary || undefined"
   >
     <header class="appDataTableHeader">
       <div class="appDataTableTitleBlock">
@@ -194,7 +202,7 @@ function onShellGridKeydown(event: KeyboardEvent): void {
     </div>
 
     <AppEmptyState
-      v-if="rowCount <= 0 && emptyTitle"
+      v-if="resolvedRowCount <= 0 && emptyTitle"
       class="appDataTableEmpty"
       :title="emptyTitle"
       :body="emptyBody"
@@ -288,6 +296,38 @@ function onShellGridKeydown(event: KeyboardEvent): void {
   border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
   border-radius: 10px;
   background: color-mix(in oklab, var(--panel) 96%, var(--surface));
+}
+
+.appDataTableViewport :deep(table) {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.appDataTableViewport :deep(th),
+.appDataTableViewport :deep(td) {
+  font-variant-numeric: tabular-nums;
+}
+
+.appDataTableViewport :deep(thead th) {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: color-mix(in oklab, var(--panel) 92%, var(--surface-working));
+  box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--border) 86%, transparent);
+}
+
+.appDataTableViewport :deep(tbody tr[aria-selected='true']),
+.appDataTableViewport :deep(tbody tr.selected) {
+  background: color-mix(in oklab, var(--accent-soft) 52%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.appDataTableViewport :deep(tbody tr:focus-visible),
+.appDataTableViewport :deep(td:focus-visible),
+.appDataTableViewport :deep(th:focus-visible) {
+  outline: 2px solid var(--focus-border);
+  outline-offset: -2px;
 }
 
 .appDataTableContent {

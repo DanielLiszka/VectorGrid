@@ -32,7 +32,7 @@ describe('workbenchNavigationModel', () => {
       '2 Strategy Setup',
       '3 Validation',
       '4 Summary',
-      '5 Finalizer',
+      '5 Final Review',
     ])
     expect(state.controlsItems.map((item) => item.actionId)).toEqual([
       'shell.controlsTab.optimize',
@@ -128,6 +128,74 @@ describe('workbenchNavigationModel', () => {
     ])
     expect(state.controlsItems.map((item) => item.id)).toEqual(['opt'])
     expect(state.resultsItems).toEqual([])
+  })
+
+  it('routes Options mode to the options research result panel', () => {
+    const state = buildWorkbenchNavigationState({
+      workspace: 'workflow',
+      mode: 'options',
+      workflowStep: 'validate',
+      controlsTab: 'data',
+      resultsTab: 'options',
+    })
+
+    expect(state.modeLabel).toBe('Options')
+    expect(state.stageItems.map((item) => item.label)).toEqual([
+      '1 Underlying Data',
+      '2 Options Data',
+      '3 Expression Run',
+      '4 Validation',
+      '5 Final Review',
+    ])
+    expect(state.controlsItems).toEqual([])
+    expect(state.resultsItems.map((item) => item.panelId)).toEqual([
+      'results_panel_options',
+    ])
+    expect(state.activeResultsTab).toBe('options')
+  })
+
+  it('keeps later conventional stages focused on evidence instead of optimize setup', () => {
+    const validation = buildWorkbenchNavigationState({
+      workspace: 'workflow',
+      mode: 'conventional',
+      workflowStep: 'validate',
+      controlsTab: 'opt',
+      resultsTab: 'validate',
+    })
+
+    expect(validation.controlsItems).toEqual([])
+    expect(validation.activeControlsTab).toBe('')
+    expect(validation.resultsItems.map((item) => item.id)).toEqual(['validate'])
+    expect(validation.activeResultsTab).toBe('validate')
+
+    const analyze = buildWorkbenchNavigationState({
+      workspace: 'workflow',
+      mode: 'conventional',
+      workflowStep: 'analyze',
+      controlsTab: 'opt',
+      resultsTab: 'top',
+    })
+
+    expect(analyze.controlsItems).toEqual([])
+    expect(analyze.resultsItems.map((item) => item.id)).toEqual([
+      'drill',
+      'top',
+      'pareto',
+      'heatmap',
+      'overview',
+    ])
+    expect(analyze.activeResultsTab).toBe('top')
+
+    const finalize = buildWorkbenchNavigationState({
+      workspace: 'workflow',
+      mode: 'conventional',
+      workflowStep: 'finalize',
+      controlsTab: 'advanced',
+      resultsTab: 'meta',
+    })
+
+    expect(finalize.controlsItems).toEqual([])
+    expect(finalize.resultsItems.map((item) => item.id)).toEqual(['final', 'meta'])
   })
 
   it('routes library, runs, and diagnostics to their preserved panel ids', () => {

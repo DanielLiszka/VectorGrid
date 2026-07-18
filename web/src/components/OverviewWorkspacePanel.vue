@@ -307,8 +307,8 @@ function reviewTopResults(): void {
           </option>
         </select>
         <div class="actions">
-          <button type="button" :disabled="!canSetBaseline" @click="analysisStore.setBaseline()">Set baseline = current</button>
-          <button type="button" :disabled="!canClearBaseline" @click="analysisStore.clearBaseline()">Clear baseline</button>
+          <button type="button" :disabled="!canSetBaseline" data-qa-action="overview.baseline.set" @click="analysisStore.setBaseline()">Set baseline = current</button>
+          <button type="button" :disabled="!canClearBaseline" data-qa-action="overview.baseline.clear" @click="analysisStore.clearBaseline()">Clear baseline</button>
         </div>
         <details class="panelDetails">
           <summary>Comparison details</summary>

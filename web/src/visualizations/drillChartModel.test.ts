@@ -34,6 +34,10 @@ const curves = {
     { time: 1_744_500_000, from_index: 1, to_index: 1, fast: 100.2, slow: 100.0 },
     { time: 1_744_500_060, from_index: 2, to_index: 2, fast: 100.5, slow: 100.1 },
   ],
+  composite_indicator_bars: [
+    { time: 1_744_500_000, halftrend: 0, macz_hist: 0.2, ott_line: 99.8 },
+    { time: 1_744_500_060, halftrend: 1, macz_hist: -0.1, ott_line: 100.0 },
+  ],
 }
 
 describe('drillChartModel', () => {
@@ -47,10 +51,16 @@ describe('drillChartModel', () => {
     const model = buildDrillChartModel(curves, bars)
     expect(model.candleData).toHaveLength(4)
     expect(model.fastData).toHaveLength(2)
+    expect(model.halftrendData).toEqual([
+      { time: 1_744_500_000, value: 1, color: 'rgba(34, 197, 94, 0.38)' },
+      { time: 1_744_500_060, value: -1, color: 'rgba(244, 63, 94, 0.38)' },
+    ])
+    expect(model.ottData).toHaveLength(2)
+    expect(model.maczData).toHaveLength(2)
 
     const markers = buildDrillTradeMarkers(model, 1)
     expect(markers.some((marker) => marker.id === 'trade-0-entry' && marker.text === 'L1')).toBe(true)
-    expect(markers.some((marker) => marker.id === 'trade-0-exit')).toBe(true)
+    expect(markers.some((marker) => marker.id === 'trade-0-exit' && marker.text === 'X1')).toBe(true)
     expect(markers.find((marker) => marker.id === 'trade-1-entry')?.size).toBe(1.4)
   })
 

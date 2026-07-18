@@ -88,6 +88,7 @@ fn base_request(candidates: Vec<DoubleMaValidationParams>) -> DoubleMaValidation
         data_id: "bench-double-ma".to_string(),
         backend: Backend::CpuOnly,
         ma_source: "close".to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params: None,
         slow_ma_params: None,
         candidates,

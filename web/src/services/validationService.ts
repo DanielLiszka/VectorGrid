@@ -21,6 +21,7 @@ import {
 } from "../utils/core/stageCompletion";
 import { openPathWithRevealFallback } from "../utils/openPath";
 import { formatUiCount, formatUtcDateFromUnixMs } from "../utils/uiFormat";
+import { storeErrorText } from "../utils/storeErrorText";
 import { buildValidationEvidenceSummary } from "../utils/validationEvidenceSummary";
 import {
   measureValidationReportPerf,
@@ -139,6 +140,7 @@ function isDoubleLikeKind(kindRaw: unknown): boolean {
     kind === "Orc" ||
     kind === "Marrt" ||
     kind === "Vfct" ||
+    kind === "DynamicDoubleMa" ||
     kind === "CompositeTrend" ||
     kind === "RegimeHybrid" ||
     kind === "BreakoutMomentum"
@@ -3200,7 +3202,7 @@ export async function runValidation(
           .join(" • ");
         reportXlsxPath = exportResult.reportXlsxPath;
       } catch (error) {
-        const reason = String(error || "").trim() || "unknown error";
+        const reason = storeErrorText(error) || "unknown error";
         autoExportStatus = `Auto-export XLSX failed: ${reason}`;
       }
     }
@@ -3299,7 +3301,7 @@ export async function runValidation(
 
     if (switchTab) selectWorkflowResultsTab("validate", true);
   } catch (error) {
-    const message = String(error || "").trim() || "Validation failed.";
+    const message = storeErrorText(error) || "Validation failed.";
     patchValidationStoreState({
       statusLine: message,
       validationHint: message,

@@ -621,6 +621,7 @@ fn make_validation_request(
             .to_string(),
         backend,
         ma_source: cli.ma_source.clone(),
+        dynamic_strategy_ir: None,
         fast_ma_params,
         slow_ma_params,
         candidates,

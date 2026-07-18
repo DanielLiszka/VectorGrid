@@ -60,7 +60,7 @@ async function readShellLayout(page: Page): Promise<ShellLayoutSnapshot> {
     const main = readRect('#shellMainPanel')
     const footer = readRect('#runFooterShell')
     const navTargets = Array.from(
-      document.querySelectorAll('#workspaceBar .tabBtn, #modeBar .tabBtn, #workflowStepBar .tabBtn'),
+      document.querySelectorAll('#workspaceBar .railButton, #modeBar .tabBtn, #workflowStepBar .stageButton'),
     ).map((element) => {
       const rect = element.getBoundingClientRect()
       return {
@@ -199,6 +199,7 @@ defineWorkflow({
   viewport: { width: 1600, height: 1000 },
   scenario: heatmapLayoutScenario,
   run: async ({ page, action }) => {
+    await action('shell.workflowStep.analyze').click()
     await action('shell.resultsTab.heatmap').click()
     await expect(page.locator('#results_panel_heatmap')).toBeVisible()
     await expect(page.locator('#heatmapCanvasStackVue')).toBeVisible()
@@ -232,8 +233,15 @@ defineWorkflow({
     ).toBeGreaterThanOrEqual(0.86)
     expect(Math.abs(geometry.width - geometry.height), 'heatmap should remain square').toBeLessThanOrEqual(2)
     expect(geometry.right, 'heatmap should stay inside its results panel').toBeLessThanOrEqual(geometry.panelRight + 0.5)
+    await expect(page.locator('#heatmapCanvasStackVue')).toHaveAttribute('data-render-ready', 'true')
+    await expect(page.locator('#heatmapCanvasStackVue')).toHaveAttribute('data-finite-coverage', /0\.\d+|1\.000/)
     await expectCanvasHasPaint(page)
     await expectNoHorizontalDocumentOverflow(page)
+
+    await action('heatmap.reviewTop').click()
+    await expect(page.locator('#results_panel_top')).toBeVisible()
+    await action('shell.resultsTab.heatmap').click()
+    await expect(page.locator('#results_panel_heatmap')).toBeVisible()
 
     await page.locator('#vueHeatmapViewMode').selectOption('3d')
     await expect(page.locator('#heatmapSurface3DViewportVue')).toBeVisible()

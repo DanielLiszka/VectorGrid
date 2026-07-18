@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EXEC_KEYS_STORAGE_KEY } from "../utils/core/storageKeys";
 import { invokeCommand } from "../tauri/invoke";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 import { listenEvent } from "../tauri/events";
 import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore";
 import {
@@ -1506,6 +1507,62 @@ describe("executionService", () => {
     expect(result.statusHint).not.toContain("key_1");
     expect(result.statusHint).not.toContain("secret_1");
     expect(result.brokerReviewRefreshRequired).toBe(true);
+  });
+
+  it("strips TauriRuntimeError prefixes from secure persistence warnings", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "execute_strategy_signal_once") {
+        return {
+          action: "hold",
+          order_submitted: false,
+          warnings: [],
+        };
+      }
+      if (command === "alpaca_set_api_credentials") {
+        throw new TauriRuntimeError({
+          code: "TAURI_INVOKE_FAILED",
+          operation: "invoke:alpaca_set_api_credentials",
+          message:
+            "Desktop runtime unavailable for alpaca set api credentials. Open this action in the Tauri desktop app.",
+        });
+      }
+      return {};
+    });
+
+    const result = await runOnce({
+      ...baseOptions(),
+      dryRun: false,
+    });
+
+    expect(result.statusHint).toContain(
+      "Secure credential storage did not update",
+    );
+    expect(result.statusHint).toContain("Desktop runtime unavailable");
+    expect(result.statusHint).not.toContain("TauriRuntimeError");
+  });
+
+  it("strips TauriRuntimeError prefixes from secure credential clear failures", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "alpaca_clear_api_credentials") {
+        throw new TauriRuntimeError({
+          code: "TAURI_INVOKE_FAILED",
+          operation: "invoke:alpaca_clear_api_credentials",
+          message:
+            "Desktop runtime unavailable for alpaca clear api credentials. Open this action in the Tauri desktop app.",
+        });
+      }
+      return {};
+    });
+
+    let message = "";
+    try {
+      await clearKeys();
+    } catch (cause) {
+      message = String((cause as Error).message || cause || "");
+    }
+
+    expect(message).toContain("Desktop runtime unavailable");
+    expect(message).not.toContain("TauriRuntimeError");
   });
 
   it("passes source-run provenance through runOnce request payloads", async () => {

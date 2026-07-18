@@ -1702,6 +1702,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 :disabled="!canCrossRefresh"
+                data-qa-action="validation.cross.refresh"
                 @click="crossRefreshAction"
               >
                 Refresh list
@@ -1709,6 +1710,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 :disabled="!canCrossSelectAll"
+                data-qa-action="validation.cross.selectAll"
                 @click="crossSelectAllAction"
               >
                 All
@@ -1716,6 +1718,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 :disabled="!canCrossSelectNone"
+                data-qa-action="validation.cross.selectNone"
                 @click="crossSelectNoneAction"
               >
                 None
@@ -1723,6 +1726,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 :disabled="!canCrossSelectMatch"
+                data-qa-action="validation.cross.selectMatch"
                 @click="crossSelectMatchAction"
               >
                 Match current

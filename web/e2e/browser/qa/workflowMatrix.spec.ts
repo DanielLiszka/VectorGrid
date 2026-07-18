@@ -19,6 +19,8 @@ defineWorkflow({
     await expect(page.locator('#portfolioShellGrid')).toBeVisible()
     await expect(action('portfolio.refreshSources')).toBeVisible()
     await expect(action('portfolio.runFeasibility')).toBeVisible()
+    await expect(action('portfolio.saved.selectLatest')).toBeVisible()
+    await expect(action('portfolio.saved.clear')).toBeVisible()
 
     await action('shell.workspace.diagnostics').click()
     await expect(page.locator('#results_panel_debug')).toBeVisible()
@@ -55,6 +57,14 @@ defineWorkflow({
   tags: ['@workflow', '@smoke'],
   scenario: emptyAppScenario,
   run: async ({ page, action }) => {
+    await action('shell.mode.options').click()
+    await expect(action('shell.mode.options')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('#results_panel_options')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Options Expression' })).toBeVisible()
+
+    await action('shell.mode.conventional').click()
+    await expect(action('shell.mode.conventional')).toHaveAttribute('aria-selected', 'true')
+
     await action('shell.workflowStep.optimize').click()
     await expect(page.locator('#controls_panel_opt')).toBeVisible()
     await expect(action('optimize.run')).toBeVisible()
@@ -70,12 +80,29 @@ defineWorkflow({
 
     await action('shell.resultsTab.heatmap').click()
     await expect(page.locator('#results_panel_heatmap')).toBeVisible()
+    await expect(action('heatmap.exportPng')).toBeVisible()
+
+    await action('shell.resultsTab.pareto').click()
+    await expect(page.locator('#results_panel_pareto')).toBeVisible()
+    await expect(action('pareto.reviewTop')).toBeVisible()
+
+    await action('shell.resultsTab.overview').click()
+    await expect(page.locator('#results_panel_overview')).toBeVisible()
 
     await action('shell.workflowStep.validate').click()
     await expect(page.locator('#results_panel_validate')).toBeVisible()
+    await expect(action('validation.cross.refresh')).toBeVisible()
+    await expect(action('validation.cross.selectAll')).toBeVisible()
+    await expect(action('validation.cross.selectNone')).toBeVisible()
+    await expect(action('validation.cross.selectMatch')).toBeVisible()
 
     await action('shell.workflowStep.analyze').click()
     await expect(page.locator('#resultsTabBar')).toBeVisible()
+
+    await action('shell.workflowStep.finalize').click()
+    await expect(page.locator('#results_panel_final')).toBeVisible()
+    await expect(page.locator('#results_panel_final').getByRole('heading', { name: 'Final Review' })).toBeVisible()
+    await expect(action('shell.resultsTab.meta')).toBeVisible()
   },
 })
 
@@ -88,7 +115,20 @@ defineWorkflow({
     await expect(action('data.csv.browse')).toBeVisible()
     await expect(action('data.csv.loadDraft')).toBeVisible()
     await expect(action('data.sample.load').first()).toBeVisible()
+    await expect(action('data.timeframe.apply')).toBeDisabled()
+    await expect(action('data.storage.openFolder')).toBeVisible()
+    await expect(action('data.storage.manageSettings')).toBeVisible()
+    await action('data.polygon.toggle').click()
+    await expect(action('data.polygon.saveApiKey')).toBeDisabled()
+    await expect(action('data.polygon.clearApiKey')).toBeDisabled()
+    await expect(action('data.polygon.download')).toBeDisabled()
+    await expect(action('data.polygon.loadSelected')).toBeDisabled()
+    await expect(action('data.polygon.validateSelected')).toBeDisabled()
+    await expect(action('data.polygon.repairSelected')).toBeDisabled()
+    await expect(action('data.polygon.refresh')).toBeVisible()
+    await expect(action('data.polygon.close')).toBeVisible()
     await expect(page.getByText(/Load a dataset/i).first()).toBeVisible()
+    await expect(page.getByText(/TauriRuntimeError:/)).toHaveCount(0)
     await expectNoHorizontalDocumentOverflow(page)
   },
 })

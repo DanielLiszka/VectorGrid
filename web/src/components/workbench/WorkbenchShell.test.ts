@@ -2,13 +2,38 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTaskCenterVisibility } from '../../composables/useTaskCenterVisibility'
+import { loadExecutionStrategySupportMatrix } from '../../services/executionService'
 import { useHistoryStore } from '../../stores/historyStore'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { createTestPinia } from '../../test/pinia'
+import { tauriRuntimeAvailable } from '../../tauri/invoke'
 import WorkbenchShell from './WorkbenchShell.vue'
+
+vi.mock('../../tauri/invoke', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../tauri/invoke')>()
+  return {
+    ...actual,
+    tauriRuntimeAvailable: vi.fn(() => false),
+  }
+})
+
+vi.mock('../../services/executionService', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../services/executionService')>()
+  return {
+    ...actual,
+    loadExecutionStrategySupportMatrix: vi.fn(async () => []),
+  }
+})
+
+const tauriRuntimeAvailableMock = vi.mocked(tauriRuntimeAvailable)
+const loadExecutionStrategySupportMatrixMock = vi.mocked(
+  loadExecutionStrategySupportMatrix,
+)
 
 async function flushUi(): Promise<void> {
   await nextTick()
+  await Promise.resolve()
   await nextTick()
 }
 
@@ -18,6 +43,8 @@ describe('WorkbenchShell', () => {
     localStorage.setItem('vta_ui_mode_v1', 'advanced')
     document.body.innerHTML = ''
     useTaskCenterVisibility().value = false
+    tauriRuntimeAvailableMock.mockReturnValue(false)
+    loadExecutionStrategySupportMatrixMock.mockResolvedValue([])
   })
 
   it('renders the feature-flag shell with preserved shell selectors and mount targets', async () => {
@@ -40,6 +67,7 @@ describe('WorkbenchShell', () => {
     expect(document.querySelector('#runFooterVueShellMount')).not.toBeNull()
     expect(document.querySelector('#optVueShellMount')).not.toBeNull()
     expect(document.querySelector('#topVueShellMount')).not.toBeNull()
+    expect(document.querySelector('[data-qa-action="shell.mode.options"]')).not.toBeNull()
     expect(document.querySelector('[data-qa-panel="workbench.researchCockpit"]')).not.toBeNull()
     expect(document.querySelector('[data-qa-state="workbench.cockpit.card.dataset"]')?.textContent).toContain('No dataset')
     expect(document.querySelector('#shellSelectionStatus')?.textContent).toContain('Workspace Research.')
@@ -102,6 +130,44 @@ describe('WorkbenchShell', () => {
     wrapper.unmount()
   })
 
+  it('opens the advanced drawer without changing the active stage', async () => {
+    const pinia = createTestPinia()
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflowStep('validate', { persist: false })
+
+    const wrapper = mount(WorkbenchShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    await wrapper.get('[data-qa-action="shell.advancedDrawer.toggle"]').trigger('click')
+    await flushUi()
+
+    const drawer = document.querySelector('#researchAdvancedDrawer') as HTMLElement | null
+    expect(drawer).not.toBeNull()
+    expect(drawer?.style.display).not.toBe('none')
+    expect(drawer?.textContent || '').toContain('Validation Controls')
+    expect(drawer?.textContent || '').toContain('Validation foregrounds robustness evidence')
+    expect(workflowStore.workflowStep).toBe('validate')
+    expect(document.querySelector('[data-qa-action="shell.advancedDrawer.openStrategy"]')).not.toBeNull()
+    expect(document.querySelector('[data-qa-action="shell.advancedDrawer.openAdvancedControls"]')).not.toBeNull()
+
+    await wrapper.get('[data-qa-action="shell.advancedDrawer.close"]').trigger('click')
+    await flushUi()
+    expect(workflowStore.workflowStep).toBe('validate')
+    expect(drawer?.style.display).toBe('none')
+
+    await wrapper.get('[data-qa-action="shell.advancedDrawer.toggle"]').trigger('click')
+    await wrapper.get('[data-qa-action="shell.advancedDrawer.openStrategy"]').trigger('click')
+    await flushUi()
+
+    expect(workflowStore.workflowStep).toBe('optimize')
+    expect(workflowStore.controlsTab).toBe('strategy')
+
+    wrapper.unmount()
+  })
+
   it('exposes inspector mode switching and collapse state', async () => {
     const pinia = createTestPinia()
     const workflowStore = useWorkflowStore(pinia)
@@ -132,6 +198,36 @@ describe('WorkbenchShell', () => {
     await wrapper.get('[data-qa-action="workbench.inspector.toggle"]').trigger('click')
     await flushUi()
     expect(document.querySelector('[data-qa-panel="workbench.inspector"]')?.getAttribute('data-collapsed')).toBe('true')
+
+    wrapper.unmount()
+  })
+
+  it('keeps live support matrix runtime failures operator-readable', async () => {
+    const pinia = createTestPinia()
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('live')
+    tauriRuntimeAvailableMock.mockReturnValue(true)
+    loadExecutionStrategySupportMatrixMock.mockRejectedValueOnce({
+      name: 'TauriRuntimeError',
+      message:
+        'Desktop runtime unavailable for execution strategy support matrix. Open this action in the Tauri desktop app.',
+    })
+
+    const wrapper = mount(WorkbenchShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const supportLabel = document.querySelector(
+      '[aria-label="Current live support envelope"] strong[title]',
+    )
+    const title = supportLabel?.getAttribute('title') || ''
+
+    expect(loadExecutionStrategySupportMatrixMock).toHaveBeenCalledTimes(1)
+    expect(title).toContain('Live support matrix unavailable:')
+    expect(title).toContain('Desktop runtime unavailable')
+    expect(title).not.toContain('TauriRuntimeError')
 
     wrapper.unmount()
   })

@@ -180,7 +180,7 @@ interface AnalysisState {
   aggregateSummaryLatestRuntime: string
   metaMeta: string
   metaOutputPreview: string
-  metaTableColumns: { label: string; alignLeft: boolean }[]
+  metaTableColumns: { key?: string; label: string; alignLeft: boolean }[]
   metaTableRows: { cells: { text: string; className: string; title: string }[] }[]
   metaCompareOptions: { value: string; label: string; disabled: boolean }[]
   metaCompareSelected: string

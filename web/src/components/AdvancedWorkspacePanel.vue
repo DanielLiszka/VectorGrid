@@ -952,9 +952,9 @@ onBeforeUnmount(() => {
           </div>
 
           <div>
-            <label for="vueObjective">Objective</label>
+            <label for="vueAdvanced_objective">Objective</label>
             <select
-              id="vueObjective"
+              id="vueAdvanced_objective"
               :value="objectiveDraft"
               @change="objectiveDraft = String(($event.target as HTMLSelectElement).value || 'Sharpe'); setSelectValue('objective', objectiveDraft)"
             >
@@ -971,9 +971,9 @@ onBeforeUnmount(() => {
 
           <div>
             <template v-if="showModeControl">
-              <label for="vueMode">Mode</label>
+              <label for="vueAdvanced_mode">Mode</label>
               <select
-                id="vueMode"
+                id="vueAdvanced_mode"
                 :value="modeDraft"
                 @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'Grid'); setSelectValue('mode', modeDraft)"
               >

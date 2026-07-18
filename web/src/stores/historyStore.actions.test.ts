@@ -17,6 +17,7 @@ import {
   revealSavedRun,
   saveSavedRunTags,
 } from "../services/historyService";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 import { useHistoryStore } from "./historyStore";
 
 vi.mock("../services/historyService", () => ({
@@ -159,6 +160,27 @@ describe("history store actions", () => {
     expect(openRunsDirMock).toHaveBeenCalledTimes(1);
     expect(store.statusLine).toBe("Error: runs unavailable");
     expect(store.source).toBe("vue");
+  });
+
+  it("formats browser-runtime saved-run refresh failures without the runtime class prefix", async () => {
+    const store = useHistoryStore();
+    refreshSavedRunsMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: "TAURI_INVOKE_FAILED",
+        operation: "list_run_artifacts",
+        message:
+          "Desktop runtime unavailable for list run artifacts. Open this action in the Tauri desktop app.",
+      }),
+    );
+
+    store.refreshSavedRuns();
+    await flushServiceImports();
+    await flushServiceImports();
+
+    expect(store.statusLine).toContain(
+      "Desktop runtime unavailable for list run artifacts.",
+    );
+    expect(store.statusLine).not.toContain("TauriRuntimeError:");
   });
 
   it("dispatches saved-run actions through history service", async () => {

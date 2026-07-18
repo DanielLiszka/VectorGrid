@@ -868,7 +868,41 @@ describe("validationRequestBuilder", () => {
     );
   });
 
-  it("rejects DynamicDoubleMa validation requests until dynamic IR replay is implemented", () => {
+  it("preserves DynamicDoubleMa strategy IR for validation replay", () => {
+    const dynamicStrategyIr = {
+      profile: "double_ma",
+      entry: { kind: "and", nodes: [{ kind: "fast_above_slow" }] },
+      exit: { kind: "fast_below_slow" },
+    };
+
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-dynamic",
+        ma_source: "close",
+        dynamic_strategy_ir: dynamicStrategyIr,
+        strategy: { long_only: true },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+            fast_len: 12,
+            slow_len: 48,
+          },
+        },
+      ],
+      candidates: "8",
+    });
+
+    expect(req.validation_context.strategy_kind).toBe("DynamicDoubleMa");
+    expect(req.dynamic_strategy_ir).toEqual(dynamicStrategyIr);
+    expect(req.candidates[0]?.strategy).toEqual({ long_only: true });
+  });
+
+  it("rejects DynamicDoubleMa validation when the optimization artifact has no dynamic IR", () => {
     expect(() =>
       buildValidationRequest({
         currentRunReq: {
@@ -890,7 +924,7 @@ describe("validationRequestBuilder", () => {
         ],
         candidates: "8",
       }),
-    ).toThrow("DynamicDoubleMa validation is not supported yet");
+    ).toThrow("DynamicDoubleMa validation requires dynamic_strategy_ir");
   });
 
   it("treats Set as a double-like validation strategy", () => {

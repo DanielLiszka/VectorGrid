@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
 pub use crate::validation_shared::ValidationAuxWorkMask;
@@ -1554,6 +1555,8 @@ pub struct DoubleMaValidationRequest {
     pub backend: Backend,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
+    #[serde(default)]
+    pub dynamic_strategy_ir: Option<crate::strategy_ir::StrategyIr>,
     pub fast_ma_params: Option<HashMap<String, f64>>,
     pub slow_ma_params: Option<HashMap<String, f64>>,
     pub candidates: Vec<DoubleMaValidationParams>,
@@ -1984,10 +1987,12 @@ fn double_ma_validation_robust_score(
 #[derive(Clone)]
 struct CandidateSeries<'a> {
     n: usize,
+    candles: &'a vector_ta::utilities::data_loader::Candles,
     lr: &'a [f64],
     close: &'a [f64],
     fast: Vec<f64>,
     slow: Vec<f64>,
+    desired_positions: Option<Vec<i32>>,
     halftrend_trend: Option<Vec<f64>>,
     kaufman_stops: Option<crate::double_ma::KaufmanStopSeries>,
     start_t: usize,
@@ -2002,6 +2007,29 @@ fn build_candidate_series<'a>(
     fast_ma_params_req: Option<&HashMap<String, f64>>,
     slow_ma_params_req: Option<&HashMap<String, f64>>,
     params: &DoubleMaValidationParams,
+) -> Result<CandidateSeries<'a>, String> {
+    build_candidate_series_with_dynamic(
+        candles,
+        lr,
+        base_first_valid,
+        ma_source,
+        fast_ma_params_req,
+        slow_ma_params_req,
+        params,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_candidate_series_with_dynamic<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    base_first_valid: usize,
+    ma_source: &str,
+    fast_ma_params_req: Option<&HashMap<String, f64>>,
+    slow_ma_params_req: Option<&HashMap<String, f64>>,
+    params: &DoubleMaValidationParams,
+    dynamic_plan: Option<&crate::strategy_dynamic::RunnableDynamicDoubleMaPlan>,
 ) -> Result<CandidateSeries<'a>, String> {
     let n = candles.close.len();
     if n < 2 {
@@ -2096,20 +2124,47 @@ fn build_candidate_series<'a>(
         return Err("not enough candles after warmup".to_string());
     }
 
+    let (desired_positions, cfg) = if let Some(runtime_plan) = dynamic_plan {
+        let plan = runtime_plan.cpu_plan();
+        let context = runtime_plan.cpu_context(candles)?;
+        (
+            Some(
+                crate::strategy_dynamic::build_dynamic_double_ma_desired_positions(
+                    plan, context, &fast_mat, &slow_mat, start_t,
+                )?,
+            ),
+            plan.strategy.clone(),
+        )
+    } else {
+        (None, params.strategy.clone())
+    };
+
     Ok(CandidateSeries {
         n,
+        candles,
         lr,
         close,
         fast: fast_mat,
         slow: slow_mat,
+        desired_positions,
         halftrend_trend,
         kaufman_stops,
         start_t,
-        cfg: params.strategy.clone(),
+        cfg,
     })
 }
 
 fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usize) -> Metrics {
+    if let Some(desired) = series.desired_positions.as_ref() {
+        return crate::asr::eval_asr_metrics_window_from_desired(
+            series.candles,
+            series.lr,
+            desired,
+            start_t,
+            end_t,
+            &series.cfg,
+        );
+    }
     eval_metrics_window_with_cfg(series, start_t, end_t, &series.cfg)
 }
 
@@ -2119,6 +2174,17 @@ fn eval_metrics_window_with_cfg(
     end_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
+    if let Some(desired) = series.desired_positions.as_ref() {
+        return crate::asr::eval_asr_metrics_window_from_desired(
+            series.candles,
+            series.lr,
+            desired,
+            start_t,
+            end_t,
+            cfg,
+        );
+    }
+
     let n = series.n;
     let end_t = end_t.min(n);
     if end_t < 2 || start_t >= end_t {
@@ -2144,6 +2210,17 @@ fn eval_metrics_window_with_cfg(
 }
 
 fn trades_for_series(series: &CandidateSeries<'_>) -> Vec<Trade> {
+    if let Some(desired) = series.desired_positions.as_ref() {
+        return crate::asr::eval_asr_curves_from_desired(
+            series.candles,
+            series.lr,
+            desired,
+            series.start_t,
+            &series.cfg,
+            1,
+        )
+        .trades;
+    }
     crate::double_ma::eval_curves_f64_with_exit_mode(
         series.lr,
         series.close,
@@ -2164,6 +2241,14 @@ fn desired_positions_for_series(
     end_t: usize,
 ) -> Vec<i32> {
     let n = series.n;
+    if let Some(desired) = series.desired_positions.as_ref() {
+        let mut out = desired.clone();
+        let end_t = end_t.min(n);
+        if end_t < n {
+            out[end_t..].fill(0);
+        }
+        return out;
+    }
     let mut out = crate::double_ma::desired_positions_with_exit_mode(
         series.close,
         &series.fast,
@@ -2195,6 +2280,24 @@ fn slice_return_stats_for_series(
         .saturating_add(slice_bars.saturating_mul(slices))
         .min(series.n);
     if end_t <= start_t + 1 {
+        return out;
+    }
+
+    if let Some(desired) = series.desired_positions.as_ref() {
+        for t in start_t..end_t {
+            let slice_idx = (t - start_t) / slice_bars;
+            if slice_idx >= slices {
+                break;
+            }
+            let pos = desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+            let step_r = if pos == 0 {
+                0.0
+            } else {
+                (pos as f64) * series.lr[t].exp_m1()
+            };
+            out[slice_idx].sum += step_r;
+            out[slice_idx].sumsq += step_r * step_r;
+        }
         return out;
     }
 
@@ -2276,6 +2379,19 @@ fn slice_return_sums_for_series(
         .saturating_add(slice_bars.saturating_mul(slices))
         .min(series.n);
     if end_t <= start_t + 1 {
+        return out;
+    }
+
+    if let Some(desired) = series.desired_positions.as_ref() {
+        for (slice_idx, slice_start) in (start_t..end_t).step_by(slice_bars).enumerate() {
+            let slice_end = slice_start.saturating_add(slice_bars).min(end_t);
+            for t in slice_start..slice_end {
+                let pos = desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+                if pos != 0 {
+                    out[slice_idx] += (pos as f64) * series.lr[t].exp_m1();
+                }
+            }
+        }
         return out;
     }
 
@@ -2365,6 +2481,32 @@ impl CandidateStepReturnBundle {
         let mut active_flags = vec![false; series.n];
         let mut trade_entries = vec![false; series.n];
         let mut spread_ratio = vec![f64::NAN; series.n];
+        if let Some(desired) = series.desired_positions.as_ref() {
+            let mut prev_pos = 0;
+            for t in series.start_t..series.n {
+                let pos = desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+                let close = series.close[t].abs().max(1.0e-9);
+                let f = series.fast[t];
+                let s = series.slow[t];
+                if f.is_finite() && s.is_finite() {
+                    spread_ratio[t] = (f - s).abs() / close;
+                }
+                if pos != 0 && pos != prev_pos {
+                    trade_entries[t] = true;
+                }
+                if pos != 0 {
+                    active_flags[t] = true;
+                    step_returns[t] = (pos as f64) * series.lr[t].exp_m1();
+                }
+                prev_pos = pos;
+            }
+            return Self {
+                step_returns,
+                active_flags,
+                trade_entries,
+                spread_ratio,
+            };
+        }
         let trade_offset = if series.cfg.trade_on_next_bar {
             1usize
         } else {
@@ -4092,26 +4234,50 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     let iterative_cfg = req.iterative.clone();
     let reopt_walk_cfg = req.reopt_walk_forward.clone();
     let spa_cfg = req.spa.clone();
+    let dynamic_runtime_plan = if let Some(dynamic_ir) = req.dynamic_strategy_ir.clone() {
+        Some(
+            crate::strategy_dynamic::prepare_runnable_dynamic_double_ma_plan(
+                dynamic_ir,
+                crate::strategy_plan::StrategyPlanBackend::Cpu,
+                ObjectiveKind::Sharpe,
+                req.max_candidates.max(1),
+                false,
+                candles,
+            )?,
+        )
+    } else {
+        None
+    };
     let mut gpu_validation_fallback_reason: Option<String> = None;
     let mut gpu_prepared_plan: Option<PreparedGpuValidationPlan> = None;
-    let mut gpu_fixed_eval = match validation_supports_gpu_fixed_candidates(&req) {
-        Ok(_) => {
-            match try_prepare_gpu_fixed_candidate_validation(&req, candles, base_first_valid) {
-                Ok((eval, plan)) => {
-                    gpu_prepared_plan = Some(plan);
-                    Some(eval)
-                }
-                Err(err) => {
-                    gpu_validation_fallback_reason = Some(err);
-                    None
-                }
-            }
+    let mut gpu_fixed_eval = if dynamic_runtime_plan.is_some() {
+        if !matches!(req.backend, Backend::CpuOnly) {
+            gpu_validation_fallback_reason = Some(
+                "DynamicDoubleMa validation replays dynamic_strategy_ir on the CPU path; GPU fixed-candidate validation is not wired for dynamic IR yet."
+                    .to_string(),
+            );
         }
-        Err(reason) => {
-            if !matches!(req.backend, Backend::CpuOnly) {
-                gpu_validation_fallback_reason = Some(reason);
+        None
+    } else {
+        match validation_supports_gpu_fixed_candidates(&req) {
+            Ok(_) => {
+                match try_prepare_gpu_fixed_candidate_validation(&req, candles, base_first_valid) {
+                    Ok((eval, plan)) => {
+                        gpu_prepared_plan = Some(plan);
+                        Some(eval)
+                    }
+                    Err(err) => {
+                        gpu_validation_fallback_reason = Some(err);
+                        None
+                    }
+                }
             }
-            None
+            Err(reason) => {
+                if !matches!(req.backend, Backend::CpuOnly) {
+                    gpu_validation_fallback_reason = Some(reason);
+                }
+                None
+            }
         }
     };
     let hard_gates = sanitize_hard_gates(
@@ -4122,6 +4288,18 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         req.max_pbo,
     );
     let gpu_cpu_tail_wall_ms = AtomicU64::new(0);
+    let build_series = |params: &DoubleMaValidationParams| {
+        build_candidate_series_with_dynamic(
+            candles,
+            &lr,
+            base_first_valid,
+            &ma_source,
+            fast_ma_params.as_ref(),
+            slow_ma_params.as_ref(),
+            params,
+            dynamic_runtime_plan.as_ref(),
+        )
+    };
 
     let (mut out, cscv_pbo) = crate::validation_core::run_validation_candidates(
         &req.candidates,
@@ -4217,15 +4395,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                     n.saturating_sub(series_start_t),
                 ));
             }
-            let series = build_candidate_series(
-                candles,
-                &lr,
-                base_first_valid,
-                &ma_source,
-                fast_ma_params.as_ref(),
-                slow_ma_params.as_ref(),
-                p,
-            )?;
+            let series = build_series(p)?;
             let series_start_t = series.start_t;
 
             let in_sample = eval_metrics_window(&series, series.start_t, series.n);
@@ -4249,15 +4419,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                     rng,
                     perturb_params,
                     |pp| {
-                        let s2 = build_candidate_series(
-                            candles,
-                            &lr,
-                            base_first_valid,
-                            &ma_source,
-                            fast_ma_params.as_ref(),
-                            slow_ma_params.as_ref(),
-                            pp,
-                        )?;
+                        let s2 = build_series(pp)?;
                         Ok(eval_metrics_window(&s2, s2.start_t, s2.n))
                     },
                 )?
@@ -4341,15 +4503,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                     }
                 }
             }
-            let series = build_candidate_series(
-                candles,
-                &lr,
-                base_first_valid,
-                &ma_source,
-                fast_ma_params.as_ref(),
-                slow_ma_params.as_ref(),
-                &cand.params,
-            )?;
+            let series = build_series(&cand.params)?;
             Ok(slice_return_stats_for_series(
                 &series,
                 cscv_start_t,
@@ -4405,17 +4559,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         Some(
             out.iter()
                 .take(finalist_cache_count)
-                .map(|cand| {
-                    build_candidate_series(
-                        candles,
-                        &lr,
-                        base_first_valid,
-                        &ma_source,
-                        fast_ma_params.as_ref(),
-                        slow_ma_params.as_ref(),
-                        &cand.params,
-                    )
-                })
+                .map(|cand| build_series(&cand.params))
                 .collect::<Result<Vec<_>, _>>()?,
         )
     } else {
@@ -4585,18 +4729,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                         params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
                     )
                 });
-                finalist_series.push((
-                    key,
-                    build_candidate_series(
-                        candles,
-                        &lr,
-                        base_first_valid,
-                        &ma_source,
-                        fast_ma_params.as_ref(),
-                        slow_ma_params.as_ref(),
-                        &params,
-                    )?,
-                ));
+                finalist_series.push((key, build_series(&params)?));
             }
             crate::validation_pipeline::compute_reopt_walk_forward_stats(
                 &finalist_series,
@@ -4646,15 +4779,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                         }
                     }
                 }
-                let series = build_candidate_series(
-                    candles,
-                    &lr,
-                    base_first_valid,
-                    &ma_source,
-                    fast_ma_params.as_ref(),
-                    slow_ma_params.as_ref(),
-                    &params,
-                )?;
+                let series = build_series(&params)?;
                 candidate_slice_returns.push(slice_return_sums_for_series(
                     &series,
                     common_start_t,
@@ -4761,6 +4886,9 @@ mod tests {
     use crate::meta_select::{
         meta_select_from_artifacts, MetaClusterConfig, MetaGroupingMode, MetaHoldoutMode,
         MetaScoreWeights, MetaSelectionRequest,
+    };
+    use crate::strategy_ir::{
+        build_static_strategy_ir, StaticStrategyIrInput, StrategyProfileKind,
     };
     use serde_json::json;
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
@@ -4889,6 +5017,7 @@ mod tests {
             data_id: "test".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![base],
@@ -4954,6 +5083,106 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_double_ma_validation_replays_ir_and_reports_cpu_fallback() {
+        let candles = make_choppy_candles(768);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            fee_bps: 1.0,
+            spread_bps: 0.5,
+            slippage_bps: 0.5,
+            ..StrategyConfig::default()
+        };
+        let dynamic_strategy_ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "ema".to_string(),
+                None,
+                None,
+                strategy.clone(),
+                None,
+            ),
+        )
+        .expect("dynamic strategy ir");
+        let candidate = DoubleMaValidationParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len: 8,
+            slow_len: 32,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy,
+            halftrend_filter: None,
+        };
+
+        let req = DoubleMaValidationRequest {
+            data_id: "dynamic-validation".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            dynamic_strategy_ir: Some(dynamic_strategy_ir),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 256,
+                step_bars: 128,
+            }),
+            reopt_walk_forward: None,
+            perturb: Some(PerturbConfig {
+                iterations: 2,
+                pct_min: 0.01,
+                pct_max: 0.02,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 8,
+                stationary_mean_block_len: Some(2),
+            }),
+            monte_carlo: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 4,
+                max_combinations: 8,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 4,
+                bootstrap_samples: 8,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 7,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("dynamic validation run");
+        assert_eq!(res.candidates.len(), 1);
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("dynamic_strategy_ir"));
+        assert!(res.candidates[0].in_sample.pnl.is_finite());
+        assert!(res.candidates[0].walk_forward.is_some());
+        assert!(res.candidates[0].perturb.is_some());
+        assert!(res.candidates[0].trade_bootstrap.is_some());
+        assert!(res.cscv_pbo.is_some());
+        assert!(res.spa.is_some());
+    }
+
+    #[test]
     fn double_ma_validation_execution_profile_counts_truncated_prefix_candidates() {
         let candles = make_trending_candles(1024);
         let cancel = AtomicBool::new(false);
@@ -4991,6 +5220,7 @@ mod tests {
             data_id: "truncated-prefix-profile".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![duplicate.clone(), duplicate, distinct, later],
@@ -5049,6 +5279,7 @@ mod tests {
             data_id: "default-max-candidates".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![base; default_max_candidates() + 4],
@@ -5111,6 +5342,7 @@ mod tests {
             data_id: "validation-provenance".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -5484,6 +5716,7 @@ mod tests {
             data_id: "regime-robustness".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![
@@ -5563,6 +5796,7 @@ mod tests {
             data_id: "checkpoint-robustness".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![
@@ -5659,6 +5893,7 @@ mod tests {
             data_id: "benchmark-slice-summary".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![
@@ -5736,6 +5971,7 @@ mod tests {
             data_id: "friction-stress".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![
@@ -5808,6 +6044,7 @@ mod tests {
             data_id: "entry-margin-underwater".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![
@@ -5888,6 +6125,7 @@ mod tests {
             data_id: "friction-stress-exact-fee-pnl".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -5974,6 +6212,7 @@ mod tests {
             data_id: "aux-finalists-only".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates,
@@ -6077,6 +6316,7 @@ mod tests {
             data_id: "gpu-route".to_string(),
             backend: Backend::GpuKernel { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -6167,6 +6407,7 @@ mod tests {
             data_id: "aux-diagnostics-parity".to_string(),
             backend,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: candidates.clone(),
@@ -6375,6 +6616,7 @@ mod tests {
                 data_id: "cpu-plain".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -6407,6 +6649,7 @@ mod tests {
                 data_id: "gpu-plain".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -6478,6 +6721,7 @@ mod tests {
             data_id: "gpu-cross-direct".to_string(),
             backend: Backend::GpuKernel { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -6536,6 +6780,7 @@ mod tests {
             data_id: "gpu-iterative-fallback".to_string(),
             backend: Backend::GpuKernel { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -6591,6 +6836,7 @@ mod tests {
             data_id: "auto-iterative-fallback".to_string(),
             backend: Backend::Auto { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -6672,6 +6918,7 @@ mod tests {
                 data_id: "cpu-wf".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -6705,6 +6952,7 @@ mod tests {
                 data_id: "gpu-wf".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -6806,6 +7054,7 @@ mod tests {
                 data_id: "cpu-hybrid-wf".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![DoubleMaValidationParams {
@@ -6848,6 +7097,7 @@ mod tests {
                 data_id: "gpu-hybrid-wf".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![DoubleMaValidationParams {
@@ -6964,6 +7214,7 @@ mod tests {
                 data_id: "cpu-hybrid".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -6997,6 +7248,7 @@ mod tests {
                 data_id: "gpu-hybrid".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -7106,6 +7358,7 @@ mod tests {
                 data_id: "cpu-composite-trend".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -7138,6 +7391,7 @@ mod tests {
                 data_id: "gpu-composite-trend".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -7198,6 +7452,7 @@ mod tests {
             data_id: "auto-composite-trend".to_string(),
             backend: Backend::Auto { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -7284,6 +7539,7 @@ mod tests {
                 data_id: "cpu-composite-trend-adx".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -7316,6 +7572,7 @@ mod tests {
                 data_id: "gpu-composite-trend-adx".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -7407,6 +7664,7 @@ mod tests {
                 data_id: "cpu-composite-trend-wf".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -7439,6 +7697,7 @@ mod tests {
                 data_id: "gpu-composite-trend-wf".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -7549,6 +7808,7 @@ mod tests {
                 data_id: "cpu-breakout".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -7581,6 +7841,7 @@ mod tests {
                 data_id: "gpu-breakout".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -7657,6 +7918,7 @@ mod tests {
                 data_id: "cpu-breakout-adx".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -7689,6 +7951,7 @@ mod tests {
                 data_id: "gpu-breakout-adx".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -7761,6 +8024,7 @@ mod tests {
                 data_id: "cpu-hybrid-composite-trend-wf".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![DoubleMaValidationParams {
@@ -7803,6 +8067,7 @@ mod tests {
                 data_id: "gpu-hybrid-composite-trend-wf".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![DoubleMaValidationParams {
@@ -7886,6 +8151,7 @@ mod tests {
                 data_id: "cpu-hybrid-breakout-cscv".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -7940,6 +8206,7 @@ mod tests {
                 data_id: "gpu-hybrid-breakout-cscv".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -8156,6 +8423,7 @@ mod tests {
             data_id: "trend-quality-device-regime-exact-combo".to_string(),
             backend: Backend::GpuKernel { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -8625,6 +8893,7 @@ mod tests {
             data_id: "test".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![a, b],
@@ -8698,6 +8967,7 @@ mod tests {
                 data_id: "cpu-cscv".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -8731,6 +9001,7 @@ mod tests {
                 data_id: "gpu-cscv".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -8836,6 +9107,7 @@ mod tests {
                 data_id: "cpu-spa".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -8869,6 +9141,7 @@ mod tests {
                 data_id: "gpu-spa".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -8920,6 +9193,7 @@ mod tests {
             data_id: "gpu-perturb-plain".to_string(),
             backend,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -8996,6 +9270,7 @@ mod tests {
             data_id: "gpu-bootstrap".to_string(),
             backend,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -9114,6 +9389,7 @@ mod tests {
             data_id: "gpu-full-stack".to_string(),
             backend: Backend::GpuKernel { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![
@@ -9237,6 +9513,7 @@ mod tests {
                 data_id: "gpu-hybrid-cscv".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -9342,6 +9619,7 @@ mod tests {
                 data_id: "gpu-hybrid-spa".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -9423,6 +9701,7 @@ mod tests {
                 data_id: "gpu-kernel-vfct-cscv".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -9515,6 +9794,7 @@ mod tests {
                 data_id: "gpu-kernel-pit-spa".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -9608,6 +9888,7 @@ mod tests {
             data_id: "reopt".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates,
@@ -9685,6 +9966,7 @@ mod tests {
                 data_id: "cpu-reopt".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -9718,6 +10000,7 @@ mod tests {
                 data_id: "gpu-reopt".to_string(),
                 backend: Backend::GpuKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
@@ -9808,6 +10091,7 @@ mod tests {
                 data_id: "cpu-hybrid-reopt".to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -9862,6 +10146,7 @@ mod tests {
                 data_id: "gpu-hybrid-reopt".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: vec![
@@ -9970,6 +10255,7 @@ mod tests {
             data_id: "test".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![base],
@@ -10081,6 +10367,7 @@ mod tests {
                 data_id: format!("opt-vs-iter-{label}"),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
@@ -10231,6 +10518,7 @@ mod tests {
             data_id: "det".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![base],
@@ -10304,6 +10592,7 @@ mod tests {
             data_id: "gate".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![mk(8, 24), mk(12, 36), mk(20, 60)],
@@ -10364,6 +10653,7 @@ mod tests {
             data_id: "invalid".to_string(),
             backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![DoubleMaValidationParams {
@@ -10515,6 +10805,7 @@ mod tests {
                 data_id: label.to_string(),
                 backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
+                dynamic_strategy_ir: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,

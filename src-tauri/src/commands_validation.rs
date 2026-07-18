@@ -1173,6 +1173,7 @@ fn build_double_ma_cross_ticker_request(
         data_id: format!("cross-{dataset_index}"),
         backend,
         ma_source: ma_source.to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params,
         slow_ma_params,
         candidates,
@@ -2090,6 +2091,7 @@ mod tests {
             data_id: "base".to_string(),
             backend: ta_app_core::Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![ta_app_core::DoubleMaValidationParams {
@@ -2191,6 +2193,7 @@ mod tests {
             data_id: "base".to_string(),
             backend: ta_app_core::Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![ta_app_core::DoubleMaValidationParams {
@@ -2285,6 +2288,7 @@ mod tests {
             data_id: "base-multi-cross".to_string(),
             backend: ta_app_core::Backend::CpuOnly,
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![ta_app_core::DoubleMaValidationParams {
@@ -2406,6 +2410,7 @@ mod tests {
             data_id: "base-gpu".to_string(),
             backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
             ma_source: "close".to_string(),
+            dynamic_strategy_ir: None,
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![ta_app_core::DoubleMaValidationParams {

@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { useWorkflowStore } from "./workflowStore";
 import { resolveRuntimePinia } from "./runtimePinia";
 import { mlSignalPrimaryActionForStep } from "../utils/core/workflowModel";
+import { storeErrorText } from "../utils/storeErrorText";
 
 let optimizeServicePromise: Promise<
   typeof import("../services/optimizeService")
@@ -17,7 +18,7 @@ function loadOptimizeService(): Promise<
 }
 
 function formatActionError(prefix: string, error: unknown): string {
-  const detail = String(error || "").trim();
+  const detail = storeErrorText(error);
   return detail ? `${prefix}: ${detail}` : prefix;
 }
 

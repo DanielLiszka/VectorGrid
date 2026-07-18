@@ -41,6 +41,16 @@ const HIGHER_BETTER_KEYS = new Set([
   'robust',
   'psr',
   'dsr',
+  'samples',
+  'pass_rate',
+  'meta_score',
+  'ml_confidence',
+  'robust_score_p10',
+  'robust_score_median',
+  'holdout_pass_rate',
+  'holdout_score_p10',
+  'holdout_score_median',
+  'holdout_coverage',
   'cross',
   'maximize_value',
   'active_mean',
@@ -67,6 +77,8 @@ const NEUTRAL_KEYS = new Set([
   'long_exposure',
   'short_exposure',
   'directional_bias',
+  'max_dd_p90',
+  'holdout_max_dd_p90',
 ])
 
 const STATUS_KEYS = new Set(['gate', 'robust_pareto', 'cross_pareto'])

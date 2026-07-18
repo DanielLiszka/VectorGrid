@@ -1,4 +1,6 @@
 export function num(value: unknown, fallback: number): number {
+  if (value === null || value === undefined) return fallback
+  if (typeof value === "string" && value.trim() === "") return fallback
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
 }

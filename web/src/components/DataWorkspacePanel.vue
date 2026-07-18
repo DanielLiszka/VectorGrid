@@ -527,6 +527,7 @@ onBeforeUnmount(() => {
               <div class="actions">
                 <button
                   type="button"
+                  data-qa-action="data.polygon.saveApiKey"
                   :disabled="!canPolygonSaveApiKey"
                   @click="dataStore.savePolygonApiKey()"
                 >
@@ -534,6 +535,7 @@ onBeforeUnmount(() => {
                 </button>
                 <button
                   type="button"
+                  data-qa-action="data.polygon.clearApiKey"
                   :disabled="!canPolygonClearApiKey"
                   @click="dataStore.clearPolygonApiKey()"
                 >
@@ -683,6 +685,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="primary"
+            data-qa-action="data.polygon.download"
             :disabled="!canPolygonDownload"
             @click="dataStore.downloadPolygonDataset()"
           >
@@ -742,6 +745,7 @@ onBeforeUnmount(() => {
           <div class="actions">
             <button
               type="button"
+              data-qa-action="data.polygon.loadSelected"
               :disabled="!canPolygonLoadSelected"
               @click="dataStore.loadPolygonDataset(polygonSelectedPathDraft)"
             >
@@ -749,6 +753,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="data.polygon.validateSelected"
               :disabled="!canPolygonValidateSelected"
               @click="
                 dataStore.validatePolygonDataset(polygonSelectedPathDraft)
@@ -758,6 +763,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="data.polygon.repairSelected"
               :disabled="!canPolygonRepairSelected"
               @click="dataStore.repairPolygonDataset(polygonSelectedPathDraft)"
             >
@@ -814,6 +820,7 @@ onBeforeUnmount(() => {
           <div class="actions">
             <button
               type="button"
+              data-qa-action="data.timeframe.apply"
               :disabled="!canApplyTimeframe"
               @click="applyTimeframeFromDraft"
             >
@@ -884,12 +891,17 @@ onBeforeUnmount(() => {
           <div class="actions">
             <button
               type="button"
+              data-qa-action="data.storage.openFolder"
               :disabled="!canOpenMarketDataDir"
               @click="dataStore.openMarketDataDir()"
             >
               Open folder
             </button>
-            <button type="button" @click="openStorageSettings">
+            <button
+              type="button"
+              data-qa-action="data.storage.manageSettings"
+              @click="openStorageSettings"
+            >
               Manage in Settings
             </button>
           </div>

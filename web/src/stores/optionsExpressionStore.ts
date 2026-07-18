@@ -38,6 +38,7 @@ import {
   validateOptionsValidationFormValues,
   type OptionsValidationFormValues,
 } from "../utils/optionsValidationForm";
+import { storeErrorText } from "../utils/storeErrorText";
 
 function markImmutablePayload<T>(value: T): T {
   if (
@@ -841,7 +842,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
               : "No imported options datasets yet. Import a normalized CSV to continue.";
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() || "Failed to refresh options datasets.";
+          storeErrorText(error) || "Failed to refresh options datasets.";
       } finally {
         this.datasetsBusy = false;
       }
@@ -877,7 +878,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Imported options dataset ${imported.optionsDatasetId}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() || "Failed to import options dataset.";
+          storeErrorText(error) || "Failed to import options dataset.";
       } finally {
         this.importBusy = false;
       }
@@ -963,7 +964,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           `${downloaded.downloadedOptionRows} option rows).`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to download Polygon.io options dataset.";
       } finally {
         this.downloadBusy = false;
@@ -982,7 +983,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Revealed dataset path ${datasetPath}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to reveal the selected options dataset path.";
       }
     },
@@ -1001,7 +1002,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Revealed underlying CSV path ${csvPath}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to reveal the underlying CSV path.";
       }
     },
@@ -1024,7 +1025,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           : this.statusLine;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to refresh saved options expression artifacts.";
       } finally {
         this.artifactsBusy = false;
@@ -1156,7 +1157,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Options expression run completed with ${result.tupleCount} ranked tuple${result.tupleCount === 1 ? "" : "s"}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() || "Options expression run failed.";
+          storeErrorText(error) || "Options expression run failed.";
       } finally {
         this.runBusy = false;
       }
@@ -1288,7 +1289,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Feasibility preview compiled ${preview.compiledTupleCount} tuple${preview.compiledTupleCount === 1 ? "" : "s"} with ${(preview.candidateDensity * 100).toFixed(1)}% candidate density.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to preview options-expression feasibility.";
       } finally {
         this.feasibilityBusy = false;
@@ -1339,7 +1340,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           : `Loaded saved options expression artifact ${fileStem(nextPath) || nextPath}, but dataset ${artifact.optionsDatasetId} is not currently imported. Select a replacement dataset intentionally before rerunning or previewing feasibility.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to load saved options expression artifact.";
       } finally {
         this.loadBusy = false;
@@ -1369,7 +1370,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Validation preview selected ${preview.selectedTupleCount} tuple${preview.selectedTupleCount === 1 ? "" : "s"} for ${preview.datasetPolicy}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to preview options-expression validation.";
       } finally {
         this.validationFeasibilityBusy = false;
@@ -1390,7 +1391,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Validation ${summary.verdict.replace(/_/g, " ")}: ${summary.acceptedTupleCount}/${summary.validatedTupleCount} tuple${summary.validatedTupleCount === 1 ? "" : "s"} accepted.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to validate options expression artifact.";
       } finally {
         this.validationBusy = false;
@@ -1408,7 +1409,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Revealed ${nextPath}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to reveal options expression artifact path.";
       }
     },
@@ -1424,7 +1425,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Revealed ${nextPath}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to reveal options validation artifact path.";
       }
     },
@@ -1465,7 +1466,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           "CSV export is unavailable in the current environment.";
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to export ranked tuples to CSV.";
       }
     },
@@ -1509,7 +1510,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           "CSV export is unavailable in the current environment.";
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to export tuple inspection rows.";
       }
     },
@@ -1555,7 +1556,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           "CSV export is unavailable in the current environment.";
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() ||
+          storeErrorText(error) ||
           "Failed to export event path replay points.";
       }
     },
@@ -1594,7 +1595,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Loaded ${inspection.rows.length} event row${inspection.rows.length === 1 ? "" : "s"} for tuple #${tupleIndex + 1}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() || "Failed to load tuple inspection rows.";
+          storeErrorText(error) || "Failed to load tuple inspection rows.";
       } finally {
         this.inspectionBusy = false;
       }
@@ -1623,7 +1624,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine = `Loaded ${inspection.pointCount} path point${inspection.pointCount === 1 ? "" : "s"} for event ${inspection.eventId}.`;
       } catch (error) {
         this.statusLine =
-          String(error || "").trim() || "Failed to load event-path inspection.";
+          storeErrorText(error) || "Failed to load event-path inspection.";
       } finally {
         this.eventPathBusy = false;
       }

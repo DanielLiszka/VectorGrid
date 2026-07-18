@@ -50,6 +50,7 @@ import {
   type LiveExecutionTarget,
 } from "../services/liveExecutionLifecycleMachine";
 import { redactKnownSecrets } from "../utils/redaction";
+import { storeErrorText } from "../utils/storeErrorText";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 
 function applyVueTextFieldUpdate(
@@ -254,8 +255,12 @@ function redactExecutionCredentialText(
 }
 
 function executionErrorInput(error: unknown): unknown {
-  if (error instanceof Error && error.name === "TauriRuntimeError") {
-    return error.message;
+  if (
+    error &&
+    typeof error === "object" &&
+    (error as { name?: unknown }).name === "TauriRuntimeError"
+  ) {
+    return storeErrorText(error);
   }
   return error;
 }
@@ -2072,7 +2077,7 @@ export const useExecutionStore = defineStore("execution", {
               this.rememberKeys = true;
             }
           } catch (error) {
-            applyStoredCredentialFailure(this, String(error || "").trim());
+            applyStoredCredentialFailure(this, storeErrorText(error));
           } finally {
             this.storedCredentialHydrated = true;
             syncTypedCredentialPersistenceState(this);
@@ -2092,7 +2097,7 @@ export const useExecutionStore = defineStore("execution", {
         applyStoredCredentialStatus(this, status);
         this.storedCredentialHydrated = true;
       } catch (error) {
-        applyStoredCredentialFailure(this, String(error || "").trim());
+        applyStoredCredentialFailure(this, storeErrorText(error));
         this.storedCredentialHydrated = true;
         throw error;
       } finally {
@@ -2128,8 +2133,7 @@ export const useExecutionStore = defineStore("execution", {
         this.savedSessionStatusHint = `Loaded ${sessions.length} saved live session artifact${sessions.length === 1 ? "" : "s"}.`;
       } catch (error) {
         this.savedSessionStatusHint =
-          String(error || "").trim() ||
-          "Saved live session evidence refresh failed.";
+          storeErrorText(error) || "Saved live session evidence refresh failed.";
       } finally {
         this.pending.refreshSavedSessions = false;
         setAvailability(this);
@@ -2158,7 +2162,7 @@ export const useExecutionStore = defineStore("execution", {
         this.savedSessionStatusHint = "Saved live session evidence loaded.";
       } catch (error) {
         this.savedSessionStatusHint =
-          String(error || "").trim() || "Saved live session load failed.";
+          storeErrorText(error) || "Saved live session load failed.";
       } finally {
         this.pending.refreshSavedSessions = false;
         setAvailability(this);
@@ -2645,7 +2649,7 @@ export const useExecutionStore = defineStore("execution", {
           await this.refreshStoredCredentialStatus().catch((error) => {
             this.storedCredentialClearFailed = true;
             this.storedCredentialMessage =
-              String(error || "").trim() || "Stored credential clear failed.";
+              storeErrorText(error) || "Stored credential clear failed.";
             setAvailability(this);
             markVue(this);
           });
@@ -2653,7 +2657,7 @@ export const useExecutionStore = defineStore("execution", {
         .catch((error) => {
           this.storedCredentialClearFailed = true;
           this.storedCredentialMessage =
-            String(error || "").trim() || "Stored credential clear failed.";
+            storeErrorText(error) || "Stored credential clear failed.";
           this.failAction("Clear keys failed", error);
         })
         .finally(() => this.finishAction("clearKeys"));

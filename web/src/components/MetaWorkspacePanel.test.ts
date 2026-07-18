@@ -7,7 +7,10 @@ import MetaWorkspacePanel from "./MetaWorkspacePanel.vue";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
-import { META_RESULTS_TABLE_STATE_KEY } from "../utils/core/storageKeys";
+import {
+  META_RESULTS_TABLE_DENSITY_KEY,
+  META_RESULTS_TABLE_STATE_KEY,
+} from "../utils/core/storageKeys";
 
 function installMetaPanelMountShell(): void {
   document.body.innerHTML = `
@@ -137,6 +140,56 @@ describe("MetaWorkspacePanel", () => {
     );
     expect(restoredHeaderText).toEqual(["Group", "Selection", "Score"]);
     expect(localStorage.getItem(META_RESULTS_TABLE_STATE_KEY)).toBeNull();
+  });
+
+  it("renders semantic meta result columns with persisted density", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const historyStore = useHistoryStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("meta", { persist: false });
+    historyStore.savedRunCount = 1;
+    analysisStore.metaTableColumns = [
+      { key: "strategy", label: "Group", alignLeft: true },
+      { key: "samples", label: "Samples", alignLeft: false },
+      { key: "pass_rate", label: "Pass", alignLeft: false },
+      { key: "meta_score", label: "Meta", alignLeft: false },
+    ];
+    analysisStore.metaTableRows = [
+      {
+        cells: [
+          { text: "Momentum", className: "left", title: "Momentum" },
+          { text: "4", className: "", title: "4" },
+          { text: "75.0%", className: "", title: "75.0%" },
+          { text: "1.250000", className: "", title: "1.250000" },
+        ],
+      },
+    ];
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const shell = document.querySelector<HTMLElement>(
+      '[aria-label="Meta analysis results table shell"]',
+    );
+    expect(shell?.getAttribute("data-table-row-count")).toBe("1");
+    expect(shell?.getAttribute("data-table-density")).toBe("comfortable");
+    expect(document.querySelector("#metaColumnToggle_meta_score")).not.toBeNull();
+
+    document
+      .querySelector<HTMLButtonElement>('[data-qa="meta.table.density.compact"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPanel();
+
+    expect(shell?.getAttribute("data-table-density")).toBe("compact");
+    expect(localStorage.getItem(META_RESULTS_TABLE_DENSITY_KEY)).toBe(
+      "compact",
+    );
   });
 
   it("applies persisted meta result column order and keyboard-resizable widths", async () => {

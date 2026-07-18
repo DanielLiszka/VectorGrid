@@ -13,7 +13,6 @@ import {
   type WorkbenchPrimaryAction,
 } from "../utils/workbenchActionModel";
 import { buildWorkbenchNavigationState } from "../utils/workbenchNavigationModel";
-import { ML_SIGNAL_WORKFLOW_STEP_LABELS } from "../utils/core/workflowModel";
 import {
   latestStageCompletionForStage,
   stageCompletionIsComplete,
@@ -243,11 +242,11 @@ export function useResearchCockpitModel() {
       clean(progressMeta.value, "") || clean(runReadinessHint.value, "");
     const loaded = clean(dataId.value, "");
     const modeItems: ResearchCockpitContextItem[] =
-      navState.value.mode === "ml-signal"
+      navState.value.mode === "ml-signal" || navState.value.mode === "options"
         ? [
             {
               key: "Workflow",
-              value: "ML Signal",
+              value: navState.value.modeLabel,
               current: true,
               defaultVisible: true,
             },
@@ -327,13 +326,16 @@ export function useResearchCockpitModel() {
   const steps = computed<ResearchCockpitStep[]>(() => {
     const currentStep = navState.value.activeWorkflowStep;
     const activeControls = navState.value.activeControlsTab;
+    const stageLabel = (id: Exclude<ResearchCockpitStepId, "configure">) =>
+      navState.value.stageItems.find((item) => item.id === id)?.shortLabel ||
+      id;
     if (navState.value.mode === "ml-signal") {
       const scoreCacheReady = hasUsefulText(mlSignalScoreCachePath.value);
       const exportReady = hasUsefulText(mlSignalDatasetExportPath.value);
       return [
         step(
           "data",
-          ML_SIGNAL_WORKFLOW_STEP_LABELS.data,
+          stageLabel("data"),
           datasetReady.value ? "Dataset loaded" : "Load dataset",
           currentStep === "data"
             ? "active"
@@ -343,7 +345,7 @@ export function useResearchCockpitModel() {
         ),
         step(
           "optimize",
-          ML_SIGNAL_WORKFLOW_STEP_LABELS.optimize,
+          stageLabel("optimize"),
           scoreCacheReady
             ? "Cache selected"
             : exportReady
@@ -359,7 +361,7 @@ export function useResearchCockpitModel() {
         ),
         step(
           "validate",
-          ML_SIGNAL_WORKFLOW_STEP_LABELS.validate,
+          stageLabel("validate"),
           validationComplete.value ? "Evidence available" : "Run policy",
           currentStep === "validate"
             ? "active"
@@ -371,7 +373,7 @@ export function useResearchCockpitModel() {
         ),
         step(
           "analyze",
-          ML_SIGNAL_WORKFLOW_STEP_LABELS.analyze,
+          stageLabel("analyze"),
           scoreCacheReady ? "Sweep thresholds" : "Await cache",
           currentStep === "analyze"
             ? "active"
@@ -381,7 +383,7 @@ export function useResearchCockpitModel() {
         ),
         step(
           "finalize",
-          ML_SIGNAL_WORKFLOW_STEP_LABELS.finalize,
+          stageLabel("finalize"),
           scoreCacheReady ? "Inspect artifacts" : "Await outputs",
           currentStep === "finalize"
             ? "active"
@@ -391,10 +393,64 @@ export function useResearchCockpitModel() {
         ),
       ];
     }
+    if (navState.value.mode === "options") {
+      return [
+        step(
+          "data",
+          stageLabel("data"),
+          datasetReady.value ? "Underlying loaded" : "Load underlying",
+          currentStep === "data"
+            ? "active"
+            : datasetReady.value
+              ? "complete"
+              : "available",
+        ),
+        step(
+          "optimize",
+          stageLabel("optimize"),
+          "Prepare options dataset",
+          currentStep === "optimize"
+            ? "active"
+            : datasetReady.value
+              ? "available"
+              : "blocked",
+        ),
+        step(
+          "validate",
+          stageLabel("validate"),
+          "Run expression search",
+          currentStep === "validate"
+            ? "active"
+            : datasetReady.value
+              ? "available"
+              : "blocked",
+        ),
+        step(
+          "analyze",
+          stageLabel("analyze"),
+          "Validate scenarios",
+          currentStep === "analyze"
+            ? "active"
+            : datasetReady.value
+              ? "available"
+              : "blocked",
+        ),
+        step(
+          "finalize",
+          stageLabel("finalize"),
+          "Review finalists",
+          currentStep === "finalize"
+            ? "active"
+            : datasetReady.value
+              ? "available"
+              : "blocked",
+        ),
+      ];
+    }
     return [
       step(
         "data",
-        "Data",
+        stageLabel("data"),
         datasetReady.value ? "Loaded" : "Required",
         currentStep === "data"
           ? "active"
@@ -430,7 +486,7 @@ export function useResearchCockpitModel() {
       ),
       step(
         "validate",
-        "Validate",
+        stageLabel("validate"),
         validationComplete.value
           ? validationCompletion.value?.recommendation || "Evidence available"
           : "Prove robustness",
@@ -444,11 +500,21 @@ export function useResearchCockpitModel() {
       ),
       step(
         "analyze",
-        "Analyze",
+        stageLabel("analyze"),
         optimizationComplete.value ? "Inspect results" : "Await results",
-        currentStep === "analyze" || currentStep === "finalize"
+        currentStep === "analyze"
           ? "active"
           : optimizationComplete.value
+            ? "available"
+            : "blocked",
+      ),
+      step(
+        "finalize",
+        stageLabel("finalize"),
+        validationComplete.value ? "Review evidence" : "Await validation",
+        currentStep === "finalize"
+          ? "active"
+          : validationComplete.value
             ? "available"
             : "blocked",
       ),
@@ -551,10 +617,15 @@ export function useResearchCockpitModel() {
     title:
       navState.value.mode === "ml-signal"
         ? "ML Signal Research"
+        : navState.value.mode === "options"
+          ? "Options Research"
         : "Research Cockpit",
-    summary: datasetReady.value
-      ? "Data, strategy, results, validation, and tasks are staged for the current research run."
-      : "Start by loading data, then configure a strategy and run optimization.",
+    summary:
+      navState.value.mode === "options"
+        ? "Options data, expression search, validation, and finalist review are staged for the selected research path."
+        : datasetReady.value
+          ? "Data, strategy, results, validation, and tasks are staged for the current research run."
+          : "Start by loading data, then configure a strategy and run optimization.",
     modeLabel: navState.value.modeLabel,
     primaryAction: primaryAction.value,
     primaryDetail: primaryAction.value.disabled

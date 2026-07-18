@@ -4155,7 +4155,11 @@ function focusTupleIndex(index: number): void {
         <div class="controlBlock">
           <label for="optionsDatasetSelect">Options dataset</label>
           <div class="row inlineControls">
-            <select id="optionsDatasetSelect" v-model="selectedDatasetId">
+            <select
+              id="optionsDatasetSelect"
+              v-model="selectedDatasetId"
+              data-qa-control="options.dataset.select"
+            >
               <option value="">
                 Select {{ formatRealismLaneLabel(realismLane) }} Polygon.io
                 dataset…
@@ -4172,6 +4176,7 @@ function focusTupleIndex(index: number): void {
             </select>
             <button
               type="button"
+              data-qa-action="options.datasets.refresh"
               :disabled="datasetsBusy"
               @click="store.refreshDatasets()"
             >
@@ -4237,6 +4242,7 @@ function focusTupleIndex(index: number): void {
           <div class="row inlineControls">
             <button
               type="button"
+              data-qa-action="options.datasets.importCsv"
               :disabled="importBusy"
               @click="store.importDatasetFromPicker()"
               class="buttonWithIcon"
@@ -4345,6 +4351,7 @@ function focusTupleIndex(index: number): void {
           <div class="row inlineControls">
             <button
               type="button"
+              data-qa-action="options.datasets.downloadPolygon"
               :disabled="downloadBusy || realismLane !== 'aggregate'"
               @click="store.downloadDatasetFromPolygon()"
               class="buttonWithIcon"
@@ -4386,7 +4393,11 @@ function focusTupleIndex(index: number): void {
             </div>
           </div>
           <div class="actions">
-            <button type="button" @click="store.revealSelectedDatasetPath()">
+            <button
+              type="button"
+              data-qa-action="options.datasets.revealSelected"
+              @click="store.revealSelectedDatasetPath()"
+            >
               Reveal dataset path
             </button>
           </div>
@@ -4409,6 +4420,7 @@ function focusTupleIndex(index: number): void {
           <div class="actions">
             <button
               type="button"
+              data-qa-action="options.datasets.revealLatestDownload"
               @click="store.revealLatestDownloadUnderlyingPath()"
             >
               Reveal underlying CSV
@@ -4653,6 +4665,7 @@ function focusTupleIndex(index: number): void {
       <div class="actions">
         <button
           type="button"
+          data-qa-action="options.feasibility.preview"
           :disabled="feasibilityBusy || !selectedDatasetId"
           @click="store.previewCurrentFeasibility()"
           class="buttonWithIcon"
@@ -4667,6 +4680,7 @@ function focusTupleIndex(index: number): void {
         </button>
         <button
           type="button"
+          data-qa-action="options.expression.run"
           :disabled="runBusy || !selectedDatasetId"
           @click="store.runCurrentExpression()"
           class="buttonWithIcon"
@@ -4703,6 +4717,7 @@ function focusTupleIndex(index: number): void {
         </button>
         <button
           type="button"
+          data-qa-action="options.expression.exportCsv"
           :disabled="activeRankedResults.length === 0"
           @click="store.exportActiveCsv()"
         >
@@ -4714,7 +4729,11 @@ function focusTupleIndex(index: number): void {
         <label for="optionsArtifactSelect"
           >Saved options expression artifacts</label
         >
-        <select id="optionsArtifactSelect" v-model="selectedArtifactPath">
+        <select
+          id="optionsArtifactSelect"
+          v-model="selectedArtifactPath"
+          data-qa-control="options.artifact.select"
+        >
           <option value="">Select saved options expression artifact…</option>
           <option
             v-for="entry in filteredArtifacts"
@@ -5293,7 +5312,10 @@ function focusTupleIndex(index: number): void {
         <div class="formGrid compactGrid">
           <label>
             Dataset policy
-            <select v-model="validationDatasetPolicy">
+            <select
+              v-model="validationDatasetPolicy"
+              data-qa-control="options.validation.datasetPolicy"
+            >
               <option
                 v-for="entry in OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS"
                 :key="entry"
@@ -5305,7 +5327,10 @@ function focusTupleIndex(index: number): void {
           </label>
           <label>
             Validation plan
-            <select v-model="validationPlanMode">
+            <select
+              v-model="validationPlanMode"
+              data-qa-control="options.validation.planMode"
+            >
               <option
                 v-for="entry in OPTIONS_VALIDATION_PLAN_MODE_OPTIONS"
                 :key="entry"
@@ -6538,6 +6563,7 @@ function focusTupleIndex(index: number): void {
           <div class="actions">
             <button
               type="button"
+              data-qa-action="options.tupleInspection.load"
               :disabled="inspectionBusy || !activeArtifactPath"
               @click="loadSelectedTupleInspection()"
               class="buttonWithIcon"
@@ -7017,7 +7043,10 @@ function focusTupleIndex(index: number): void {
               <div class="row inlineControls">
                 <label>
                   Split filter
-                  <select v-model="inspectionSplitFilter">
+                  <select
+                    v-model="inspectionSplitFilter"
+                    data-qa-control="options.tupleInspection.splitFilter"
+                  >
                     <option value="all">all</option>
                     <option value="search">search</option>
                     <option value="holdout">holdout</option>
@@ -7026,6 +7055,7 @@ function focusTupleIndex(index: number): void {
                 </label>
                 <button
                   type="button"
+                  data-qa-action="options.tupleInspection.exportCsv"
                   @click="store.exportActiveInspectionCsv()"
                 >
                   Export inspection CSV
@@ -7184,6 +7214,7 @@ function focusTupleIndex(index: number): void {
                   <button
                     v-if="selectedInspectionRow.status === 'executed'"
                     type="button"
+                    data-qa-action="options.eventPath.load"
                     :disabled="eventPathBusy"
                     @click="loadSelectedEventPath()"
                     class="buttonWithIcon"
@@ -7447,6 +7478,7 @@ function focusTupleIndex(index: number): void {
                     <div class="actions">
                       <button
                         type="button"
+                        data-qa-action="options.eventPath.exportCsv"
                         @click="store.exportActiveEventPathCsv()"
                       >
                         Export path CSV

@@ -32,6 +32,7 @@ import {
 } from "../services/dataService";
 import { DATA_STARTUP_SNAPSHOT_KEY } from "../utils/core/storageKeys";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 import { useDataStore } from "./dataStore";
 import { useWorkflowArtifactsStore } from "./workflowArtifactsStore";
 
@@ -687,6 +688,27 @@ describe("data store actions", () => {
     await flushAsync();
     expect(store.polygonOpen).toBe(false);
     expect(closePolygonMock).toHaveBeenCalled();
+  });
+
+  it("formats browser-runtime Polygon cache failures without the runtime class prefix", async () => {
+    getPolygonCacheInfoMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: "TAURI_INVOKE_FAILED",
+        operation: "polygon_get_cache_info",
+        message:
+          "Desktop runtime unavailable for polygon get cache info. Open this action in the Tauri desktop app.",
+      }),
+    );
+    const store = useDataStore();
+
+    store.refreshPolygon();
+    await flushAsync();
+    await flushAsync();
+
+    expect(store.statusLine).toContain(
+      "Desktop runtime unavailable for polygon get cache info.",
+    );
+    expect(store.statusLine).not.toContain("TauriRuntimeError:");
   });
 
   it("falls back to the first cached dataset when refresh drops the prior selection", async () => {
@@ -1375,6 +1397,7 @@ describe("data store actions", () => {
     expect(clearDataMock).toHaveBeenCalledWith("data-1");
     expect(store.dataId).toBe("—");
     expect(store.baseDataId).toBe("");
+    expect(store.csvPath).toBe("");
     expect(store.datasetLabel).toBe("—");
     expect(store.dataFields).toEqual([]);
     expect(store.canApplyTimeframe).toBe(false);

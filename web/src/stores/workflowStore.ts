@@ -180,6 +180,18 @@ function defaultTabs(mode: ShellMode, workflow: string): { controls: string; res
   }
 }
 
+function shouldUseRememberedTabs(
+  mode: ShellMode,
+  workflow: string,
+  preferred?: { controls?: string; results?: string },
+): boolean {
+  const explicitResult = normalizeResults(preferred?.results)
+  if (mode === 'conventional' && workflow === 'finalize' && !explicitResult) {
+    return false
+  }
+  return true
+}
+
 function resolveTabs(
   mode: ShellMode,
   workflow: string,
@@ -188,7 +200,9 @@ function resolveTabs(
   const wf = normalizeWorkflow(workflow) || DEFAULT_WORKFLOW
   const allowed = allowedTabs(mode, wf)
   const defaults = defaultTabs(mode, wf)
-  const remembered = workflowMemory[workflowMemoryKey(mode, wf)]
+  const remembered = shouldUseRememberedTabs(mode, wf, preferred)
+    ? workflowMemory[workflowMemoryKey(mode, wf)]
+    : undefined
 
   const desiredControls =
     normalizeControls(preferred?.controls)
@@ -583,7 +597,15 @@ export const useWorkflowStore = defineStore('workflow', {
     selectWorkflowStep(step: string, options?: WorkflowCommitOptions): void {
       const nextStep = normalizeStep(step)
       if (!nextStep) return
-      if (this.workspace === 'workflow' && this.workflow === nextStep && this.workflowStep === nextStep) return
+      if (this.workspace === 'workflow' && this.workflow === nextStep && this.workflowStep === nextStep) {
+        if (nextStep !== 'finalize') return
+        const tabs = resolveTabs(this.mode, nextStep)
+        if (this.controlsTab === tabs.controls && this.resultsTab === tabs.results) return
+        this.controlsTab = tabs.controls
+        this.resultsTab = tabs.results
+        this.commitState('vue', true, options)
+        return
+      }
 
       rememberWorkflowTabs(this.mode, this.workflow, this.controlsTab, this.resultsTab)
       const tabs = resolveTabs(this.mode, nextStep)

@@ -14,7 +14,7 @@ describe('TaskCenterOverlay', () => {
     useTaskCenterVisibility().value = false
   })
 
-  it('is collapsed by default and persists open/closed toggle state', async () => {
+  it('is collapsed by default and persists open/closed state when opened by the shell', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
 
@@ -24,16 +24,16 @@ describe('TaskCenterOverlay', () => {
     })
     await nextTick()
 
-    const toggle = wrapper.get('.overlayToggle')
     expect(document.querySelector('.taskPanel')).toBeNull()
+    expect(document.querySelector('.taskOverlayRoot')).toBeNull()
     expect(useTaskCenterVisibility().value).toBe(false)
 
-    await toggle.trigger('click')
+    openTaskCenter(useTaskCenterVisibility())
     await nextTick()
     expect(document.querySelector('.taskPanel')).not.toBeNull()
     expect(localStorage.getItem('VTA_TASK_CENTER_OPEN_V1')).toBe('true')
 
-    await toggle.trigger('click')
+    await wrapper.get('.overlayToggle').trigger('click')
     await nextTick()
     expect(document.querySelector('.taskPanel')).toBeNull()
     expect(localStorage.getItem('VTA_TASK_CENTER_OPEN_V1')).toBe('false')
@@ -41,7 +41,7 @@ describe('TaskCenterOverlay', () => {
     wrapper.unmount()
   })
 
-  it('uses quiet launcher posture and clamps persisted launcher position back into the viewport', async () => {
+  it('hides the idle launcher and clamps the shared-open launcher back into the viewport', async () => {
     localStorage.setItem('VTA_TASK_CENTER_POS_V1', JSON.stringify({ x: -640, y: 9_999 }))
     localStorage.setItem('VTA_TASK_CENTER_POS_INIT_V1', 'true')
     window.innerWidth = 360
@@ -57,6 +57,12 @@ describe('TaskCenterOverlay', () => {
     await nextTick()
     await nextTick()
 
+    expect(document.querySelector('.taskOverlayRoot')).toBeNull()
+
+    openTaskCenter(useTaskCenterVisibility())
+    await nextTick()
+    await nextTick()
+
     const toggle = wrapper.get('.overlayToggle')
     const root = document.querySelector<HTMLElement>('.taskOverlayRoot')
     const stored = JSON.parse(String(localStorage.getItem('VTA_TASK_CENTER_POS_V1') || '{}')) as {
@@ -64,9 +70,7 @@ describe('TaskCenterOverlay', () => {
       y?: number
     }
 
-    expect(toggle.classes()).toContain('quiet')
-    expect(toggle.text()).toContain('Tasks')
-    expect(toggle.text()).not.toContain('Idle')
+    expect(toggle.text()).toContain('Task Center')
     expect(typeof stored.x).toBe('number')
     expect(typeof stored.y).toBe('number')
     expect(Number(stored.x)).toBeGreaterThanOrEqual(8)
@@ -79,7 +83,13 @@ describe('TaskCenterOverlay', () => {
     wrapper.unmount()
   })
 
-  it('moves focus into the task panel on open and restores focus to the toggle on close', async () => {
+  it('keeps the shared-open launcher below the desktop titlebar hit area', async () => {
+    localStorage.setItem('VTA_TASK_CENTER_POS_V1', JSON.stringify({ x: 320, y: 12 }))
+    localStorage.setItem('VTA_TASK_CENTER_POS_INIT_V1', 'true')
+    document.documentElement.style.setProperty('--desktop-titlebar-h', '48px')
+    window.innerWidth = 720
+    window.innerHeight = 480
+
     const pinia = createPinia()
     setActivePinia(pinia)
 
@@ -90,11 +100,42 @@ describe('TaskCenterOverlay', () => {
     await nextTick()
     await nextTick()
 
-    const toggle = document.querySelector<HTMLButtonElement>('.overlayToggle')
-    expect(toggle).not.toBeNull()
+    expect(document.querySelector('.taskOverlayRoot')).toBeNull()
 
-    toggle?.focus()
-    await wrapper.get('.overlayToggle').trigger('click')
+    openTaskCenter(useTaskCenterVisibility())
+    await nextTick()
+    await nextTick()
+
+    const root = document.querySelector<HTMLElement>('.taskOverlayRoot')
+    const stored = JSON.parse(String(localStorage.getItem('VTA_TASK_CENTER_POS_V1') || '{}')) as {
+      y?: number
+    }
+
+    expect(Number(stored.y)).toBeGreaterThanOrEqual(56)
+    expect(root?.style.top).toBe(`${Math.round(Number(stored.y))}px`)
+
+    wrapper.unmount()
+    document.documentElement.style.removeProperty('--desktop-titlebar-h')
+  })
+
+  it('moves focus into the task panel on open and restores focus to the opener on close', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const wrapper = mount(TaskCenterOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const opener = document.createElement('button')
+    opener.type = 'button'
+    opener.textContent = 'Open task center'
+    document.body.appendChild(opener)
+
+    opener.focus()
+    openTaskCenter(useTaskCenterVisibility(), opener)
     await nextTick()
     await nextTick()
 
@@ -113,7 +154,7 @@ describe('TaskCenterOverlay', () => {
     await nextTick()
 
     expect(document.querySelector('.taskPanel')).toBeNull()
-    expect(document.activeElement).toBe(toggle)
+    expect(document.activeElement).toBe(opener)
 
     wrapper.unmount()
   })
@@ -195,7 +236,7 @@ describe('TaskCenterOverlay', () => {
     await nextTick()
     await nextTick()
 
-    await wrapper.get('.overlayToggle').trigger('click')
+    openTaskCenter(useTaskCenterVisibility())
     await nextTick()
     await nextTick()
 
@@ -273,7 +314,7 @@ describe('TaskCenterOverlay', () => {
     await nextTick()
     await nextTick()
 
-    await wrapper.get('.overlayToggle').trigger('click')
+    openTaskCenter(useTaskCenterVisibility())
     await nextTick()
     await nextTick()
 

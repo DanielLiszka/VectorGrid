@@ -194,19 +194,29 @@ function onItemKeydown(event: KeyboardEvent, item: WorkbenchNavigationItem): voi
     padding: 0.35rem;
     border-right: 0;
     border-bottom: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto;
     overflow-x: auto;
   }
 
+  .railTabList {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
+    gap: 0.12rem;
+  }
+
   .railGroup {
-    display: flex;
-    min-width: max-content;
+    display: contents;
+  }
+
+  .railGroup.secondary {
+    align-self: auto;
   }
 
   .railButton {
-    width: 72px;
+    width: 100%;
     min-height: 44px;
+    padding: 0.36rem 0.08rem;
+    font-size: 0.58rem;
   }
 }
 </style>

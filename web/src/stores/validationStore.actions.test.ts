@@ -13,6 +13,7 @@ import {
 } from '../services/validationService'
 import { useDataStore } from './dataStore'
 import { useValidationStore } from './validationStore'
+import { TauriRuntimeError } from '../tauri/runtimeError'
 
 vi.mock('../services/validationService', () => ({
   crossRefresh: vi.fn(async () => ({ datasets: [] })),
@@ -184,6 +185,29 @@ describe('validation store actions', () => {
     expect(store.source).toBe('vue')
   })
 
+  it('formats validation runtime rejections without constructor prefixes', async () => {
+    const store = useValidationStore()
+    runValidationMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: 'TAURI_COMMAND_UNKNOWN',
+        operation: 'run_double_ma_validation',
+        message:
+          'Desktop runtime unavailable for run validation. Open this action in the Tauri desktop app.',
+      }),
+    )
+
+    store.runValidation()
+    await flushServiceImports()
+
+    expect(store.statusLine).toBe(
+      'Validation failed: Desktop runtime unavailable for run validation. Open this action in the Tauri desktop app.',
+    )
+    expect(store.validationHint).toBe(
+      'Validation failed: Desktop runtime unavailable for run validation. Open this action in the Tauri desktop app.',
+    )
+    expect(store.statusLine).not.toContain('TauriRuntimeError:')
+  })
+
   it('keeps export service rejections inside store state', async () => {
     const store = useValidationStore()
 
@@ -296,6 +320,26 @@ describe('validation store actions', () => {
     expect(store.crossMeta).toContain('selected 1/2')
     expect(store.statusLine).toBe('Refreshed cross-ticker list.')
     expect(toggleCrossDatasetMock).toHaveBeenCalledWith('C:/data/stale.csv', false)
+  })
+
+  it('formats cross-ticker runtime rejections without constructor prefixes', async () => {
+    const store = useValidationStore()
+    crossRefreshMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: 'TAURI_COMMAND_UNKNOWN',
+        operation: 'list_validation_datasets',
+        message:
+          'Desktop runtime unavailable for cross-ticker refresh. Open this action in the Tauri desktop app.',
+      }),
+    )
+
+    store.crossRefresh()
+    await flushServiceImports()
+
+    expect(store.statusLine).toBe(
+      'Cross-ticker refresh failed: Desktop runtime unavailable for cross-ticker refresh. Open this action in the Tauri desktop app.',
+    )
+    expect(store.statusLine).not.toContain('TauriRuntimeError:')
   })
 
   it('selects matching cross datasets in Vue path when current dataset context is known', async () => {

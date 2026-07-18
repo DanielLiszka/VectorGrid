@@ -28,6 +28,7 @@ import {
   replayClassSummary,
   resolveReportState,
 } from "../utils/core/artifactEvidenceStatus";
+import { storeErrorText } from "../utils/storeErrorText";
 
 let historyServicePromise: Promise<
   typeof import("../services/historyService")
@@ -1451,11 +1452,11 @@ export const useHistoryStore = defineStore("history", {
             return;
           if (this.savedSelectedValue === nextPath) {
             this.savedRunDetailParams =
-              `Failed to load artifact:\n${String(error || "")}`.trim();
+              `Failed to load artifact:\n${storeErrorText(error)}`.trim();
           }
           if (this.savedRunCompareSelected === nextPath) {
             this.savedRunCompareSummary =
-              `Compare failed: ${String(error || "")}`.trim();
+              `Compare failed: ${storeErrorText(error)}`.trim();
           }
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
@@ -1497,7 +1498,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to apply history run.";
+            storeErrorText(error) || "Failed to apply history run.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1513,7 +1514,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to export preset.";
+            storeErrorText(error) || "Failed to export preset.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1529,7 +1530,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to import preset.";
+            storeErrorText(error) || "Failed to import preset.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1547,7 +1548,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to clear history.";
+            storeErrorText(error) || "Failed to clear history.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1580,7 +1581,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to save tags.";
+            storeErrorText(error) || "Failed to save tags.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1605,7 +1606,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to refresh saved runs.";
+            storeErrorText(error) || "Failed to refresh saved runs.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1617,7 +1618,7 @@ export const useHistoryStore = defineStore("history", {
         .then((service) => service.openRunsDir())
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to open runs directory.";
+            storeErrorText(error) || "Failed to open runs directory.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1630,7 +1631,7 @@ export const useHistoryStore = defineStore("history", {
         .then((service) => service.loadSavedRun(nextPath))
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to load saved run.";
+            storeErrorText(error) || "Failed to load saved run.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1643,7 +1644,7 @@ export const useHistoryStore = defineStore("history", {
         .then((service) => service.applySavedRun(nextPath))
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to apply saved run.";
+            storeErrorText(error) || "Failed to apply saved run.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1656,7 +1657,7 @@ export const useHistoryStore = defineStore("history", {
         .then((service) => service.rerunSavedRun(nextPath))
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to rerun saved run.";
+            storeErrorText(error) || "Failed to rerun saved run.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1669,7 +1670,7 @@ export const useHistoryStore = defineStore("history", {
         .then((service) => service.openSavedRunReport(nextPath))
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to open saved run report.";
+            storeErrorText(error) || "Failed to open saved run report.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1682,7 +1683,7 @@ export const useHistoryStore = defineStore("history", {
         .then((service) => service.revealSavedRun(nextPath))
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to reveal saved run.";
+            storeErrorText(error) || "Failed to reveal saved run.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1724,7 +1725,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           const message =
-            String(error || "").trim() ||
+            storeErrorText(error) ||
             "Failed to repair saved run artifact.";
           this.savedRunRepairSummary = message;
           this.statusLine = message;
@@ -1758,7 +1759,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to delete saved run.";
+            storeErrorText(error) || "Failed to delete saved run.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });

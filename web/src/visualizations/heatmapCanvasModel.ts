@@ -191,6 +191,109 @@ function applyHeatmapViewport(
   return view
 }
 
+function screenXForHeatmapCol(
+  col: number,
+  width: number,
+  binsFast: number,
+  view: HeatmapCanvasViewport,
+): number {
+  const cellW = width / Math.max(1, binsFast)
+  return (col + 0.5) * cellW * view.scale + view.offsetX
+}
+
+function screenYForHeatmapDrawRow(
+  drawRow: number,
+  height: number,
+  binsSlow: number,
+  view: HeatmapCanvasViewport,
+): number {
+  const cellH = height / Math.max(1, binsSlow)
+  return (drawRow + 0.5) * cellH * view.scale + view.offsetY
+}
+
+function visibleIndexSamples(maxIndex: number, count = 5): number[] {
+  if (maxIndex < 0) return []
+  if (maxIndex === 0) return [0]
+  const samples = new Set<number>()
+  const slots = Math.max(2, Math.floor(count))
+  for (let i = 0; i < slots; i += 1) {
+    samples.add(Math.round((i / (slots - 1)) * maxIndex))
+  }
+  return Array.from(samples).sort((a, b) => a - b)
+}
+
+function textChipWidth(textValue: string): number {
+  return Math.max(28, Math.min(92, textValue.length * 6.4 + 10))
+}
+
+function paintTextChip(
+  ctx: CanvasRenderingContext2D,
+  textValue: string,
+  xRaw: number,
+  yRaw: number,
+  options: {
+    align?: 'left' | 'center' | 'right'
+    fill?: string
+    stroke?: string
+    text?: string
+  } = {},
+): void {
+  const width = textChipWidth(textValue)
+  const height = 16
+  const align = options.align ?? 'center'
+  const x =
+    align === 'left'
+      ? xRaw
+      : align === 'right'
+        ? xRaw - width
+        : xRaw - width / 2
+  const y = yRaw - height / 2
+  ctx.fillStyle = options.fill ?? 'rgba(2, 6, 23, 0.72)'
+  ctx.fillRect(x, y, width, height)
+  ctx.strokeStyle = options.stroke ?? 'rgba(226, 232, 240, 0.28)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1))
+  ctx.fillStyle = options.text ?? 'rgba(248, 250, 252, 0.95)'
+  ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(textValue, x + width / 2, y + height / 2 + 0.5)
+}
+
+function paintHeatmapAxisGuides(
+  ctx: CanvasRenderingContext2D,
+  renderModel: HeatmapCanvasRenderModel,
+  width: number,
+  height: number,
+  view: HeatmapCanvasViewport,
+): void {
+  const { model, request } = renderModel
+  if (width < 280 || height < 280 || model.binsFast <= 0 || model.binsSlow <= 0) return
+
+  const fastLabel = cleanText(request.fastMaType, 'fast').toUpperCase()
+  const slowLabel = cleanText(request.slowMaType, 'slow').toUpperCase()
+  const fastSamples = visibleIndexSamples(model.binsFast - 1, 5)
+  const slowDrawSamples = visibleIndexSamples(model.binsSlow - 1, 5)
+
+  ctx.save()
+  for (const col of fastSamples) {
+    const x = screenXForHeatmapCol(col, width, model.binsFast, view)
+    if (x < 32 || x > width - 28) continue
+    const fast = fastForHeatmapCol(model, col)
+    paintTextChip(ctx, `${fastLabel} ${fast}`, x, height - 12)
+  }
+  for (const drawRow of slowDrawSamples) {
+    const y = screenYForHeatmapDrawRow(drawRow, height, model.binsSlow, view)
+    if (y < 42 || y > height - 34) continue
+    const logicalRow = model.binsSlow - 1 - drawRow
+    const slow = slowForHeatmapLogicalRow(model, logicalRow)
+    paintTextChip(ctx, `${slowLabel} ${slow}`, 8, y, { align: 'left' })
+  }
+  paintTextChip(ctx, `${fastLabel} axis`, width - 10, height - 34, { align: 'right', fill: 'rgba(15, 23, 42, 0.66)' })
+  paintTextChip(ctx, `${slowLabel} axis`, 8, 18, { align: 'left', fill: 'rgba(15, 23, 42, 0.66)' })
+  ctx.restore()
+}
+
 function prepareLogicalCanvasContext(
   canvas: HTMLCanvasElement,
 ): { ctx: CanvasRenderingContext2D; width: number; height: number } | null {
@@ -656,35 +759,49 @@ export function paintHeatmapOverlay(
   for (const marker of markers) {
     const cx = (marker.col + 0.5) * cellW
     const cy = (marker.drawRow + 0.5) * cellH
-    overlayCtx.fillStyle = 'rgba(248, 250, 252, 0.95)'
+    const radius = Math.max(4, Math.min(cellW, cellH) * 0.2)
+    overlayCtx.fillStyle = 'rgba(248, 250, 252, 0.98)'
     overlayCtx.beginPath()
-    overlayCtx.arc(cx, cy, Math.max(3, Math.min(cellW, cellH) * 0.18), 0, Math.PI * 2)
+    overlayCtx.arc(cx, cy, radius, 0, Math.PI * 2)
     overlayCtx.fill()
-    overlayCtx.strokeStyle = 'rgba(15, 23, 42, 0.95)'
-    overlayCtx.lineWidth = 1 / view.scale
+    overlayCtx.strokeStyle = 'rgba(15, 23, 42, 0.98)'
+    overlayCtx.lineWidth = Math.max(1, 1.4 / view.scale)
     overlayCtx.stroke()
-    overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.95)'
-    overlayCtx.font = '11px ui-monospace, monospace'
-    overlayCtx.fillText(marker.label, cx + 5, cy - 5)
+    overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.42)'
+    overlayCtx.lineWidth = Math.max(1, 2.2 / view.scale)
+    overlayCtx.strokeRect(cx - cellW * 0.5 + 1 / view.scale, cy - cellH * 0.5 + 1 / view.scale, Math.max(0, cellW - 2 / view.scale), Math.max(0, cellH - 2 / view.scale))
   }
 
-  if (!hoverCell) {
-    overlayCtx.restore()
-    return
+  if (hoverCell) {
+    const hoverX = hoverCell.col * cellW
+    const hoverY = hoverCell.row * cellH
+    overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.95)'
+    overlayCtx.lineWidth = 1.5 / view.scale
+    overlayCtx.strokeRect(hoverX + 0.5, hoverY + 0.5, Math.max(0, cellW - 1), Math.max(0, cellH - 1))
+    overlayCtx.beginPath()
+    overlayCtx.moveTo(hoverX + cellW / 2, 0)
+    overlayCtx.lineTo(hoverX + cellW / 2, height)
+    overlayCtx.moveTo(0, hoverY + cellH / 2)
+    overlayCtx.lineTo(width, hoverY + cellH / 2)
+    overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.28)'
+    overlayCtx.stroke()
   }
-  const hoverX = hoverCell.col * cellW
-  const hoverY = hoverCell.row * cellH
-  overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.95)'
-  overlayCtx.lineWidth = 1.5 / view.scale
-  overlayCtx.strokeRect(hoverX + 0.5, hoverY + 0.5, Math.max(0, cellW - 1), Math.max(0, cellH - 1))
-  overlayCtx.beginPath()
-  overlayCtx.moveTo(hoverX + cellW / 2, 0)
-  overlayCtx.lineTo(hoverX + cellW / 2, height)
-  overlayCtx.moveTo(0, hoverY + cellH / 2)
-  overlayCtx.lineTo(width, hoverY + cellH / 2)
-  overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.28)'
-  overlayCtx.stroke()
   overlayCtx.restore()
+  paintHeatmapAxisGuides(overlayCtx, renderModel, width, height, normalizedHeatmapViewport(viewport))
+  for (const marker of markers) {
+    const screenX = screenXForHeatmapCol(marker.col, width, model.binsFast, view)
+    const screenY = screenYForHeatmapDrawRow(marker.drawRow, height, model.binsSlow, view)
+    if (screenX < -16 || screenX > width + 16 || screenY < -16 || screenY > height + 16) continue
+    const labelWidth = textChipWidth(marker.label)
+    const canPlaceRight = screenX + 8 + labelWidth <= width - 4
+    const labelX = canPlaceRight ? Math.max(4, screenX + 8) : Math.min(width - 4, screenX - 8)
+    const labelY = Math.max(14, Math.min(height - 16, screenY < 44 ? screenY + 24 : screenY - 14))
+    paintTextChip(overlayCtx, marker.label, labelX, labelY, {
+      align: canPlaceRight ? 'left' : 'right',
+      fill: 'rgba(15, 23, 42, 0.84)',
+      stroke: 'rgba(248, 250, 252, 0.48)',
+    })
+  }
 }
 
 export function resolveHeatmapCellFromPoint(

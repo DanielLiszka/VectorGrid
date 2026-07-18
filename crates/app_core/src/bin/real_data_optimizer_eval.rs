@@ -634,6 +634,7 @@ fn evaluate_holdout(
         data_id: "holdout".to_string(),
         backend: ta_app_core::Backend::CpuOnly,
         ma_source: "close".to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params: if ma.fast_ma == "alma" {
             Some(alma_params_default())
         } else {
@@ -716,6 +717,7 @@ fn evaluate_topk_holdout_recovery(
         data_id: "holdout_topk".to_string(),
         backend: ta_app_core::Backend::CpuOnly,
         ma_source: "close".to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params: if ma.fast_ma == "alma" {
             Some(alma_params_default())
         } else {

@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { bindRuntimePinia } from "./runtimePinia";
 import { useAdvancedStore } from "./advancedStore";
 import { useOptimizeStore } from "./optimizeStore";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 
 const invokeCommandMock = vi.fn();
 const resetMoSearchSpaceMock = vi.fn();
@@ -108,6 +109,45 @@ describe("advanced store actions", () => {
     expect(advanced.statusLine).toContain("picker failed");
     expect(advanced.source).toBe("vue");
     expect(advanced.updatedAtUnixMs).toBeGreaterThan(0);
+  });
+
+  it("formats runtime picker and search-space rejections without constructor prefixes", async () => {
+    const advanced = useAdvancedStore(pinia);
+    invokeCommandMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: "TAURI_COMMAND_UNKNOWN",
+        operation: "pick_save_csv",
+        message:
+          "Desktop runtime unavailable for export-all CSV picker. Open this action in the Tauri desktop app.",
+      }),
+    );
+
+    advanced.browseExportAll();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(advanced.statusLine).toBe(
+      "Export-all CSV picker failed: Desktop runtime unavailable for export-all CSV picker. Open this action in the Tauri desktop app.",
+    );
+    expect(advanced.statusLine).not.toContain("TauriRuntimeError:");
+
+    resetMoSearchSpaceMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: "TAURI_COMMAND_UNKNOWN",
+        operation: "reset_mo_search_space",
+        message:
+          "Desktop runtime unavailable for reset search space. Open this action in the Tauri desktop app.",
+      }),
+    );
+
+    advanced.resetMoSearchSpace();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(advanced.statusLine).toBe(
+      "Reset search space failed: Desktop runtime unavailable for reset search space. Open this action in the Tauri desktop app.",
+    );
+    expect(advanced.statusLine).not.toContain("TauriRuntimeError:");
   });
 
   it("resets Composite MO search space only when the helper is enabled", async () => {

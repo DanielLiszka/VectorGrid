@@ -22,6 +22,8 @@ export interface CompositeIndicatorBar {
   time: number;
   halftrend: number | null;
   macz: number | null;
+  ottLine: number | null;
+  ottPrice: number | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -175,10 +177,12 @@ export function normalizeCompositeIndicatorBars(
     if (!Number.isFinite(time)) continue;
     const halftrend = toOptionalNumber(rowRaw.halftrend);
     const macz = toOptionalNumber(rowRaw.macz_hist ?? rowRaw.macz);
-    if (halftrend == null && macz == null) continue;
+    const ottLine = toOptionalNumber(rowRaw.ott_line ?? rowRaw.ottLine);
+    const ottPrice = toOptionalNumber(rowRaw.ott_price ?? rowRaw.ottPrice);
+    if (halftrend == null && macz == null && ottLine == null && ottPrice == null) continue;
     const previous = out[out.length - 1];
     if (previous && previous.time > time) sorted = false;
-    out.push({ time, halftrend, macz });
+    out.push({ time, halftrend, macz, ottLine, ottPrice });
   }
   if (!sorted) out.sort((a, b) => a.time - b.time);
   return out;

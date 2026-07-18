@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { isReactive } from "vue";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 import { useOptionsExpressionStore } from "./optionsExpressionStore";
 
 const {
@@ -880,6 +881,25 @@ describe("optionsExpressionStore", () => {
     );
     expect(store.selectedDatasetId).toBe("spy_mid");
     expect(store.fillModel).toBe("aggregate_research");
+  });
+
+  it("formats browser-runtime options dataset failures without the runtime class prefix", async () => {
+    listOptionsDatasetsMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: "TAURI_INVOKE_FAILED",
+        operation: "list_options_datasets",
+        message:
+          "Desktop runtime unavailable for list options datasets. Open this action in the Tauri desktop app.",
+      }),
+    );
+    const store = useOptionsExpressionStore();
+
+    await store.refreshDatasets();
+
+    expect(store.statusLine).toContain(
+      "Desktop runtime unavailable for list options datasets.",
+    );
+    expect(store.statusLine).not.toContain("TauriRuntimeError:");
   });
 
   it("blocks direct provider download outside the aggregate lane", async () => {

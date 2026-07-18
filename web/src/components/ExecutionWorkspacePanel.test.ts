@@ -96,6 +96,8 @@ const executionChartServiceMock = vi.hoisted(() => ({
       markerCount: brokerMarkerCount,
     }
   }),
+  fitExecutionChartContent: vi.fn(() => '[0.0..1.0]'),
+  panExecutionChart: vi.fn((direction: 'left' | 'right') => direction === 'left' ? '[0.0..1.0]' : '[1.0..2.0]'),
   disposeExecutionChart: vi.fn(),
 }))
 
@@ -130,6 +132,8 @@ describe('ExecutionWorkspacePanel', () => {
   beforeEach(() => {
     localStorage.clear()
     executionChartServiceMock.syncExecutionChart.mockReset()
+    executionChartServiceMock.fitExecutionChartContent.mockReset()
+    executionChartServiceMock.panExecutionChart.mockReset()
     executionChartServiceMock.disposeExecutionChart.mockReset()
     executionChartServiceMock.syncExecutionChart.mockImplementation(async (_host: HTMLElement | null, input: {
       dataId: string
@@ -219,6 +223,10 @@ describe('ExecutionWorkspacePanel', () => {
         markerCount: brokerMarkerCount,
       }
     })
+    executionChartServiceMock.fitExecutionChartContent.mockImplementation(() => '[0.0..1.0]')
+    executionChartServiceMock.panExecutionChart.mockImplementation((direction: 'left' | 'right') =>
+      direction === 'left' ? '[0.0..1.0]' : '[1.0..2.0]',
+    )
     executionChartServiceMock.disposeExecutionChart.mockImplementation(() => {})
     document.body.innerHTML = `
       <div id="liveShellGrid">

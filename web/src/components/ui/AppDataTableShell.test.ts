@@ -28,6 +28,9 @@ describe('AppDataTableShell', () => {
     expect(wrapper.get('.appDataTableControls').attributes('role')).toBe('toolbar')
     expect(wrapper.get('.appDataTableControls').attributes('aria-label')).toBe('Top candidates table controls')
     expect(wrapper.get('.appDataTableShell').attributes('data-table-density')).toBe('compact')
+    expect(wrapper.get('.appDataTableShell').attributes('data-table-row-count')).toBe('128')
+    expect(wrapper.get('.appDataTableShell').attributes('data-table-has-rows')).toBe('true')
+    expect(wrapper.get('.appDataTableShell').attributes('data-table-summary')).toContain('sorted by return')
     expect(wrapper.get('.appDataTableViewport').text()).toContain('Candidate 1')
     expect(wrapper.get('.appDataTableHint').text()).toContain('arrow keys')
   })
@@ -46,6 +49,8 @@ describe('AppDataTableShell', () => {
     })
 
     expect(wrapper.find('.appDataTableViewport').exists()).toBe(false)
+    expect(wrapper.get('.appDataTableShell').attributes('data-table-row-count')).toBe('0')
+    expect(wrapper.get('.appDataTableShell').attributes('data-table-has-rows')).toBe('false')
     expect(wrapper.get('.appEmptyState').text()).toContain('No validation results')
     expect(wrapper.get('.emptyActions button').text()).toBe('Run validation')
   })

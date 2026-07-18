@@ -6,6 +6,7 @@ import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 import {
   exportMlSignalDataset,
   generateMlSignalScoreCache,
@@ -1242,6 +1243,32 @@ describe("mlSignalService", () => {
     );
     expect(useOptimizeStore(pinia).statusLine).toContain(
       "ML policy sweep failed",
+    );
+  });
+
+  it("formats ML Signal runtime rejections without constructor prefixes", async () => {
+    seedStores();
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "run_ml_signal_validation") {
+        throw new TauriRuntimeError({
+          code: "TAURI_COMMAND_UNKNOWN",
+          operation: "run_ml_signal_validation",
+          message:
+            "Desktop runtime unavailable for ML validation. Open this action in the Tauri desktop app.",
+        });
+      }
+      return {};
+    });
+
+    await expect(runMlSignalValidation()).rejects.toThrow(
+      "Desktop runtime unavailable for ML validation.",
+    );
+
+    expect(useOptimizeStore(pinia).statusLine).toBe(
+      "ML validation failed: Desktop runtime unavailable for ML validation. Open this action in the Tauri desktop app.",
+    );
+    expect(useOptimizeStore(pinia).statusLine).not.toContain(
+      "TauriRuntimeError:",
     );
   });
 

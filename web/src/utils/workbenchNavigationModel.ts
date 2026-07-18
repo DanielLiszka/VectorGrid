@@ -1,6 +1,5 @@
 import {
   TAB_LABELS,
-  WORKFLOW_STEPS,
   type ControlsTab,
   type ResultsTab,
   type ShellMode,
@@ -13,8 +12,8 @@ import {
   normalizeWorkspaceTab,
   shellModeLabel,
   workflowAllowedForMode,
-  workflowStepLabelForMode,
 } from './core/workflowModel'
+import { workflowStageDefinitionsForMode } from './workflowStageRegistry'
 
 export type WorkbenchWorkspaceId = WorkspaceTab
 
@@ -213,16 +212,16 @@ export function buildWorkbenchNavigationState(input: WorkbenchNavigationInput): 
     secondary: item.secondary === true,
   }))
 
-  const stageItems = WORKFLOW_STEPS.map((step, index) => ({
-    id: step,
-    label: `${index + 1} ${workflowStepLabelForMode(step, mode)}`,
-    shortLabel: workflowStepLabelForMode(step, mode),
-    description: `${workflowStepLabelForMode(step, mode)} workflow step.`,
-    icon: step,
-    actionId: `shell.workflowStep.${step}`,
-    tabId: workflowStepTabId(step),
+  const stageItems = workflowStageDefinitionsForMode(mode).map((stage, index) => ({
+    id: stage.id,
+    label: `${index + 1} ${stage.label}`,
+    shortLabel: stage.label,
+    description: stage.description,
+    icon: stage.icon,
+    actionId: `shell.workflowStep.${stage.id}`,
+    tabId: workflowStepTabId(stage.id),
     ariaControls: 'shellMainPanel',
-    selected: activeWorkspaceId === 'workflow' && activeWorkflowStep === step,
+    selected: activeWorkspaceId === 'workflow' && activeWorkflowStep === stage.id,
     secondary: false,
   }))
 

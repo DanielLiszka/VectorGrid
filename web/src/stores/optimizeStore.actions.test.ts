@@ -18,6 +18,7 @@ import { useDataStore } from "./dataStore";
 import { useStrategyStore } from "./strategyStore";
 import { useWorkflowStore } from "./workflowStore";
 import { invokeCommand } from "../tauri/invoke";
+import { TauriRuntimeError } from "../tauri/runtimeError";
 
 vi.mock("../services/optimizeService", () => ({
   applyPreset: vi.fn(async () => undefined),
@@ -170,6 +171,26 @@ describe("optimize store actions", () => {
     expect(runValidationMock).toHaveBeenCalled();
     expect(store.statusLine).toBe("Validation failed: Error: dataset mismatch");
     expect(store.source).toBe("vue");
+  });
+
+  it("formats optimize runtime rejections without constructor prefixes", async () => {
+    const store = useOptimizeStore(pinia);
+    runValidationMock.mockRejectedValueOnce(
+      new TauriRuntimeError({
+        code: "TAURI_COMMAND_UNKNOWN",
+        operation: "run_validation",
+        message:
+          "Desktop runtime unavailable for optimize validation. Open this action in the Tauri desktop app.",
+      }),
+    );
+
+    store.runValidation();
+    await flushServiceImports();
+
+    expect(store.statusLine).toBe(
+      "Validation failed: Desktop runtime unavailable for optimize validation. Open this action in the Tauri desktop app.",
+    );
+    expect(store.statusLine).not.toContain("TauriRuntimeError:");
   });
 
   it("keeps optimize run and utility rejections inside store state", async () => {

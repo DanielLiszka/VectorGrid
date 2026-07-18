@@ -269,6 +269,21 @@ describe('execution store actions', () => {
     expect(store.keyStateLabel).toBe('Stored securely')
   })
 
+  it('keeps stored credential runtime failures free of raw TauriRuntimeError prefixes', async () => {
+    const store = useExecutionStore()
+    migrateLegacyStoredExecutionKeysToSecureStorageMock.mockRejectedValueOnce({
+      name: 'TauriRuntimeError',
+      message:
+        'Desktop runtime unavailable for alpaca get credential status. Open this action in the Tauri desktop app.',
+    })
+
+    await store.hydrateStoredCredentialStatus()
+
+    expect(store.storedCredentialState).toBe('unavailable')
+    expect(store.storedCredentialMessage).toContain('Desktop runtime unavailable')
+    expect(store.storedCredentialMessage).not.toContain('TauriRuntimeError')
+  })
+
   it('dispatches execution actions through execution service', async () => {
     const store = useExecutionStore()
 
@@ -1577,6 +1592,21 @@ describe('execution store actions', () => {
     expect(store.selectedSavedSessionPath).toBe('C:/runs/vectorgrid_live_session_latest.json')
     expect(store.savedSessionDetail?.sessionId).toBe('sess_latest')
     expect(store.savedSessionStatusHint).toBe('Loaded 2 saved live session artifacts.')
+  })
+
+  it('keeps saved live session runtime failures free of raw TauriRuntimeError prefixes', async () => {
+    const store = useExecutionStore()
+    listSavedLiveSessionsMock.mockRejectedValueOnce({
+      name: 'TauriRuntimeError',
+      message:
+        'Desktop runtime unavailable for list live session artifacts. Open this action in the Tauri desktop app.',
+    } as never)
+
+    await store.refreshSavedSessions()
+    await waitForStoreToSettle(store)
+
+    expect(store.savedSessionStatusHint).toContain('Desktop runtime unavailable')
+    expect(store.savedSessionStatusHint).not.toContain('TauriRuntimeError')
   })
 
   it('loads an explicitly selected saved live session detail', async () => {

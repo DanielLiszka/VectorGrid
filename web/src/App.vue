@@ -16,10 +16,12 @@ const DataWorkspacePanel = defineAsyncComponent(() => import('./components/DataW
 const DebugWorkspacePanel = defineAsyncComponent(() => import('./components/DebugWorkspacePanel.vue'))
 const CandidateDetailWorkspacePanel = defineAsyncComponent(() => import('./components/CandidateDetailWorkspacePanel.vue'))
 const ExecutionWorkspacePanel = defineAsyncComponent(() => import('./components/ExecutionWorkspacePanel.vue'))
+const FinalReviewWorkspacePanel = defineAsyncComponent(() => import('./components/FinalReviewWorkspacePanel.vue'))
 const HeatmapWorkspacePanel = defineAsyncComponent(() => import('./components/HeatmapWorkspacePanel.vue'))
 const HistoryWorkspacePanel = defineAsyncComponent(() => import('./components/HistoryWorkspacePanel.vue'))
 const MetaWorkspacePanel = defineAsyncComponent(() => import('./components/MetaWorkspacePanel.vue'))
 const MlSignalShellPanel = defineAsyncComponent(() => import('./components/MlSignalShellPanel.vue'))
+const OptionsExpressionShellPanel = defineAsyncComponent(() => import('./components/OptionsExpressionShellPanel.vue'))
 const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
 const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/ParetoWorkspacePanel.vue'))
 const PortfolioFeasibilityWorkspacePanel = defineAsyncComponent(() => import('./components/PortfolioFeasibilityWorkspacePanel.vue'))
@@ -39,6 +41,7 @@ const liveWorkspaceActive = computed(() => String(workspace.value || '').trim() 
 const portfolioWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'portfolio')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
+const optionsModeActive = computed(() => String(mode.value || '').trim() === 'options')
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
 const historyPanelActive = computed(() =>
@@ -69,6 +72,8 @@ const drillPanelActive = computed(() => activeResultsTab.value === 'drill' && !m
 const heatmapPanelActive = computed(() => activeResultsTab.value === 'heatmap' && !mlSignalModeActive.value)
 const metaPanelActive = computed(() => activeResultsTab.value === 'meta' && (!mlSignalModeActive.value || currentWorkspace.value !== 'workflow'))
 const debugPanelActive = computed(() => activeResultsTab.value === 'debug')
+const optionsPanelActive = computed(() => activeResultsTab.value === 'options' && optionsModeActive.value)
+const finalReviewPanelActive = computed(() => activeResultsTab.value === 'final' && !mlSignalModeActive.value)
 
 type LazyPanelKey = 'data' | 'live' | 'optimize' | 'overview' | 'portfolio'
 
@@ -109,10 +114,12 @@ mountWhenActive('portfolio', () => portfolioWorkspaceActive.value)
   <DebugWorkspacePanel v-if="debugPanelActive" />
   <CandidateDetailWorkspacePanel v-if="drillPanelActive" />
   <ExecutionWorkspacePanel v-if="mountedPanels.live" />
+  <FinalReviewWorkspacePanel v-if="finalReviewPanelActive" />
   <HeatmapWorkspacePanel v-if="heatmapPanelActive" />
   <HistoryWorkspacePanel v-if="historyPanelActive" />
   <MetaWorkspacePanel v-if="metaPanelActive" />
   <MlSignalShellPanel v-if="mlSignalPanelActive" />
+  <OptionsExpressionShellPanel v-if="optionsPanelActive" />
   <OverviewWorkspacePanel v-if="mountedPanels.overview" />
   <ParetoWorkspacePanel v-if="paretoPanelActive" />
   <PortfolioFeasibilityWorkspacePanel v-if="mountedPanels.portfolio" />

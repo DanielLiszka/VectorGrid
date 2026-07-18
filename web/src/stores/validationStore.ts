@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { markRaw } from "vue";
 import { useDataStore } from "./dataStore";
 import { resolveRuntimePinia } from "./runtimePinia";
+import { storeErrorText } from "../utils/storeErrorText";
 import type {
   ValidationOverfitEvidenceItem,
   ValidationOverfitEvidenceStatus,
@@ -20,7 +21,7 @@ function loadValidationService(): Promise<
 }
 
 function formatActionError(prefix: string, error: unknown): string {
-  const detail = String(error || "").trim();
+  const detail = storeErrorText(error);
   return detail ? `${prefix}: ${detail}` : prefix;
 }
 
@@ -978,16 +979,20 @@ export const useValidationStore = defineStore("validation", {
                 service.toggleCrossDataset(path, false),
               ),
             ).catch((error: unknown) => {
-              this.statusLine =
-                `Cross-ticker refresh sync failed: ${String(error || "")}`.trim();
+              this.statusLine = formatActionError(
+                "Cross-ticker refresh sync failed",
+                error,
+              );
               this.source = "vue";
               this.updatedAtUnixMs = Date.now();
             });
           }),
         )
         .catch((error: unknown) => {
-          this.statusLine =
-            `Cross-ticker refresh failed: ${String(error || "")}`.trim();
+          this.statusLine = formatActionError(
+            "Cross-ticker refresh failed",
+            error,
+          );
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1018,8 +1023,10 @@ export const useValidationStore = defineStore("validation", {
           ),
         ),
       ).catch((error: unknown) => {
-        this.statusLine =
-          `Cross-ticker selection failed: ${String(error || "")}`.trim();
+        this.statusLine = formatActionError(
+          "Cross-ticker selection failed",
+          error,
+        );
         this.source = "vue";
         this.updatedAtUnixMs = Date.now();
       });
@@ -1050,8 +1057,10 @@ export const useValidationStore = defineStore("validation", {
           ),
         ),
       ).catch((error: unknown) => {
-        this.statusLine =
-          `Cross-ticker selection failed: ${String(error || "")}`.trim();
+        this.statusLine = formatActionError(
+          "Cross-ticker selection failed",
+          error,
+        );
         this.source = "vue";
         this.updatedAtUnixMs = Date.now();
       });
@@ -1118,8 +1127,10 @@ export const useValidationStore = defineStore("validation", {
           ),
         ),
       ).catch((error: unknown) => {
-        this.statusLine =
-          `Cross-ticker match selection failed: ${String(error || "")}`.trim();
+        this.statusLine = formatActionError(
+          "Cross-ticker match selection failed",
+          error,
+        );
         this.source = "vue";
         this.updatedAtUnixMs = Date.now();
       });
@@ -1162,8 +1173,10 @@ export const useValidationStore = defineStore("validation", {
       void loadValidationService()
         .then((service) => service.toggleCrossDataset(nextPath, nextChecked))
         .catch((error: unknown) => {
-          this.statusLine =
-            `Cross-ticker update failed: ${String(error || "")}`.trim();
+          this.statusLine = formatActionError(
+            "Cross-ticker update failed",
+            error,
+          );
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });

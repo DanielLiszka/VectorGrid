@@ -14,6 +14,7 @@ import {
   type MatrixColumnMeta,
 } from "../composables/useHeadlessMatrixTable";
 import { usePersistedMatrixColumnState } from "../composables/usePersistedMatrixColumnState";
+import { usePersistedTableDensity } from "../composables/usePersistedTableDensity";
 import { useShellMount } from "../composables/useShellMount";
 import { useUiReadiness } from "../composables/useUiReadiness";
 import { useVirtualTableRows } from "../composables/useVirtualTableRows";
@@ -23,9 +24,14 @@ import ConfirmationDialog from "./ConfirmationDialog.vue";
 import ContextHelpTip from "./ContextHelpTip.vue";
 import ContextActionMenu from "./ContextActionMenu.vue";
 import AppDataTableShell from "./ui/AppDataTableShell.vue";
+import AppMetricCell from "./ui/AppMetricCell.vue";
+import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useWorkflowStore } from "../stores/workflowStore";
-import { META_RESULTS_TABLE_STATE_KEY } from "../utils/core/storageKeys";
+import {
+  META_RESULTS_TABLE_DENSITY_KEY,
+  META_RESULTS_TABLE_STATE_KEY,
+} from "../utils/core/storageKeys";
 import {
   artifactBundleIcon,
   emptyArtifactLibraryIllustration,
@@ -34,6 +40,11 @@ import {
 } from "../utils/appSvgAssets";
 import { artifactActionIcon, type AppIcon } from "../utils/iconography";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
+import {
+  buildMetricColumnVisualRanges,
+  resolveMetricCellVisual,
+  type MetricCellVisual,
+} from "../visualizations/metricCellVisualModel";
 
 interface OptionItem {
   value: string;
@@ -42,6 +53,7 @@ interface OptionItem {
 }
 
 interface MetaColumn {
+  key?: string;
   label: string;
   alignLeft: boolean;
 }
@@ -310,8 +322,14 @@ const {
   renderedColumns,
   META_RESULTS_TABLE_STATE_KEY,
 );
+const { tableDensity } = usePersistedTableDensity(
+  META_RESULTS_TABLE_DENSITY_KEY,
+);
 const { headerGroups, rowModelRows, visibleLeafColumns } =
   useHeadlessMatrixTable(orderedColumns, renderedRows, { columnVisibility, columnWidths });
+const metaMetricVisualRanges = computed(() =>
+  buildMetricColumnVisualRanges(orderedColumns.value, renderedRows.value),
+);
 const renderedBatchDatasets = computed<BatchDatasetItem[]>(
   () => batchDatasets.value as BatchDatasetItem[],
 );
@@ -1500,6 +1518,15 @@ function metaCellStyle(cell: Cell<MetaRow, unknown>): Record<string, string> {
   return columnWidthStyle(meta.columnKey);
 }
 
+function metaCellVisual(cell: Cell<MetaRow, unknown>): MetricCellVisual | null {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta;
+  return resolveMetricCellVisual(
+    meta.columnKey,
+    metaCellPayload(cell),
+    metaMetricVisualRanges.value,
+  );
+}
+
 function finishMetaColumnResize(): void {
   resizingMetaColumnKey.value = "";
   window.removeEventListener("pointermove", onMetaColumnResizeMove);
@@ -2332,6 +2359,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="!canMetaMlRefresh"
+              data-qa-action="aggregate.ml.refresh"
               @click="runAction(() => analysisStore.mlRefresh())"
             >
               Refresh
@@ -2339,6 +2367,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="!canMetaMlTrain"
+              data-qa-action="aggregate.ml.train"
               @click="runAction(() => analysisStore.mlTrain())"
             >
               Train / update
@@ -2346,6 +2375,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="!canMetaMlApply"
+              data-qa-action="aggregate.ml.apply"
               @click="runAction(() => analysisStore.mlApply())"
             >
               Apply to current meta
@@ -2353,6 +2383,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="!canMetaMlDelete"
+              data-qa-action="aggregate.ml.delete"
               @click="runAction(() => analysisStore.mlDelete())"
             >
               Delete model
@@ -2542,6 +2573,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 :disabled="!canRunMetaStage4"
+                data-qa-action="aggregate.stage5.run"
                 @click="runAction(() => analysisStore.runStage5())"
               >
                 Run Stage 5
@@ -2549,6 +2581,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 :disabled="!canRunMetaPolicyEval"
+                data-qa-action="aggregate.policy.evaluate"
                 @click="runAction(() => analysisStore.runMlPolicyEvaluation())"
               >
                 Evaluate policy
@@ -2556,6 +2589,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 :disabled="!canRevealMetaStage4"
+                data-qa-action="aggregate.stage5.reveal"
                 @click="runAction(() => analysisStore.revealStage5())"
               >
                 Reveal Stage 5 file
@@ -3248,55 +3282,64 @@ onBeforeUnmount(() => {
             title="Meta selection rows"
             :summary="metaTableShellSummary"
             :row-count="renderedRows.length"
+            :density="tableDensity"
             :viewport="false"
             aria-label="Meta analysis results table shell"
+            toolbar-label="Meta result table controls"
             keyboard-hint="Meta rows are virtualized; spacer rows are hidden from assistive technology."
           >
             <template #controls>
-              <details v-if="renderedColumns.length > 0" class="columnDetails">
-                <summary class="columnDetailsSummary">
-                  <span>Visible columns</span>
-                  <span class="mono panelNumeric">{{
-                    columnVisibilitySummary
-                  }}</span>
-                </summary>
-                <div class="columnDetailsBody">
-                  <div class="panelMuted">{{ columnVisibilityHint }}</div>
-                  <div
-                    class="columnToggleGrid"
-                    role="group"
-                    aria-label="Visible meta result columns"
-                  >
-                    <label
-                      v-for="column in columnOptions"
-                      :key="column.key"
-                      class="columnToggle"
-                      :class="{
-                        disabled: !canHideColumn(column.key) && column.visible,
-                      }"
-                      :for="metaColumnToggleId(column.key)"
+              <div class="tableControlBar">
+                <details v-if="renderedColumns.length > 0" class="columnDetails">
+                  <summary class="columnDetailsSummary">
+                    <span>Visible columns</span>
+                    <span class="mono panelNumeric">{{
+                      columnVisibilitySummary
+                    }}</span>
+                  </summary>
+                  <div class="columnDetailsBody">
+                    <div class="panelMuted">{{ columnVisibilityHint }}</div>
+                    <div
+                      class="columnToggleGrid"
+                      role="group"
+                      aria-label="Visible meta result columns"
                     >
-                      <input
-                        :id="metaColumnToggleId(column.key)"
-                        type="checkbox"
-                        :checked="column.visible"
-                        :disabled="!canHideColumn(column.key) && column.visible"
-                        @change="toggleColumnVisibility(column.key)"
-                      />
-                      <span>{{ column.label }}</span>
-                    </label>
+                      <label
+                        v-for="column in columnOptions"
+                        :key="column.key"
+                        class="columnToggle"
+                        :class="{
+                          disabled: !canHideColumn(column.key) && column.visible,
+                        }"
+                        :for="metaColumnToggleId(column.key)"
+                      >
+                        <input
+                          :id="metaColumnToggleId(column.key)"
+                          type="checkbox"
+                          :checked="column.visible"
+                          :disabled="!canHideColumn(column.key) && column.visible"
+                          @change="toggleColumnVisibility(column.key)"
+                        />
+                        <span>{{ column.label }}</span>
+                      </label>
+                    </div>
+                    <div class="actions columnDetailsActions">
+                      <button
+                        type="button"
+                        :disabled="!canRestoreDefaults"
+                        @click="restoreDefaultColumns()"
+                      >
+                        Restore defaults
+                      </button>
+                    </div>
                   </div>
-                  <div class="actions columnDetailsActions">
-                    <button
-                      type="button"
-                      :disabled="!canRestoreDefaults"
-                      @click="restoreDefaultColumns()"
-                    >
-                      Restore defaults
-                    </button>
-                  </div>
-                </div>
-              </details>
+                </details>
+                <AppTableDensityControl
+                  v-model:density="tableDensity"
+                  label="Meta density"
+                  qa-prefix="meta.table.density"
+                />
+              </div>
             </template>
             <div
               ref="tableScrollElementRef"
@@ -3352,9 +3395,24 @@ onBeforeUnmount(() => {
                       <td
                         :class="metaCellPayload(cell).className"
                         :style="metaCellStyle(cell)"
+                        :data-column-key="
+                          String(
+                            (cell.column.columnDef.meta as MatrixColumnMeta)
+                              ?.columnKey || '',
+                          )
+                        "
                         :title="metaCellPayload(cell).title || undefined"
                       >
-                        {{ metaCellPayload(cell).text }}
+                        <AppMetricCell
+                          :text="metaCellPayload(cell).text"
+                          :visual="metaCellVisual(cell)"
+                          :align="
+                            (cell.column.columnDef.meta as MatrixColumnMeta)
+                              .alignLeft
+                              ? 'left'
+                              : 'right'
+                          "
+                        />
                       </td>
                     </template>
                   </tr>
@@ -3653,6 +3711,19 @@ onBeforeUnmount(() => {
   background: var(--surface-sunken);
 }
 
+.tableControlBar {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tableControlBar .columnDetails {
+  flex: 1 1 22rem;
+  margin-top: 0;
+}
+
 .columnDetailsSummary {
   list-style: none;
   display: flex;
@@ -3725,7 +3796,7 @@ onBeforeUnmount(() => {
 .metaTableVue th,
 .metaTableVue td {
   border-bottom: 1px solid var(--border);
-  padding: 0.34rem 0.42rem;
+  padding: var(--density-table-y) var(--density-table-x);
   text-align: right;
   vertical-align: top;
 }
@@ -3892,6 +3963,11 @@ onBeforeUnmount(() => {
   .gridFour,
   .gridThree {
     grid-template-columns: 1fr;
+  }
+
+  .tableControlBar {
+    display: grid;
+    justify-content: stretch;
   }
 
   .columnToggleGrid {

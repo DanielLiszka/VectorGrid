@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
-import { ListTodo } from "@lucide/vue";
+import { ListTodo, SlidersHorizontal, X } from "@lucide/vue";
 import {
   TASK_CENTER_PANEL_ID,
   openTaskCenter as requestTaskCenterOpen,
@@ -26,6 +26,7 @@ import {
   resolveWorkbenchInspectorState,
   type WorkbenchInspectorMode,
 } from "../../utils/inspectorModel";
+import { storeErrorText } from "../../utils/storeErrorText";
 import { resolveWorkbenchPrimaryAction } from "../../utils/workbenchActionModel";
 import {
   buildWorkbenchNavigationState,
@@ -39,6 +40,12 @@ import WorkbenchRail from "./WorkbenchRail.vue";
 import ResearchCockpit from "./ResearchCockpit.vue";
 
 type TabKeyItem = { id: string };
+type AdvancedDrawerAction = {
+  actionId: string;
+  label: string;
+  detail: string;
+  run: () => void;
+};
 
 const workflowStore = useWorkflowStore();
 const settingsStore = useSettingsStore();
@@ -118,6 +125,7 @@ const { datasetReady, hasOptimizationResults, validationStage } =
 
 const inspectorCollapsed = ref(false);
 const requestedInspectorMode = ref<WorkbenchInspectorMode | "">("");
+const advancedDrawerOpen = ref(false);
 
 const modeItems = [
   {
@@ -125,6 +133,12 @@ const modeItems = [
     label: "Conventional",
     actionId: "shell.mode.conventional",
     tabId: "mode_tab_conventional",
+  },
+  {
+    id: "options",
+    label: "Options",
+    actionId: "shell.mode.options",
+    tabId: "mode_tab_options",
   },
   {
     id: "ml-signal",
@@ -196,7 +210,7 @@ async function refreshLiveSupportMatrix(): Promise<void> {
       : "Backend returned an empty live strategy support matrix.";
   } catch (error) {
     liveSupportMatrixStatus.value =
-      `Live support matrix unavailable: ${String(error || "")}`.trim();
+      `Live support matrix unavailable: ${storeErrorText(error)}`.trim();
   } finally {
     liveSupportMatrixLoaded.value = true;
   }
@@ -221,6 +235,36 @@ const resultsTabsVisible = computed(
 const researchCockpitVisible = computed(
   () => standardWorkspaceActive.value && currentWorkspace.value === "workflow",
 );
+const advancedDrawerVisible = computed(
+  () => researchCockpitVisible.value && advancedDrawerOpen.value,
+);
+const activeModeLabel = computed(
+  () => modeItems.find((item) => item.id === currentMode.value)?.label || "Conventional",
+);
+const activeStageLabel = computed(
+  () =>
+    navState.value.stageItems.find((item) => item.id === currentWorkflowStep.value)
+      ?.label || currentWorkflowStep.value,
+);
+const advancedDrawerTitle = computed(() => `${activeStageLabel.value} Controls`);
+const advancedDrawerSummary = computed(() => {
+  if (currentMode.value === "options") {
+    return "Options research keeps expression, dataset, validation, and replay controls in the foreground; parent optimization, library, and operator tools stay one hop away.";
+  }
+  if (currentMode.value === "ml-signal") {
+    return "ML Signal keeps the active dataset, score-cache, validation, or policy-sweep task focused while preserving parent data, artifacts, and diagnostics.";
+  }
+  if (currentWorkflowStep.value === "validate") {
+    return "Validation foregrounds robustness evidence. Strategy ranges, optimization setup, meta-analysis, and diagnostics remain reachable here.";
+  }
+  if (currentWorkflowStep.value === "analyze") {
+    return "Candidate Review foregrounds top candidates, charts, heatmaps, and Pareto evidence. Run controls and downstream review stay available here.";
+  }
+  if (currentWorkflowStep.value === "finalize") {
+    return "Final Review foregrounds promotion evidence. Use these entries for meta-analysis, artifacts, diagnostics, or returning to earlier setup.";
+  }
+  return "Use this drawer for related expert controls without changing the current stage until an action is selected.";
+});
 const workbenchGridClass = computed(() => ({
   singleColumn: !controlsColumnVisible.value || !resultsColumnVisible.value,
 }));
@@ -348,6 +392,13 @@ watch(
 );
 
 watch(
+  () => researchCockpitVisible.value,
+  (visible) => {
+    if (!visible) advancedDrawerOpen.value = false;
+  },
+);
+
+watch(
   () => liveWorkspaceActive.value,
   (active) => {
     if (active) void refreshLiveSupportMatrix();
@@ -405,6 +456,98 @@ function selectResultsTab(id: string): void {
 function openTaskCenter(): void {
   requestTaskCenterOpen(taskCenterOpen);
 }
+
+function toggleAdvancedDrawer(): void {
+  advancedDrawerOpen.value = !advancedDrawerOpen.value;
+}
+
+function closeAdvancedDrawer(): void {
+  advancedDrawerOpen.value = false;
+}
+
+function openStrategyControls(): void {
+  workflowStore.selectWorkflowStep("optimize");
+  workflowStore.selectControlsTab("strategy");
+  closeAdvancedDrawer();
+}
+
+function openOptimizationControls(): void {
+  workflowStore.selectWorkflowStep("optimize");
+  workflowStore.selectControlsTab("opt");
+  closeAdvancedDrawer();
+}
+
+function openAdvancedDiagnostics(): void {
+  workflowStore.selectWorkspace("pro");
+  closeAdvancedDrawer();
+}
+
+function openMetaReview(): void {
+  workflowStore.selectWorkflowStep("finalize");
+  workflowStore.selectResultsTab("meta");
+  closeAdvancedDrawer();
+}
+
+function openLibraryReview(): void {
+  workflowStore.selectWorkspace("library");
+  closeAdvancedDrawer();
+}
+
+const advancedDrawerActions = computed<AdvancedDrawerAction[]>(() => {
+  const strategyDetail = strategyContextLabel.value || "No strategy";
+  const backendDetail = backendContextLabel.value || "Backend route";
+  const metaDetail = String(validationMeta.value || validationStage.value || "Meta and final evidence").trim();
+  const libraryDetail = savedRunsMeta.value || "Saved runs";
+  const diagnosticsDetail = gpuStatus.value || "Operator tools";
+
+  const strategyAction: AdvancedDrawerAction = {
+    actionId: "shell.advancedDrawer.openStrategy",
+    label: currentMode.value === "options" ? "Parent strategy setup" : "Strategy controls",
+    detail: strategyDetail,
+    run: openStrategyControls,
+  };
+  const optimizationAction: AdvancedDrawerAction = {
+    actionId: "shell.advancedDrawer.openOptimization",
+    label: currentMode.value === "ml-signal" ? "ML stage controls" : "Optimization controls",
+    detail: backendDetail,
+    run: openOptimizationControls,
+  };
+  const metaAction: AdvancedDrawerAction = {
+    actionId: "shell.advancedDrawer.openMeta",
+    label: currentMode.value === "options" ? "Final and meta review" : "Meta analysis",
+    detail: metaDetail,
+    run: openMetaReview,
+  };
+  const libraryAction: AdvancedDrawerAction = {
+    actionId: "shell.advancedDrawer.openLibrary",
+    label: "Artifact library",
+    detail: libraryDetail,
+    run: openLibraryReview,
+  };
+  const diagnosticsAction: AdvancedDrawerAction = {
+    actionId: "shell.advancedDrawer.openAdvancedControls",
+    label: "Diagnostics",
+    detail: diagnosticsDetail,
+    run: openAdvancedDiagnostics,
+  };
+
+  if (currentMode.value === "options") {
+    return [libraryAction, metaAction, strategyAction, optimizationAction, diagnosticsAction];
+  }
+  if (currentMode.value === "ml-signal") {
+    return [optimizationAction, libraryAction, metaAction, diagnosticsAction];
+  }
+  if (currentWorkflowStep.value === "validate") {
+    return [strategyAction, optimizationAction, metaAction, libraryAction, diagnosticsAction];
+  }
+  if (currentWorkflowStep.value === "analyze") {
+    return [optimizationAction, metaAction, libraryAction, strategyAction, diagnosticsAction];
+  }
+  if (currentWorkflowStep.value === "finalize") {
+    return [metaAction, libraryAction, diagnosticsAction, strategyAction, optimizationAction];
+  }
+  return [strategyAction, optimizationAction, metaAction, libraryAction, diagnosticsAction];
+});
 
 function toggleInspector(): void {
   inspectorCollapsed.value = !inspectorCollapsed.value;
@@ -643,6 +786,20 @@ function onResultsKeydown(
           </div>
 
           <button
+            v-if="currentWorkspace === 'workflow'"
+            type="button"
+            class="advancedDrawerButton"
+            :class="{ open: advancedDrawerOpen }"
+            aria-controls="researchAdvancedDrawer"
+            :aria-expanded="advancedDrawerOpen ? 'true' : 'false'"
+            data-qa-action="shell.advancedDrawer.toggle"
+            @click="toggleAdvancedDrawer"
+          >
+            <SlidersHorizontal aria-hidden="true" />
+            <span>Advanced</span>
+          </button>
+
+          <button
             type="button"
             class="taskLauncher"
             :class="{ active: activeTaskCount > 0, open: taskCenterOpen }"
@@ -701,6 +858,44 @@ function onResultsKeydown(
         </div>
 
         <ResearchCockpit v-if="researchCockpitVisible" />
+
+        <aside
+          v-if="researchCockpitVisible"
+          v-show="advancedDrawerVisible"
+          id="researchAdvancedDrawer"
+          class="advancedDrawer"
+          aria-label="Advanced workflow controls"
+        >
+          <div class="advancedDrawerHeader">
+            <div>
+              <span class="eyebrow">{{ activeModeLabel }} · Advanced</span>
+              <h2>{{ advancedDrawerTitle }}</h2>
+              <p>{{ advancedDrawerSummary }}</p>
+            </div>
+            <button
+              type="button"
+              class="iconOnlyButton"
+              aria-label="Close advanced workflow controls"
+              data-qa-action="shell.advancedDrawer.close"
+              @click="closeAdvancedDrawer"
+            >
+              <X aria-hidden="true" />
+            </button>
+          </div>
+          <div class="advancedDrawerGrid">
+            <button
+              v-for="action in advancedDrawerActions"
+              :key="action.actionId"
+              type="button"
+              class="advancedDrawerAction"
+              :data-qa-action="action.actionId"
+              @click="action.run"
+            >
+              <span>{{ action.label }}</span>
+              <strong class="mono">{{ action.detail }}</strong>
+            </button>
+          </div>
+        </aside>
 
         <section
           v-show="standardWorkspaceActive"
@@ -1008,6 +1203,42 @@ function onResultsKeydown(
             >
               <div id="debugVueShellMount"></div>
             </div>
+            <div
+              id="results_panel_options"
+              class="panelHost"
+              data-vue-panel="options"
+              :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('options') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'options')
+              "
+              :aria-hidden="!isResultsPanelVisible('options')"
+              v-show="isResultsPanelVisible('options')"
+            >
+              <div id="optionsVueShellMount"></div>
+            </div>
+            <div
+              id="results_panel_final"
+              class="panelHost"
+              data-vue-panel="final"
+              :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('final') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'final')
+              "
+              :aria-hidden="!isResultsPanelVisible('final')"
+              v-show="isResultsPanelVisible('final')"
+            >
+              <div id="finalReviewVueShellMount"></div>
+            </div>
           </section>
         </section>
 
@@ -1283,7 +1514,8 @@ function onResultsKeydown(
   box-shadow: inset 0 -2px 0 var(--selection-rail);
 }
 
-.taskLauncher {
+.taskLauncher,
+.advancedDrawerButton {
   margin-left: auto;
   min-width: 0;
   min-height: 34px;
@@ -1295,13 +1527,20 @@ function onResultsKeydown(
   color: var(--muted-strong);
 }
 
-.taskLauncher svg {
+.advancedDrawerButton {
+  margin-left: 0;
+}
+
+.taskLauncher svg,
+.advancedDrawerButton svg,
+.iconOnlyButton svg {
   width: 1rem;
   height: 1rem;
 }
 
 .taskLauncher.active,
-.taskLauncher.open {
+.taskLauncher.open,
+.advancedDrawerButton.open {
   color: var(--text);
   border-color: color-mix(in oklab, var(--panel-focus-edge) 72%, var(--border));
   background: color-mix(
@@ -1312,11 +1551,101 @@ function onResultsKeydown(
 }
 
 .workbenchMain {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.advancedDrawer {
+  position: absolute;
+  z-index: 20;
+  top: 0.62rem;
+  right: 0.65rem;
+  width: min(430px, calc(100% - 1.3rem));
+  max-height: calc(100% - 1.24rem);
+  overflow: auto;
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 58%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-shell) 96%, var(--panel));
+  box-shadow: var(--shadow-lg);
+  padding: 0.72rem;
+  display: grid;
+  gap: 0.58rem;
+}
+
+.advancedDrawerHeader {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.advancedDrawerHeader h2 {
+  margin: 0.08rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.18;
+}
+
+.advancedDrawerHeader p {
+  margin: 0.26rem 0 0;
+  max-width: 46ch;
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  line-height: 1.34;
+}
+
+.iconOnlyButton {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--muted-strong);
+}
+
+.advancedDrawerGrid {
+  display: grid;
+  gap: 0.44rem;
+}
+
+.advancedDrawerAction {
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
+  color: var(--text);
+  padding: 0.54rem 0.58rem;
+  display: grid;
+  gap: 0.12rem;
+  text-align: left;
+}
+
+.advancedDrawerAction:hover {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 62%, var(--border));
+  background: color-mix(in oklab, var(--selection-fill) 82%, var(--surface-working));
+  transform: none;
+}
+
+.advancedDrawerAction span {
+  font-size: 0.74rem;
+  font-weight: 760;
+  line-height: 1.2;
+}
+
+.advancedDrawerAction strong {
+  min-width: 0;
+  color: var(--muted-strong);
+  font-size: 0.69rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .workbenchPaneGrid {
@@ -1546,9 +1875,13 @@ function onResultsKeydown(
     flex-wrap: nowrap;
   }
 
-  .tabBtn,
-  .stageButton {
+  .tabBtn {
     flex: 0 0 auto;
+  }
+
+  .stageButton {
+    flex: 1 1 0;
+    padding-inline: 0.34rem;
   }
 
   .taskLauncher {

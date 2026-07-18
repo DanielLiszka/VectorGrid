@@ -188,7 +188,7 @@ function selectParetoPoint(point: ParetoRenderPoint): void {
             Use the Top results table as the keyboard-friendly way to move between candidates, or click frontier points if you want direct chart-driven candidate detail.
           </div>
           <div class="actions" style="margin-top: 0;">
-            <button type="button" @click="reviewTopResults">Review Top results</button>
+            <button type="button" data-qa-action="pareto.reviewTop" @click="reviewTopResults">Review Top results</button>
           </div>
         </div>
         <div class="panelAdvisory">

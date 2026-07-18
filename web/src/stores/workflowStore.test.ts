@@ -83,7 +83,7 @@ describe('workflow store actions', () => {
     expect(store.workspace).toBe('portfolio')
     expect(store.workflow).toBe('validate')
     expect(store.workflowStep).toBe('validate')
-    expect(store.controlsTab).toBe('opt')
+    expect(store.controlsTab).toBe('data')
     expect(store.resultsTab).toBe('validate')
     expect(store.workflowSubtitle).toContain('portfolio admission')
   })
@@ -95,7 +95,7 @@ describe('workflow store actions', () => {
     expect(store.workflow).toBe('validate')
     expect(store.workflowStep).toBe('validate')
     expect(store.workspace).toBe('workflow')
-    expect(store.controlsTab).toBe('opt')
+    expect(store.controlsTab).toBe('data')
     expect(store.resultsTab).toBe('validate')
   })
 
@@ -111,7 +111,7 @@ describe('workflow store actions', () => {
     expect(store.resultsTab).toBe('drill')
   })
 
-  it('selects the finalizer workflow step with meta results', () => {
+  it('selects the finalizer workflow step with final review results', () => {
     const store = useWorkflowStore()
 
     store.selectWorkflowStep('finalize')
@@ -119,8 +119,31 @@ describe('workflow store actions', () => {
     expect(store.workspace).toBe('workflow')
     expect(store.workflowStep).toBe('finalize')
     expect(store.workflow).toBe('finalize')
-    expect(store.controlsTab).toBe('advanced')
+    expect(store.controlsTab).toBe('data')
+    expect(store.resultsTab).toBe('final')
+  })
+
+  it('uses final review as the finalizer default even after meta was selected before', () => {
+    const store = useWorkflowStore()
+
+    store.selectWorkflowStep('finalize')
+    store.selectResultsTab('meta')
     expect(store.resultsTab).toBe('meta')
+
+    store.selectWorkflowStep('optimize')
+    store.selectWorkflowStep('finalize')
+
+    expect(store.resultsTab).toBe('final')
+  })
+
+  it('repairs stale finalizer meta selection when the active finalizer stage is selected again', () => {
+    const store = useWorkflowStore()
+
+    store.selectWorkflowStep('finalize')
+    store.selectResultsTab('meta')
+    store.selectWorkflowStep('finalize')
+
+    expect(store.resultsTab).toBe('final')
   })
 
   it('keeps controls and results tab changes local to the current workflow', () => {
@@ -180,6 +203,22 @@ describe('workflow store actions', () => {
     expect(store.controlsTab).toBe('opt')
     expect(store.resultsTab).toBe('overview')
     expect(store.workflowSubtitle).toContain('score cache')
+  })
+
+  it('switches into Options mode with the options research panel selected', () => {
+    const store = useWorkflowStore()
+    store.selectWorkflowStep('optimize', { persist: false })
+    store.selectControlsTab('strategy', { persist: false })
+    store.selectResultsTab('top', { persist: false })
+
+    store.selectMode('options', { persist: false })
+
+    expect(store.mode).toBe('options')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workflowStep).toBe('optimize')
+    expect(store.controlsTab).toBe('data')
+    expect(store.resultsTab).toBe('options')
+    expect(store.workflowSubtitle).toContain('options data')
   })
 
   it('keeps mode-specific tab memory separate between conventional and MlSignal', () => {

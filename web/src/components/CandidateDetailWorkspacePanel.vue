@@ -8,12 +8,19 @@ import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import {
+  buildDrillTradeMarkers,
   buildDrillTradeTableModel,
   type DrillChartModel,
   type DrillTradeTableModel,
 } from '../visualizations/drillChartModel'
 import PriceChartPanel from './visualizations/PriceChartPanel.vue'
 import AppMetricStrip, { type AppMetricItem } from './ui/AppMetricStrip.vue'
+
+interface ChartLegendItem {
+  label: string
+  color: string
+  value?: string
+}
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
@@ -38,6 +45,7 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'drill'
 const selectedTradeIdx = ref(-1)
 const tradeRangeStart = ref(0)
 const chartMetaText = ref('Hover for OHLC/MA values; select a Top result or click a marker to focus a trade.')
+const chartViewLabel = ref('')
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 const drillContentVisible = computed(() => analysisStore.drillWrapVisible || Boolean(drillChartModel.value))
@@ -106,10 +114,42 @@ const chartEvidenceChips = computed(() => {
     model.bars.length > 0 ? `${model.bars.length} price bars` : '',
     model.trades.length > 0 ? `${model.trades.length} trades` : 'No trades',
     model.fastData.length || model.slowData.length ? 'MA overlays' : '',
-    model.halftrendData.length ? 'Halftrend' : '',
+    model.halftrendData.length ? 'HalfTrend regime' : '',
+    model.ottData.length ? 'OTT' : '',
     model.maczData.length ? 'MAC-Z' : '',
   ]
   return chips.filter((chip) => chip.length > 0)
+})
+
+const chartRenderReady = computed(() => {
+  const model = drillChartModel.value
+  return Boolean(model?.bars.length && model?.candleData.length)
+})
+
+const chartStateLabel = computed(() => {
+  if (!chartRenderReady.value) return 'Awaiting chart'
+  return selectedTradeIdx.value >= 0 ? `Trade ${selectedTradeIdx.value + 1} selected` : 'Chart ready'
+})
+
+const chartLegendItems = computed<ChartLegendItem[]>(() => {
+  const model = drillChartModel.value
+  if (!model) return []
+  const items: ChartLegendItem[] = [
+    { label: 'Candles', color: '#16a34a', value: String(model.candleData.length) },
+  ]
+  if (model.fastData.length) items.push({ label: 'Fast MA', color: '#0ea5e9', value: String(model.fastData.length) })
+  if (model.slowData.length) items.push({ label: 'Slow MA', color: '#f59e0b', value: String(model.slowData.length) })
+  if (model.halftrendData.length) items.push({ label: 'HalfTrend', color: 'linear-gradient(90deg, #22c55e 0 50%, #f43f5e 50% 100%)', value: String(model.halftrendData.length) })
+  if (model.ottData.length) items.push({ label: 'OTT', color: '#a855f7', value: String(model.ottData.length) })
+  if (model.maczData.length) items.push({ label: 'MAC-Z', color: '#94a3b8', value: String(model.maczData.length) })
+  if (model.trades.length) {
+    const markers = buildDrillTradeMarkers(model, -1)
+    const entries = markers.filter((marker) => marker.id.endsWith('-entry')).length
+    const exits = markers.filter((marker) => marker.id.endsWith('-exit')).length
+    if (entries) items.push({ label: 'Entries', color: '#22c55e', value: String(entries) })
+    if (exits) items.push({ label: 'Exits', color: '#f43f5e', value: String(exits) })
+  }
+  return items
 })
 
 const candidateProvenanceChips = computed(() => {
@@ -153,6 +193,9 @@ const chartRuntime = useDrillPriceChartRuntime({
   onMetaChange: (message) => {
     chartMetaText.value = message
   },
+  onViewChange: (label) => {
+    chartViewLabel.value = label
+  },
 })
 
 function reviewTopResults(): void {
@@ -163,6 +206,18 @@ function setDrillChartHost(element: HTMLElement | null): void {
   chartRuntime.setHost(element)
   if (!element || !visible.value || !mountReady.value) return
   void renderCurrentChart()
+}
+
+function fitDrillChartContent(): void {
+  chartRuntime.fitContent()
+}
+
+function panDrillChartLeft(): void {
+  chartRuntime.pan('left')
+}
+
+function panDrillChartRight(): void {
+  chartRuntime.pan('right')
 }
 
 function setPanelStatus(message: string): void {
@@ -327,7 +382,7 @@ onBeforeUnmount(() => {
             <div class="panelMuted">{{ selectedCandidateDecisionNote }}</div>
           </div>
           <div class="actions candidateDecisionActions">
-            <button type="button" @click="reviewTopResults">Review Top results</button>
+            <button type="button" data-qa-action="candidateDetail.reviewTop" @click="reviewTopResults">Review Top results</button>
           </div>
         </div>
         <div class="panelSummaryChips" aria-label="Candidate detail provenance">
@@ -357,10 +412,10 @@ onBeforeUnmount(() => {
         <div class="chartAssist">
           <div id="drillKeyboardHint" class="panelMuted">Use the Top results table to select another candidate, or click chart markers if you prefer direct chart interaction.</div>
           <div class="actions">
-            <button type="button" @click="reviewTopResults">Review Top results</button>
+            <button type="button" data-qa-action="candidateDetail.reviewTop" @click="reviewTopResults">Review Top results</button>
           </div>
         </div>
-          <div class="panelAdvisory">
+          <div v-if="!drillContentVisible" class="panelAdvisory">
             If the charts stay empty, confirm that a Top result is selected and that the latest optimization run finished writing analysis results.
           </div>
           <div
@@ -374,12 +429,22 @@ onBeforeUnmount(() => {
               <PriceChartPanel
                 chart-id="drillTvChartVue"
                 meta-id="drillTvChartMetaVue"
-                title="Price + trades (TradingView Lightweight Charts)"
+                title="Price + trades"
                 :meta-text="chartMetaText"
+                :summary-items="chartEvidenceChips"
+                :legend-items="chartLegendItems"
+                :state-label="chartStateLabel"
+                :render-ready="chartRenderReady"
+                :view-label="chartViewLabel"
+                :navigation="true"
+                qa-prefix="candidateChart"
                 frame-aria-label="Backtest price and trade chart for the selected candidate. Use the Top results tab to select a different candidate without clicking inside the chart."
                 host-aria-label="Backtest price chart"
                 described-by="drillKeyboardHint"
                 @host-ready="setDrillChartHost"
+                @fit-content="fitDrillChartContent"
+                @pan-left="panDrillChartLeft"
+                @pan-right="panDrillChartRight"
               />
             </div>
             <div class="supportChartGrid">
@@ -434,9 +499,9 @@ onBeforeUnmount(() => {
                 <h3 class="panelPaneTitle">Trades</h3>
               </div>
               <div class="actions tradeEvidenceActions">
-                <button type="button" :disabled="!hasTradeEvidence" @click="selectPrevTradeFromPanel()">Previous trade</button>
-                <button type="button" :disabled="!hasTradeEvidence" @click="selectNextTradeFromPanel()">Next trade</button>
-                <button type="button" :disabled="!hasTradeEvidence" @click="clearTradeSelectionFromPanel()">Clear selection</button>
+                <button type="button" :disabled="!hasTradeEvidence" data-qa-action="candidateDetail.trade.prev" @click="selectPrevTradeFromPanel()">Previous trade</button>
+                <button type="button" :disabled="!hasTradeEvidence" data-qa-action="candidateDetail.trade.next" @click="selectNextTradeFromPanel()">Next trade</button>
+                <button type="button" :disabled="!hasTradeEvidence" data-qa-action="candidateDetail.trade.clear" @click="clearTradeSelectionFromPanel()">Clear selection</button>
               </div>
             </div>
             <div class="mono" id="tradeStatsVue" role="status" aria-live="polite">{{ tradeStatsText }}</div>
@@ -589,8 +654,16 @@ onBeforeUnmount(() => {
 
 .chartAssist {
   margin-top: 0.75rem;
-  display: grid;
-  gap: 0.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.chartAssist .panelMuted {
+  flex: 1 1 22rem;
+  margin: 0;
 }
 
 .chartSurface:focus-visible {

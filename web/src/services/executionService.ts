@@ -6,6 +6,7 @@ import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore"
 import { EXEC_KEYS_STORAGE_KEY } from "../utils/core/storageKeys";
 import { formatUtcDateTimeFromUnixMs } from "../utils/uiFormat";
 import { readStorageString, removeStorageKey } from "../utils/storage";
+import { storeErrorText } from "../utils/storeErrorText";
 import {
   isBoundaryObject,
   parseBoundaryArray,
@@ -2074,7 +2075,7 @@ async function persistRememberedExecutionTypedOverrideWarning(
     await persistRememberedExecutionTypedOverride(options, typedOverride);
     return null;
   } catch (error) {
-    const detail = redactExecutionSecrets(String(error || "").trim(), [
+    const detail = redactExecutionSecrets(storeErrorText(error), [
       typedOverride.apiKey,
       typedOverride.apiSecret,
       options.apiKey,
@@ -2091,7 +2092,7 @@ function brokerReviewRefreshFailureWarning(
   actionSummary: string,
   error: unknown,
 ): ExecutionFollowupWarning {
-  const detail = text(error);
+  const detail = storeErrorText(error);
   return {
     short: "Broker review refresh failed.",
     detail: `${text(actionSummary) || "The broker-facing action still succeeded."} Broker review refresh failed${detail ? `: ${detail}` : "."} Refresh orders manually now.`,
@@ -3027,7 +3028,7 @@ export async function clearKeys(): Promise<ExecutionActionResult> {
     removeStorageKey(EXEC_KEYS_STORAGE_KEY);
   } catch {}
   if (secureClearError) {
-    const detail = text(secureClearError);
+    const detail = storeErrorText(secureClearError);
     throw new Error(detail || "Stored credential clear failed.");
   }
   return {

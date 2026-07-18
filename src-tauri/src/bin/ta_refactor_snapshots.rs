@@ -141,6 +141,7 @@ fn main() -> Result<(), String> {
         data_id: "AAPL".to_string(),
         backend: ta_app_core::Backend::CpuOnly,
         ma_source: "close".to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params: None,
         slow_ma_params: None,
         candidates: vec![

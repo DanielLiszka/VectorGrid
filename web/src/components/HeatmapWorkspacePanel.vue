@@ -406,7 +406,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <template #actions>
-            <button type="button" :disabled="!canHeatmapExportPng" @click="analysisStore.heatmapExportPng()">Export PNG</button>
+            <button type="button" :disabled="!canHeatmapExportPng" data-qa-action="heatmap.exportPng" @click="analysisStore.heatmapExportPng()">Export PNG</button>
           </template>
         </VisualizationToolbar>
         <div class="metaLine mono" role="status" aria-live="polite">{{ heatmapMeta }}</div>

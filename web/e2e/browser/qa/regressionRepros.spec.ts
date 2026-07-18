@@ -419,6 +419,19 @@ defineWorkflow({
     await action("aggregate.meta.run").click();
     await expect(page.locator(".metaTableVue tbody tr").first()).toBeVisible();
     await expect(page.getByText(/groups=1/i).first()).toBeVisible();
+    await expect(action("aggregate.ml.refresh")).toBeEnabled();
+    await action("aggregate.ml.refresh").click();
+    await expect(
+      page.locator('[role="status"]').filter({
+        hasText: /Refreshed ML confidence status/i,
+      }).last(),
+    ).toBeVisible();
+    await expect(action("aggregate.ml.train")).toBeEnabled();
+    await expect(action("aggregate.ml.apply")).toBeEnabled();
+    await expect(action("aggregate.ml.delete")).toBeEnabled();
+    await expect(action("aggregate.stage5.run")).toBeEnabled();
+    await expect(action("aggregate.policy.evaluate")).toBeEnabled();
+    await expect(action("aggregate.stage5.reveal")).toBeDisabled();
 
     await expect(action("aggregate.meta.openReport")).toBeEnabled();
     const openPathBefore = (await readTauriInvokeLog(page)).filter(
@@ -816,6 +829,7 @@ defineWorkflow({
     await expect(action("top.selected.openCandidateDetail")).toBeEnabled();
     await action("top.selected.openCandidateDetail").click();
     await expect(page.locator("#results_panel_drill")).toBeVisible();
+    await expect(action("candidateDetail.reviewTop").first()).toBeVisible();
     await expectNoStuckBusyState(page);
   },
 });

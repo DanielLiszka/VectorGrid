@@ -25,6 +25,7 @@ import { buildMetaBatchRequest } from "./metaBatchRequestBuilder";
 import { buildMetaMlScope } from "./metaMlScopeBuilder";
 import { buildMetaSelectionRequest } from "./metaRequestBuilder";
 import { buildMetaStage5Request } from "./metaStage4RequestBuilder";
+import { storeErrorText } from "../utils/storeErrorText";
 import {
   buildCampaignStageCompletion,
   buildMetaStageCompletion,
@@ -61,6 +62,7 @@ interface VueStoreFieldBinding {
 }
 
 interface MetaTableColumn {
+  key?: string;
   label: string;
   alignLeft: boolean;
 }
@@ -96,24 +98,24 @@ interface BatchSummaryEnvelope {
 type AnalysisStore = ReturnType<typeof useAnalysisStore>;
 
 const META_TABLE_COLUMNS: MetaTableColumn[] = markRaw([
-  { label: "#", alignLeft: false },
-  { label: "Samples", alignLeft: false },
-  { label: "Pass", alignLeft: false },
-  { label: "Meta", alignLeft: false },
-  { label: "ML", alignLeft: false },
-  { label: "Robust p10", alignLeft: false },
-  { label: "Robust med", alignLeft: false },
-  { label: "DD p90", alignLeft: false },
-  { label: "PSR", alignLeft: false },
-  { label: "DSR", alignLeft: false },
-  { label: "H pass", alignLeft: false },
-  { label: "H p10", alignLeft: false },
-  { label: "H med", alignLeft: false },
-  { label: "H DD p90", alignLeft: false },
-  { label: "H coverage", alignLeft: false },
-  { label: "Fast", alignLeft: true },
-  { label: "Slow", alignLeft: true },
-  { label: "Params", alignLeft: true },
+  { key: "rank", label: "#", alignLeft: false },
+  { key: "samples", label: "Samples", alignLeft: false },
+  { key: "pass_rate", label: "Pass", alignLeft: false },
+  { key: "meta_score", label: "Meta", alignLeft: false },
+  { key: "ml_confidence", label: "ML", alignLeft: false },
+  { key: "robust_score_p10", label: "Robust p10", alignLeft: false },
+  { key: "robust_score_median", label: "Robust med", alignLeft: false },
+  { key: "max_dd_p90", label: "DD p90", alignLeft: false },
+  { key: "psr", label: "PSR", alignLeft: false },
+  { key: "dsr", label: "DSR", alignLeft: false },
+  { key: "holdout_pass_rate", label: "H pass", alignLeft: false },
+  { key: "holdout_score_p10", label: "H p10", alignLeft: false },
+  { key: "holdout_score_median", label: "H med", alignLeft: false },
+  { key: "holdout_max_dd_p90", label: "H DD p90", alignLeft: false },
+  { key: "holdout_coverage", label: "H coverage", alignLeft: false },
+  { key: "fast", label: "Fast", alignLeft: true },
+  { key: "slow", label: "Slow", alignLeft: true },
+  { key: "params", label: "Params", alignLeft: true },
 ]) as MetaTableColumn[];
 
 const ANALYSIS_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -406,7 +408,7 @@ function setStatusLine(message: string): void {
 }
 
 function setErrorStatus(error: unknown): void {
-  const message = normalizeText(error) || "Operation failed.";
+  const message = storeErrorText(error) || "Operation failed.";
   patchAnalysisStore({ statusLine: message });
 }
 

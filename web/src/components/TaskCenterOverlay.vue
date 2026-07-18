@@ -122,6 +122,33 @@ const postureSummary = computed(() => {
   return parts.join(' · ') || 'No active or recent commands.'
 })
 
+function desktopTitlebarHeightPx(): number {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue('--desktop-titlebar-h')
+    .trim()
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function footerTopPx(): number {
+  const footer = document.querySelector<HTMLElement>('#runFooterShell')
+  const rect = footer?.getBoundingClientRect()
+  if (!rect || rect.top <= 0 || rect.top >= window.innerHeight) {
+    return window.innerHeight
+  }
+  return rect.top
+}
+
+function defaultLauncherPos(): { x: number; y: number } {
+  const width = Math.max(1, overlayRootRef.value?.offsetWidth ?? 220)
+  const height = Math.max(1, overlayRootRef.value?.offsetHeight ?? 48)
+  const margin = 12
+  return {
+    x: window.innerWidth - width - margin,
+    y: footerTopPx() - height - margin,
+  }
+}
+
 function toggleExpanded(): void {
   if (ignoreNextToggle.value) {
     ignoreNextToggle.value = false
@@ -194,13 +221,14 @@ function normalizeLauncherPos(value: unknown): { x: number; y: number } | null {
 
 function clampLauncherPos(next: { x: number; y: number }): { x: number; y: number } {
   const margin = 8
+  const minY = desktopTitlebarHeightPx() + margin
   const width = Math.max(1, overlayRootRef.value?.offsetWidth ?? 220)
   const height = Math.max(1, overlayRootRef.value?.offsetHeight ?? 48)
   const maxX = Math.max(margin, window.innerWidth - width - margin)
-  const maxY = Math.max(margin, window.innerHeight - height - margin)
+  const maxY = Math.max(minY, window.innerHeight - height - margin)
   return {
     x: Math.min(maxX, Math.max(margin, Math.round(next.x))),
-    y: Math.min(maxY, Math.max(margin, Math.round(next.y))),
+    y: Math.min(maxY, Math.max(minY, Math.round(next.y))),
   }
 }
 
@@ -211,9 +239,12 @@ function setLauncherPos(next: { x: number; y: number }): void {
 function syncInitialLauncherPos(): void {
   const stored = normalizeLauncherPos(launcherPos.value)
   if (!launcherPosInitialized.value || !stored) {
-    const width = Math.max(1, overlayRootRef.value?.offsetWidth ?? 220)
-    setLauncherPos({ x: window.innerWidth - width - 12, y: 12 })
+    setLauncherPos(defaultLauncherPos())
     launcherPosInitialized.value = true
+    return
+  }
+  if (stored.y < desktopTitlebarHeightPx() + 24) {
+    setLauncherPos(defaultLauncherPos())
     return
   }
   setLauncherPos(stored)
@@ -446,7 +477,12 @@ function openRelatedAction(action: RelatedTaskAction | null): void {
 </script>
 
 <template>
-  <div ref="overlayRootRef" class="taskOverlayRoot" :style="rootStyle">
+  <div
+    v-if="!quietMode"
+    ref="overlayRootRef"
+    class="taskOverlayRoot"
+    :style="rootStyle"
+  >
     <div ref="referenceRef" class="overlayAnchor">
       <button
         ref="toggleRef"

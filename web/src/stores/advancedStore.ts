@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
 import { resetMoSearchSpace as resetMoSearchSpaceAction } from '../services/advancedService'
+import { storeErrorText } from '../utils/storeErrorText'
 import { resolveRuntimePinia } from './runtimePinia'
 
 export interface AdvancedOption {
@@ -56,6 +57,11 @@ function normalizeModeOptions(values: unknown): AdvancedOption[] {
     .filter((option, index, arr) => arr.findIndex((row) => row.value === option.value) === index)
   if (entries.length > 0) return entries
   return [{ value: 'Grid', label: 'Grid', disabled: false }]
+}
+
+function formatActionError(prefix: string, error: unknown): string {
+  const detail = storeErrorText(error)
+  return detail ? `${prefix}: ${detail}` : prefix
 }
 
 interface AdvancedState {
@@ -649,7 +655,7 @@ export const useAdvancedStore = defineStore('advanced', {
           this.source = 'vue'
           this.updatedAtUnixMs = Date.now()
         } catch (error) {
-          this.statusLine = `Export-all CSV picker failed: ${String(error || '')}`.trim()
+          this.statusLine = formatActionError('Export-all CSV picker failed', error)
           this.source = 'vue'
           this.updatedAtUnixMs = Date.now()
         }
@@ -667,7 +673,7 @@ export const useAdvancedStore = defineStore('advanced', {
           this.source = 'vue'
           this.updatedAtUnixMs = Date.now()
         } catch (error) {
-          this.statusLine = `Reset search space failed: ${String(error || '')}`.trim()
+          this.statusLine = formatActionError('Reset search space failed', error)
           this.source = 'vue'
           this.updatedAtUnixMs = Date.now()
         }

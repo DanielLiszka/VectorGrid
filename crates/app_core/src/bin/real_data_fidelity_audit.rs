@@ -793,6 +793,7 @@ fn run_validation_with_preset(
         data_id: format!("fidelity_audit_{label}"),
         backend: Backend::CpuOnly,
         ma_source: "close".to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params: if ma.fast_ma == "alma" {
             Some(alma_params_default())
         } else {
@@ -1185,6 +1186,7 @@ fn evaluate_validation_top_candidate_holdout(
         data_id: "validation_holdout_top_candidates".to_string(),
         backend: Backend::CpuOnly,
         ma_source: "close".to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params: if ma.fast_ma == "alma" {
             Some(alma_params_default())
         } else {
@@ -1383,6 +1385,7 @@ fn evaluate_optimization_winner_holdout(
         data_id: "holdout_optimization_winners".to_string(),
         backend: Backend::CpuOnly,
         ma_source: "close".to_string(),
+        dynamic_strategy_ir: None,
         fast_ma_params: if ma.fast_ma == "alma" {
             Some(alma_params_default())
         } else {
