@@ -203,7 +203,7 @@ try {
 
   $env:RUSTC_WRAPPER = ""
   Write-Host "Building ta_options_expression_feasibility with CUDA..."
-  & cargo build -p ta_desktop_demo_app --release --bin ta_options_expression_feasibility --features "cuda,cuda-backtest-kernel"
+  & cargo build -p ta_desktop_demo_app --release --bin ta_options_expression_feasibility --features "maintainer-tools,cuda,cuda-backtest-kernel"
   if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
   }

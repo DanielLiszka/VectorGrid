@@ -4,9 +4,10 @@ import {
   mlSignalPrimaryActionForStep,
   normalizeShellMode,
   normalizeWorkflowStep,
+  optionsPrimaryActionForStep,
 } from './core/workflowModel'
 
-export type WorkbenchPrimaryActionKind = 'cancel' | 'optimize' | 'validate' | 'ml_signal' | 'inspect'
+export type WorkbenchPrimaryActionKind = 'cancel' | 'optimize' | 'validate' | 'ml_signal' | 'options' | 'inspect'
 export type WorkbenchPrimaryActionTone = 'primary' | 'danger' | 'subtle'
 
 export interface WorkbenchPrimaryActionInput {
@@ -25,6 +26,11 @@ export interface WorkbenchPrimaryActionInput {
   mlSignalScoreCachePath?: string
   mlSignalScoreSource?: string
   mlSignalModelBundleId?: string
+  optionsDatasetReady?: boolean
+  optionsArtifactReady?: boolean
+  optionsValidationReady?: boolean
+  optionsRunBusy?: boolean
+  optionsValidationBusy?: boolean
   workspace?: unknown
 }
 
@@ -130,6 +136,53 @@ export function resolveWorkbenchPrimaryAction(input: WorkbenchPrimaryActionInput
         ? specificReason || String(input.runReadinessHint || '').trim() || 'This ML Signal stage is not ready.'
         : '',
       tone: descriptor.actionable ? 'primary' : 'subtle',
+    }
+  }
+
+  if (mode === 'options') {
+    const descriptor = optionsPrimaryActionForStep(step)
+    if (!input.dataLoaded) {
+      return {
+        kind: 'inspect',
+        label: descriptor.label,
+        disabled: true,
+        disabledReason: 'Load the underlying dataset used by the parent artifact before continuing.',
+        tone: 'subtle',
+      }
+    }
+    if (!descriptor.actionable) {
+      const reason = descriptor.kind === 'underlying'
+        ? 'Confirm the underlying dataset and parent artifact in this stage.'
+        : descriptor.kind === 'options_data'
+          ? 'Import or select an options dataset with the controls in this stage.'
+          : 'Review finalist evidence and exports in this stage.'
+      return {
+        kind: 'inspect',
+        label: descriptor.label,
+        disabled: true,
+        disabledReason: reason,
+        tone: 'subtle',
+      }
+    }
+    const expressionStage = descriptor.kind === 'expression'
+    const busy = expressionStage ? input.optionsRunBusy : input.optionsValidationBusy
+    const ready = expressionStage
+      ? input.optionsDatasetReady
+      : input.optionsArtifactReady && input.optionsValidationReady !== false
+    return {
+      kind: 'options',
+      label: descriptor.label,
+      disabled: !!busy || !ready,
+      disabledReason: busy
+        ? `${descriptor.label} is already in progress.`
+        : ready
+          ? ''
+          : expressionStage
+            ? 'Select an options dataset before running the expression search.'
+            : !input.optionsArtifactReady
+              ? 'Run or load an options expression artifact before validation.'
+              : 'Complete the options validation setup before running validation.',
+      tone: 'primary',
     }
   }
 

@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "base_dir": "..",
+  "numeric_tolerance_profile": "scientific_replay_v1",
+  "pairs": [
+    {
+      "name": "report-json-semantic",
+      "kind": "exact_json",
+      "baseline": "scripts/baselines/samples/report.json",
+      "candidate": "_write_test/headless_reports/vectorgrid_synthetic_headless_current.json",
+      "ignore_paths": [
+        "$.ts",
+        "$.optimization.res.runtime_ms",
+        "$.validation.res.runtime_ms",
+        "$.reproducibility.environment.generated_at_utc"
+      ],
+      "numeric_tolerances": []
+    },
+    {
+      "name": "validation-shortlist-csv-vs-json",
+      "kind": "validation_shortlist_csv_vs_json",
+      "json": "_write_test/headless_reports/vectorgrid_synthetic_headless_current.json",
+      "csv": "_write_test/headless_reports/vectorgrid_synthetic_headless_current.csv",
+      "json_candidates_path": [
+        "validation",
+        "res",
+        "candidates"
+      ],
+      "numeric_tolerance": {
+        "abs": 1e-12,
+        "rel": 1e-12
+      }
+    }
+  ]
+}

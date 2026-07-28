@@ -32,7 +32,6 @@ const {
   bestMeta,
   bestSummary,
   bestStats,
-  overviewEmptyVisible,
   overviewEmptyTitle,
   overviewEmptyBody,
   overviewEmptyHint,
@@ -59,7 +58,8 @@ const { mountReady } = useShellMount('#overviewVueShellMount')
 const compareDraft = ref('')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'overview')
-const showPendingOverview = computed(() => !overviewEmptyVisible.value && overviewStage.value === 'data_loaded_no_run')
+const showNoDataOverview = computed(() => overviewStage.value === 'no_data')
+const showPendingOverview = computed(() => overviewStage.value === 'data_loaded_no_run')
 const showReadyOverview = computed(() => overviewStage.value === 'ready')
 const executionRisk = computed(() => {
   const req = currentRun.value?.req
@@ -79,8 +79,8 @@ const routeProvenanceSummary = computed(() => {
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 const overviewStageLabel = computed(() => {
-  if (overviewEmptyVisible.value) return 'Awaiting results'
-  if (showPendingOverview.value) return 'Ready for review'
+  if (showNoDataOverview.value) return 'Awaiting data'
+  if (showPendingOverview.value) return 'Ready to run'
   return showReadyOverview.value ? 'Winner ready' : 'Overview'
 })
 
@@ -172,7 +172,7 @@ function reviewTopResults(): void {
         <div v-for="chip in overviewSummaryChips" :key="chip" class="panelSummaryChip">{{ chip }}</div>
       </div>
 
-      <section v-if="overviewEmptyVisible" class="emptyState">
+      <section v-if="showNoDataOverview" class="emptyState">
         <img class="emptyStateIllustration" :src="emptyResultsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
         <div class="emptyTitle">{{ overviewEmptyTitle }}</div>
         <div class="emptyBody">{{ overviewEmptyBody }}</div>

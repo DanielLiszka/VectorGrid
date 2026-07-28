@@ -34,6 +34,10 @@ pub(crate) fn build_validation_shortlist_csv_blocking(
     commands_reports_csv::build_validation_shortlist_csv_blocking(validation_res)
 }
 
+pub fn build_validation_shortlist_csv_headless(validation_res: &Value) -> Result<String, String> {
+    commands_reports_csv::build_validation_shortlist_csv_text(validation_res)
+}
+
 pub(crate) fn build_meta_report_xlsx_bytes(
     ts: &str,
     meta: &MetaSelectionResult,
@@ -224,30 +228,23 @@ pub(crate) fn save_report_xlsx_from_artifact_blocking(
     app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<SaveReportXlsxResponse, String> {
     let artifact_path = path.clone();
-    let mut artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
+    let artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
     validate_report_export_artifact_kind(&artifact)?;
     let report = build_validation_report_from_artifact(&artifact)?;
     let mut saved = save_report_xlsx_blocking(report, max_rows, app.clone())?;
 
-    if let Some(root) = artifact.as_object_mut() {
-        root.insert(
-            "report_xlsx_path".to_string(),
-            Value::String(saved.path.clone()),
-        );
-
-        match run_artifacts::save_run_artifact_blocking(artifact, app, Some(artifact_path)) {
-            Ok(_) => {
-                saved.artifact_updated = true;
-            }
-            Err(error) => {
-                saved.artifact_update_warning =
-                    format!("artifact report path persistence failed: {error}");
-            }
+    match run_artifacts::update_run_artifact_report_path_blocking(
+        artifact_path,
+        saved.path.clone(),
+        app,
+    ) {
+        Ok(_) => {
+            saved.artifact_updated = true;
         }
-    } else {
-        saved.artifact_update_warning =
-            "artifact report path persistence failed: artifact payload is not an object"
-                .to_string();
+        Err(error) => {
+            saved.artifact_update_warning =
+                format!("artifact report path persistence failed: {error}");
+        }
     }
 
     Ok(saved)
@@ -3096,9 +3093,7 @@ mod tests {
     use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::json;
-    use std::io::{Cursor, Read};
     use std::path::PathBuf;
-    use zip::ZipArchive;
 
     fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
@@ -3137,27 +3132,6 @@ mod tests {
         }
         fields.push(cur);
         fields
-    }
-
-    fn stable_xlsx_text_entries(bytes: &[u8]) -> Vec<(String, String)> {
-        let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec())).expect("xlsx zip archive");
-        let mut entries = Vec::new();
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i).expect("xlsx zip entry");
-            let name = file.name().to_string();
-            if name.starts_with("docProps/") {
-                continue;
-            }
-            if !(name.ends_with(".xml") || name.ends_with(".rels")) {
-                continue;
-            }
-            let mut text = String::new();
-            file.read_to_string(&mut text)
-                .expect("read xlsx text entry");
-            entries.push((name, text));
-        }
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
-        entries
     }
 
     fn make_trending_candles(len: usize, step: f64) -> vector_ta::utilities::data_loader::Candles {
@@ -3387,6 +3361,40 @@ mod tests {
     }
 
     #[test]
+    fn report_xlsx_bytes_are_deterministic_across_wall_clock_and_parallel_builds() {
+        use std::sync::{Arc, Barrier};
+
+        const PARALLEL_BUILDERS: usize = 4;
+
+        let report = Arc::new(minimal_report("2026-07-28T12:34:56Z"));
+        let expected = build_report_xlsx_bytes_headless(&report, Some(1)).expect("reference xlsx");
+
+        // The XLSX library's default document properties use the current
+        // second. Crossing that boundary makes this regression sensitive to
+        // accidentally reintroducing wall-clock metadata.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+
+        let barrier = Arc::new(Barrier::new(PARALLEL_BUILDERS));
+        let handles = (0..PARALLEL_BUILDERS)
+            .map(|_| {
+                let report = Arc::clone(&report);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    build_report_xlsx_bytes_headless(&report, Some(1)).expect("parallel xlsx build")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            assert_eq!(
+                handle.join().expect("parallel xlsx builder panicked"),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn build_report_xlsx_bytes_headless_treats_zero_max_rows_like_unbounded() {
         let report = minimal_report(&unique_report_ts("headless_zero_max_rows"));
 
@@ -3395,10 +3403,7 @@ mod tests {
         let unbounded =
             build_report_xlsx_bytes_headless(&report, None).expect("unbounded max rows xlsx");
 
-        assert_eq!(
-            stable_xlsx_text_entries(&explicit_zero),
-            stable_xlsx_text_entries(&unbounded)
-        );
+        assert_eq!(explicit_zero, unbounded);
     }
 
     #[test]

@@ -235,6 +235,7 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
     let mut has_high_any = false;
     let mut has_low_any = false;
     let mut has_volume_any = false;
+    let mut previous_timestamp: Option<(i64, usize)> = None;
 
     for (row_idx, record) in records.enumerate() {
         let record = record.map_err(|error| format_csv_read_error("record", error))?;
@@ -261,6 +262,19 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
                 ts_raw.trim(),
             )
         })?;
+        if let Some((previous, previous_line)) = previous_timestamp {
+            if ts == previous {
+                return Err(format!(
+                    "duplicate timestamp {ts} at line {line_num}; the same timestamp first appeared at line {previous_line}. Remove or aggregate duplicate rows before loading the CSV"
+                ));
+            }
+            if ts < previous {
+                return Err(format!(
+                    "timestamps are out of order at line {line_num}: {ts} is earlier than {previous} at line {previous_line}. Sort the CSV in strictly ascending timestamp order before loading it"
+                ));
+            }
+        }
+        previous_timestamp = Some((ts, line_num));
 
         let c_raw = record
             .get(idx.close)
@@ -455,6 +469,70 @@ mod tests {
     }
 
     #[test]
+    fn empty_csv_reports_an_actionable_error() {
+        let tmp = write_temp_csv("vta_csv_compat_test_empty", "");
+
+        let error =
+            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect_err("empty CSV must fail");
+
+        assert_eq!(error, "CSV is empty");
+    }
+
+    #[test]
+    fn header_only_csv_reports_that_data_rows_are_missing() {
+        let tmp = write_temp_csv("vta_csv_compat_test_header_only", "timestamp,close\n");
+
+        let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect_err("header-only CSV must fail");
+
+        assert_eq!(error, "CSV has no data rows");
+    }
+
+    #[test]
+    fn short_record_reports_the_missing_close_and_line() {
+        let tmp = write_temp_csv(
+            "vta_csv_compat_test_short_record",
+            "timestamp,close\n1350460800000\n",
+        );
+
+        let error =
+            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect_err("short row must fail");
+
+        assert!(error.contains("missing close column"));
+        assert!(error.contains("line 2"));
+    }
+
+    #[test]
+    fn truncated_quoted_record_fails_with_an_actionable_line() {
+        let tmp = write_temp_csv(
+            "vta_csv_compat_test_truncated_quote",
+            "timestamp,close\n\"1350460800000,23.5143\n",
+        );
+
+        let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect_err("truncated quoted row must fail");
+
+        assert!(error.contains("missing close column"), "{error}");
+        assert!(error.contains("line 2"), "{error}");
+    }
+
+    #[test]
+    fn non_finite_close_is_rejected_with_the_source_line() {
+        for (case, value) in [("nan", "NaN"), ("positive_inf", "inf")] {
+            let tmp = write_temp_csv(
+                &format!("vta_csv_compat_test_non_finite_{case}"),
+                &format!("timestamp,close\n1350460800000,{value}\n"),
+            );
+
+            let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+                .expect_err("non-finite close must fail");
+
+            assert!(error.contains("close is not finite"));
+            assert!(error.contains("line 2"));
+        }
+    }
+
+    #[test]
     fn float_form_timestamps_are_rounded_for_compatibility() {
         let csv = concat!("timestamp,close\n", "1350460800000.6,23.5143\n");
         let tmp = write_temp_csv("vta_csv_compat_test_float_timestamp", csv);
@@ -472,6 +550,64 @@ mod tests {
         let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
             .expect_err("out-of-range timestamp should fail");
         assert!(error.contains("out of i64 range"));
+    }
+
+    #[test]
+    fn duplicate_timestamps_are_rejected_with_both_source_lines() {
+        let csv = concat!(
+            "timestamp,close\n",
+            "1350460800000,23.5143\n",
+            "1350460800000,23.6143\n"
+        );
+        let tmp = write_temp_csv("vta_csv_compat_test_duplicate_timestamp", csv);
+
+        let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect_err("duplicate timestamps must fail");
+
+        assert!(
+            error.contains("duplicate timestamp 1350460800000"),
+            "{error}"
+        );
+        assert!(error.contains("line 3"), "{error}");
+        assert!(error.contains("line 2"), "{error}");
+        assert!(error.contains("Remove or aggregate"), "{error}");
+    }
+
+    #[test]
+    fn descending_timestamps_are_rejected_with_sorting_guidance() {
+        let csv = concat!(
+            "timestamp,close\n",
+            "1350460920000,23.5143\n",
+            "1350460800000,23.6143\n"
+        );
+        let tmp = write_temp_csv("vta_csv_compat_test_descending_timestamp", csv);
+
+        let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect_err("out-of-order timestamps must fail");
+
+        assert!(error.contains("timestamps are out of order"), "{error}");
+        assert!(error.contains("line 3"), "{error}");
+        assert!(error.contains("line 2"), "{error}");
+        assert!(error.contains("strictly ascending"), "{error}");
+    }
+
+    #[test]
+    fn strictly_ascending_timestamps_remain_valid() {
+        let csv = concat!(
+            "timestamp,close\n",
+            "1350460800000,23.5143\n",
+            "1350460860000,23.5643\n",
+            "1350460920000,23.6143\n"
+        );
+        let tmp = write_temp_csv("vta_csv_compat_test_ascending_timestamps", csv);
+
+        let candles = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect("strictly ascending timestamps should parse");
+
+        assert_eq!(
+            candles.timestamp,
+            vec![1350460800000, 1350460860000, 1350460920000]
+        );
     }
 
     #[test]

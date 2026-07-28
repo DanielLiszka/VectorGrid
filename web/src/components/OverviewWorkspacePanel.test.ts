@@ -89,6 +89,41 @@ describe('OverviewWorkspacePanel', () => {
     expect(text).toContain('Ready to review once results exist.')
   })
 
+  it('hides retained winner evidence when a reused data id points to a new dataset path', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowArtifactsStore = useWorkflowArtifactsStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('overview', { persist: false })
+    dataStore.dataId = 'data-1'
+    dataStore.datasetLabel = 'vectorgrid_synthetic_ohlcv.csv'
+    dataStore.baseCsvPath = 'C:/samples/vectorgrid_synthetic_ohlcv.csv'
+    analysisStore.bestTitle = 'Retained AAPL winner'
+    analysisStore.bestMeta = 'This must not be presented as current.'
+    workflowArtifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-07-18T12:00:00Z',
+        req: { data_id: 'data-1', strategy_kind: 'DoubleMa' },
+        dataset_meta: { csv_path: 'C:/market/AAPL.csv' },
+        res: { top: [{}] },
+      },
+    })
+
+    mount(OverviewWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('No analyzed winner yet.')
+    expect(text).not.toContain('Retained AAPL winner')
+    expect(text).not.toContain('This must not be presented as current.')
+  })
+
   it('keeps winner framing and baseline review while providing an explicit Top handoff', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -159,6 +194,8 @@ describe('OverviewWorkspacePanel', () => {
       currentRun: {
         ts: '2026-04-09T12:00:00Z',
         req: {
+          data_id: 'dataset_1',
+          strategy_kind: 'DoubleMa',
           strategy: {
             long_only: false,
             trade_on_next_bar: false,
@@ -211,6 +248,8 @@ describe('OverviewWorkspacePanel', () => {
           fallbackReason: 'cuda unavailable',
         },
         req: {
+          data_id: 'dataset_1',
+          strategy_kind: 'DoubleMa',
           backend: { backend: 'GpuOnly', device_id: 0 },
         },
         res: { top: [] },

@@ -361,6 +361,11 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
           last_updated_utc_ms: 1700010000000,
           row_count: 1000,
           adjusted: true,
+          integrity: {
+            csv_size_bytes: 456,
+            csv_sha256:
+              "D2683B5EF685D46C4F32E3E92D89E83A1EB70DCE166F47311266823189441D82",
+          },
         },
       ],
     };
@@ -1939,6 +1944,9 @@ describe("meta service", () => {
               csv_path: "C:/a.csv",
               label: "AAPL",
               timeframe: "1m",
+              source_size_bytes: 456,
+              source_content_fingerprint:
+                "sha256:d2683b5ef685d46c4f32e3e92d89e83a1eb70dce166f47311266823189441d82",
             }),
           ],
         }),
@@ -2021,6 +2029,47 @@ describe("meta service", () => {
     });
   });
 
+  it("merges packaged samples into the clean-install batch catalog without duplicating existing paths", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "list_sample_csvs") {
+        return [
+          {
+            id: "synthetic-ohlcv",
+            label: "Synthetic OHLCV sample",
+            path: "C:/package/resources/sample-data/vectorgrid_synthetic_ohlcv.csv",
+            source_kind: "bundled_synthetic",
+            timeframe: "1m",
+            row_count: 160,
+          },
+          {
+            id: "repo-duplicate",
+            label: "Duplicate repo sample",
+            path: "C:/b.csv",
+            source_kind: "repo_local",
+            timeframe: "1m",
+          },
+        ];
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await batchRefresh();
+
+    const analysisStore = useAnalysisStore(pinia);
+    expect(analysisStore.batchDatasets.map((row) => row.path).sort()).toEqual([
+      "C:/a.csv",
+      "C:/b.csv",
+      "C:/package/resources/sample-data/vectorgrid_synthetic_ohlcv.csv",
+    ]);
+    const sampleRow = analysisStore.batchDatasets.find((row) =>
+      row.path.endsWith("vectorgrid_synthetic_ohlcv.csv"),
+    );
+    expect(sampleRow?.label).toBe("Synthetic OHLCV sample");
+    expect(sampleRow?.meta).toContain("sample");
+    expect(sampleRow?.meta).toContain("tf=1m");
+    expect(sampleRow?.meta).toContain("rows=160");
+  });
+
   it("keeps local batch datasets and reports Polygon refresh failures", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === "polygon_get_cache_info") {
@@ -2054,5 +2103,23 @@ describe("meta service", () => {
       "C:/a.csv",
     ]);
     expect(analysisStore.batchMeta).toContain("local data error");
+  });
+
+  it("keeps Polygon and local datasets when packaged sample discovery fails", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "list_sample_csvs") {
+        throw new Error("packaged samples unavailable");
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await batchRefresh();
+
+    const analysisStore = useAnalysisStore(pinia);
+    expect(analysisStore.batchDatasets.map((row) => row.path).sort()).toEqual([
+      "C:/a.csv",
+      "C:/b.csv",
+    ]);
+    expect(analysisStore.batchMeta).toContain("sample data error");
   });
 });

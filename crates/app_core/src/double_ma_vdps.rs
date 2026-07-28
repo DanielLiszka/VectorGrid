@@ -193,6 +193,11 @@ pub(crate) fn vdps_merge_partial_results(
         all: None,
         all_scores: None,
         heatmap: None,
+        search_distribution: None,
+        search_distribution_unavailable_reason: Some(
+            "full-search Sharpe distribution unavailable: VDPS evaluates heuristic rungs rather than one comparable exhaustive candidate universe"
+                .to_string(),
+        ),
         num_combos: total_num_combos,
         num_candles,
     })
@@ -468,6 +473,8 @@ mod tests {
             all: None,
             all_scores: None,
             heatmap: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
             num_combos: 64,
             num_candles: 1000,
         }

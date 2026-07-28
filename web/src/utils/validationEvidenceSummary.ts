@@ -40,6 +40,44 @@ export interface ValidationOverfitEvidenceSummary {
   items: ValidationOverfitEvidenceItem[];
 }
 
+export type ValidationDataRealismStatus = "complete" | "incomplete";
+
+export interface ValidationDataRealismEvidenceItem {
+  id:
+    | "price_adjustment"
+    | "corporate_actions"
+    | "survivorship_bias"
+    | "liquidity_capacity"
+    | "market_impact"
+    | "borrow_availability";
+  label: string;
+  value: string;
+  blocking: boolean;
+  detail: string;
+}
+
+export interface ValidationDataRealismSummary {
+  status: ValidationDataRealismStatus;
+  complete: boolean;
+  summaryLine: string;
+  missingOrUnknown: string[];
+  items: ValidationDataRealismEvidenceItem[];
+}
+
+export type ValidationPromotionEligibilityState =
+  | "blocked"
+  | "research_only"
+  | "eligible_for_review";
+
+export interface ValidationPromotionEligibilitySummary {
+  eligible: boolean;
+  state: ValidationPromotionEligibilityState;
+  summaryLine: string;
+  reason: string;
+  gatesPassed: string[];
+  gatesFailed: string[];
+}
+
 export interface ValidationEvidenceSummary {
   status: "not_run" | "incomplete" | "available";
   summaryLine: string;
@@ -52,6 +90,8 @@ export interface ValidationEvidenceSummary {
   datasetIdentity: string;
   modules: ValidationEvidenceModuleSummary[];
   overfit: ValidationOverfitEvidenceSummary;
+  dataRealism: ValidationDataRealismSummary;
+  promotionEligibility: ValidationPromotionEligibilitySummary;
 }
 
 export interface BuildValidationEvidenceSummaryInput {
@@ -73,6 +113,8 @@ interface NormalizedValidationEvidencePack {
   route: Record<string, unknown>;
   candidateUniverse: Record<string, unknown>;
   verdict: Record<string, unknown>;
+  dataset: Record<string, unknown>;
+  promotionEligibility: Record<string, unknown>;
   metrics: Record<string, unknown>[];
   modules: Record<string, unknown>[];
 }
@@ -202,6 +244,217 @@ function normalizeAvailability(
   return "unknown";
 }
 
+const DATA_REALISM_FIELDS: Array<{
+  id: ValidationDataRealismEvidenceItem["id"];
+  label: string;
+  priceAdjustment: boolean;
+}> = [
+  {
+    id: "price_adjustment",
+    label: "Price adjustment",
+    priceAdjustment: true,
+  },
+  {
+    id: "corporate_actions",
+    label: "Corporate actions",
+    priceAdjustment: false,
+  },
+  {
+    id: "survivorship_bias",
+    label: "Survivorship bias",
+    priceAdjustment: false,
+  },
+  {
+    id: "liquidity_capacity",
+    label: "Liquidity / capacity",
+    priceAdjustment: false,
+  },
+  {
+    id: "market_impact",
+    label: "Market impact",
+    priceAdjustment: false,
+  },
+  {
+    id: "borrow_availability",
+    label: "Borrow availability",
+    priceAdjustment: false,
+  },
+];
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => text(entry))
+    .filter(
+      (entry, index, entries) =>
+        entry.length > 0 && entries.indexOf(entry) === index,
+    );
+}
+
+function normalizeDataRealismValue(
+  value: unknown,
+  priceAdjustment: boolean,
+): string {
+  const normalized = text(value).toLowerCase();
+  if (priceAdjustment) {
+    return normalized === "adjusted" ||
+      normalized === "unadjusted" ||
+      normalized === "not_applicable"
+      ? normalized
+      : "unknown";
+  }
+  return normalized === "documented" || normalized === "not_applicable"
+    ? normalized
+    : "unknown";
+}
+
+function dataRealismDetail(value: string, priceAdjustment: boolean): string {
+  if (value === "not_applicable") return "not applicable";
+  if (value === "unknown") return "missing or unknown";
+  if (priceAdjustment) return `${value} prices documented`;
+  return "documented";
+}
+
+function buildDataRealismSummary(
+  pack: NormalizedValidationEvidencePack | null,
+): ValidationDataRealismSummary {
+  const dataset = pack?.dataset ?? {};
+  const dataRealism = asRecord(
+    dataset.data_realism ?? dataset.dataRealism,
+  );
+  const items = DATA_REALISM_FIELDS.map((field) => {
+    const value = normalizeDataRealismValue(
+      dataRealism[field.id],
+      field.priceAdjustment,
+    );
+    return {
+      id: field.id,
+      label: field.label,
+      value,
+      blocking: value === "unknown",
+      detail: dataRealismDetail(value, field.priceAdjustment),
+    };
+  });
+  const derivedMissing = items
+    .filter((item) => item.blocking)
+    .map((item) => item.id);
+  const reportedMissing = stringList(
+    dataRealism.missing_or_unknown ?? dataRealism.missingOrUnknown,
+  );
+  const missingOrUnknown = [...reportedMissing, ...derivedMissing].filter(
+    (entry, index, entries) => entries.indexOf(entry) === index,
+  );
+  const complete =
+    dataRealism.complete === true &&
+    missingOrUnknown.length === 0 &&
+    items.every((item) => !item.blocking);
+  const priceAdjustment =
+    items.find((item) => item.id === "price_adjustment")?.value ?? "unknown";
+  const missingLabels = missingOrUnknown.map((entry) => {
+    const normalized = entry.trim().toLowerCase();
+    return (
+      DATA_REALISM_FIELDS.find((field) => field.id === normalized)?.label ??
+      entry.replace(/_/g, " ")
+    );
+  });
+  const summaryLine = complete
+    ? `Data realism complete; price adjustment ${priceAdjustment}; corporate-action, survivorship, liquidity/capacity, market-impact, and borrow evidence documented or not applicable.`
+    : missingLabels.length > 0
+      ? `Data realism incomplete; missing/unknown ${missingLabels.join(", ")}.`
+      : "Data realism incomplete; the evidence pack did not mark the contract complete.";
+  return {
+    status: complete ? "complete" : "incomplete",
+    complete,
+    summaryLine,
+    missingOrUnknown,
+    items,
+  };
+}
+
+function normalizePromotionState(
+  value: unknown,
+): ValidationPromotionEligibilityState {
+  const normalized = text(value);
+  if (
+    normalized === "research_only" ||
+    normalized === "eligible_for_review"
+  ) {
+    return normalized;
+  }
+  return "blocked";
+}
+
+function buildPromotionEligibilitySummary(
+  pack: NormalizedValidationEvidencePack | null,
+  dataRealism: ValidationDataRealismSummary,
+  validationPresent: boolean,
+): ValidationPromotionEligibilitySummary {
+  const raw = pack?.promotionEligibility ?? {};
+  const reportedState = normalizePromotionState(raw.state);
+  const gatesPassed = stringList(raw.gates_passed ?? raw.gatesPassed);
+  const gatesFailed = stringList(raw.gates_failed ?? raw.gatesFailed);
+  const reportedReason = firstText(raw.reason);
+  const rawPresent = Object.keys(raw).length > 0;
+  const eligible =
+    raw.eligible === true &&
+    reportedState === "eligible_for_review" &&
+    dataRealism.complete &&
+    gatesFailed.length === 0;
+  const state: ValidationPromotionEligibilityState = eligible
+    ? "eligible_for_review"
+    : !dataRealism.complete || gatesFailed.length > 0
+      ? "blocked"
+      : reportedState === "research_only"
+        ? "research_only"
+        : "blocked";
+  const reason = !validationPresent
+    ? "validation evidence has not run"
+    : !dataRealism.complete
+      ? `data-realism evidence is incomplete${
+          dataRealism.missingOrUnknown.length > 0
+            ? ` (${dataRealism.missingOrUnknown.join(", ")})`
+            : ""
+        }`
+      : gatesFailed.length > 0
+        ? `promotion gates failed (${gatesFailed.join(", ")})`
+        : !rawPresent
+          ? "promotion eligibility was not reported"
+          : reportedReason ||
+            (state === "research_only"
+              ? "backend classified this artifact as research-only"
+              : eligible
+                ? "backend gates permit promotion review"
+                : "backend did not mark this artifact eligible for review");
+  const stateLabel =
+    state === "eligible_for_review"
+      ? "eligible for review"
+      : state === "research_only"
+        ? "research-only"
+        : "blocked";
+  return {
+    eligible,
+    state,
+    summaryLine: `Promotion ${stateLabel}; ${reason}. Statistical validation approval is not deployability or deployment approval.`,
+    reason,
+    gatesPassed,
+    gatesFailed,
+  };
+}
+
+function appendRealismAndPromotionSummary(
+  base: string,
+  dataRealism: ValidationDataRealismSummary,
+  promotionEligibility: ValidationPromotionEligibilitySummary,
+): string {
+  return [
+    text(base),
+    dataRealism.summaryLine,
+    promotionEligibility.summaryLine,
+  ]
+    .filter((part) => part.length > 0)
+    .join(" ");
+}
+
 function validationEvidencePackFromInput(
   input: BuildValidationEvidenceSummaryInput,
   validationRes: Record<string, unknown>,
@@ -228,6 +481,10 @@ function validationEvidencePackFromInput(
     route: asRecord(pack.route),
     candidateUniverse,
     verdict: asRecord(pack.verdict),
+    dataset: asRecord(pack.dataset),
+    promotionEligibility: asRecord(
+      pack.promotion_eligibility ?? pack.promotionEligibility,
+    ),
     metrics: Array.isArray(pack.metrics)
       ? pack.metrics.map((entry) => asRecord(entry))
       : [],
@@ -1185,11 +1442,23 @@ export function buildValidationEvidenceSummary(
   const datasetMeta = asRecord(input.datasetMeta);
   const pack = validationEvidencePackFromInput(input, validationRes);
   const overfit = buildValidationOverfitEvidenceSummary(input);
+  const validationPresent =
+    Object.keys(validationRes).length > 0 || pack != null;
+  const dataRealism = buildDataRealismSummary(pack);
+  const promotionEligibility = buildPromotionEligibilitySummary(
+    pack,
+    dataRealism,
+    validationPresent,
+  );
 
-  if (Object.keys(validationRes).length === 0 && !pack) {
+  if (!validationPresent) {
     return {
       status: "not_run",
-      summaryLine: "Validation evidence not run.",
+      summaryLine: appendRealismAndPromotionSummary(
+        "Validation evidence not run.",
+        dataRealism,
+        promotionEligibility,
+      ),
       requestedBackend: firstText(asRecord(validationReq.backend).backend),
       realizedBackend: "",
       route: "",
@@ -1201,6 +1470,8 @@ export function buildValidationEvidenceSummary(
         buildModuleSummary(validationReq, validationRes, module),
       ),
       overfit,
+      dataRealism,
+      promotionEligibility,
     };
   }
 
@@ -1224,14 +1495,21 @@ export function buildValidationEvidenceSummary(
       pack.status === "incomplete" || missingCount > 0
         ? "incomplete"
         : "available";
-    const requestedBackend = firstText(pack.route.requested_backend, pack.route.requestedBackend);
-    const realizedBackend = firstText(pack.route.realized_backend, pack.route.realizedBackend);
+    const requestedBackend = firstText(
+      pack.route.requested_backend,
+      pack.route.requestedBackend,
+    );
+    const realizedBackend = firstText(
+      pack.route.realized_backend,
+      pack.route.realizedBackend,
+    );
     const route = firstText(pack.route.route_label, pack.route.routeLabel);
     const fallbackReason = firstText(
       pack.route.fallback_reason,
       pack.route.fallbackReason,
     );
-    const routeLabel = realizedBackend || route || requestedBackend || "backend unknown";
+    const routeLabel =
+      realizedBackend || route || requestedBackend || "backend unknown";
     const packLabel = [
       pack.schemaVersion ? `schema ${pack.schemaVersion}` : "",
       pack.version != null ? `v${pack.version}` : "",
@@ -1244,7 +1522,11 @@ export function buildValidationEvidenceSummary(
         : `Validation evidence ${status}; pack ${packLabel || "present"}; no optional evidence modules requested; route ${routeLabel}.`;
     return {
       status,
-      summaryLine,
+      summaryLine: appendRealismAndPromotionSummary(
+        summaryLine,
+        dataRealism,
+        promotionEligibility,
+      ),
       requestedBackend,
       realizedBackend,
       route,
@@ -1254,6 +1536,8 @@ export function buildValidationEvidenceSummary(
       datasetIdentity: datasetIdentityFromMeta(datasetMeta),
       modules,
       overfit,
+      dataRealism,
+      promotionEligibility,
     };
   }
 
@@ -1293,7 +1577,11 @@ export function buildValidationEvidenceSummary(
 
   return {
     status,
-    summaryLine,
+    summaryLine: appendRealismAndPromotionSummary(
+      summaryLine,
+      dataRealism,
+      promotionEligibility,
+    ),
     requestedBackend,
     realizedBackend,
     route,
@@ -1303,5 +1591,7 @@ export function buildValidationEvidenceSummary(
     datasetIdentity: datasetIdentityFromMeta(datasetMeta),
     modules,
     overfit,
+    dataRealism,
+    promotionEligibility,
   };
 }

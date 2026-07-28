@@ -3,6 +3,7 @@ import { redactKnownSecrets } from '../utils/redaction'
 
 export type LegacyBootPhase = 'idle' | 'booting' | 'ready' | 'error'
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
+export type LatestArtifactHydrationPhase = 'idle' | 'loading' | 'ready' | 'error'
 export type DesktopNotificationPermission = 'unknown' | 'default' | 'granted' | 'denied' | 'unsupported'
 export type DesktopUpdaterStatus =
   | 'unknown'
@@ -40,6 +41,9 @@ interface RuntimeState {
   bootReadyAt: number | null
   bootError: string | null
   bootErrorDetail: string | null
+  latestArtifactHydrationPhase: LatestArtifactHydrationPhase
+  latestArtifactHydrationError: string
+  latestArtifactHydrationAttempts: number
   desktopLogs: RuntimeLogEntry[]
   desktopLogConsoleAttached: boolean
   desktopWindowStateFile: string
@@ -67,6 +71,9 @@ export const useRuntimeStore = defineStore('runtime', {
     bootReadyAt: null,
     bootError: null,
     bootErrorDetail: null,
+    latestArtifactHydrationPhase: 'idle',
+    latestArtifactHydrationError: '',
+    latestArtifactHydrationAttempts: 0,
     desktopLogs: [],
     desktopLogConsoleAttached: false,
     desktopWindowStateFile: '',
@@ -134,6 +141,29 @@ export const useRuntimeStore = defineStore('runtime', {
         }
       })()
       this.bootErrorDetail = redactKnownSecrets(raw).trim() || null
+    },
+
+    markLatestArtifactHydrationStarted(): void {
+      this.latestArtifactHydrationPhase = 'loading'
+      this.latestArtifactHydrationError = ''
+      this.latestArtifactHydrationAttempts += 1
+    },
+
+    markLatestArtifactHydrationReady(): void {
+      this.latestArtifactHydrationPhase = 'ready'
+      this.latestArtifactHydrationError = ''
+    },
+
+    markLatestArtifactHydrationError(error: unknown): void {
+      const message = redactKnownSecrets(
+        error instanceof Error ? error.message : error ?? 'Unknown artifact restore error',
+      ).trim()
+      this.latestArtifactHydrationPhase = 'error'
+      this.latestArtifactHydrationError = message || 'Unknown artifact restore error'
+      this.pushDesktopLog(
+        'warn',
+        `Latest artifact restore failed: ${this.latestArtifactHydrationError}`,
+      )
     },
 
     pushDesktopLog(level: RuntimeLogLevel, message: string): void {

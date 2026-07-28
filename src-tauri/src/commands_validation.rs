@@ -425,7 +425,7 @@ pub async fn run_composite_validation(
             "CompositeMo",
         ],
     )?;
-    let candles = state.get_candles(&req.data_id)?;
+    let candles = state.get_candles_for_run(&req.data_id)?;
 
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let app_cache_dir = crate::data_cache::app_data_cache_dir(&base);
@@ -588,6 +588,14 @@ fn apply_cross_ticker_validation_with_stack(
     let finalists_cross_mode = preserved_cross_mode || full_stack_cross_mode;
 
     let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
+    let optimization_trials = res
+        .validation_evidence_pack
+        .as_ref()
+        .and_then(|pack| pack.candidate_universe.optimization_trials);
+    let search_distribution = res
+        .validation_evidence_pack
+        .as_ref()
+        .and_then(|pack| pack.candidate_universe.search_distribution.clone());
     if finalists_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
     }
@@ -601,7 +609,7 @@ fn apply_cross_ticker_validation_with_stack(
         app_for_progress,
         "composite_validate_cross",
         |di, total_candidates, candidates| {
-            build_composite_cross_ticker_request(
+            let mut cross_req = build_composite_cross_ticker_request(
                 di,
                 total_candidates,
                 candidates,
@@ -660,7 +668,15 @@ fn apply_cross_ticker_validation_with_stack(
                     None
                 },
                 if finalists_cross_mode { max_pbo } else { None },
-            )
+            );
+            cross_req.validation_context = (optimization_trials.is_some()
+                || search_distribution.is_some())
+            .then(|| ta_app_core::ValidationArtifactContext {
+                optimization_trials,
+                search_distribution: search_distribution.clone(),
+                ..ta_app_core::ValidationArtifactContext::default()
+            });
+            cross_req
         },
         |req2, candles2, cancel2, progress2| {
             if preserved_cross_mode {
@@ -732,7 +748,7 @@ fn apply_cross_ticker_validation_with_stack(
                 requested_candidate_count: original_candidates_tested,
                 evaluated_candidate_count: res.run_verdict.candidates_tested,
                 retained_candidate_count: res.candidates.len(),
-                optimization_trials: None,
+                optimization_trials,
                 admission_policy: None,
                 hard_gates: &hard_gates,
                 run_verdict: &res.run_verdict,
@@ -825,7 +841,7 @@ pub async fn run_double_ma_validation(
             "BreakoutMomentum",
         ],
     )?;
-    let candles = state.get_candles(&req.data_id)?;
+    let candles = state.get_candles_for_run(&req.data_id)?;
 
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let app_cache_dir = crate::data_cache::app_data_cache_dir(&base);
@@ -937,6 +953,14 @@ fn apply_cross_ticker_validation_double_ma(
     let finalists_cross_mode = preserved_cross_mode || full_stack_cross_mode;
 
     let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
+    let optimization_trials = res
+        .validation_evidence_pack
+        .as_ref()
+        .and_then(|pack| pack.candidate_universe.optimization_trials);
+    let search_distribution = res
+        .validation_evidence_pack
+        .as_ref()
+        .and_then(|pack| pack.candidate_universe.search_distribution.clone());
     if finalists_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
     }
@@ -950,7 +974,7 @@ fn apply_cross_ticker_validation_double_ma(
         app_for_progress,
         "double_ma_validate_cross",
         |di, total_candidates, candidates| {
-            build_double_ma_cross_ticker_request(
+            let mut cross_req = build_double_ma_cross_ticker_request(
                 di,
                 total_candidates,
                 candidates,
@@ -1009,7 +1033,15 @@ fn apply_cross_ticker_validation_double_ma(
                     None
                 },
                 if finalists_cross_mode { max_pbo } else { None },
-            )
+            );
+            cross_req.validation_context = (optimization_trials.is_some()
+                || search_distribution.is_some())
+            .then(|| ta_app_core::ValidationArtifactContext {
+                optimization_trials,
+                search_distribution: search_distribution.clone(),
+                ..ta_app_core::ValidationArtifactContext::default()
+            });
+            cross_req
         },
         |req2, candles2, cancel2, progress2| {
             if preserved_cross_mode {
@@ -1081,7 +1113,7 @@ fn apply_cross_ticker_validation_double_ma(
                 requested_candidate_count: original_candidates_tested,
                 evaluated_candidate_count: res.run_verdict.candidates_tested,
                 retained_candidate_count: res.candidates.len(),
-                optimization_trials: None,
+                optimization_trials,
                 admission_policy: None,
                 hard_gates: &hard_gates,
                 run_verdict: &res.run_verdict,
@@ -1576,6 +1608,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         let err = validate_validation_context(
             Some(&ctx),
@@ -1596,6 +1631,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("1h".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         let err = validate_validation_context(
             Some(&ctx),
@@ -1616,6 +1654,9 @@ mod tests {
             csv_path: None,
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         let err = validate_validation_context(
             Some(&ctx),
@@ -1633,6 +1674,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("   ".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         let err = validate_validation_context(
             Some(&ctx),
@@ -1880,6 +1924,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         let err = validate_validation_context(
             Some(&ctx),
@@ -1897,6 +1944,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -1913,6 +1963,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -1929,6 +1982,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -1945,6 +2001,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -1961,6 +2020,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -1977,6 +2039,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -1993,6 +2058,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -2009,6 +2077,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -2025,6 +2096,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -2041,6 +2115,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -2057,6 +2134,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         let err = validate_validation_context(
             Some(&ctx),
@@ -2074,6 +2154,9 @@ mod tests {
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
             timeframe: Some("15m".to_string()),
             label: Some("AAPL".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         validate_validation_context(
             Some(&ctx),
@@ -2121,7 +2204,10 @@ mod tests {
             min_cscv_oos_rank_frac: None,
             min_cscv_oos_metric: None,
             max_pbo: None,
-            validation_context: None,
+            validation_context: Some(ta_app_core::ValidationArtifactContext {
+                optimization_trials: Some(58_300),
+                ..ta_app_core::ValidationArtifactContext::default()
+            }),
         };
         let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
             req, &candles, &cancel, None,
@@ -2183,6 +2269,12 @@ mod tests {
             .map(|s| s.datasets)
             .unwrap_or(0)
             >= 1));
+        assert_eq!(
+            res.validation_evidence_pack
+                .as_ref()
+                .and_then(|pack| pack.candidate_universe.optimization_trials),
+            Some(58_300)
+        );
     }
 
     #[test]
@@ -2559,7 +2651,10 @@ mod tests {
             min_cscv_oos_rank_frac: None,
             min_cscv_oos_metric: None,
             max_pbo: None,
-            validation_context: None,
+            validation_context: Some(ta_app_core::ValidationArtifactContext {
+                optimization_trials: Some(58_300),
+                ..ta_app_core::ValidationArtifactContext::default()
+            }),
         };
         let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
             req, &candles, &cancel, None,
@@ -2616,6 +2711,12 @@ mod tests {
             .map(|s| s.datasets)
             .unwrap_or(0)
             >= 1));
+        assert_eq!(
+            res.validation_evidence_pack
+                .as_ref()
+                .and_then(|pack| pack.candidate_universe.optimization_trials),
+            Some(58_300)
+        );
     }
 
     #[test]

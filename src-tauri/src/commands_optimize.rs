@@ -91,7 +91,7 @@ fn begin_optimization_run(
 ) -> Result<(RunGuard, Arc<AtomicBool>, Arc<Candles>), String> {
     let run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
-    let candles = state.get_candles(data_id)?;
+    let candles = state.get_candles_for_run(data_id)?;
     Ok((run_guard, cancel, candles))
 }
 

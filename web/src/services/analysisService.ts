@@ -7,6 +7,7 @@ import { invokeCommand } from "../tauri/invoke";
 import { copyTextToDesktopClipboard } from "./desktopClipboard";
 import { csvLine } from "../utils/csv";
 import { storeErrorText } from "../utils/storeErrorText";
+import { activeRunCompatibility } from "../utils/activeContextCompatibility";
 import {
   buildRunCompareSummary,
   parseArtifactLineage,
@@ -4670,6 +4671,38 @@ export async function rerenderDrill(): Promise<void> {
   if (store) {
     const rows = readTopRows(store);
     if (rows.length) {
+      const run = readWorkflowRun();
+      const pinia = resolveRuntimePinia();
+      const dataStore = pinia ? useDataStore(pinia) : null;
+      const workflowStore = pinia ? useWorkflowStore(pinia) : null;
+      const compatibility = activeRunCompatibility({
+        activeDataId: dataStore?.dataId,
+        activeDatasetPath: dataStore?.baseCsvPath || dataStore?.csvPath,
+        activeMode: workflowStore?.mode,
+        activeTimeframe: dataStore?.dataTimeframe,
+        run,
+      });
+      if (!compatibility.compatible) {
+        const persistedDataId = compatibility.runDataId;
+        const loadedDataId = compatibility.activeDataId;
+        const message = compatibility.code === "missing_run_dataset_identity"
+          ? "Candidate detail unavailable: the saved result does not identify its source dataset. Historical candidate rows remain available in Top Results."
+          : compatibility.code === "missing_active_dataset"
+            ? `Candidate detail unavailable: saved result data_id ${persistedDataId} is not currently loaded. Load the matching dataset. Historical candidate rows remain available in Top Results.`
+            : `Candidate detail stale/incompatible: ${compatibility.reason} Historical candidate rows remain available in Top Results.`;
+        drillSeq = (drillSeq + 1) >>> 0;
+        drillRenderState = null;
+        store.drillWrapVisible = false;
+        store.tradeStatsWrapVisible = false;
+        store.stabilityWrapVisible = false;
+        store.drillChartModel = null;
+        store.drillTradeTableModel = null;
+        store.drillMeta = `saved data_id=${persistedDataId || "missing"} | loaded data_id=${loadedDataId || "none"} | saved mode=${compatibility.runMode} | active mode=${compatibility.activeMode}`;
+        store.drillStatus = message;
+        store.stabilityStatus = "-";
+        setStatus(store, message);
+        return;
+      }
       const selected = rows.findIndex((row) => !!row?.selected);
       const bounded = selected >= 0 ? selected : 0;
       const model = resolveTopRowModelAtIndex(store, bounded);

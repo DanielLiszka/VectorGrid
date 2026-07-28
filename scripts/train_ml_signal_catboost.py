@@ -247,7 +247,8 @@ def import_training_dependencies() -> dict[str, Any]:
     except ImportError as exc:
         raise UserFacingError(
             "missing required Python dependency 'catboost'. Install it with "
-            "`python -m pip install catboost`, or use --dry-run to validate inputs only."
+            "`python -m pip install -r scripts/requirements-ml-signal-training.lock.txt`, "
+            "or use --dry-run to validate inputs only."
         ) from exc
     try:
         import sklearn
@@ -258,8 +259,8 @@ def import_training_dependencies() -> dict[str, Any]:
     except ImportError as exc:
         raise UserFacingError(
             "missing required Python dependency 'scikit-learn'. Training uses sklearn "
-            "metrics and calibration utilities; install it with "
-            "`python -m pip install scikit-learn`."
+            "metrics and calibration utilities; install the reviewed environment with "
+            "`python -m pip install -r scripts/requirements-ml-signal-training.lock.txt`."
         ) from exc
     return {
         "CatBoostClassifier": CatBoostClassifier,
@@ -950,7 +951,9 @@ def synthesize_export_manifest(
             "data_id": base.get("data_id")
             or context["config"].get("dataset", {}).get("data_id")
             or inferred_data_id(df),
-            "output_path": str(dataset_csv),
+            # Bundle sidecars must remain portable and must not disclose the
+            # workstation path used for training.
+            "output_path": dataset_csv.name,
             "row_count": int(len(df.index)),
             "feature_schema_path": "feature_schema.json",
             "feature_schema_version": int(schema.get("schema_version", 1) or 1),

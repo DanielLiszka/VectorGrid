@@ -43,13 +43,14 @@ function Get-AppCoreFeatureList {
 }
 
 function Get-DesktopFeatureArgs {
+  $features = @("maintainer-tools")
   if ($Variant -eq "gpu-ma") {
-    return @("--features", "cuda")
+    $features += "cuda"
   }
-  if ($Variant -eq "gpu-kernel") {
-    return @("--features", "cuda-backtest-kernel")
+  elseif ($Variant -eq "gpu-kernel") {
+    $features += "cuda-backtest-kernel"
   }
-  return @()
+  return @("--features", ($features -join ","))
 }
 
 function Get-StrictClippyArgs {
@@ -71,6 +72,12 @@ try {
   }
   if ($IncludeGpuValidationPerf -and $Variant -ne "gpu-kernel") {
     throw "-IncludeGpuValidationPerf requires -Variant gpu-kernel."
+  }
+  if ($IncludeGpuPerf -and $Variant -eq "gpu-ma") {
+    $gpuMaPerfBaselinePath = Join-Path $repoRoot "scripts\\baselines\\gpu_ma_perf_baseline.json"
+    if (-not (Test-Path -LiteralPath $gpuMaPerfBaselinePath -PathType Leaf)) {
+      throw "The gpu-ma backend release performance baseline is missing: $gpuMaPerfBaselinePath. Establish it explicitly with scripts\\run_gpu_ma_perf_gate.ps1 -Mode baseline before release rehearsal."
+    }
   }
 
   Write-Host "Backend release gate: Rust-only validation for the backend/CLI preview surface."
@@ -99,7 +106,7 @@ try {
     cargo check -p ta_strategies --all-targets
     if ($LASTEXITCODE -ne 0) { throw "ta_strategies check failed with exit code $LASTEXITCODE" }
 
-    cargo check -p ta_desktop_demo_app --no-default-features --lib --tests --bin ta_headless_validate
+    cargo check -p ta_desktop_demo_app --no-default-features --features maintainer-tools --lib --tests --bins
     if ($LASTEXITCODE -ne 0) { throw "ta_desktop_demo_app backend check failed with exit code $LASTEXITCODE" }
   }
 
@@ -119,8 +126,8 @@ try {
         Args = @("clippy", "-p", "ta_strategies", "--all-targets", "--no-deps")
       },
       @{
-        Name = "ta_desktop_demo_app backend targets"
-        Args = @("clippy", "-p", "ta_desktop_demo_app", "--no-default-features", "--lib", "--tests", "--bin", "ta_headless_validate", "--no-deps")
+        Name = "ta_desktop_demo_app maintainer targets"
+        Args = @("clippy", "-p", "ta_desktop_demo_app", "--no-default-features", "--features", "maintainer-tools", "--lib", "--tests", "--bins", "--no-deps")
       }
     )
     foreach ($step in $clippySteps) {
@@ -185,8 +192,14 @@ try {
   }
 
   if ($IncludeGpuPerf) {
-    Invoke-Step "GPU perf gate" {
-      powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\\run_gpu_perf_gate.ps1") -Mode candidate
+    if ($Variant -eq "gpu-ma") {
+      Invoke-Step "GPU MA-sweep perf gate" {
+        powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\\run_gpu_ma_perf_gate.ps1") -Mode candidate
+      }
+    } else {
+      Invoke-Step "GPU kernel perf gate" {
+        powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\\run_gpu_perf_gate.ps1") -Mode candidate
+      }
     }
   }
 

@@ -134,21 +134,27 @@ pub use commands_options_data::{
 pub use commands_options_expression::{
     analyze_options_expression_feasibility,
     analyze_options_expression_feasibility_blocking_headless,
-    analyze_options_expression_validation_feasibility, inspect_options_expression_event_path,
-    inspect_options_expression_event_path_blocking_headless, inspect_options_expression_tuple,
-    inspect_options_expression_tuple_blocking_headless, list_options_expression_artifacts,
-    list_options_expression_artifacts_blocking_headless, load_options_expression_artifact,
-    load_options_expression_artifact_blocking_headless, run_options_expression,
-    run_options_expression_blocking_headless, save_options_csv, save_options_csv_blocking_headless,
-    validate_options_expression_artifact, AnalyzeOptionsExpressionFeasibilityResponse,
+    analyze_options_expression_validation_feasibility,
+    analyze_options_expression_validation_feasibility_blocking_headless,
+    inspect_options_expression_event_path, inspect_options_expression_event_path_blocking_headless,
+    inspect_options_expression_tuple, inspect_options_expression_tuple_blocking_headless,
+    list_options_expression_artifacts, list_options_expression_artifacts_blocking_headless,
+    load_options_expression_artifact, load_options_expression_artifact_blocking_headless,
+    run_options_expression, run_options_expression_blocking_headless, save_options_csv,
+    save_options_csv_blocking_headless, validate_options_expression_artifact,
+    validate_options_expression_artifact_blocking_headless,
+    AnalyzeOptionsExpressionFeasibilityResponse,
     AnalyzeOptionsExpressionValidationFeasibilityResponse,
     InspectOptionsExpressionEventPathRequest, InspectOptionsExpressionTupleRequest,
-    OptionsExpressionArtifactSummary, RunOptionsExpressionResponse, SaveOptionsCsvRequest,
-    SaveOptionsCsvResponse, ValidateOptionsExpressionArtifactResponse,
+    OptionsExpressionArtifactSummary, OptionsExpressionReplayBuildTimingBreakdown,
+    RunOptionsExpressionResponse, SaveOptionsCsvRequest, SaveOptionsCsvResponse,
+    ValidateOptionsExpressionArtifactResponse,
 };
 pub use commands_portfolio::analyze_portfolio_feasibility;
-pub use commands_reports::build_report_xlsx_bytes_headless;
 pub(crate) use commands_reports::{build_meta_report_xlsx_bytes, sanitize_filename_component};
+pub use commands_reports::{
+    build_report_xlsx_bytes_headless, build_validation_shortlist_csv_headless,
+};
 pub use commands_reports_api::{
     build_report_xlsx, build_validation_shortlist_csv, open_path, open_reports_dir, reveal_path,
     save_report_xlsx, save_report_xlsx_from_artifact, SaveReportXlsxResponse,

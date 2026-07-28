@@ -219,10 +219,13 @@ describe('ParetoWorkspacePanel', () => {
     })
     await flushPanel()
 
-    const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((candidate) =>
-      String(candidate.textContent || '').includes('Review Top results'),
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).filter(
+      (candidate) => String(candidate.textContent || '').trim() === 'Review Top results',
     )
-    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]?.dataset.qaAction).toBe('pareto.reviewTop')
+
+    buttons[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPanel()
 
     expect(workflowStore.resultsTab).toBe('top')

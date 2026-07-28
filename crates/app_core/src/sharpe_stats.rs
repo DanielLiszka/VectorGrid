@@ -6,6 +6,69 @@ pub struct SharpeStats {
     pub dsr: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReturnDistributionMoments {
+    pub observations: usize,
+    pub skewness: f64,
+    pub kurtosis: f64,
+}
+
+/// Estimates bias-corrected sample skewness and Pearson kurtosis from finite returns.
+///
+/// At least four non-constant observations are required. Callers can preserve the
+/// historical normal-moment assumption (`0.0`, `3.0`) when this returns `None`.
+pub fn sample_return_distribution_moments<I>(returns: I) -> Option<ReturnDistributionMoments>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut n = 0.0f64;
+    let mut observations = 0usize;
+    let mut mean = 0.0f64;
+    let mut m2 = 0.0f64;
+    let mut m3 = 0.0f64;
+    let mut m4 = 0.0f64;
+
+    for value in returns {
+        if !value.is_finite() {
+            continue;
+        }
+        observations = observations.saturating_add(1);
+        let previous_n = n;
+        n += 1.0;
+        let delta = value - mean;
+        let delta_n = delta / n;
+        let delta_n_sq = delta_n * delta_n;
+        let term1 = delta * delta_n * previous_n;
+        m4 += term1 * delta_n_sq * (n * n - 3.0 * n + 3.0) + 6.0 * delta_n_sq * m2
+            - 4.0 * delta_n * m3;
+        m3 += term1 * delta_n * (n - 2.0) - 3.0 * delta_n * m2;
+        m2 += term1;
+        mean += delta_n;
+    }
+
+    if observations < 4 || !m2.is_finite() || m2 <= 0.0 {
+        return None;
+    }
+
+    let sample_skewness = (n * (n - 1.0).sqrt() / (n - 2.0)) * m3 / m2.powf(1.5);
+    let population_excess_kurtosis = n * m4 / (m2 * m2) - 3.0;
+    let sample_excess_kurtosis =
+        ((n - 1.0) / ((n - 2.0) * (n - 3.0))) * ((n + 1.0) * population_excess_kurtosis + 6.0);
+    let sample_kurtosis = sample_excess_kurtosis + 3.0;
+    if !sample_skewness.is_finite() || !sample_kurtosis.is_finite() {
+        return None;
+    }
+
+    Some(ReturnDistributionMoments {
+        observations,
+        skewness: sample_skewness,
+        // Pearson kurtosis is bounded below by one in the population. Sampling
+        // correction can undershoot slightly, while the PSR model requires a
+        // valid Pearson moment.
+        kurtosis: sample_kurtosis.max(1.0),
+    })
+}
+
 pub fn effective_sample_count(raw_samples: usize, effective_samples: Option<usize>) -> usize {
     let raw_floor = raw_samples.max(2);
     effective_samples.unwrap_or(raw_floor).clamp(2, raw_floor)
@@ -14,6 +77,15 @@ pub fn effective_sample_count(raw_samples: usize, effective_samples: Option<usiz
 pub fn effective_trial_count(raw_trials: usize, effective_trials: Option<usize>) -> usize {
     let raw_floor = raw_trials.max(1);
     effective_trials.unwrap_or(raw_floor).clamp(1, raw_floor)
+}
+
+pub fn normalize_optimization_trial_count(
+    optimization_trials: Option<usize>,
+    retained_trials: usize,
+) -> Option<usize> {
+    optimization_trials
+        .filter(|trials| *trials > 0)
+        .map(|trials| trials.max(retained_trials.max(1)))
 }
 
 fn normal_cdf(x: f64) -> f64 {
@@ -302,6 +374,17 @@ mod tests {
     }
 
     #[test]
+    fn optimization_trial_count_normalization_rejects_zero_and_cannot_undercount_retained_rows() {
+        assert_eq!(normalize_optimization_trial_count(None, 12), None);
+        assert_eq!(normalize_optimization_trial_count(Some(0), 12), None);
+        assert_eq!(normalize_optimization_trial_count(Some(5), 12), Some(12));
+        assert_eq!(
+            normalize_optimization_trial_count(Some(58_300), 12),
+            Some(58_300)
+        );
+    }
+
+    #[test]
     fn probabilistic_sharpe_ratio_preserves_invalid_input_fallback() {
         assert_eq!(
             probabilistic_sharpe_ratio(f64::NAN, 0.0, 100, 0.0, 3.0),
@@ -356,6 +439,31 @@ mod tests {
             0.2,
         );
         assert!(overlap_dsr < legacy_dsr);
+    }
+
+    #[test]
+    fn sample_return_distribution_moments_recovers_symmetric_sample_shape() {
+        let moments =
+            sample_return_distribution_moments([-2.0, -1.0, 0.0, 1.0, 2.0]).expect("moments");
+        assert_eq!(moments.observations, 5);
+        approx_eq(moments.skewness, 0.0, 1e-12);
+        approx_eq(moments.kurtosis, 1.8, 1e-12);
+    }
+
+    #[test]
+    fn sample_return_distribution_moments_detects_positive_skew_and_filters_nonfinite_values() {
+        let moments =
+            sample_return_distribution_moments([f64::NAN, 0.0, 0.0, 0.0, 1.0, f64::INFINITY])
+                .expect("moments");
+        assert_eq!(moments.observations, 4);
+        assert!(moments.skewness > 0.0);
+        assert!(moments.kurtosis >= 1.0);
+    }
+
+    #[test]
+    fn sample_return_distribution_moments_requires_four_nonconstant_returns() {
+        assert!(sample_return_distribution_moments([1.0, 2.0, 3.0]).is_none());
+        assert!(sample_return_distribution_moments([1.0, 1.0, 1.0, 1.0]).is_none());
     }
 
     #[test]

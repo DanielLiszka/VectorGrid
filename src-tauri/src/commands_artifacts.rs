@@ -157,7 +157,9 @@ pub async fn load_run_artifact(path: String, app: tauri::AppHandle) -> Result<Va
 #[tauri::command]
 pub async fn load_artifact(path: String, app: tauri::AppHandle) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        run_artifacts::load_run_artifact_blocking(path, app)
+        let artifact = run_artifacts::load_run_artifact_blocking(path, app)?;
+        super::commands_campaign::validate_campaign_summary_artifact_value(&artifact)?;
+        Ok(artifact)
     })
     .await
     .map_err(|e| e.to_string())?

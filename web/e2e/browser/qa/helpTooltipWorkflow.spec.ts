@@ -7,8 +7,12 @@ const visibleTooltipRole = (page: Page) => page.locator('[role="tooltip"]:visibl
 
 async function expectVisibleHelpTriggersHaveOneTooltip(page: Page, surfaceName: string): Promise<void> {
   const triggers = page.locator('.contextHelpTrigger:visible')
+  await expect
+    .poll(() => triggers.count(), {
+      message: `${surfaceName} visible help trigger count`,
+    })
+    .toBeGreaterThan(0)
   const triggerCount = await triggers.count()
-  expect(triggerCount, `${surfaceName} visible help trigger count`).toBeGreaterThan(0)
 
   for (let index = 0; index < triggerCount; index += 1) {
     const trigger = triggers.nth(index)

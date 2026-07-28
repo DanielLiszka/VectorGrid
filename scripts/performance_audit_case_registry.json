@@ -93,7 +93,9 @@
         "polygon_live_candle_stream_status"
       ],
       "primary_authority": "scripts/run_support_perf_gate.ps1 -Mode candidate -Case live-status",
-      "companion_evidence": ["manual_credentialed_runtime_check for actual provider stream start"],
+      "companion_evidence": [
+        "manual_credentialed_runtime_check for actual provider stream start"
+      ],
       "script": "scripts/run_support_perf_gate.ps1",
       "baseline_path": "scripts/baselines/support_perf_baseline.json",
       "default_out_path": "output/benchmarks/support_perf_summary.json",
@@ -115,7 +117,10 @@
       "automation_mode": "automated_import_fixture",
       "fixture_class": "small_options_csv_or_cached_manifest_fixture",
       "output_shape_authority": "options dataset manifest and provenance fields",
-      "command_modules": ["commands_options_data.rs", "options_parent_adapters.rs"],
+      "command_modules": [
+        "commands_options_data.rs",
+        "options_parent_adapters.rs"
+      ],
       "command_names": [
         "download_polygon_options_dataset",
         "import_options_dataset",
@@ -147,7 +152,11 @@
       "automation_mode": "automated",
       "fixture_class": "workflow_benchmark_pack",
       "output_shape_authority": "workflow summary plus CPU/GPU perf summaries",
-      "command_modules": ["commands_optimize.rs", "commands_data.rs", "metric_surface.rs"],
+      "command_modules": [
+        "commands_optimize.rs",
+        "commands_data.rs",
+        "metric_surface.rs"
+      ],
       "command_names": [
         "run_double_ma_optimization",
         "cancel_current_run",
@@ -164,6 +173,7 @@
       ],
       "script": "scripts/run_workflow_gate.ps1",
       "baseline_path": "scripts/baselines/workflow_regression_baseline.json",
+      "release_required_baseline": true,
       "default_out_path": "output/benchmarks/workflow_regression_summary.json",
       "heavy": true,
       "gpu_required": false,
@@ -189,9 +199,13 @@
         "run_composite_mo_optimization"
       ],
       "primary_authority": "scripts/run_cpu_perf_gate.ps1 -Mode candidate",
-      "companion_evidence": ["crates/app_core/benches/composite_cpu_opt.rs", "crates/app_core/benches/composite_mo_opt.rs"],
+      "companion_evidence": [
+        "crates/app_core/benches/composite_cpu_opt.rs",
+        "crates/app_core/benches/composite_mo_opt.rs"
+      ],
       "script": "scripts/run_cpu_perf_gate.ps1",
       "baseline_path": "scripts/baselines/cpu_perf_baseline.json",
+      "release_required_baseline": true,
       "default_out_path": "output/benchmarks/cpu_perf_summary.json",
       "heavy": true,
       "gpu_required": false,
@@ -211,7 +225,11 @@
       "automation_mode": "automated",
       "fixture_class": "criterion_validation_and_structured_probe_fixture",
       "output_shape_authority": "validation result, route metadata, and gpu_validation summary",
-      "command_modules": ["commands_validation.rs", "validation_common.rs", "metric_surface.rs"],
+      "command_modules": [
+        "commands_validation.rs",
+        "validation_common.rs",
+        "metric_surface.rs"
+      ],
       "command_names": [
         "run_composite_validation",
         "run_double_ma_validation",
@@ -224,6 +242,7 @@
       ],
       "script": "scripts/run_gpu_validation_perf_gate.ps1",
       "baseline_path": "scripts/baselines/gpu_validation_perf_baseline.json",
+      "release_required_baseline": true,
       "default_out_path": "output/benchmarks/gpu_validation_perf_summary.json",
       "heavy": true,
       "gpu_required": true,
@@ -251,7 +270,9 @@
         "compute_composite_cpu_local_stability"
       ],
       "primary_authority": "scripts/run_gpu_followup_perf_gate.ps1 -Mode candidate",
-      "companion_evidence": ["crates/app_core/benches/double_ma_followup_workflow.rs"],
+      "companion_evidence": [
+        "crates/app_core/benches/double_ma_followup_workflow.rs"
+      ],
       "script": "scripts/run_gpu_followup_perf_gate.ps1",
       "baseline_path": "scripts/baselines/gpu_followup_perf_baseline.json",
       "default_out_path": "output/benchmarks/gpu_followup_perf_summary.json",
@@ -273,7 +294,12 @@
       "automation_mode": "automated",
       "fixture_class": "saved_run_artifact_and_validation_shortlist_fixture",
       "output_shape_authority": "output parity plus byte count and wall time",
-      "command_modules": ["commands_reports.rs", "commands_reports_api.rs", "commands_simple_summary.rs", "run_artifacts.rs"],
+      "command_modules": [
+        "commands_reports.rs",
+        "commands_reports_api.rs",
+        "commands_simple_summary.rs",
+        "run_artifacts.rs"
+      ],
       "command_names": [
         "build_report_xlsx",
         "build_validation_shortlist_csv",
@@ -304,13 +330,20 @@
       "automation_mode": "manual_or_mocked",
       "fixture_class": "mocked_desktop_shell_fixture",
       "output_shape_authority": "command success/failure status and UI shell event timing",
-      "command_modules": ["commands_data.rs", "commands_reports_api.rs", "commands_artifacts.rs", "commands_system.rs"],
+      "command_modules": [
+        "commands_data.rs",
+        "commands_reports_api.rs",
+        "commands_artifacts.rs",
+        "commands_system.rs"
+      ],
       "command_names": [
         "pick_csv_file",
         "pick_save_csv",
+        "pick_save_json",
         "pick_folder",
         "open_reports_dir",
         "open_runs_dir",
+        "open_run_artifact_report",
         "reveal_path",
         "open_path",
         "exit_application",
@@ -326,7 +359,7 @@
       "gpu_required": false,
       "credentials_required": false,
       "destructive": false,
-      "notes": "Do not mix shell-open latency with report generation throughput."
+      "notes": "Coverage is manual or mocked only. It records picker/open/reveal command ownership without treating user dialog interaction, Explorer launch, or report generation as latency authority."
     },
     {
       "id": "meta.ml_confidence_workflow",
@@ -340,7 +373,11 @@
       "automation_mode": "automated",
       "fixture_class": "criterion_meta_ml_fixture",
       "output_shape_authority": "meta result, policy eval result, and Criterion estimates",
-      "command_modules": ["commands_meta.rs", "run_artifacts.rs", "metric_surface.rs"],
+      "command_modules": [
+        "commands_meta.rs",
+        "run_artifacts.rs",
+        "metric_surface.rs"
+      ],
       "command_names": [
         "run_meta_selection",
         "run_meta_stage4_experimental",
@@ -440,7 +477,9 @@
         "delete_artifact"
       ],
       "primary_authority": "scripts/run_support_perf_gate.ps1 -Mode candidate -Case artifacts",
-      "companion_evidence": ["web/e2e/browser/artifact-history-bootstrap-perf.spec.ts"],
+      "companion_evidence": [
+        "web/e2e/browser/artifact-history-bootstrap-perf.spec.ts"
+      ],
       "script": "scripts/run_support_perf_gate.ps1",
       "baseline_path": "scripts/baselines/support_perf_baseline.json",
       "default_out_path": "output/benchmarks/support_perf_summary.json",
@@ -462,10 +501,12 @@
       "automation_mode": "automated",
       "fixture_class": "headless_campaign_dataset_fixture",
       "output_shape_authority": "campaign summary, progress events, and prefetch economics",
-      "command_modules": ["commands_campaign.rs", "commands_data.rs", "run_artifacts.rs"],
-      "command_names": [
-        "run_research_campaign"
+      "command_modules": [
+        "commands_campaign.rs",
+        "commands_data.rs",
+        "run_artifacts.rs"
       ],
+      "command_names": ["run_research_campaign"],
       "primary_authority": "scripts/run_campaign_perf_gate.ps1 -Mode candidate",
       "companion_evidence": [
         "src-tauri/src/bin/ta_campaign_perf.rs",
@@ -492,7 +533,11 @@
       "automation_mode": "automated_when_fixture_available",
       "fixture_class": "phase05_options_expression_fixture",
       "output_shape_authority": "phase05 summary, options expression artifact, and promotion-gate summary",
-      "command_modules": ["commands_options_expression.rs", "options_parent_adapters.rs", "run_artifacts.rs"],
+      "command_modules": [
+        "commands_options_expression.rs",
+        "options_parent_adapters.rs",
+        "run_artifacts.rs"
+      ],
       "command_names": [
         "run_options_expression",
         "analyze_options_expression_feasibility",
@@ -508,6 +553,7 @@
       "companion_evidence": ["scripts/run_options_expression_phase05.ps1"],
       "script": "scripts/run_options_expression_gpu_promotion_gate.ps1",
       "baseline_path": "scripts/baselines/options_expression_perf_baseline.json",
+      "release_required_baseline": true,
       "default_out_path": "output/benchmarks/options_expression_perf_summary.json",
       "heavy": true,
       "gpu_required": false,
@@ -528,9 +574,7 @@
       "fixture_class": "candidate_portfolio_fixture",
       "output_shape_authority": "portfolio feasibility result and rejected-candidate reason counts",
       "command_modules": ["commands_portfolio.rs", "metric_surface.rs"],
-      "command_names": [
-        "analyze_portfolio_feasibility"
-      ],
+      "command_names": ["analyze_portfolio_feasibility"],
       "primary_authority": "scripts/run_support_perf_gate.ps1 -Mode candidate -Case portfolio",
       "companion_evidence": [],
       "script": "scripts/run_support_perf_gate.ps1",
@@ -579,7 +623,9 @@
         "preview_execution_policy_decision"
       ],
       "primary_authority": "scripts/run_support_perf_gate.ps1 -Mode candidate -Case execution",
-      "companion_evidence": ["manual_credentialed_runtime_check for live broker API calls"],
+      "companion_evidence": [
+        "manual_credentialed_runtime_check for live broker API calls"
+      ],
       "script": "scripts/run_support_perf_gate.ps1",
       "baseline_path": "scripts/baselines/support_perf_baseline.json",
       "default_out_path": "output/benchmarks/support_perf_summary.json",
@@ -618,6 +664,34 @@
       "credentials_required": false,
       "destructive": false,
       "notes": "Useful for route-matrix diagnostics but not a primary product performance claim."
+    },
+    {
+      "id": "frontend.click_to_painted_stable",
+      "title": "Scoped warm mocked-browser workspace and saved-result click-to-painted-stable latency",
+      "workflow": "frontend_ui",
+      "surface_category": "frontend",
+      "priority": "high",
+      "claim_class": "scoped_warm_mocked_browser_interaction_latency",
+      "timing_boundary": "trusted_browser_click_to_painted_stable_state",
+      "cold_warm_boundary": "production frontend is built once; three interaction warmups precede twenty measured warm clicks per case",
+      "automation_mode": "automated_opt_in",
+      "fixture_class": "strict_path_distinct_async_mocked_tauri_saved_artifact_fixture",
+      "output_shape_authority": "unique no-replace output/playwright/frontend-interaction-latency/<run>/summary.json evidence with exact runner publication SHA, v2 per-file build attestation, flat content-addressed immutable preloaded served-dist identity, child-verifiable lock lease, harness/effective-fixture/scoped-Git-status hashes, retained samples, wrapper-side recomputation, and explicit local-candidate versus clean-source release-evidence classification",
+      "command_modules": [],
+      "command_names": [],
+      "primary_authority": "powershell -File scripts/run_frontend_interaction_latency.ps1",
+      "companion_evidence": [
+        "scripts/run_frontend_e2e_gate.ps1 for behavior",
+        "scripts/frontend_interaction_latency_policy.json for fixed samples and budgets"
+      ],
+      "script": "scripts/run_frontend_interaction_latency.ps1",
+      "baseline_path": "scripts/frontend_interaction_latency_policy.json",
+      "default_out_path": "",
+      "heavy": false,
+      "gpu_required": false,
+      "credentials_required": false,
+      "destructive": false,
+      "notes": "Opt-in scoped warm mocked-browser headless Chromium authority; exact dirty snapshots may pass only as labeled local candidate rehearsal evidence with release_evidence_eligible=false. Excludes dirty-worktree publication authority, full application latency, cold startup, Playwright actionability wait, native WebView2/Tauri overhead, backend/provider latency, and device diversity."
     },
     {
       "id": "frontend.startup_workbench_virtual_tables",
@@ -661,7 +735,11 @@
       "automation_mode": "gpu_required",
       "fixture_class": "criterion_gpu_bench_and_route_matrix_fixture",
       "output_shape_authority": "gpu_perf_summary plus optional Nsight provenance",
-      "command_modules": ["commands_optimize.rs", "commands_validation.rs", "commands_system.rs"],
+      "command_modules": [
+        "commands_optimize.rs",
+        "commands_validation.rs",
+        "commands_system.rs"
+      ],
       "command_names": [],
       "primary_authority": "scripts/run_gpu_perf_gate.ps1 -Mode candidate",
       "companion_evidence": [
@@ -672,12 +750,41 @@
       ],
       "script": "scripts/run_gpu_perf_gate.ps1",
       "baseline_path": "scripts/baselines/gpu_perf_baseline.json",
+      "release_required_baseline": true,
       "default_out_path": "output/benchmarks/gpu_perf_summary.json",
       "heavy": true,
       "gpu_required": true,
       "credentials_required": false,
       "destructive": false,
       "notes": "Profiler attachments are optional evidence and should not run under the default inventory pack."
+    },
+    {
+      "id": "gpu.optimization_residency_ma_sweep_route",
+      "title": "GPU MA-sweep optimization route and Criterion cases",
+      "workflow": "gpu_optimization",
+      "surface_category": "gpu",
+      "priority": "critical",
+      "claim_class": "gpu_ma_optimization_performance",
+      "timing_boundary": "engine_call",
+      "cold_warm_boundary": "device availability and the MA-sweep benchmark fixture are ready before timing starts",
+      "automation_mode": "gpu_required",
+      "fixture_class": "criterion_gpu_ma_sweep_fixture",
+      "output_shape_authority": "gpu_ma_perf_summary",
+      "command_modules": [],
+      "command_names": [],
+      "primary_authority": "scripts/run_gpu_ma_perf_gate.ps1 -Mode candidate",
+      "companion_evidence": [
+        "scripts/run_release_candidate_gate.ps1 -Variant gpu-ma -IncludePerf"
+      ],
+      "script": "scripts/run_gpu_ma_perf_gate.ps1",
+      "baseline_path": "scripts/baselines/gpu_ma_perf_baseline.json",
+      "release_required_baseline": true,
+      "default_out_path": "output/benchmarks/gpu_ma_perf_summary.json",
+      "heavy": true,
+      "gpu_required": true,
+      "credentials_required": false,
+      "destructive": false,
+      "notes": "Public GPU-MA release rehearsal fails closed until this baseline is captured explicitly on reviewed hardware; inventory must never fabricate it."
     },
     {
       "id": "support.internal_shared_surfaces",

@@ -132,6 +132,8 @@ function baseOptions() {
     riskTakeProfitPct: "",
     riskMaxOrderNotional: "",
     riskMaxPositionNotional: "",
+    riskMaxDailyLoss: "",
+    riskMaxDailyOrders: "",
     riskAllowShort: true,
     riskRequireBracket: false,
     manualFastLen: "",
@@ -272,6 +274,8 @@ describe("executionService", () => {
     await expect(loadExecutionRiskPolicy()).resolves.toEqual({
       max_order_notional: 250,
       max_position_notional: null,
+      max_daily_loss: null,
+      max_daily_orders: null,
       allow_short: null,
       require_bracket: null,
     });
@@ -1319,6 +1323,8 @@ describe("executionService", () => {
       ...baseOptions(),
       riskMaxOrderNotional: "500",
       riskMaxPositionNotional: "1000.50",
+      riskMaxDailyLoss: "125.25",
+      riskMaxDailyOrders: "4",
       riskAllowShort: false,
       riskRequireBracket: true,
     });
@@ -1331,6 +1337,8 @@ describe("executionService", () => {
         risk: expect.objectContaining({
           max_order_notional: 500,
           max_position_notional: 1000.5,
+          max_daily_loss: 125.25,
+          max_daily_orders: 4,
           allow_short: false,
           require_bracket: true,
         }),
@@ -1338,13 +1346,115 @@ describe("executionService", () => {
     });
   });
 
+  it("passes unsaved daily-limit drafts through preview, one-shot, and runner requests", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "preview_execution_policy_decision") {
+        return {
+          symbol: "AAPL",
+          decision: {
+            allowed: true,
+            code: "allowed",
+            message: "Execution policy allowed the current signal.",
+          },
+        };
+      }
+      if (command === "execute_strategy_signal_once") {
+        return {
+          action: "hold",
+          order_submitted: false,
+          warnings: [],
+        };
+      }
+      if (command === "polygon_live_candle_stream_status") {
+        return {
+          active: true,
+          stream: { symbol: "AAPL", delayed: true, market: "stocks" },
+        };
+      }
+      if (command === "start_live_execution_runner") {
+        return {
+          active: true,
+          inflight: false,
+          run_count: 0,
+          skip_count: 0,
+          error_count: 0,
+          config: {
+            symbol: "AAPL",
+            mode: "paper",
+            dry_run: true,
+          },
+        };
+      }
+      return {};
+    });
+    const options = {
+      ...baseOptions(),
+      rememberKeys: false,
+      apiKey: "",
+      apiSecret: "",
+      riskMaxDailyLoss: "87.50",
+      riskMaxDailyOrders: "3",
+    };
+
+    await previewExecutionRiskPolicy(options);
+    await runOnce(options);
+    await startRunner(options);
+
+    for (const command of [
+      "preview_execution_policy_decision",
+      "execute_strategy_signal_once",
+      "start_live_execution_runner",
+    ]) {
+      const call = invokeCommandMock.mock.calls.find(
+        ([calledCommand]) => calledCommand === command,
+      );
+      expect(call?.[1]).toEqual({
+        req: expect.objectContaining({
+          risk: expect.objectContaining({
+            max_daily_loss: 87.5,
+            max_daily_orders: 3,
+          }),
+        }),
+      });
+    }
+  });
+
+  it("rejects fractional daily-order drafts before preview or execution dispatch", async () => {
+    const options = {
+      ...baseOptions(),
+      riskMaxDailyOrders: "2.5",
+    };
+
+    await expect(previewExecutionRiskPolicy(options)).rejects.toThrow(
+      "Max daily orders must be a positive integer.",
+    );
+    await expect(runOnce(options)).rejects.toThrow(
+      "Max daily orders must be a positive integer.",
+    );
+    expect(invokeCommandMock).not.toHaveBeenCalled();
+  });
+
   it("loads, saves, and previews execution risk policy through backend commands", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === "get_execution_risk_policy") {
-        return { policy: { max_order_notional: 250, allow_short: false } };
+        return {
+          policy: {
+            max_order_notional: 250,
+            max_daily_loss: 100,
+            max_daily_orders: 5,
+            allow_short: false,
+          },
+        };
       }
       if (command === "set_execution_risk_policy") {
-        return { policy: { max_order_notional: 500, require_bracket: true } };
+        return {
+          policy: {
+            max_order_notional: 500,
+            max_daily_loss: 150,
+            max_daily_orders: 6,
+            require_bracket: true,
+          },
+        };
       }
       if (command === "preview_execution_policy_decision") {
         return {
@@ -1363,17 +1473,23 @@ describe("executionService", () => {
     await expect(loadExecutionRiskPolicy()).resolves.toEqual({
       max_order_notional: 250,
       max_position_notional: null,
+      max_daily_loss: 100,
+      max_daily_orders: 5,
       allow_short: false,
       require_bracket: null,
     });
     await expect(
       saveExecutionRiskPolicy({
         max_order_notional: 500,
+        max_daily_loss: 150,
+        max_daily_orders: 6,
         require_bracket: true,
       }),
     ).resolves.toEqual({
       max_order_notional: 500,
       max_position_notional: null,
+      max_daily_loss: 150,
+      max_daily_orders: 6,
       allow_short: null,
       require_bracket: true,
     });

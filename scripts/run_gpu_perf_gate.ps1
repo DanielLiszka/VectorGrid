@@ -1,8 +1,10 @@
 param(
   [ValidateSet("baseline", "candidate")]
   [string]$Mode = "candidate",
-  [string]$BaselinePath = "scripts/baselines/gpu_perf_baseline.json",
-  [string]$OutPath = "output/benchmarks/gpu_perf_summary.json",
+  [ValidateSet("gpu-kernel", "gpu-ma")]
+  [string]$WorkloadProfile = "gpu-kernel",
+  [string]$BaselinePath = "",
+  [string]$OutPath = "",
   [string]$CaseId = "",
   [string]$BenchFilter = "",
   [string]$CriterionEstimatesPath = "",
@@ -17,6 +19,37 @@ $ErrorActionPreference = "Stop"
 
 $SchemaVersion = 1
 $CaseRegistryVersion = 1
+
+if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
+  $BaselinePath = if ($WorkloadProfile -eq "gpu-ma") {
+    "scripts/baselines/gpu_ma_perf_baseline.json"
+  } else {
+    "scripts/baselines/gpu_perf_baseline.json"
+  }
+}
+if ([string]::IsNullOrWhiteSpace($OutPath)) {
+  $OutPath = if ($WorkloadProfile -eq "gpu-ma") {
+    "output/benchmarks/gpu_ma_perf_summary.json"
+  } else {
+    "output/benchmarks/gpu_perf_summary.json"
+  }
+}
+if ($WorkloadProfile -eq "gpu-ma" -and $CheckDynamicStrategyRatio) {
+  throw "The dynamic-strategy ratio is a gpu-kernel authority and cannot be enabled for -WorkloadProfile gpu-ma."
+}
+$GpuFeatureSet = if ($WorkloadProfile -eq "gpu-ma") {
+  "cuda"
+} else {
+  "cuda,cuda-backtest-kernel"
+}
+$GpuWorkloadLabel = if ($WorkloadProfile -eq "gpu-ma") {
+  "GPU MA-sweep"
+} else {
+  "GPU kernel"
+}
+if ($Mode -eq "candidate" -and -not (Test-Path -LiteralPath $BaselinePath -PathType Leaf)) {
+  throw "Missing $GpuWorkloadLabel perf baseline: $BaselinePath. Run with -Mode baseline first."
+}
 
 function Write-JsonUtf8 {
   param(
@@ -236,6 +269,7 @@ function Resolve-EstimatePath {
 
 function Get-GpuPerfCases {
   param(
+    [Parameter(Mandatory = $true)][string]$Profile,
     [string]$CustomCaseId,
     [string]$CustomBenchFilter,
     [string]$CustomEstimatesPath,
@@ -256,6 +290,21 @@ function Get-GpuPerfCases {
         id = $(if ([string]::IsNullOrWhiteSpace($CustomCaseId)) { "custom_gpu_case" } else { $CustomCaseId })
         bench_filter = $CustomBenchFilter
         estimates_path = $resolvedEstimatePath
+      }
+    )
+  }
+
+  if ($Profile -eq "gpu-ma") {
+    return @(
+      [ordered]@{
+        id = "gpu_ma_sma_small"
+        bench_filter = "double_ma/gpu_sweep/sma_sma/200k/small"
+        estimates_path = "target/criterion/double_ma_gpu_sweep_sma_sma_200k/small_1590pairs/new/estimates.json"
+      },
+      [ordered]@{
+        id = "gpu_ma_alma_large"
+        bench_filter = "double_ma/gpu_sweep/alma_alma/200k/large"
+        estimates_path = "target/criterion/double_ma_gpu_sweep_alma_alma_200k/large_58300pairs/new/estimates.json"
       }
     )
   }
@@ -287,7 +336,7 @@ function Convert-CriterionEstimateToCaseSummary {
     id = $CaseSpec.id
     schema_version = $SchemaVersion
     timing_boundary = "Criterion"
-    timing_boundary_note = "Criterion bench profile estimate for a single deterministic GPU-kernel optimization case."
+    timing_boundary_note = "Criterion bench profile estimate for a single deterministic $GpuWorkloadLabel optimization case."
     build_profile = "bench"
     bench_filter = $CaseSpec.bench_filter
     estimates_json = $CaseSpec.estimates_path
@@ -306,7 +355,7 @@ function Get-CaseById {
   return @($Cases | Where-Object { $_.id -eq $Id } | Select-Object -First 1)[0]
 }
 
-function Invoke-GpuKernelBenchCase {
+function Invoke-GpuBenchCase {
   param(
     [Parameter(Mandatory = $true)][string]$BenchExePath,
     [Parameter(Mandatory = $true)]$CaseSpec
@@ -314,11 +363,11 @@ function Invoke-GpuKernelBenchCase {
 
   Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU benchmark launch"
   Remove-Item Env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL -ErrorAction SilentlyContinue
-  Write-Host "Running GPU kernel benchmark ($($CaseSpec.bench_filter)) with dynamic strategy preflight OFF..."
+  Write-Host "Running $GpuWorkloadLabel benchmark ($($CaseSpec.bench_filter)) with dynamic strategy preflight OFF..."
   Invoke-ProcessAndEcho -FilePath $BenchExePath -ArgumentList @(
     $CaseSpec.bench_filter,
     "--bench"
-  ) -FailureContext "GPU kernel benchmark process failed" | Out-Null
+  ) -FailureContext "$GpuWorkloadLabel benchmark process failed" | Out-Null
   Wait-NoPerfProcesses -TimeoutSeconds 900 -Context "after GPU benchmark completion"
 
   if (!(Test-Path $CaseSpec.estimates_path)) {
@@ -380,6 +429,7 @@ function Invoke-DynamicStrategyProfileRun {
 }
 
 $criterionCases = Get-GpuPerfCases `
+  -Profile $WorkloadProfile `
   -CustomCaseId $CaseId `
   -CustomBenchFilter $BenchFilter `
   -CustomEstimatesPath $CriterionEstimatesPath `
@@ -398,13 +448,13 @@ try {
       "bench",
       "-p", "ta_app_core",
       "--bench", "double_ma_opt",
-      "--features", "cuda,cuda-backtest-kernel",
+      "--features", $GpuFeatureSet,
       "--no-run"
-    ) -FailureContext "Failed to build GPU kernel benchmark executable"
+    ) -FailureContext "Failed to build $GpuWorkloadLabel benchmark executable"
 
     $benchExe = Find-LatestBenchExecutable -benchName "double_ma_opt"
     foreach ($case in $criterionCases) {
-      Invoke-GpuKernelBenchCase -BenchExePath $benchExe.FullName -CaseSpec $case
+      Invoke-GpuBenchCase -BenchExePath $benchExe.FullName -CaseSpec $case
     }
 
     if ($CheckDynamicStrategyRatio) {
@@ -442,6 +492,8 @@ $summary = [ordered]@{
   case_registry_version = $CaseRegistryVersion
   generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
   mode = $Mode
+  workload_profile = $WorkloadProfile
+  cargo_features = $GpuFeatureSet
   environment = Get-EnvironmentFingerprint
   gpu = $gpuIdentity.raw
   gpu_info = $gpuIdentity
@@ -501,12 +553,21 @@ if ($Mode -eq "baseline") {
 }
 
 if (!(Test-Path $BaselinePath)) {
-  throw "Missing GPU perf baseline: $BaselinePath. Run with -Mode baseline first."
+  throw "Missing $GpuWorkloadLabel perf baseline: $BaselinePath. Run with -Mode baseline first."
 }
 
 $baseline = Read-JsonFile -Path $BaselinePath
 Assert-CompatibilityEqual -Name "gpu_perf.schema_version" -Candidate $summary.schema_version -Baseline $baseline.schema_version
 Assert-CompatibilityEqual -Name "gpu_perf.case_registry_version" -Candidate $summary.case_registry_version -Baseline $baseline.case_registry_version
+$baselineWorkloadProfile = if ($baseline.PSObject.Properties.Name -contains "workload_profile") {
+  [string]$baseline.workload_profile
+} else {
+  "gpu-kernel"
+}
+Assert-CompatibilityEqual -Name "gpu_perf.workload_profile" -Candidate $summary.workload_profile -Baseline $baselineWorkloadProfile
+if ($baseline.PSObject.Properties.Name -contains "cargo_features") {
+  Assert-CompatibilityEqual -Name "gpu_perf.cargo_features" -Candidate $summary.cargo_features -Baseline $baseline.cargo_features
+}
 
 if (
   $summary.gpu_info.PSObject.Properties.Name -contains "name" -and

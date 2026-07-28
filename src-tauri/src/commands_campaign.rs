@@ -18,9 +18,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet, VecDeque};
+#[cfg(test)]
 use std::fs;
-use std::io::Write;
+#[cfg(test)]
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use ta_app_core::{
@@ -32,6 +36,9 @@ use ta_app_core::{
 };
 use tauri::{Emitter, Manager};
 use vector_ta::utilities::data_loader::Candles;
+
+#[cfg(test)]
+static CAMPAIGN_SUMMARY_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -155,7 +162,7 @@ pub struct ResearchCampaignRequest {
     pub preload_policy: ResearchCampaignPreloadPolicy,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchCampaignCounts {
     pub total: usize,
     pub optimized: usize,
@@ -165,7 +172,7 @@ pub struct ResearchCampaignCounts {
     pub cancelled: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchCampaignItemDiagnostics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prepare_source: Option<String>,
@@ -219,7 +226,7 @@ pub enum CampaignResumeState {
     LegacyDegraded,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchCampaignDatasetIdentitySummary {
     pub csv_path: String,
     pub label: String,
@@ -236,7 +243,7 @@ pub struct ResearchCampaignDatasetIdentitySummary {
     pub source_content_fingerprint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ResearchCampaignManifestV2 {
     pub manifest_version: u32,
     pub manifest_hash: String,
@@ -258,7 +265,7 @@ pub struct ResearchCampaignManifestV2 {
     pub strict_identity_required: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchCampaignItemSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
@@ -285,7 +292,7 @@ pub struct ResearchCampaignItemSummary {
     pub diagnostics: Option<ResearchCampaignItemDiagnostics>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchCampaignSummary {
     pub version: u32,
     pub kind: String,
@@ -2169,6 +2176,45 @@ fn merge_json(mut left: Value, right: Value) -> Value {
     left
 }
 
+fn optimization_trials_from_result(run_res: &CampaignOptimizationResult) -> Option<usize> {
+    let trials = match run_res {
+        CampaignOptimizationResult::Backend(result) => result.num_combos,
+        CampaignOptimizationResult::CompositeMo(result) => result.total_evaluations,
+        CampaignOptimizationResult::CompositeMoArtifact(result) => result
+            .get("total_evaluations")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .or_else(|| {
+                result
+                    .pointer("/telemetry/search/actual_evaluations")
+                    .and_then(Value::as_u64)
+                    .filter(|value| *value > 0)
+            })
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0),
+    };
+    (trials > 0).then_some(trials)
+}
+
+fn search_distribution_from_result(
+    run_res: &CampaignOptimizationResult,
+) -> Option<ta_optimizer::SearchDistributionSummary> {
+    match run_res {
+        CampaignOptimizationResult::Backend(result) => result
+            .search_semantics
+            .as_ref()
+            .and_then(|semantics| semantics.search_distribution.clone()),
+        CampaignOptimizationResult::CompositeMo(result) => result
+            .search_semantics
+            .as_ref()
+            .and_then(|semantics| semantics.search_distribution.clone()),
+        CampaignOptimizationResult::CompositeMoArtifact(result) => result
+            .pointer("/search_semantics/search_distribution")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+    }
+}
+
 fn build_validation_request_value(
     strategy_kind: &str,
     data_id: &str,
@@ -2178,6 +2224,8 @@ fn build_validation_request_value(
     validation_cfg: &ResearchCampaignValidationConfig,
     family: CampaignOptimizationFamily,
 ) -> Result<Value, String> {
+    let optimization_trials = optimization_trials_from_result(run_res);
+    let search_distribution = search_distribution_from_result(run_res);
     let (candidates, admission_provenance) = candidate_selection_from_optimization(
         strategy_kind,
         family,
@@ -2233,6 +2281,9 @@ fn build_validation_request_value(
             csv_path,
             timeframe,
             label,
+            optimization_trials,
+            search_distribution,
+            data_realism: None,
         }
     }))
 }
@@ -2646,48 +2697,386 @@ fn build_campaign_summary(
     }
 }
 
+fn is_campaign_summary_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorgrid_campaign_summary" | "vectorbt_campaign_summary"
+    )
+}
+
+pub(super) fn validate_campaign_summary_artifact_value(value: &Value) -> Result<(), String> {
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !is_campaign_summary_kind(kind) {
+        return Ok(());
+    }
+
+    let version = value.get("version").and_then(Value::as_u64).unwrap_or(0);
+    if version < 2 {
+        // Legacy summaries remain viewable, but the frontend treats them as
+        // restart-only because they do not carry the v2 manifest contract.
+        return Ok(());
+    }
+    if version != 2 {
+        return Err(format!(
+            "unsupported campaign summary version {version}; restart the campaign with this build"
+        ));
+    }
+
+    let summary: ResearchCampaignSummary = serde_json::from_value(value.clone())
+        .map_err(|error| format!("invalid campaign summary v2 structure: {error}"))?;
+    let manifest = summary
+        .manifest
+        .as_ref()
+        .ok_or_else(|| "campaign summary v2 is missing its integrity manifest".to_string())?;
+    let req: ResearchCampaignRequest = serde_json::from_value(summary.request.clone())
+        .map_err(|error| format!("campaign summary request is not resumable: {error}"))?;
+
+    let strategy_kind = resolve_campaign_strategy_kind(&req.strategy_kind)
+        .map_err(|error| format!("campaign summary request is not resumable: {error}"))?;
+    if normalize_strategy_kind(&summary.strategy_kind) != strategy_kind {
+        return Err(
+            "campaign summary strategy does not match its resumable request; restart the campaign"
+                .to_string(),
+        );
+    }
+    let expected_timeframe = req
+        .timeframe_override
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .filter(|entry| !entry.is_empty());
+    let summary_timeframe = summary
+        .timeframe
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .filter(|entry| !entry.is_empty());
+    if expected_timeframe != summary_timeframe {
+        return Err(
+            "campaign summary timeframe does not match its resumable request; restart the campaign"
+                .to_string(),
+        );
+    }
+    if summary.tags != req.tags {
+        return Err(
+            "campaign summary tags do not match its resumable request; restart the campaign"
+                .to_string(),
+        );
+    }
+    if summary.holdout_pct != req.holdout_pct.min(50) {
+        return Err(
+            "campaign summary holdout split does not match its resumable request; restart the campaign"
+                .to_string(),
+        );
+    }
+
+    let expected_manifest = build_campaign_manifest(
+        &req,
+        &strategy_kind,
+        summary_timeframe.as_deref(),
+        &summary.tags,
+        summary.holdout_tag.as_deref(),
+        req.execution_mode,
+    );
+    if manifest != &expected_manifest {
+        return Err(
+            "campaign summary integrity manifest does not match its resumable request; the summary is corrupt or was modified"
+                .to_string(),
+        );
+    }
+
+    if summary.counts.total != req.datasets.len() || summary.items.len() != req.datasets.len() {
+        return Err(
+            "campaign summary item count does not match its resumable request; restart the campaign"
+                .to_string(),
+        );
+    }
+    for count in [
+        summary.counts.optimized,
+        summary.counts.validated,
+        summary.counts.skipped,
+        summary.counts.failed,
+    ] {
+        if count > summary.counts.total {
+            return Err(
+                "campaign summary progress counts exceed the dataset total; the summary is corrupt"
+                    .to_string(),
+            );
+        }
+    }
+
+    let dataset_paths = req
+        .datasets
+        .iter()
+        .map(|dataset| normalize_text(&dataset.csv_path))
+        .collect::<Vec<_>>();
+    let primary_tag = summary.tags.first().map(String::as_str).unwrap_or_default();
+    let (_, holdout_paths) = split_holdout_paths(&dataset_paths, req.holdout_pct, primary_tag);
+    let mut item_ids = HashSet::new();
+    let mut artifact_paths = HashSet::new();
+    for (index, (dataset, item)) in req.datasets.iter().zip(&summary.items).enumerate() {
+        let csv_path = normalize_text(&dataset.csv_path);
+        let timeframe = dataset_timeframe_hint(dataset, summary_timeframe.as_deref());
+        let label = dataset_label_from_input(dataset);
+        if normalize_path_key(&item.csv_path) != normalize_path_key(&csv_path)
+            || normalize_timeframe_label(&item.timeframe) != normalize_timeframe_label(&timeframe)
+            || normalize_text(&item.label) != normalize_text(&label)
+            || item.is_holdout != holdout_paths.contains(&csv_path)
+        {
+            return Err(format!(
+                "campaign summary item {} does not match its resumable dataset identity",
+                index + 1
+            ));
+        }
+
+        let expected_item_id =
+            campaign_item_id(&manifest.manifest_hash, index, &csv_path, &timeframe);
+        match item.item_id.as_deref().map(str::trim) {
+            Some(actual) if actual == expected_item_id => {
+                if !item_ids.insert(actual.to_string()) {
+                    return Err(
+                        "campaign summary contains duplicate stable item identities".to_string()
+                    );
+                }
+            }
+            Some(_) => {
+                return Err(format!(
+                    "campaign summary item {} has a mismatched stable identity",
+                    index + 1
+                ));
+            }
+            None if item.status == "failed" => {}
+            None => {
+                return Err(format!(
+                    "campaign summary item {} is missing its stable identity",
+                    index + 1
+                ));
+            }
+        }
+
+        if let Some(path) = item
+            .artifact_path
+            .as_deref()
+            .map(normalize_text)
+            .filter(|path| !path.is_empty())
+        {
+            let key = normalize_path_key(&path);
+            if !artifact_paths.insert(key) {
+                return Err("campaign summary contains duplicate run-artifact paths".to_string());
+            }
+        }
+    }
+
+    let expected_evidence = campaign_summary_evidence_state(&summary.counts, &summary.items);
+    if summary.evidence_state != Some(expected_evidence) {
+        return Err(
+            "campaign summary evidence state is inconsistent with its item checkpoints".to_string(),
+        );
+    }
+    let expected_resume = campaign_summary_resume_state(&summary.counts, &summary.items);
+    if summary.resume_state != Some(expected_resume) {
+        return Err(
+            "campaign summary resume state is inconsistent with its item checkpoints".to_string(),
+        );
+    }
+    if (summary.state == "cancelled") != summary.counts.cancelled {
+        return Err(
+            "campaign summary cancellation state is inconsistent with its progress counts"
+                .to_string(),
+        );
+    }
+    if matches!(
+        summary.state.as_str(),
+        "completed" | "completed_with_failures" | "completed_with_warnings"
+    ) && summary.counts.cancelled
+    {
+        return Err(
+            "campaign summary reports completion after cancellation; restart the campaign"
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn campaign_summary_temp_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("campaign summary path has no file name: {}", path.display()))?;
+    let counter = CAMPAIGN_SUMMARY_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Ok(parent.join(format!(
+        ".{}.{}.{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        nanos,
+        counter
+    )))
+}
+
+#[cfg(test)]
+fn existing_campaign_summary_target(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "refusing to replace non-regular campaign summary target {}",
+                    path.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect campaign summary target {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(test)]
+fn replace_existing_campaign_summary(staged_path: &Path, final_path: &Path) -> Result<(), String> {
+    // The staged file lives beside the target, so this is a same-filesystem atomic
+    // rename. On Windows, Rust implements this with MOVEFILE_REPLACE_EXISTING.
+    fs::rename(staged_path, final_path).map_err(|error| {
+        format!(
+            "failed to atomically replace campaign summary {}: {error}",
+            final_path.display()
+        )
+    })
+}
+
+#[cfg(test)]
+fn publish_campaign_summary(
+    staged_path: &Path,
+    final_path: &Path,
+    target_exists: bool,
+) -> Result<(), String> {
+    if target_exists {
+        replace_existing_campaign_summary(staged_path, final_path)
+    } else {
+        fs::rename(staged_path, final_path).map_err(|error| {
+            format!(
+                "failed to publish campaign summary {}: {error}",
+                final_path.display()
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+fn write_campaign_summary_bytes_with_publish(
+    path: &Path,
+    bytes: &[u8],
+    publish: impl FnOnce(&Path, &Path, bool) -> Result<(), String>,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create campaign summary directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let target_exists = existing_campaign_summary_target(path)?;
+
+    let (staged_path, mut staged_file) = {
+        let mut staged = None;
+        for _ in 0..64 {
+            let candidate = campaign_summary_temp_path(path)?;
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    staged = Some((candidate, file));
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "failed to create staged campaign summary {}: {error}",
+                        candidate.display()
+                    ));
+                }
+            }
+        }
+        staged.ok_or_else(|| {
+            format!(
+                "failed to allocate a unique staged campaign summary for {}",
+                path.display()
+            )
+        })?
+    };
+
+    let stage_result = (|| -> Result<(), String> {
+        staged_file.write_all(bytes).map_err(|error| {
+            format!(
+                "failed to write staged campaign summary {}: {error}",
+                staged_path.display()
+            )
+        })?;
+        staged_file.sync_all().map_err(|error| {
+            format!(
+                "failed to sync staged campaign summary {}: {error}",
+                staged_path.display()
+            )
+        })
+    })();
+    drop(staged_file);
+    if let Err(error) = stage_result {
+        let _ = fs::remove_file(&staged_path);
+        return Err(error);
+    }
+
+    if let Err(error) = publish(&staged_path, path, target_exists) {
+        let _ = fs::remove_file(&staged_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn write_campaign_summary_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_campaign_summary_bytes_with_publish(path, bytes, publish_campaign_summary)
+}
+
 fn save_campaign_summary_blocking<R: tauri::Runtime>(
     summary: &ResearchCampaignSummary,
     app: &tauri::AppHandle<R>,
     existing_path: Option<&str>,
 ) -> Result<(String, usize), String> {
-    let path = existing_path
+    let bytes = serde_json::to_vec_pretty(summary).map_err(|e| e.to_string())?;
+    let _artifact_library_lock = run_artifacts::acquire_artifact_library_process_lock(app)?;
+    let replace_existing = existing_path
+        .map(PathBuf::from)
+        .is_some_and(|value| !value.as_os_str().is_empty());
+    let path = match existing_path
         .map(PathBuf::from)
         .filter(|value| !value.as_os_str().is_empty())
-        .unwrap_or(run_artifacts::suggest_campaign_summary_path(
-            &summary.ts,
-            app,
-        )?);
-    let bytes = serde_json::to_vec_pretty(summary).map_err(|e| e.to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let tmp = {
-        let file_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("campaign_summary.json");
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        path.with_file_name(format!("{file_name}.tmp.{}.{}", std::process::id(), nanos))
+    {
+        Some(path) => path,
+        None => run_artifacts::suggest_campaign_summary_path(&summary.ts, app)?,
     };
-    let result = (|| -> Result<(), String> {
-        let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
-        file.flush().map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        if path.exists() {
-            let _ = fs::remove_file(&path);
-        }
-        fs::rename(&tmp, &path).map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+    run_artifacts::invalidate_artifact_catalog_under_process_lock(app)?;
+    if replace_existing {
+        run_artifacts::publish_artifact_file_atomically(&path, &bytes)?;
+    } else {
+        run_artifacts::publish_new_artifact_file_atomically(&path, &bytes)?;
     }
-    result?;
-    run_artifacts::prune_old_campaign_summary_artifacts_blocking(
+    run_artifacts::prune_old_campaign_summary_artifacts_under_process_lock(
         app,
         run_artifacts::artifact_retention_policy_for_app(app).campaign_summary_keep_newest,
     );
@@ -2956,6 +3345,12 @@ fn build_run_artifact_value(
         "dataset_meta": dataset_meta,
         "tags": tags,
     })
+}
+
+fn latch_campaign_cancellation(cancel: &AtomicBool, counts: &mut ResearchCampaignCounts) {
+    if cancel.load(Ordering::Relaxed) {
+        counts.cancelled = true;
+    }
 }
 
 fn run_research_campaign_blocking_with_mode(
@@ -4141,6 +4536,16 @@ fn run_research_campaign_blocking_with_mode(
                 &app,
                 Some(&summary_json_path),
             )?;
+            emit_campaign_progress(
+                &app,
+                "checkpoint",
+                index + 1,
+                dataset_total,
+                &items[index].label,
+                "dataset checkpoint saved",
+                Some(&summary_json_path),
+                &counts,
+            );
             continue;
         }
 
@@ -4630,6 +5035,10 @@ fn run_research_campaign_blocking_with_mode(
         )?;
     }
 
+    // The final (or only) dataset may observe cancellation inside its optimizer
+    // and return before there is another dataset boundary to latch the flag.
+    latch_campaign_cancellation(cancel.as_ref(), &mut counts);
+
     let mut meta_response = None;
     let mut stage5_response = None;
     if execution_mode == ResearchCampaignExecutionMode::OptimizeOnly {
@@ -4841,22 +5250,27 @@ pub async fn run_research_campaign(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_composite_candidate_value, build_doublema_vram_prefetch_config,
-        build_item_diagnostics, build_request_summary_value,
-        can_reuse_optimization_artifact_for_validation, candidate_selection_from_optimization,
-        candidate_values_from_optimization, classify_run_artifact_for_campaign,
-        existing_optimization_match, existing_validation_match, is_double_like_kind,
+        build_campaign_manifest, build_campaign_summary, build_composite_candidate_value,
+        build_doublema_vram_prefetch_config, build_item_diagnostics, build_request_summary_value,
+        campaign_item_id, can_reuse_optimization_artifact_for_validation,
+        candidate_selection_from_optimization, candidate_values_from_optimization,
+        classify_run_artifact_for_campaign, dataset_identity_summary, existing_optimization_match,
+        existing_validation_match, is_double_like_kind, latch_campaign_cancellation,
         load_existing_campaign_artifacts, normalize_backend_value, normalize_campaign_datasets,
-        optimization_family_for_kind, optimization_result_from_artifact_value, push_unique_warning,
-        record_prefetch_feedback, requested_gpu_device_id, resolve_campaign_strategy_kind,
-        save_campaign_summary_checkpoint_blocking, should_load_existing_artifacts, Backend,
-        CampaignArtifactMatchDecision, CampaignDoubleMaVramPrefetchConfig, CampaignEvidenceState,
-        CampaignOptimizationFamily, CampaignOptimizationResult, CampaignPrefetchDiagnostics,
-        CampaignResumeState, DatasetPreloadJob, DatasetPrepareSource, DoubleMaRequest,
-        PreparedCampaignDataset, ResearchCampaignCounts, ResearchCampaignDatasetInput,
-        ResearchCampaignExecutionMode, ResearchCampaignItemDiagnostics,
-        ResearchCampaignItemSummary, ResearchCampaignPreloadPolicy, ResearchCampaignRequest,
-        ResearchCampaignSummary, ResearchCampaignValidationConfig,
+        optimization_family_for_kind, optimization_result_from_artifact_value,
+        optimization_trials_from_result, push_unique_warning, record_prefetch_feedback,
+        requested_gpu_device_id, resolve_campaign_strategy_kind,
+        save_campaign_summary_checkpoint_blocking, search_distribution_from_result,
+        should_load_existing_artifacts, validate_campaign_summary_artifact_value,
+        write_campaign_summary_bytes_atomically, write_campaign_summary_bytes_with_publish,
+        Backend, CampaignArtifactMatchDecision, CampaignDoubleMaVramPrefetchConfig,
+        CampaignEvidenceState, CampaignOptimizationFamily, CampaignOptimizationResult,
+        CampaignPrefetchDiagnostics, CampaignResumeState, DatasetPreloadJob, DatasetPrepareSource,
+        DoubleMaRequest, PreparedCampaignDataset, ResearchCampaignCounts,
+        ResearchCampaignDatasetInput, ResearchCampaignExecutionMode,
+        ResearchCampaignItemDiagnostics, ResearchCampaignItemSummary,
+        ResearchCampaignPreloadPolicy, ResearchCampaignRequest, ResearchCampaignSummary,
+        ResearchCampaignValidationConfig,
     };
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
@@ -5001,6 +5415,246 @@ mod tests {
             ml_score_contract_summary: None,
             ml_score_note: None,
         }
+    }
+
+    fn prepared_dataset_for_resume(
+        symbol: &str,
+        source_size_bytes: u64,
+        source_mtime_utc_ms: i64,
+        source_content_fingerprint: &str,
+    ) -> PreparedCampaignDataset {
+        let csv_path = format!("C:/data/{symbol}.csv");
+        PreparedCampaignDataset {
+            input: ResearchCampaignDatasetInput {
+                csv_path: csv_path.clone(),
+                label: Some(symbol.to_string()),
+                timeframe: Some("15m".to_string()),
+                source_size_bytes: Some(source_size_bytes),
+                source_mtime_utc_ms: Some(source_mtime_utc_ms),
+                source_content_fingerprint: Some(source_content_fingerprint.to_string()),
+            },
+            candles: vector_ta::utilities::data_loader::Candles::new(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            dataset_meta: json!({
+                "csv_path": csv_path,
+                "timeframe": "15m",
+                "base_timeframe": "15m",
+                "derived_timeframe": "15m",
+                "source_size_bytes": source_size_bytes,
+                "source_mtime_utc_ms": source_mtime_utc_ms,
+                "source_content_fingerprint": source_content_fingerprint,
+            }),
+            timeframe: "15m".to_string(),
+            label: symbol.to_string(),
+        }
+    }
+
+    fn pending_resume_items(
+        manifest_hash: &str,
+        prepared: &[PreparedCampaignDataset],
+    ) -> Vec<ResearchCampaignItemSummary> {
+        prepared
+            .iter()
+            .enumerate()
+            .map(|(index, dataset)| ResearchCampaignItemSummary {
+                item_id: Some(campaign_item_id(
+                    manifest_hash,
+                    index,
+                    &dataset.input.csv_path,
+                    &dataset.timeframe,
+                )),
+                csv_path: dataset.input.csv_path.clone(),
+                label: dataset.label.clone(),
+                timeframe: dataset.timeframe.clone(),
+                is_holdout: false,
+                status: "pending".to_string(),
+                dataset_identity: Some(dataset_identity_summary(dataset)),
+                evidence_state: Some(CampaignEvidenceState::None),
+                resume_state: Some(CampaignResumeState::Resumable),
+                reuse_decision: None,
+                artifact_path: None,
+                report_xlsx_path: None,
+                error: None,
+                diagnostics: None,
+            })
+            .collect()
+    }
+
+    fn resume_artifact_summary(
+        artifact_dir: &std::path::Path,
+        item_id: &str,
+        prepared: &PreparedCampaignDataset,
+    ) -> super::run_artifacts::RunArtifactSummary {
+        let path = artifact_dir.join(format!("{item_id}.json"));
+        let mut artifact = run_artifact_summary(path.to_string_lossy().as_ref(), false);
+        artifact.config_fingerprint = "cfg-resume-v1".to_string();
+        artifact.csv_path = prepared.input.csv_path.clone();
+        artifact.timeframe = prepared.timeframe.clone();
+        artifact.base_timeframe = prepared.timeframe.clone();
+        artifact.derived_timeframe = prepared.timeframe.clone();
+        artifact.source_size_bytes = prepared.input.source_size_bytes;
+        artifact.source_mtime_utc_ms = prepared.input.source_mtime_utc_ms;
+        artifact.source_content_fingerprint = prepared.input.source_content_fingerprint.clone();
+        artifact.tags = vec!["campaign-resume".to_string()];
+        artifact
+    }
+
+    fn complete_resume_item(
+        item: &mut ResearchCampaignItemSummary,
+        status: &str,
+        artifact_path: String,
+        reuse_decision: Option<String>,
+    ) {
+        item.status = status.to_string();
+        item.evidence_state = Some(CampaignEvidenceState::Complete);
+        item.resume_state = Some(CampaignResumeState::Complete);
+        item.reuse_decision = reuse_decision;
+        item.artifact_path = Some(artifact_path);
+    }
+
+    fn write_test_json_atomically(path: &std::path::Path, value: &impl serde::Serialize) {
+        let bytes = serde_json::to_vec_pretty(value).expect("serialize test checkpoint");
+        write_campaign_summary_bytes_atomically(path, &bytes)
+            .expect("publish test checkpoint atomically");
+    }
+
+    fn read_test_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> T {
+        serde_json::from_slice(&std::fs::read(path).expect("read test checkpoint"))
+            .expect("deserialize test checkpoint")
+    }
+
+    fn resumable_summary_value() -> Value {
+        let req = ResearchCampaignRequest {
+            strategy_kind: "DoubleMa".to_string(),
+            datasets: vec![ResearchCampaignDatasetInput {
+                csv_path: "C:/data/AAPL.csv".to_string(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("15m".to_string()),
+                source_size_bytes: Some(2_048),
+                source_mtime_utc_ms: Some(1_712_000_000_000),
+                source_content_fingerprint: Some("fnv1a64-full-aabbccdd".to_string()),
+            }],
+            timeframe_override: Some("15m".to_string()),
+            tags: vec!["campaign-resume-contract".to_string()],
+            holdout_pct: 0,
+            holdout_tag: None,
+            skip_existing: true,
+            auto_meta: false,
+            auto_stage5: false,
+            execution_mode: ResearchCampaignExecutionMode::OptimizeOnly,
+            optimization_template: json!({
+                "strategy_kind": "DoubleMa",
+                "data_id": "campaign_resume_contract",
+            }),
+            validation_config: ResearchCampaignValidationConfig::default(),
+            meta_request: None,
+            stage5_request: None,
+            preload_policy: ResearchCampaignPreloadPolicy::Disabled,
+        };
+        let manifest = build_campaign_manifest(
+            &req,
+            "DoubleMa",
+            Some("15m"),
+            &req.tags,
+            None,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+        );
+        let items = vec![ResearchCampaignItemSummary {
+            item_id: Some(campaign_item_id(
+                &manifest.manifest_hash,
+                0,
+                "C:/data/AAPL.csv",
+                "15m",
+            )),
+            csv_path: "C:/data/AAPL.csv".to_string(),
+            label: "AAPL".to_string(),
+            timeframe: "15m".to_string(),
+            is_holdout: false,
+            status: "pending".to_string(),
+            dataset_identity: None,
+            evidence_state: Some(CampaignEvidenceState::None),
+            resume_state: Some(CampaignResumeState::Resumable),
+            reuse_decision: None,
+            artifact_path: None,
+            report_xlsx_path: None,
+            error: None,
+            diagnostics: None,
+        }];
+        let counts = ResearchCampaignCounts {
+            total: 1,
+            optimized: 0,
+            validated: 0,
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        };
+        serde_json::to_value(build_campaign_summary(
+            "2026-07-25T12:00:00Z",
+            "running",
+            "DoubleMa",
+            Some("15m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+            &req.tags,
+            None,
+            &counts,
+            &items,
+            None,
+            None,
+            &[],
+            5,
+        ))
+        .expect("serialize resumable campaign summary")
+    }
+
+    #[test]
+    fn post_loop_cancellation_latches_for_a_single_failed_dataset() {
+        let cancel = AtomicBool::new(true);
+        let mut counts = ResearchCampaignCounts {
+            total: 1,
+            optimized: 0,
+            validated: 0,
+            skipped: 0,
+            failed: 1,
+            cancelled: false,
+        };
+
+        latch_campaign_cancellation(&cancel, &mut counts);
+
+        assert!(counts.cancelled);
+        assert_eq!(counts.failed, 1);
+    }
+
+    #[test]
+    fn campaign_summary_resume_contract_accepts_untampered_v2_summary() {
+        validate_campaign_summary_artifact_value(&resumable_summary_value())
+            .expect("valid v2 campaign summary");
+    }
+
+    #[test]
+    fn campaign_summary_resume_contract_rejects_request_manifest_tampering() {
+        let mut summary = resumable_summary_value();
+        summary["request"]["optimization_template"]["fast_range"] = json!([3, 30, 3]);
+        let error = validate_campaign_summary_artifact_value(&summary)
+            .expect_err("tampered request must not remain resumable");
+        assert!(error.contains("integrity manifest"));
+    }
+
+    #[test]
+    fn campaign_summary_resume_contract_keeps_legacy_summary_viewable() {
+        validate_campaign_summary_artifact_value(&json!({
+            "version": 1,
+            "kind": "vectorgrid_campaign_summary",
+            "state": "cancelled",
+            "request": {"datasets": []}
+        }))
+        .expect("legacy summaries remain viewable but are blocked by the UI from resume");
     }
 
     #[test]
@@ -5351,6 +6005,114 @@ mod tests {
             shortlist_union_telemetry: None,
             search_semantics: None,
         }
+    }
+
+    #[test]
+    fn optimization_trial_count_uses_reported_backend_and_composite_search_counts() {
+        let mut backend = sample_backend_result(vec![(
+            sample_params(5, 20),
+            sample_metrics(1.0, 1.0, 1.0, 1.0),
+        )]);
+        backend.num_combos = 58_300;
+        assert_eq!(
+            optimization_trials_from_result(&CampaignOptimizationResult::Backend(backend)),
+            Some(58_300)
+        );
+
+        let composite = ta_app_core::CompositeMoResult {
+            data_id: "campaign-test".to_string(),
+            pareto: Vec::new(),
+            metric_surface_kind: None,
+            search_semantics: None,
+            total_evaluations: 4_096,
+            runtime_ms: 0,
+            telemetry: ta_app_core::composite_mo::CompositeMoTelemetry {
+                prescan: None,
+                search: ta_app_core::composite_mo::CompositeMoSearchTelemetry {
+                    sampler: "test".to_string(),
+                    requested_evaluations: 4_096,
+                    actual_evaluations: 4_096,
+                    unique_evaluations: 4_000,
+                    duplicate_evaluations_avoided: 96,
+                    feasible_points: 3_900,
+                    rejected_decode_or_order: 50,
+                    rejected_prescan_pair: 25,
+                    rejected_other_constraints: 25,
+                    exact_grid_used: false,
+                    exact_grid_total_combinations: None,
+                    post_search_trade22_points: 0,
+                    post_search_trade22_runtime_ms: 0,
+                },
+            },
+        };
+        assert_eq!(
+            optimization_trials_from_result(&CampaignOptimizationResult::CompositeMo(composite)),
+            Some(4_096)
+        );
+
+        let artifact = CampaignOptimizationResult::CompositeMoArtifact(json!({
+            "total_evaluations": 0,
+            "telemetry": {
+                "search": {
+                    "actual_evaluations": 2_048
+                }
+            }
+        }));
+        assert_eq!(optimization_trials_from_result(&artifact), Some(2_048));
+        assert_eq!(
+            optimization_trials_from_result(&CampaignOptimizationResult::CompositeMoArtifact(
+                json!({
+                    "total_evaluations": 0
+                })
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn campaign_validation_context_preserves_full_search_distribution() {
+        let summary = ta_optimizer::SearchDistributionSummary {
+            metric_surface_kind: "core17".to_string(),
+            sharpe_metric_id: ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID.to_string(),
+            attempted_count: 100,
+            unique_count: 90,
+            feasible_count: 80,
+            finite_sharpe_count: 75,
+            finite_sharpe_mean: Some(0.2),
+            finite_sharpe_sample_std: Some(0.4),
+        };
+        let mut backend = sample_backend_result(vec![(
+            sample_params(5, 20),
+            sample_metrics(1.0, 1.0, 1.0, 1.0),
+        )]);
+        backend.search_semantics = Some(ta_app_core::OptimizationSearchSemanticsSummary {
+            approx_mode: "exact_exhaustive".to_string(),
+            workload_family: "test".to_string(),
+            contract_summary: "test".to_string(),
+            declared_domain: None,
+            base_ranker: None,
+            rerank_operator: None,
+            heatmap_semantics: None,
+            search_distribution: Some(summary.clone()),
+            search_distribution_unavailable_reason: None,
+        });
+        let from_backend =
+            search_distribution_from_result(&CampaignOptimizationResult::Backend(backend));
+        let from_artifact = search_distribution_from_result(
+            &CampaignOptimizationResult::CompositeMoArtifact(json!({
+                "search_semantics": {
+                    "search_distribution": summary
+                }
+            })),
+        );
+
+        assert_eq!(from_backend, from_artifact);
+        assert_eq!(
+            from_backend
+                .as_ref()
+                .map(|distribution| distribution.finite_sharpe_count),
+            Some(75)
+        );
     }
 
     #[test]
@@ -5877,6 +6639,480 @@ mod tests {
                 .and_then(Value::as_str),
             Some("heuristic_observational")
         );
+    }
+
+    #[test]
+    fn failed_campaign_summary_replacement_preserves_previous_valid_summary() {
+        let temp_dir = make_temp_dir("campaign_summary_failed_replace");
+        let summary_path = temp_dir.join("summary.json");
+        let previous = br#"{"version":2,"state":"running","items":[{"status":"ok"}]}"#;
+        let replacement = br#"{"version":2,"state":"complete","items":[]}"#;
+        std::fs::write(&summary_path, previous).expect("write previous valid summary");
+
+        let mut staged_path = None;
+        let error = write_campaign_summary_bytes_with_publish(
+            &summary_path,
+            replacement,
+            |staged, final_path, target_exists| {
+                assert!(target_exists, "the existing summary must be replaced");
+                assert_eq!(final_path, summary_path.as_path());
+                assert_eq!(
+                    std::fs::read(staged).expect("read complete staged summary"),
+                    replacement
+                );
+                staged_path = Some(staged.to_path_buf());
+                Err("injected atomic replacement failure".to_string())
+            },
+        )
+        .expect_err("injected replacement failure must propagate");
+
+        assert!(error.contains("injected atomic replacement failure"));
+        let preserved = std::fs::read(&summary_path).expect("previous summary must survive");
+        assert_eq!(preserved, previous);
+        let parsed: Value =
+            serde_json::from_slice(&preserved).expect("preserved summary must remain valid JSON");
+        assert_eq!(
+            parsed.pointer("/items/0/status").and_then(Value::as_str),
+            Some("ok")
+        );
+        assert!(
+            !staged_path
+                .expect("publish attempt must observe the staged path")
+                .exists(),
+            "failed replacement must remove its staged temp file"
+        );
+
+        std::fs::remove_dir_all(temp_dir).expect("remove test temp dir");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_campaign_summary_replacement_preserves_existing_file_and_cleans_temp() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let temp_dir = make_temp_dir("campaign_summary_locked_replace");
+        let summary_path = temp_dir.join("summary.json");
+        let previous = br#"{"version":2,"state":"running"}"#;
+        std::fs::write(&summary_path, previous).expect("write previous campaign summary");
+        let locked_summary = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&summary_path)
+            .expect("open campaign summary without delete sharing");
+
+        let error =
+            write_campaign_summary_bytes_atomically(&summary_path, br#"{"state":"complete"}"#)
+                .expect_err("locked target must reject atomic replacement");
+        assert!(error.contains("failed to atomically replace campaign summary"));
+        assert_eq!(
+            std::fs::read(&summary_path).expect("previous summary must remain readable"),
+            previous
+        );
+        let remaining_paths = std::fs::read_dir(&temp_dir)
+            .expect("list summary directory")
+            .map(|entry| entry.expect("read summary directory entry").path())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remaining_paths,
+            vec![summary_path.clone()],
+            "failed OS-level replacement must remove its staged temp file"
+        );
+
+        drop(locked_summary);
+        std::fs::remove_dir_all(temp_dir).expect("remove test temp dir");
+    }
+
+    #[test]
+    fn campaign_summary_atomic_replace_leaves_no_temp_artifacts() {
+        let temp_dir = make_temp_dir("campaign_summary_atomic_replace");
+        let summary_path = temp_dir.join("summary.json");
+        std::fs::write(&summary_path, br#"{"state":"running"}"#).expect("write initial summary");
+
+        let replacement = br#"{"state":"complete"}"#;
+        write_campaign_summary_bytes_atomically(&summary_path, replacement)
+            .expect("atomically replace campaign summary");
+
+        assert_eq!(
+            std::fs::read(&summary_path).expect("read replacement summary"),
+            replacement
+        );
+        let remaining_paths = std::fs::read_dir(&temp_dir)
+            .expect("list summary directory")
+            .map(|entry| entry.expect("read summary directory entry").path())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remaining_paths,
+            vec![summary_path],
+            "successful replacement must consume the staged temp file"
+        );
+
+        std::fs::remove_dir_all(temp_dir).expect("remove test temp dir");
+    }
+
+    #[test]
+    fn cancelled_checkpoint_resumes_from_fresh_state_once_and_second_resume_is_noop() {
+        const STRATEGY_KIND: &str = "DoubleMa";
+        const PRIMARY_TAG: &str = "campaign-resume";
+        const CONFIG_FINGERPRINT: &str = "cfg-resume-v1";
+
+        let temp_dir = make_temp_dir("campaign_cancel_restart_resume");
+        let summary_path = temp_dir.join("campaign-summary.json");
+        let artifact_catalog_path = temp_dir.join("artifact-catalog.json");
+        let artifact_dir = temp_dir.join("runs");
+        let prepared = vec![
+            prepared_dataset_for_resume("AAPL", 2_048, 1_712_000_000_000, "sha256:aapl"),
+            prepared_dataset_for_resume("MSFT", 4_096, 1_712_000_000_001, "sha256:msft"),
+        ];
+        let tags = vec![PRIMARY_TAG.to_string()];
+        let req = ResearchCampaignRequest {
+            strategy_kind: STRATEGY_KIND.to_string(),
+            datasets: prepared
+                .iter()
+                .map(|dataset| dataset.input.clone())
+                .collect(),
+            timeframe_override: Some("15m".to_string()),
+            tags: tags.clone(),
+            holdout_pct: 0,
+            holdout_tag: None,
+            skip_existing: true,
+            auto_meta: false,
+            auto_stage5: false,
+            execution_mode: ResearchCampaignExecutionMode::OptimizeOnly,
+            optimization_template: json!({
+                "strategy_kind": STRATEGY_KIND,
+                "data_id": "campaign_resume_template",
+            }),
+            validation_config: ResearchCampaignValidationConfig::default(),
+            meta_request: None,
+            stage5_request: None,
+            preload_policy: ResearchCampaignPreloadPolicy::Disabled,
+        };
+        let manifest = build_campaign_manifest(
+            &req,
+            STRATEGY_KIND,
+            Some("15m"),
+            &tags,
+            None,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+        );
+        let manifest_hash = manifest.manifest_hash.clone();
+        let expected_item_ids = pending_resume_items(&manifest_hash, &prepared)
+            .into_iter()
+            .map(|item| item.item_id.expect("campaign item id"))
+            .collect::<Vec<_>>();
+        assert_ne!(
+            expected_item_ids[0], expected_item_ids[1],
+            "different dataset identities must not share a campaign item id"
+        );
+
+        // Phase 1 models a bounded cancellation at the same item boundary used
+        // by the production campaign loop. The durable run artifact is published
+        // before the cancelled summary checkpoint.
+        let cancel = AtomicBool::new(false);
+        let mut executed_item_ids = Vec::new();
+        let mut artifacts = Vec::new();
+        let mut items = pending_resume_items(&manifest_hash, &prepared);
+        let mut counts = ResearchCampaignCounts {
+            total: prepared.len(),
+            optimized: 0,
+            validated: 0,
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        };
+        for (index, dataset) in prepared.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                counts.cancelled = true;
+                break;
+            }
+            let mut warnings = Vec::new();
+            assert!(
+                existing_optimization_match(
+                    &artifacts,
+                    STRATEGY_KIND,
+                    CONFIG_FINGERPRINT,
+                    PRIMARY_TAG,
+                    dataset,
+                    &mut warnings,
+                )
+                .is_none(),
+                "a missing identity must execute exactly once"
+            );
+            let item_id = items[index].item_id.clone().expect("phase-one item id");
+            let artifact = resume_artifact_summary(&artifact_dir, &item_id, dataset);
+            write_test_json_atomically(std::path::Path::new(&artifact.path), &artifact);
+            complete_resume_item(&mut items[index], "optimized", artifact.path.clone(), None);
+            artifacts.push(artifact);
+            executed_item_ids.push(item_id);
+            counts.optimized += 1;
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if cancel.load(Ordering::Relaxed) {
+            counts.cancelled = true;
+        }
+        assert_eq!(counts.optimized, 1);
+        assert!(counts.cancelled);
+
+        let cancelled_summary = build_campaign_summary(
+            "2026-07-24T18:00:00Z",
+            "cancelled",
+            STRATEGY_KIND,
+            Some("15m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+            &tags,
+            None,
+            &counts,
+            &items,
+            None,
+            None,
+            &[],
+            10,
+        );
+        write_test_json_atomically(&artifact_catalog_path, &artifacts);
+        write_test_json_atomically(&summary_path, &cancelled_summary);
+
+        let checkpoint: ResearchCampaignSummary = read_test_json(&summary_path);
+        assert_eq!(checkpoint.version, 2);
+        assert_eq!(checkpoint.kind, "vectorgrid_campaign_summary");
+        assert_eq!(checkpoint.state, "cancelled");
+        assert_eq!(checkpoint.counts.optimized, 1);
+        assert!(checkpoint.counts.cancelled);
+        assert_eq!(
+            checkpoint
+                .manifest
+                .as_ref()
+                .map(|value| value.manifest_hash.as_str()),
+            Some(manifest_hash.as_str())
+        );
+        assert_eq!(
+            checkpoint.evidence_state,
+            Some(CampaignEvidenceState::Partial)
+        );
+        assert_eq!(
+            checkpoint.resume_state,
+            Some(CampaignResumeState::Resumable)
+        );
+        assert_eq!(checkpoint.items[0].status, "optimized");
+        assert_eq!(checkpoint.items[1].status, "pending");
+        assert_eq!(
+            checkpoint.items[0].item_id.as_deref(),
+            Some(expected_item_ids[0].as_str())
+        );
+        assert_eq!(
+            checkpoint.items[1].item_id.as_deref(),
+            Some(expected_item_ids[1].as_str())
+        );
+
+        // Phase 2 deliberately reconstructs every orchestration value from the
+        // request and the durable artifact catalog. It does not reuse the prior
+        // process's items, counters, cancel token, or in-memory artifact vector.
+        let mut resumed_artifacts: Vec<super::run_artifacts::RunArtifactSummary> =
+            read_test_json(&artifact_catalog_path);
+        let mut resumed_items = pending_resume_items(&manifest_hash, &prepared);
+        let mut resumed_counts = ResearchCampaignCounts {
+            total: prepared.len(),
+            optimized: 0,
+            validated: 0,
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        };
+        for (index, dataset) in prepared.iter().enumerate() {
+            let mut warnings = Vec::new();
+            let existing_path = existing_optimization_match(
+                &resumed_artifacts,
+                STRATEGY_KIND,
+                CONFIG_FINGERPRINT,
+                PRIMARY_TAG,
+                dataset,
+                &mut warnings,
+            )
+            .map(|matched| matched.summary.path.clone());
+            if let Some(existing_path) = existing_path {
+                resumed_counts.skipped += 1;
+                complete_resume_item(
+                    &mut resumed_items[index],
+                    "skipped",
+                    existing_path,
+                    Some("exact_optimization_artifact".to_string()),
+                );
+                continue;
+            }
+
+            let item_id = resumed_items[index]
+                .item_id
+                .clone()
+                .expect("resumed item id");
+            let artifact = resume_artifact_summary(&artifact_dir, &item_id, dataset);
+            assert!(
+                !std::path::Path::new(&artifact.path).exists(),
+                "a missing identity must not collide with an existing artifact path"
+            );
+            write_test_json_atomically(std::path::Path::new(&artifact.path), &artifact);
+            complete_resume_item(
+                &mut resumed_items[index],
+                "optimized",
+                artifact.path.clone(),
+                None,
+            );
+            resumed_artifacts.push(artifact);
+            executed_item_ids.push(item_id);
+            resumed_counts.optimized += 1;
+        }
+        assert_eq!(resumed_counts.optimized, 1);
+        assert_eq!(resumed_counts.skipped, 1);
+        assert_eq!(resumed_items[0].status, "skipped");
+        assert_eq!(resumed_items[1].status, "optimized");
+
+        let completed_summary = build_campaign_summary(
+            "2026-07-24T18:00:01Z",
+            "completed",
+            STRATEGY_KIND,
+            Some("15m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+            &tags,
+            None,
+            &resumed_counts,
+            &resumed_items,
+            None,
+            None,
+            &[],
+            20,
+        );
+        write_test_json_atomically(&artifact_catalog_path, &resumed_artifacts);
+        write_test_json_atomically(&summary_path, &completed_summary);
+        let catalog_bytes_after_resume =
+            std::fs::read(&artifact_catalog_path).expect("read completed artifact catalog");
+
+        let completed_checkpoint: ResearchCampaignSummary = read_test_json(&summary_path);
+        assert_eq!(completed_checkpoint.state, "completed");
+        assert_eq!(
+            completed_checkpoint.evidence_state,
+            Some(CampaignEvidenceState::Complete)
+        );
+        assert_eq!(
+            completed_checkpoint.resume_state,
+            Some(CampaignResumeState::Complete)
+        );
+        assert_eq!(
+            completed_checkpoint
+                .items
+                .iter()
+                .map(|item| item.item_id.as_deref().expect("completed item id"))
+                .collect::<Vec<_>>(),
+            expected_item_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+
+        let unique_artifact_paths = resumed_artifacts
+            .iter()
+            .map(|artifact| artifact.path.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let unique_source_identities = resumed_artifacts
+            .iter()
+            .map(|artifact| {
+                artifact
+                    .source_content_fingerprint
+                    .as_deref()
+                    .expect("strict artifact source identity")
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(resumed_artifacts.len(), prepared.len());
+        assert_eq!(unique_artifact_paths.len(), prepared.len());
+        assert_eq!(unique_source_identities.len(), prepared.len());
+        for expected_id in &expected_item_ids {
+            assert_eq!(
+                executed_item_ids
+                    .iter()
+                    .filter(|executed| *executed == expected_id)
+                    .count(),
+                1,
+                "each stable campaign item identity must execute exactly once"
+            );
+        }
+
+        // Phase 3 is another fresh reconstruction. Every strict identity must
+        // now resolve to skip-existing, leaving the durable catalog byte-identical.
+        let second_resume_artifacts: Vec<super::run_artifacts::RunArtifactSummary> =
+            read_test_json(&artifact_catalog_path);
+        let mut second_resume_items = pending_resume_items(&manifest_hash, &prepared);
+        let mut second_resume_counts = ResearchCampaignCounts {
+            total: prepared.len(),
+            optimized: 0,
+            validated: 0,
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        };
+        let execution_count_before_second_resume = executed_item_ids.len();
+        for (index, dataset) in prepared.iter().enumerate() {
+            let mut warnings = Vec::new();
+            let matched = existing_optimization_match(
+                &second_resume_artifacts,
+                STRATEGY_KIND,
+                CONFIG_FINGERPRINT,
+                PRIMARY_TAG,
+                dataset,
+                &mut warnings,
+            )
+            .expect("second resume must find every strict artifact identity");
+            second_resume_counts.skipped += 1;
+            complete_resume_item(
+                &mut second_resume_items[index],
+                "skipped",
+                matched.summary.path.clone(),
+                Some("exact_optimization_artifact".to_string()),
+            );
+        }
+        assert_eq!(second_resume_counts.optimized, 0);
+        assert_eq!(second_resume_counts.skipped, prepared.len());
+        assert_eq!(
+            executed_item_ids.len(),
+            execution_count_before_second_resume,
+            "a second resume must not execute any completed identity"
+        );
+        assert_eq!(
+            std::fs::read(&artifact_catalog_path).expect("reread no-op artifact catalog"),
+            catalog_bytes_after_resume,
+            "a no-op resume must not mutate the durable artifact catalog"
+        );
+        assert!(second_resume_items
+            .iter()
+            .all(|item| item.status == "skipped"
+                && item.evidence_state == Some(CampaignEvidenceState::Complete)
+                && item.resume_state == Some(CampaignResumeState::Complete)));
+
+        let no_op_summary = build_campaign_summary(
+            "2026-07-24T18:00:02Z",
+            "completed",
+            STRATEGY_KIND,
+            Some("15m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+            &tags,
+            None,
+            &second_resume_counts,
+            &second_resume_items,
+            None,
+            None,
+            &[],
+            5,
+        );
+        assert_eq!(
+            no_op_summary.evidence_state,
+            Some(CampaignEvidenceState::Complete)
+        );
+        assert_eq!(
+            no_op_summary.resume_state,
+            Some(CampaignResumeState::Complete)
+        );
+
+        std::fs::remove_dir_all(temp_dir).expect("remove resume lifecycle temp dir");
     }
 
     #[test]

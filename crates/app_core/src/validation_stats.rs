@@ -42,20 +42,45 @@ pub fn compute_psr_dsr_with_effective_counts(
     peer_mean: f64,
     peer_std: f64,
 ) -> (Option<f64>, Option<f64>) {
+    compute_psr_dsr_with_effective_counts_and_moments(
+        sharpe,
+        raw_obs,
+        effective_obs,
+        raw_trials,
+        effective_trials,
+        peer_mean,
+        peer_std,
+        0.0,
+        3.0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_psr_dsr_with_effective_counts_and_moments(
+    sharpe: f64,
+    raw_obs: usize,
+    effective_obs: Option<usize>,
+    raw_trials: usize,
+    effective_trials: Option<usize>,
+    peer_mean: f64,
+    peer_std: f64,
+    skewness: f64,
+    kurtosis: f64,
+) -> (Option<f64>, Option<f64>) {
     let psr = crate::sharpe_stats::probabilistic_sharpe_ratio_with_effective_samples(
         sharpe,
         0.0,
         raw_obs,
         effective_obs,
-        0.0,
-        3.0,
+        skewness,
+        kurtosis,
     );
     let dsr = crate::sharpe_stats::deflated_sharpe_ratio_with_effective_counts(
         sharpe,
         raw_obs,
         effective_obs,
-        0.0,
-        3.0,
+        skewness,
+        kurtosis,
         raw_trials,
         effective_trials,
         peer_mean,
@@ -182,6 +207,51 @@ mod tests {
             compute_psr_dsr_with_effective_counts(1.25, 128, Some(32), 12, Some(4), 0.4, 0.2);
         assert!(overlap.0.expect("overlap psr") < legacy.0.expect("legacy psr"));
         assert!(overlap.1.expect("overlap dsr") < legacy.1.expect("legacy dsr"));
+    }
+
+    #[test]
+    fn moment_aware_probability_path_preserves_normal_moment_compatibility() {
+        let legacy =
+            compute_psr_dsr_with_effective_counts(1.25, 128, Some(96), 12, Some(8), 0.4, 0.2);
+        let moment_aware = compute_psr_dsr_with_effective_counts_and_moments(
+            1.25,
+            128,
+            Some(96),
+            12,
+            Some(8),
+            0.4,
+            0.2,
+            0.0,
+            3.0,
+        );
+        assert_eq!(legacy, moment_aware);
+    }
+
+    #[test]
+    fn moment_aware_probability_path_changes_tail_probability_for_nonnormal_returns() {
+        let normal = compute_psr_dsr_with_effective_counts_and_moments(
+            1.25,
+            128,
+            Some(128),
+            12,
+            Some(12),
+            0.4,
+            0.2,
+            0.0,
+            3.0,
+        );
+        let nonnormal = compute_psr_dsr_with_effective_counts_and_moments(
+            1.25,
+            128,
+            Some(128),
+            12,
+            Some(12),
+            0.4,
+            0.2,
+            -0.75,
+            8.0,
+        );
+        assert_ne!(normal, nonnormal);
     }
 
     #[test]

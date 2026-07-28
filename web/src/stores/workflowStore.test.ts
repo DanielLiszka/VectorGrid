@@ -373,7 +373,7 @@ describe('workflow store actions', () => {
     expect(store.workspace).toBe(snapshot.workspace)
     expect(store.workflow).toBe(snapshot.workflow)
     expect(store.workflowStep).toBe(snapshot.workflowStep)
-    expect(store.controlsTab).toBe(snapshot.controlsTab)
+    expect(store.controlsTab).toBe('opt')
     expect(store.resultsTab).toBe(snapshot.resultsTab)
     expect(store.aggregateTab).toBe(snapshot.aggregateTab)
   })

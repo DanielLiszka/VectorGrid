@@ -14,11 +14,14 @@ const VERSION: u32 = 2;
 const HEADER_LEN: usize = 64;
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV1A64_PRIME: u64 = 0x100000001b3;
+const DEFAULT_MAX_SOURCE_CSV_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_MAX_SOURCE_CSV_ROWS: u64 = 10_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceIdentity {
     pub size: u64,
     pub mtime_utc_ms: i64,
+    pub change_marker: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +30,39 @@ pub struct LoadOutcome {
     pub cache_hit: bool,
     pub cache_path: Option<PathBuf>,
     pub source_identity: SourceIdentity,
+    pub source_content_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CsvLoadLimits {
+    max_source_bytes: u64,
+    max_rows: u64,
+}
+
+impl CsvLoadLimits {
+    fn from_env() -> Self {
+        Self {
+            max_source_bytes: positive_env_u64(
+                "VECTORBT_MAX_SOURCE_CSV_BYTES",
+                DEFAULT_MAX_SOURCE_CSV_BYTES,
+            ),
+            max_rows: positive_env_u64("VECTORBT_MAX_SOURCE_CSV_ROWS", DEFAULT_MAX_SOURCE_CSV_ROWS),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceContentInspection {
+    hash: u64,
+    data_rows: u64,
+}
+
+fn positive_env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 pub fn app_data_cache_dir(app_local_data_dir: &Path) -> PathBuf {
@@ -34,7 +70,10 @@ pub fn app_data_cache_dir(app_local_data_dir: &Path) -> PathBuf {
 }
 
 pub fn identity_for_source(path: &Path) -> Result<SourceIdentity, String> {
-    let md = fs::metadata(path).map_err(|e| e.to_string())?;
+    let md = fs::metadata(path).map_err(|e| format!("failed to read CSV source metadata: {e}"))?;
+    if !md.is_file() {
+        return Err("CSV source path is not a regular file".to_string());
+    }
     let size = md.len();
 
     let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -46,7 +85,53 @@ pub fn identity_for_source(path: &Path) -> Result<SourceIdentity, String> {
     Ok(SourceIdentity {
         size,
         mtime_utc_ms: ms,
+        change_marker: source_change_marker(path, &md)?,
     })
+}
+
+#[cfg(windows)]
+fn source_change_marker(path: &Path, _metadata: &fs::Metadata) -> Result<i64, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO,
+    };
+
+    // LastWriteTime can be restored after a same-size rewrite. NTFS ChangeTime records
+    // the file-record mutation independently, giving run-start checks a strong O(1) marker.
+    let file = fs::File::open(path)
+        .map_err(|error| format!("failed to open CSV source for identity check: {error}"))?;
+    let mut info = std::mem::MaybeUninit::<FILE_BASIC_INFO>::uninit();
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle().cast(),
+            FileBasicInfo,
+            info.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "failed to inspect CSV source change time: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(unsafe { info.assume_init() }.ChangeTime)
+}
+
+#[cfg(unix)]
+fn source_change_marker(_path: &Path, metadata: &fs::Metadata) -> Result<i64, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    // ctime changes for content or inode metadata mutations and cannot be reset with mtime.
+    Ok(metadata
+        .ctime()
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(metadata.ctime_nsec()))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn source_change_marker(_path: &Path, _metadata: &fs::Metadata) -> Result<i64, String> {
+    Err("CSV source identity checks are unsupported on this platform".to_string())
 }
 
 fn fnv1a64_update(mut h: u64, bytes: &[u8]) -> u64 {
@@ -57,49 +142,103 @@ fn fnv1a64_update(mut h: u64, bytes: &[u8]) -> u64 {
     h
 }
 
-fn hash_file_contents(file: &mut fs::File, mut h: u64) -> Result<u64, String> {
+fn inspect_file_contents(
+    file: &mut fs::File,
+    mut h: u64,
+) -> Result<SourceContentInspection, String> {
     let mut buf = [0u8; 64 * 1024];
+    let mut physical_lines = 0u64;
+    let mut saw_bytes = false;
+    let mut ended_with_newline = false;
     loop {
         let n = file.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
+        saw_bytes = true;
+        physical_lines = physical_lines
+            .checked_add(buf[..n].iter().filter(|&&byte| byte == b'\n').count() as u64)
+            .ok_or_else(|| "CSV physical line count overflow".to_string())?;
+        ended_with_newline = buf[n - 1] == b'\n';
         h = fnv1a64_update(h, &buf[..n]);
     }
-    Ok(h)
+    if saw_bytes && !ended_with_newline {
+        physical_lines = physical_lines
+            .checked_add(1)
+            .ok_or_else(|| "CSV physical line count overflow".to_string())?;
+    }
+    Ok(SourceContentInspection {
+        hash: h,
+        data_rows: physical_lines.saturating_sub(1),
+    })
+}
+
+fn inspect_source_contents(
+    path: &Path,
+    source_identity: SourceIdentity,
+) -> Result<SourceContentInspection, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("failed to read CSV source contents: {e}"))?;
+
+    let mut h = FNV1A64_OFFSET_BASIS;
+    h = fnv1a64_update(h, &source_identity.size.to_le_bytes());
+    inspect_file_contents(&mut file, h)
+}
+
+fn inspect_source_with_limits(
+    path: &Path,
+    expected_identity: SourceIdentity,
+    limits: CsvLoadLimits,
+) -> Result<SourceContentInspection, String> {
+    let current_identity = identity_for_source(path)?;
+    if current_identity != expected_identity {
+        return Err("CSV source changed while it was being loaded; retry the load".to_string());
+    }
+    if current_identity.size > limits.max_source_bytes {
+        return Err(format!(
+            "CSV source is {} bytes, exceeding the bounded load limit of {} bytes; split or resample the file, or raise VECTORBT_MAX_SOURCE_CSV_BYTES explicitly",
+            current_identity.size, limits.max_source_bytes
+        ));
+    }
+    let inspection = inspect_source_contents(path, current_identity)?;
+    if inspection.data_rows > limits.max_rows {
+        return Err(format!(
+            "CSV source contains more than {} data rows; split or resample the file, or raise VECTORBT_MAX_SOURCE_CSV_ROWS explicitly",
+            limits.max_rows
+        ));
+    }
+    Ok(inspection)
+}
+
+fn ensure_source_identity_unchanged(
+    path: &Path,
+    expected_identity: SourceIdentity,
+) -> Result<(), String> {
+    if identity_for_source(path)? != expected_identity {
+        return Err("CSV source changed while it was being loaded; retry the load".to_string());
+    }
+    Ok(())
 }
 
 fn content_fingerprint_parts_for_source(path: &Path) -> Result<(&'static str, u64), String> {
-    let md = fs::metadata(path).map_err(|e| e.to_string())?;
-    let size = md.len();
-    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
-
-    let mut h = FNV1A64_OFFSET_BASIS;
-    h = fnv1a64_update(h, &size.to_le_bytes());
-    h = hash_file_contents(&mut file, h)?;
-    Ok(("full", h))
+    let source_identity = identity_for_source(path)?;
+    let inspection = inspect_source_contents(path, source_identity)?;
+    Ok(("full", inspection.hash))
 }
 
+#[cfg(test)]
 fn content_fingerprint_hash_for_source(path: &Path) -> Result<u64, String> {
     let (_, hash) = content_fingerprint_parts_for_source(path)?;
-    Ok(hash)
-}
-
-fn cached_content_fingerprint_hash_for_source(
-    path: &Path,
-    cached: &mut Option<u64>,
-) -> Result<u64, String> {
-    if let Some(hash) = *cached {
-        return Ok(hash);
-    }
-    let hash = content_fingerprint_hash_for_source(path)?;
-    *cached = Some(hash);
     Ok(hash)
 }
 
 pub fn content_fingerprint_for_source(path: &Path) -> Result<String, String> {
     let (mode, hash) = content_fingerprint_parts_for_source(path)?;
     Ok(format!("fnv1a64-{mode}-{hash:016x}"))
+}
+
+fn format_content_fingerprint(hash: u64) -> String {
+    format!("fnv1a64-full-{hash:016x}")
 }
 
 fn sidecar_cache_path(csv_path: &Path) -> PathBuf {
@@ -301,43 +440,68 @@ pub fn load_or_build_with_identity(
     app_cache_dir: &Path,
     src_id: SourceIdentity,
 ) -> Result<LoadOutcome, String> {
+    load_or_build_with_identity_and_limits(
+        csv_path,
+        app_cache_dir,
+        src_id,
+        CsvLoadLimits::from_env(),
+    )
+}
+
+fn load_or_build_with_identity_and_limits(
+    csv_path: &Path,
+    app_cache_dir: &Path,
+    src_id: SourceIdentity,
+    limits: CsvLoadLimits,
+) -> Result<LoadOutcome, String> {
     let sidecar = sidecar_cache_path(csv_path);
     let fallback = fallback_cache_path(app_cache_dir, csv_path);
-    let mut source_content_hash = None;
+    let source_inspection = inspect_source_with_limits(csv_path, src_id, limits)?;
 
-    if let Ok(Some(candles)) = try_load_cache(&sidecar, csv_path, src_id, &mut source_content_hash)
+    if let Ok(Some(candles)) =
+        try_load_cache(&sidecar, src_id, source_inspection.hash, limits.max_rows)
     {
+        ensure_source_identity_unchanged(csv_path, src_id)?;
         return Ok(LoadOutcome {
             candles,
             cache_hit: true,
             cache_path: Some(sidecar),
             source_identity: src_id,
+            source_content_fingerprint: format_content_fingerprint(source_inspection.hash),
         });
     }
 
     if sidecar != fallback {
         if let Ok(Some(candles)) =
-            try_load_cache(&fallback, csv_path, src_id, &mut source_content_hash)
+            try_load_cache(&fallback, src_id, source_inspection.hash, limits.max_rows)
         {
+            ensure_source_identity_unchanged(csv_path, src_id)?;
             return Ok(LoadOutcome {
                 candles,
                 cache_hit: true,
                 cache_path: Some(fallback),
                 source_identity: src_id,
+                source_content_fingerprint: format_content_fingerprint(source_inspection.hash),
             });
         }
     }
 
     let candles = ta_app_core::read_candles_from_csv_compat(csv_path.to_string_lossy().as_ref())?;
+    if u64::try_from(candles.timestamp.len()).unwrap_or(u64::MAX) > limits.max_rows {
+        return Err(format!(
+            "CSV source contains more than {} parsed data rows; split or resample the file, or raise VECTORBT_MAX_SOURCE_CSV_ROWS explicitly",
+            limits.max_rows
+        ));
+    }
 
     let mut wrote_path = None;
-    let source_content_hash =
-        cached_content_fingerprint_hash_for_source(csv_path, &mut source_content_hash)?;
-    if let Ok(()) = write_cache_with_source_hash(&sidecar, &candles, src_id, source_content_hash) {
+    ensure_source_identity_unchanged(csv_path, src_id)?;
+    if let Ok(()) = write_cache_with_source_hash(&sidecar, &candles, src_id, source_inspection.hash)
+    {
         wrote_path = Some(sidecar);
     } else if sidecar != fallback {
         if let Ok(()) =
-            write_cache_with_source_hash(&fallback, &candles, src_id, source_content_hash)
+            write_cache_with_source_hash(&fallback, &candles, src_id, source_inspection.hash)
         {
             wrote_path = Some(fallback);
         }
@@ -348,14 +512,15 @@ pub fn load_or_build_with_identity(
         cache_hit: false,
         cache_path: wrote_path,
         source_identity: src_id,
+        source_content_fingerprint: format_content_fingerprint(source_inspection.hash),
     })
 }
 
 fn try_load_cache(
     cache_path: &Path,
-    csv_path: &Path,
     src_id: SourceIdentity,
-    source_content_hash_cache: &mut Option<u64>,
+    current_source_content_hash: u64,
+    max_rows: u64,
 ) -> Result<Option<Candles>, String> {
     let mut f = match fs::File::open(cache_path) {
         Ok(file) => file,
@@ -379,9 +544,10 @@ fn try_load_cache(
         return Ok(None);
     }
 
-    let current_source_content_hash =
-        cached_content_fingerprint_hash_for_source(csv_path, source_content_hash_cache)?;
     if source_content_hash != current_source_content_hash {
+        return Ok(None);
+    }
+    if len_u64 > max_rows {
         return Ok(None);
     }
 
@@ -546,7 +712,8 @@ fn create_unique_temp_cache_file(cache_path: &Path) -> Result<(PathBuf, fs::File
 mod tests {
     use super::{
         content_fingerprint_for_source, fallback_cache_path, identity_for_source, load_or_build,
-        load_or_build_with_identity, write_cache, write_header, SourceIdentity, HEADER_LEN,
+        load_or_build_with_identity, load_or_build_with_identity_and_limits, write_cache,
+        write_header, CsvLoadLimits, SourceIdentity, HEADER_LEN,
     };
     use std::fs;
     use std::io::Write;
@@ -642,22 +809,31 @@ mod tests {
     }
 
     #[test]
-    fn source_identity_equality_uses_size_and_mtime() {
+    fn source_identity_equality_uses_size_mtime_and_change_marker() {
         let a = SourceIdentity {
             size: 123,
             mtime_utc_ms: 456,
+            change_marker: 789,
         };
         let b = SourceIdentity {
             size: 123,
             mtime_utc_ms: 456,
+            change_marker: 789,
         };
         let c = SourceIdentity {
             size: 124,
             mtime_utc_ms: 456,
+            change_marker: 789,
+        };
+        let d = SourceIdentity {
+            size: 123,
+            mtime_utc_ms: 456,
+            change_marker: 790,
         };
 
         assert_eq!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, d);
     }
 
     #[test]
@@ -676,10 +852,111 @@ mod tests {
         assert!(!first.cache_hit);
         assert_eq!(first.source_identity, src_id);
         assert_eq!(second.source_identity, src_id);
+        assert_eq!(
+            first.source_content_fingerprint,
+            content_fingerprint_for_source(&csv).expect("source fingerprint")
+        );
+        assert_eq!(
+            second.source_content_fingerprint,
+            first.source_content_fingerprint
+        );
         assert!(second.cache_hit);
         assert_eq!(first.candles.timestamp, second.candles.timestamp);
         assert_eq!(first.candles.close, second.candles.close);
         assert_eq!(first.cache_path, second.cache_path);
+    }
+
+    #[test]
+    fn bounded_loader_rejects_source_bytes_before_parse_or_cache_write() {
+        let temp = make_temp_dir("data_cache_source_byte_limit");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+        let src_id = identity_for_source(&csv).expect("source identity");
+
+        let err = load_or_build_with_identity_and_limits(
+            &csv,
+            &cache_dir,
+            src_id,
+            CsvLoadLimits {
+                max_source_bytes: src_id.size.saturating_sub(1),
+                max_rows: u64::MAX,
+            },
+        )
+        .expect_err("oversized CSV should fail before parse");
+
+        assert!(err.contains("bounded load limit"));
+        assert!(err.contains("VECTORBT_MAX_SOURCE_CSV_BYTES"));
+        assert!(!csv.with_extension("vta").exists());
+        assert!(
+            fs::read_dir(&cache_dir)
+                .expect("read cache dir")
+                .next()
+                .is_none(),
+            "bounded rejection must not publish a fallback cache"
+        );
+    }
+
+    #[test]
+    fn bounded_loader_rejects_excess_rows_before_parse_or_cache_write() {
+        let temp = make_temp_dir("data_cache_source_row_limit");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+        let src_id = identity_for_source(&csv).expect("source identity");
+
+        let err = load_or_build_with_identity_and_limits(
+            &csv,
+            &cache_dir,
+            src_id,
+            CsvLoadLimits {
+                max_source_bytes: u64::MAX,
+                max_rows: 2,
+            },
+        )
+        .expect_err("row-heavy CSV should fail before parse");
+
+        assert!(err.contains("more than 2 data rows"));
+        assert!(err.contains("VECTORBT_MAX_SOURCE_CSV_ROWS"));
+        assert!(!csv.with_extension("vta").exists());
+        assert!(
+            fs::read_dir(&cache_dir)
+                .expect("read cache dir")
+                .next()
+                .is_none(),
+            "bounded rejection must not publish a fallback cache"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual source-integrity timing probe; set VECTORBT_SOURCE_TIMING_CSV"]
+    fn source_identity_timing_probe() {
+        let path = std::env::var("VECTORBT_SOURCE_TIMING_CSV")
+            .map(PathBuf::from)
+            .expect("set VECTORBT_SOURCE_TIMING_CSV to an existing CSV");
+        let iterations = 100u32;
+
+        let identity_started = std::time::Instant::now();
+        for _ in 0..iterations {
+            identity_for_source(&path).expect("source identity");
+        }
+        let identity_elapsed = identity_started.elapsed();
+
+        let fingerprint_started = std::time::Instant::now();
+        content_fingerprint_for_source(&path).expect("source fingerprint");
+        let fingerprint_elapsed = fingerprint_started.elapsed();
+
+        eprintln!(
+            "source_identity_timing path={} bytes={} iterations={} identity_total_ms={:.3} identity_mean_ms={:.6} full_fingerprint_ms={:.3}",
+            path.display(),
+            fs::metadata(&path).expect("source metadata").len(),
+            iterations,
+            identity_elapsed.as_secs_f64() * 1000.0,
+            identity_elapsed.as_secs_f64() * 1000.0 / f64::from(iterations),
+            fingerprint_elapsed.as_secs_f64() * 1000.0,
+        );
     }
 
     #[test]
@@ -716,7 +993,12 @@ mod tests {
         let drifted_identity = identity_for_source(&csv).expect("drifted source identity");
         let drifted_fingerprint =
             content_fingerprint_for_source(&csv).expect("drifted content fingerprint");
-        assert_eq!(drifted_identity, initial_identity);
+        assert_eq!(drifted_identity.size, initial_identity.size);
+        assert_eq!(drifted_identity.mtime_utc_ms, initial_identity.mtime_utc_ms);
+        assert_ne!(
+            drifted_identity.change_marker,
+            initial_identity.change_marker
+        );
         assert_ne!(drifted_fingerprint, initial_fingerprint);
 
         let second =

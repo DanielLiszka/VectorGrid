@@ -22,6 +22,7 @@ import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import ConfirmationDialog from './ConfirmationDialog.vue'
+import CompactEvidenceValue from './CompactEvidenceValue.vue'
 import ContextHelpTip from './ContextHelpTip.vue'
 import AppDataTableShell from './ui/AppDataTableShell.vue'
 import PriceChartPanel from './visualizations/PriceChartPanel.vue'
@@ -39,6 +40,8 @@ const {
   riskTakeProfitPct,
   riskMaxOrderNotional,
   riskMaxPositionNotional,
+  riskMaxDailyLoss,
+  riskMaxDailyOrders,
   riskAllowShort,
   riskRequireBracket,
   riskPolicyStatusHint,
@@ -151,6 +154,7 @@ interface ExecutionPostureItem {
 interface ReviewDetailItem {
   label: string
   value: string
+  evidenceKind?: 'path' | 'hash'
 }
 
 interface RecoveryChecklistItem {
@@ -172,6 +176,8 @@ const riskSlDraft = ref('')
 const riskTpDraft = ref('')
 const riskMaxOrderDraft = ref('')
 const riskMaxPositionDraft = ref('')
+const riskMaxDailyLossDraft = ref('')
+const riskMaxDailyOrdersDraft = ref('')
 const manualFastDraft = ref('')
 const manualSlowDraft = ref('')
 const apiKeyDraft = ref('')
@@ -518,7 +524,11 @@ const savedSessionDetailItems = computed<ReviewDetailItem[]>(() => {
     { label: 'Finalized', value: detail.finalizedAtUnixMs ? formatUiTimeFromUnixMs(detail.finalizedAtUnixMs) : 'Active / unknown' },
     { label: 'Events', value: String(detail.eventCount) },
     { label: 'Snapshots', value: String(detail.brokerSnapshotCount) },
-    { label: 'Source run', value: detail.sourceRunArtifactPath || '—' },
+    {
+      label: 'Source run',
+      value: detail.sourceRunArtifactPath || '—',
+      evidenceKind: 'path',
+    },
   ]
 })
 const savedSessionEventLines = computed(() =>
@@ -844,6 +854,8 @@ watch(
     String(riskTakeProfitPct.value || ''),
     String(riskMaxOrderNotional.value || ''),
     String(riskMaxPositionNotional.value || ''),
+    String(riskMaxDailyLoss.value || ''),
+    String(riskMaxDailyOrders.value || ''),
     String(manualFastLen.value || ''),
     String(manualSlowLen.value || ''),
     String(apiKey.value || ''),
@@ -859,6 +871,8 @@ watch(
     nextRiskTakeProfitPct,
     nextRiskMaxOrderNotional,
     nextRiskMaxPositionNotional,
+    nextRiskMaxDailyLoss,
+    nextRiskMaxDailyOrders,
     nextManualFastLen,
     nextManualSlowLen,
     nextApiKey,
@@ -873,6 +887,8 @@ watch(
     if (riskTpDraft.value !== nextRiskTakeProfitPct) riskTpDraft.value = nextRiskTakeProfitPct
     if (riskMaxOrderDraft.value !== nextRiskMaxOrderNotional) riskMaxOrderDraft.value = nextRiskMaxOrderNotional
     if (riskMaxPositionDraft.value !== nextRiskMaxPositionNotional) riskMaxPositionDraft.value = nextRiskMaxPositionNotional
+    if (riskMaxDailyLossDraft.value !== nextRiskMaxDailyLoss) riskMaxDailyLossDraft.value = nextRiskMaxDailyLoss
+    if (riskMaxDailyOrdersDraft.value !== nextRiskMaxDailyOrders) riskMaxDailyOrdersDraft.value = nextRiskMaxDailyOrders
     if (manualFastDraft.value !== nextManualFastLen) manualFastDraft.value = nextManualFastLen
     if (manualSlowDraft.value !== nextManualSlowLen) manualSlowDraft.value = nextManualSlowLen
     if (apiKeyDraft.value !== nextApiKey) apiKeyDraft.value = nextApiKey
@@ -1312,6 +1328,30 @@ watch(
               @change="commitInputValue('execRiskMaxPositionNotional', riskMaxPositionDraft)"
             />
           </div>
+          <div>
+            <label for="vueExecRiskMaxDailyLoss">Max daily loss</label>
+            <input
+              id="vueExecRiskMaxDailyLoss"
+              type="number"
+              min="0.01"
+              step="0.01"
+              :value="riskMaxDailyLossDraft"
+              @input="riskMaxDailyLossDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execRiskMaxDailyLoss', riskMaxDailyLossDraft)"
+              @change="commitInputValue('execRiskMaxDailyLoss', riskMaxDailyLossDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueExecRiskMaxDailyOrders">Max daily orders</label>
+            <input
+              id="vueExecRiskMaxDailyOrders"
+              type="number"
+              min="1"
+              step="1"
+              :value="riskMaxDailyOrdersDraft"
+              @input="riskMaxDailyOrdersDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execRiskMaxDailyOrders', riskMaxDailyOrdersDraft)"
+              @change="commitInputValue('execRiskMaxDailyOrders', riskMaxDailyOrdersDraft)"
+            />
+          </div>
           <div class="inlineCheck">
             <input
               id="vueExecRiskAllowShort"
@@ -1664,7 +1704,15 @@ watch(
             <dl class="reviewDetailList">
               <template v-for="item in savedSessionDetailItems" :key="`saved_session_${item.label}`">
                 <dt>{{ item.label }}</dt>
-                <dd class="mono">{{ item.value }}</dd>
+                <dd>
+                  <CompactEvidenceValue
+                    v-if="item.evidenceKind"
+                    :label="item.label"
+                    :value="item.value"
+                    :kind="item.evidenceKind"
+                  />
+                  <span v-else class="mono">{{ item.value }}</span>
+                </dd>
               </template>
             </dl>
           </div>

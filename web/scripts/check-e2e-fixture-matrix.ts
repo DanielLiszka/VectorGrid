@@ -183,6 +183,10 @@ function collectWorkflowReferences(): WorkflowReference[] {
     savedRunOpenScenario: fixtureScenarios.find((scenario) => scenario.name === 'saved-run-open-ready'),
     savedRunRepairScenario: fixtureScenarios.find((scenario) => scenario.name === 'saved-run-repair-ready'),
     savedRunRepairWriteScenario: fixtureScenarios.find((scenario) => scenario.name === 'saved-run-repair-write-ready'),
+    // These workflow-local variants enrich a registered base fixture with
+    // presentation-specific responses while retaining the base family contract.
+    optionsBacktestValidationScenario: fixtureScenarios.find((scenario) => scenario.name === 'options-validation-ready'),
+    aggregateMetaTableScenario: fixtureScenarios.find((scenario) => scenario.name === 'aggregate-meta-ready'),
   })) {
     if (scenario) scenarioByIdentifier.set(identifier, scenario)
   }

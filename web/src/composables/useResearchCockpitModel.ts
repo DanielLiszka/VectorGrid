@@ -5,6 +5,7 @@ import { useUiReadiness } from "./useUiReadiness";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
+import { useOptionsExpressionStore } from "../stores/optionsExpressionStore";
 import { useValidationStore } from "../stores/validationStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
 import { useWorkflowStore } from "../stores/workflowStore";
@@ -15,7 +16,6 @@ import {
 import { buildWorkbenchNavigationState } from "../utils/workbenchNavigationModel";
 import {
   latestStageCompletionForStage,
-  stageCompletionIsComplete,
   stageCompletionNeedsReview,
 } from "../utils/core/stageCompletion";
 
@@ -132,6 +132,7 @@ export function useResearchCockpitModel() {
   const workflowStore = useWorkflowStore();
   const dataStore = useDataStore();
   const optimizeStore = useOptimizeStore();
+  const optionsExpressionStore = useOptionsExpressionStore();
   const analysisStore = useAnalysisStore();
   const validationStore = useValidationStore();
   const workflowArtifactsStore = useWorkflowArtifactsStore();
@@ -164,6 +165,13 @@ export function useResearchCockpitModel() {
     validationWarningSummary,
   } = storeToRefs(validationStore);
   const { currentRun, currentValidation } = storeToRefs(workflowArtifactsStore);
+  const {
+    activeArtifactPath: optionsArtifactPath,
+    runBusy: optionsRunBusy,
+    selectedDatasetId: optionsDatasetId,
+    validationBusy: optionsValidationBusy,
+    validationFormValid: optionsValidationReady,
+  } = storeToRefs(optionsExpressionStore);
   const { activeTaskCount, centerStatusLabel, taskHeadline } =
     useTaskLifecycleSummary();
   const {
@@ -185,14 +193,10 @@ export function useResearchCockpitModel() {
     ),
   );
   const optimizationComplete = computed(
-    () =>
-      hasOptimizationResults.value ||
-      stageCompletionIsComplete(optimizationCompletion.value),
+    () => hasOptimizationResults.value,
   );
   const validationComplete = computed(
-    () =>
-      hasValidationResults.value ||
-      stageCompletionIsComplete(validationCompletion.value),
+    () => hasValidationResults.value,
   );
 
   const navState = computed(() =>
@@ -227,6 +231,11 @@ export function useResearchCockpitModel() {
       mlSignalDatasetExportPath: mlSignalDatasetExportPath.value,
       mlSignalScoreInputPath: mlSignalScoreInputPath.value,
       mlSignalScoreCachePath: mlSignalScoreCachePath.value,
+      optionsDatasetReady: hasUsefulText(optionsDatasetId.value),
+      optionsArtifactReady: hasUsefulText(optionsArtifactPath.value),
+      optionsValidationReady: optionsValidationReady.value,
+      optionsRunBusy: optionsRunBusy.value,
+      optionsValidationBusy: optionsValidationBusy.value,
     }),
   );
 
@@ -239,7 +248,12 @@ export function useResearchCockpitModel() {
     const backendLabel = clean(backend.value, "");
     const timeframe = clean(dataTimeframe.value, "");
     const status =
-      clean(progressMeta.value, "") || clean(runReadinessHint.value, "");
+      clean(progressMeta.value, "") ||
+      (datasetReady.value
+        ? optimizationComplete.value
+          ? clean(runReadinessHint.value, "Ready.")
+          : "Ready to configure and run optimization."
+        : clean(runReadinessHint.value, "Load a dataset first."));
     const loaded = clean(dataId.value, "");
     const modeItems: ResearchCockpitContextItem[] =
       navState.value.mode === "ml-signal" || navState.value.mode === "options"
@@ -543,11 +557,13 @@ export function useResearchCockpitModel() {
       ) ||
       clean(optimizationCompletion.value?.route, "") ||
       clean(optimizationCompletion.value?.backendUsed, "");
-    const resultDetail =
-      clean(bestMeta.value, "") ||
-      packetResultDetail ||
-      clean(currentRun.value?.artifactPath, "") ||
-      clean(runReadinessHint.value, "");
+    const resultDetail = optimizationComplete.value
+      ? clean(bestMeta.value, "") ||
+        packetResultDetail ||
+        clean(currentRun.value?.artifactPath, "")
+      : datasetReady.value
+        ? "Run optimization to rank candidates."
+        : "Load a dataset before running optimization.";
     const packetValidationDetail =
       clean(validationCompletion.value?.recommendation, "") ||
       clean(validationCompletion.value?.blockers?.[0], "") ||
@@ -556,11 +572,14 @@ export function useResearchCockpitModel() {
         validationCompletion.value?.summary?.candidatesTested,
         "candidate tested",
       );
-    const validationDetail =
-      packetValidationDetail ||
-      clean(validationWarningSummary.value, "") ||
-      clean(validationStatusLine.value, "") ||
-      clean(currentValidation.value?.ts, "");
+    const validationDetail = validationComplete.value
+      ? packetValidationDetail ||
+        clean(validationWarningSummary.value, "") ||
+        clean(validationStatusLine.value, "") ||
+        clean(currentValidation.value?.ts, "")
+      : optimizationComplete.value
+        ? "Run validation against the active optimization result."
+        : "Optimization results are required first.";
     return [
       card(
         "dataset",
@@ -631,7 +650,9 @@ export function useResearchCockpitModel() {
     primaryDetail: primaryAction.value.disabled
       ? primaryAction.value.disabledReason
       : clean(progressMeta.value, "") ||
-        clean(runReadinessHint.value, "Ready."),
+        (datasetReady.value
+          ? "Ready to configure and run optimization."
+          : clean(runReadinessHint.value, "Load a dataset first.")),
     steps: steps.value,
     cards: cards.value,
     contextItems: contextItems.value.filter((item) => item.defaultVisible),

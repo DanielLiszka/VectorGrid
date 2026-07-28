@@ -2,8 +2,14 @@ import { configDefaults, defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import { visualizer } from 'rollup-plugin-visualizer'
 import checker from 'vite-plugin-checker'
+import { minify } from 'terser'
+import type { Plugin } from 'vite'
 
-const baseTestExclude = [...configDefaults.exclude, 'e2e/**']
+const baseTestExclude = [
+  ...configDefaults.exclude,
+  'e2e/**',
+  'scripts/**/*.test.mjs',
+]
 
 const jsdomTestInclude = [
   'src/App.test.ts',
@@ -29,6 +35,31 @@ const jsdomTestInclude = [
   'src/visualizations/*.test.ts',
 ]
 
+function secondaryTerserPass(pass: number): Plugin {
+  return {
+    name: `secondary-terser-pass-${pass}`,
+    enforce: 'post',
+    renderChunk: {
+      order: 'post',
+      async handler(code) {
+        const result = await minify(code, {
+          ecma: 2022,
+          module: true,
+          compress: {
+            hoist_funs: true,
+            hoist_vars: true,
+            passes: 3,
+          },
+          format: {
+            comments: false,
+          },
+        })
+        return result.code ? { code: result.code, map: null } : null
+      },
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
@@ -50,6 +81,9 @@ export default defineConfig(({ mode }) => ({
             open: false,
           }),
         ]
+      : []),
+    ...(mode === 'production'
+      ? [secondaryTerserPass(2), secondaryTerserPass(3), secondaryTerserPass(4)]
       : []),
   ],
   server: {
@@ -82,8 +116,23 @@ export default defineConfig(({ mode }) => ({
   build: {
     emptyOutDir: true,
     outDir: 'dist',
+    // Keep small UI glyphs inline, but emit larger SVG illustrations separately
+    // so they do not inflate JavaScript parse/evaluation work as base64 data URIs.
+    assetsInlineLimit: 1024,
     sourcemap: mode === 'analyze',
     target: 'es2022',
+    minify: 'terser',
+    terserOptions: {
+      ecma: 2022,
+      compress: {
+        hoist_funs: true,
+        hoist_vars: true,
+        passes: 3,
+      },
+      format: {
+        comments: false,
+      },
+    },
     chunkSizeWarningLimit: 650,
     rollupOptions: {
       output: {

@@ -2365,15 +2365,22 @@ function normalizeBatchDatasetEntry(
   const source =
     normalizeText(row.source ?? fallback.source) ||
     (market === "local" ? "repo_data" : "polygon");
+  const integrity = asRecord(row.integrity);
   const sourceSize = normalizeMaybeInteger(
-    row.source_size_bytes ?? fallback.source_size_bytes,
+    row.source_size_bytes ??
+      integrity?.csv_size_bytes ??
+      fallback.source_size_bytes,
   );
   const sourceMtime = normalizeMaybeInteger(
     row.source_mtime_utc_ms ?? fallback.source_mtime_utc_ms,
   );
-  const sourceFp = normalizeText(
-    row.source_content_fingerprint ?? fallback.source_content_fingerprint,
-  );
+  const integritySha256 = normalizeText(
+    integrity?.csv_sha256 ?? integrity?.csvSha256,
+  ).toLowerCase();
+  const sourceFp =
+    normalizeText(
+      row.source_content_fingerprint ?? fallback.source_content_fingerprint,
+    ) || (integritySha256 ? `sha256:${integritySha256}` : "");
   const marketLabel = normalizeMarketLabel(market, adjusted === true);
   const minTs = formatYmdUtc(row.min_ts);
   const maxTs = formatYmdUtc(row.max_ts);
@@ -2398,6 +2405,7 @@ async function refreshBatchDatasetsInternal(): Promise<void> {
   const byPath = new Map<string, BatchDatasetEntry>();
   let polygonError = "";
   let localError = "";
+  let sampleError = "";
   let localDir = "";
   let localTruncated = false;
 
@@ -2443,6 +2451,22 @@ async function refreshBatchDatasetsInternal(): Promise<void> {
     localError = normalizeText(error);
   }
 
+  try {
+    const raw = (await invokeCommand("list_sample_csvs")) as unknown;
+    const samples = Array.isArray(raw) ? raw : [];
+    for (const entry of samples) {
+      const row = normalizeBatchDatasetEntry(entry, {
+        market: "sample",
+        source: "bundled_sample",
+      });
+      if (!row) continue;
+      if (byPath.has(row.path)) continue;
+      byPath.set(row.path, row);
+    }
+  } catch (error) {
+    sampleError = normalizeText(error);
+  }
+
   BATCH_DATASETS_CACHE = Array.from(byPath.values());
   BATCH_DATASETS_CACHE.sort((left, right) =>
     `${left.market}${left.label}`.localeCompare(
@@ -2459,6 +2483,7 @@ async function refreshBatchDatasetsInternal(): Promise<void> {
   if (localTruncated) extras.push("local truncated");
   if (polygonError) extras.push("polygon error");
   if (localError) extras.push("local data error");
+  if (sampleError) extras.push("sample data error");
   renderBatchDatasetList(extras.join(" • "));
 }
 

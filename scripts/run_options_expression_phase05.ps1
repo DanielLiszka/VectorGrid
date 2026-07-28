@@ -127,11 +127,13 @@ $cargoArgs = @(
   "ta_desktop_demo_app"
 )
 
+$cargoFeatures = @("maintainer-tools")
 if ($Cuda) {
-  $cargoArgs += @("--features", "cuda,cuda-backtest-kernel")
+  $cargoFeatures += @("cuda", "cuda-backtest-kernel")
 } elseif ($CompareBackends) {
   Write-Warning "CompareBackends is enabled without -Cuda. The accelerated lane will fall back to the CPU-only build and the GPU comparison will not be meaningful."
 }
+$cargoArgs += @("--features", ($cargoFeatures -join ","))
 
 $cargoArgs += @(
   "--bin",

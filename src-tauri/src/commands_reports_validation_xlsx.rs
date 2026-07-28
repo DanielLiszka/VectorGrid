@@ -3,8 +3,8 @@ use super::commands_reports_validation_common::{
 };
 use rust_xlsxwriter::{
     utility::quote_sheet_name, Chart, ChartType, Color, ConditionalFormat3ColorScale,
-    ConditionalFormatDataBar, Format, FormatAlign, FormatBorder, Table, TableColumn, TableStyle,
-    Workbook, Worksheet, XlsxError,
+    ConditionalFormatDataBar, DocProperties, ExcelDateTime, Format, FormatAlign, FormatBorder,
+    Table, TableColumn, TableStyle, Workbook, Worksheet, XlsxError,
 };
 use serde_json::Value;
 
@@ -5450,6 +5450,21 @@ pub(super) fn build_validation_report_xlsx(
 ) -> Result<Vec<u8>, String> {
     let model = build_model_from_report(report, max_rows)?;
     let mut workbook = Workbook::new();
+    // rust_xlsxwriter otherwise embeds SystemTime::now() in docProps/core.xml.
+    // Bind the metadata to report content so identical reports produce identical
+    // XLSX bytes even when they are built on different threads or at different
+    // wall-clock times.
+    // Legacy reports without a parseable timestamp use a fixed fallback.
+    let fallback_creation_time =
+        ExcelDateTime::from_ymd(2000, 1, 1).map_err(|e: XlsxError| e.to_string())?;
+    let creation_time = report
+        .get("ts")
+        .and_then(Value::as_str)
+        .filter(|timestamp| timestamp.contains('-'))
+        .and_then(|timestamp| ExcelDateTime::parse_from_str(timestamp).ok())
+        .unwrap_or(fallback_creation_time);
+    let properties = DocProperties::new().set_creation_datetime(&creation_time);
+    workbook.set_properties(&properties);
     let (
         title_fmt,
         header_fmt,
@@ -5668,6 +5683,17 @@ mod tests {
         text
     }
 
+    fn core_properties_xml(bytes: &[u8]) -> String {
+        let mut zip = ZipArchive::new(Cursor::new(bytes)).expect("zip archive");
+        let mut file = zip
+            .by_name("docProps/core.xml")
+            .expect("core document properties");
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .expect("read core document properties");
+        text
+    }
+
     fn has_entry(bytes: &[u8], name: &str) -> bool {
         let mut zip = ZipArchive::new(Cursor::new(bytes)).expect("zip archive");
         let exists = zip.by_name(name).is_ok();
@@ -5769,6 +5795,13 @@ mod tests {
         assert!(workbook.contains("Distributions"));
         assert!(workbook.contains("Audit Data"));
         assert!(workbook.contains("Dashboard"));
+        let core_properties = core_properties_xml(&bytes);
+        assert!(core_properties.contains(
+            "<dcterms:created xsi:type=\"dcterms:W3CDTF\">2026-03-13T00:00:00Z</dcterms:created>"
+        ));
+        assert!(core_properties.contains(
+            "<dcterms:modified xsi:type=\"dcterms:W3CDTF\">2026-03-13T00:00:00Z</dcterms:modified>"
+        ));
     }
 
     #[test]

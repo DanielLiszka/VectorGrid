@@ -2,13 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Maximize2, Minimize2, Play, Search, Settings2, Square, X } from '@lucide/vue'
-import { type CloseRequestedEvent, getCurrentWindow } from '@tauri-apps/api/window'
+import { currentMonitor, type CloseRequestedEvent, getCurrentWindow } from '@tauri-apps/api/window'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
 import ConfirmationDialog from './ConfirmationDialog.vue'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useOptionsExpressionStore } from '../stores/optionsExpressionStore'
 import { type TrackedTask, shouldGuardDesktopCloseForTask, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { invokeCommand, tauriRuntimeAvailable } from '../tauri/invoke'
@@ -16,6 +17,7 @@ import { useUiReadiness } from '../composables/useUiReadiness'
 import {
   WORKSPACE_SUBTITLES,
   mlSignalPrimaryActionForStep,
+  optionsPrimaryActionForStep,
   shellModeLabel,
   normalizeWorkflowStep,
   normalizeWorkspaceTab,
@@ -23,14 +25,16 @@ import {
   workflowStepSubtitleForMode,
 } from '../utils/core/workflowModel'
 import { mlSignalScoreCacheDisabledReason } from '../utils/workbenchActionModel'
+import { maximizedBoundsExceedMonitor } from '../utils/windowGeometrySafety'
 
 const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
 const executionStore = useExecutionStore()
 const optimizeStore = useOptimizeStore()
+const optionsExpressionStore = useOptionsExpressionStore()
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
-const { datasetReady } = useUiReadiness()
+const { datasetReady, hasOptimizationResults } = useUiReadiness()
 
 const { runnerActive } = storeToRefs(executionStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
@@ -41,6 +45,7 @@ const desktopWindow = desktopRuntimeAvailable ? getCurrentWindow() : null
 const isFocused = ref(true)
 const isMaximized = ref(false)
 const closeConfirmOpen = ref(false)
+const windowActionNotice = ref('')
 const unlisteners: Array<() => void> = []
 
 const workspaceLabel = computed(() => {
@@ -74,6 +79,10 @@ const subtitle = computed(() => {
 const mlSignalPrimaryAction = computed(() =>
   mlSignalPrimaryActionForStep(workflowStep.value),
 )
+const optionsPrimaryAction = computed(() =>
+  optionsPrimaryActionForStep(workflowStep.value),
+)
+const optionsModeActive = computed(() => shellModeLabel(mode.value) === 'Options')
 const validateStepActive = computed(() => normalizeWorkflowStep(workflowStep.value) === 'validate')
 const mlSignalPrimaryActionDisabled = computed(() => {
   if (canCancel.value) return false
@@ -110,6 +119,7 @@ const actionLabel = computed(() => {
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.label
   }
+  if (optionsModeActive.value) return optionsPrimaryAction.value.label
   if (validateStepActive.value) return 'Run validation'
   return 'Run optimization'
 })
@@ -119,6 +129,7 @@ const actionShortLabel = computed(() => {
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.shortLabel
   }
+  if (optionsModeActive.value) return optionsPrimaryAction.value.shortLabel
   if (validateStepActive.value) return 'Validate'
   return 'Run'
 })
@@ -128,12 +139,67 @@ const actionDisabled = computed(() => {
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryActionDisabled.value
   }
-  if (validateStepActive.value) return !!validateDisabled.value || !dataLoaded.value
+  if (optionsModeActive.value) {
+    const descriptor = optionsPrimaryAction.value
+    if (!dataLoaded.value) return true
+    if (!descriptor.actionable) return true
+    if (descriptor.kind === 'expression') {
+      return optionsExpressionStore.runBusy || !String(optionsExpressionStore.selectedDatasetId || '').trim()
+    }
+    return optionsExpressionStore.validationBusy
+      || !String(optionsExpressionStore.activeArtifactPath || '').trim()
+      || !optionsExpressionStore.validationFormValid
+  }
+  if (validateStepActive.value) {
+    return !!validateDisabled.value || !dataLoaded.value || !hasOptimizationResults.value
+  }
   return !!runDisabled.value || !dataLoaded.value
+})
+const actionBlockedReason = computed(() => {
+  if (!actionDisabled.value) return ''
+  if (!dataLoaded.value) return 'Load a dataset in Research before using this action.'
+  if (shellModeLabel(mode.value) === 'ML Signal') {
+    switch (mlSignalPrimaryAction.value.kind) {
+      case 'dataset_export':
+        return 'Choose an ML dataset export path before exporting.'
+      case 'score_cache':
+        return mlSignalScoreCacheDisabledReason({
+          mlSignalModelBundleId: optimizeStore.mlSignalModelBundleId,
+          mlSignalScoreCachePath: optimizeStore.mlSignalScoreCachePath,
+          mlSignalScoreInputPath: optimizeStore.mlSignalScoreInputPath,
+          mlSignalScoreSource: optimizeStore.mlSignalScoreSource,
+        }) || 'Complete the ML score-cache setup before building.'
+      case 'validation':
+      case 'policy_sweep':
+        return 'Build or select a compatible ML score cache before running this stage.'
+      case 'artifacts':
+        return 'Review generated artifacts in the ML Signal panel.'
+    }
+  }
+  if (optionsModeActive.value) {
+    const descriptor = optionsPrimaryAction.value
+    if (descriptor.kind === 'underlying') return 'Confirm the underlying dataset and parent artifact in this stage.'
+    if (descriptor.kind === 'options_data') return 'Import or select an options dataset with the controls in this stage.'
+    if (descriptor.kind === 'final_review') return 'Review finalist evidence and exports in this stage.'
+    if (descriptor.kind === 'expression') {
+      return optionsExpressionStore.runBusy
+        ? 'Expression search is already in progress.'
+        : 'Select an options dataset before running the expression search.'
+    }
+    if (optionsExpressionStore.validationBusy) return 'Options validation is already in progress.'
+    if (!String(optionsExpressionStore.activeArtifactPath || '').trim()) {
+      return 'Run or load an options expression artifact before validation.'
+    }
+    return 'Complete the options validation setup before running validation.'
+  }
+  if (validateStepActive.value) {
+    return 'Run a compatible optimization for the active dataset before validation.'
+  }
+  return 'Complete the active strategy setup before running optimization.'
 })
 const actionTitle = computed(() => {
   if (!actionDisabled.value) return actionLabel.value
-  return actionLabel.value
+  return actionBlockedReason.value
 })
 const guardedActiveTasks = computed<TrackedTask[]>(() => {
   const tasks: TrackedTask[] = []
@@ -199,7 +265,20 @@ function triggerPrimaryAction(): void {
     if (!actionDisabled.value) commandActionStore.runOptimization()
     return
   }
-  if (validateStepActive.value && !validateDisabled.value) {
+  if (optionsModeActive.value) {
+    const actionId = optionsPrimaryAction.value.kind === 'expression'
+      ? 'options.expression.run'
+      : optionsPrimaryAction.value.kind === 'validation'
+        ? 'options.validation.run'
+        : ''
+    if (actionId && !actionDisabled.value) {
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[data-qa-action]'))
+        .find((button) => button.dataset.qaAction === actionId)
+        ?.click()
+    }
+    return
+  }
+  if (validateStepActive.value && !actionDisabled.value) {
     commandActionStore.validateOptimization()
     return
   }
@@ -211,10 +290,38 @@ async function minimizeWindow(): Promise<void> {
   await desktopWindow.minimize().catch(() => undefined)
 }
 
+async function repairUnsafeMaximizedBounds(): Promise<boolean> {
+  if (!desktopWindow || !isMaximized.value) return false
+  const [monitor, maximizedSize] = await Promise.all([
+    currentMonitor().catch(() => null),
+    desktopWindow.outerSize().catch(() => null),
+  ])
+  if (!monitor || !maximizedSize || !maximizedBoundsExceedMonitor(maximizedSize, monitor.size)) {
+    return false
+  }
+  await desktopWindow.unmaximize().catch(() => undefined)
+  windowActionNotice.value = 'Maximize was reverted because the window exceeded the current monitor.'
+  await syncWindowState()
+  return true
+}
+
 async function toggleMaximizeWindow(): Promise<void> {
   if (!desktopWindow) return
-  await desktopWindow.toggleMaximize().catch(() => undefined)
+  windowActionNotice.value = ''
+  if (isMaximized.value) {
+    await desktopWindow.unmaximize().catch(() => {
+      windowActionNotice.value = 'The window could not be restored.'
+    })
+    await syncWindowState()
+    return
+  }
+  const maximized = await desktopWindow.maximize().then(() => true).catch(() => false)
+  if (!maximized) {
+    windowActionNotice.value = 'The window could not be maximized.'
+    return
+  }
   await syncWindowState()
+  await repairUnsafeMaximizedBounds()
 }
 
 async function requestClose(): Promise<void> {
@@ -262,6 +369,7 @@ async function handleTitlebarDoubleClick(): Promise<void> {
 onMounted(async () => {
   document.documentElement.dataset.desktopChrome = '1'
   await syncWindowState()
+  await repairUnsafeMaximizedBounds()
   if (!desktopWindow) return
   const resizeOff = await desktopWindow.onResized(() => {
     void syncWindowState()
@@ -338,6 +446,7 @@ onBeforeUnmount(() => {
         :class="{ titlebarDanger: canCancel }"
         :disabled="actionDisabled"
         :aria-label="actionLabel"
+        :aria-describedby="actionDisabled ? 'desktopPrimaryActionBlockedReason' : undefined"
         :title="actionTitle"
         @click="triggerPrimaryAction"
       >
@@ -345,6 +454,13 @@ onBeforeUnmount(() => {
         <Play v-else :size="15" aria-hidden="true" />
         <span class="titlebarToolLabel">{{ actionShortLabel }}</span>
       </button>
+      <span
+        v-if="actionDisabled"
+        id="desktopPrimaryActionBlockedReason"
+        class="srOnly"
+      >
+        {{ actionBlockedReason }}
+      </span>
 
       <div class="windowControls" :class="{ unavailable: !desktopRuntimeAvailable }" aria-label="Window controls">
         <button
@@ -364,7 +480,7 @@ onBeforeUnmount(() => {
           data-qa-action="shell.window.toggleMaximize"
           :disabled="!desktopRuntimeAvailable"
           :aria-label="isMaximized ? 'Restore window' : 'Maximize window'"
-          :title="isMaximized ? 'Restore' : 'Maximize'"
+          :title="windowActionNotice || (isMaximized ? 'Restore' : 'Maximize')"
           @click="toggleMaximizeWindow"
         >
           <Square v-if="isMaximized" :size="13" aria-hidden="true" />
@@ -383,6 +499,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
+    <span class="srOnly" role="status" aria-live="polite">{{ windowActionNotice }}</span>
     <ConfirmationDialog
       id-base="desktop_close_confirm"
       :open="closeConfirmOpen"
@@ -456,13 +573,13 @@ onBeforeUnmount(() => {
 }
 
 .titlebarWorkspace {
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   color: var(--muted-strong);
 }
 
 .titlebarSubtitle {
   max-width: 56ch;
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -495,7 +612,7 @@ onBeforeUnmount(() => {
 
 .titlebarTool {
   padding: 0.34rem 0.56rem;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 
@@ -555,6 +672,18 @@ onBeforeUnmount(() => {
   display: inline;
 }
 
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (max-width: 980px) {
   .desktopTitlebar {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -588,7 +717,8 @@ onBeforeUnmount(() => {
   }
 
   .titlebarTool {
-    width: 30px;
+    width: 32px;
+    flex: 0 0 32px;
     padding: 0;
   }
 

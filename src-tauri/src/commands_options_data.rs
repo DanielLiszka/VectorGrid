@@ -5,10 +5,13 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use ta_app_core::options_data_store::{
+    scan_options_dataset_manifests_with_diagnostics, OptionsDatasetPublication,
+};
 use ta_app_core::{
     dataset_manifest_path, load_imported_options_dataset_from_csv, read_options_dataset_manifest,
-    scan_options_dataset_manifests, write_options_dataset_manifest,
-    ImportedOptionsDatasetCsvBuildRequest, OptionsDatasetManifestV1, OptionsPriceSemantics,
+    write_options_dataset_manifest, ImportedOptionsDatasetCsvBuildRequest,
+    OptionsDatasetManifestV1, OptionsPriceSemantics,
 };
 use tauri::Manager;
 
@@ -1011,14 +1014,9 @@ fn download_polygon_options_dataset_into_store(
 
     let datasets_dir = options_datasets_dir(app_local_data_dir)?;
     let dataset_id = derive_polygon_download_dataset_id(req);
-    let dataset_dir = datasets_dir.join(&dataset_id);
-    if dataset_dir.exists() {
-        return Err(format!(
-            "options dataset id '{}' already exists at {}",
-            dataset_id,
-            dataset_dir.display()
-        ));
-    }
+    let publication = OptionsDatasetPublication::begin(&datasets_dir, &dataset_id)?;
+    let dataset_dir = publication.staging_dir().to_path_buf();
+    let final_dataset_csv = dataset_csv_copy_path(publication.final_dir());
 
     let underlying_download = polygon::download_1m_to_cache(
         app_identifier,
@@ -1037,7 +1035,6 @@ fn download_polygon_options_dataset_into_store(
     let underlying_by_timestamp = read_underlying_close_map(&underlying_csv_path)?;
 
     let result = (|| {
-        std::fs::create_dir_all(&dataset_dir).map_err(|e| e.to_string())?;
         let dataset_csv = dataset_csv_copy_path(&dataset_dir);
         let file = std::fs::File::create(&dataset_csv).map_err(|e| {
             format!(
@@ -1093,8 +1090,9 @@ fn download_polygon_options_dataset_into_store(
             &root_symbol,
             &as_of,
         );
-        let dataset = load_imported_options_dataset_from_csv(&build_req)?;
-        let manifest_path = dataset_manifest_path(&datasets_dir, &dataset_id);
+        let mut dataset = load_imported_options_dataset_from_csv(&build_req)?;
+        dataset.manifest.dataset_path = final_dataset_csv.to_string_lossy().to_string();
+        let manifest_path = dataset_dir.join("manifest.json");
         write_options_dataset_manifest(&manifest_path, &dataset.manifest)?;
         Ok(PolygonOptionsDatasetDownloadResponse {
             manifest: dataset.manifest,
@@ -1108,10 +1106,13 @@ fn download_polygon_options_dataset_into_store(
         })
     })();
 
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&dataset_dir);
+    match result {
+        Ok(response) => {
+            publication.publish()?;
+            Ok(response)
+        }
+        Err(error) => Err(error),
     }
-    result
 }
 
 fn copy_dataset_into_store(
@@ -1123,14 +1124,6 @@ fn copy_dataset_into_store(
     if dataset_id.is_empty() {
         return Err("options_dataset_id resolved to an empty value".to_string());
     }
-    let dataset_dir = datasets_dir.join(&dataset_id);
-    if dataset_dir.exists() {
-        return Err(format!(
-            "options dataset id '{}' already exists at {}",
-            dataset_id,
-            dataset_dir.display()
-        ));
-    }
     let source_csv = std::path::Path::new(req.csv_path.trim());
     if !source_csv.is_file() {
         return Err(format!(
@@ -1138,9 +1131,11 @@ fn copy_dataset_into_store(
             source_csv.display()
         ));
     }
+    let publication = OptionsDatasetPublication::begin(&datasets_dir, &dataset_id)?;
+    let dataset_dir = publication.staging_dir().to_path_buf();
+    let final_dataset_csv = dataset_csv_copy_path(publication.final_dir());
 
     let import_result = (|| {
-        std::fs::create_dir_all(&dataset_dir).map_err(|e| e.to_string())?;
         let copied_csv = dataset_csv_copy_path(&dataset_dir);
         std::fs::copy(source_csv, &copied_csv)
             .map_err(|e| format!("failed to copy options dataset CSV into store: {e}"))?;
@@ -1192,16 +1187,20 @@ fn copy_dataset_into_store(
             underlier_reference_source: req.underlier_reference_source.clone(),
             aggregate_price_field,
         };
-        let dataset = load_imported_options_dataset_from_csv(&build_req)?;
-        let manifest_path = dataset_manifest_path(&datasets_dir, &dataset_id);
+        let mut dataset = load_imported_options_dataset_from_csv(&build_req)?;
+        dataset.manifest.dataset_path = final_dataset_csv.to_string_lossy().to_string();
+        let manifest_path = dataset_dir.join("manifest.json");
         write_options_dataset_manifest(&manifest_path, &dataset.manifest)?;
         Ok(dataset.manifest)
     })();
 
-    if import_result.is_err() {
-        let _ = std::fs::remove_dir_all(&dataset_dir);
+    match import_result {
+        Ok(manifest) => {
+            publication.publish()?;
+            Ok(manifest)
+        }
+        Err(error) => Err(error),
     }
-    import_result
 }
 
 fn validate_options_import_csv_path(
@@ -1287,7 +1286,15 @@ pub async fn list_options_datasets(
         if !datasets_dir.is_dir() {
             return Ok(Vec::new());
         }
-        scan_options_dataset_manifests(&datasets_dir)
+        let scan = scan_options_dataset_manifests_with_diagnostics(&datasets_dir)?;
+        for diagnostic in &scan.diagnostics {
+            log::warn!(
+                "skipping unreadable options dataset manifest {}: {}",
+                diagnostic.manifest_path.display(),
+                diagnostic.error
+            );
+        }
+        Ok(scan.manifests)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1543,6 +1550,72 @@ mod tests {
         let datasets_dir = options_datasets_dir(&app_local_data_dir).expect("datasets dir");
         let manifest_path = dataset_manifest_path(&datasets_dir, "spy_bad_aggregate_field");
         assert!(!manifest_path.exists());
+        assert!(!datasets_dir.join("spy_bad_aggregate_field").exists());
+        assert_eq!(
+            std::fs::read_dir(&datasets_dir)
+                .expect("read datasets dir")
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name
+                        .starts_with(".options-dataset-staging-spy_bad_aggregate_field-")))
+                .count(),
+            0
+        );
+
+        let _ = std::fs::remove_dir_all(&app_local_data_dir);
+    }
+
+    #[test]
+    fn options_dataset_import_retries_same_id_after_orphan_staging_directory() {
+        let app_local_data_dir = temp_app_local_data_dir("orphan_staging_retry");
+        let source_csv = app_local_data_dir.join("source.csv");
+        std::fs::write(
+            &source_csv,
+            concat!(
+                "root_symbol,contract_id,option_type,expiration_date,expiration_timestamp_ms,strike,multiplier,timestamp_ms,open,high,low,close,underlying_price,volume,open_interest\n",
+                "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160000000,2.0,2.3,1.9,2.1,498.0,1000,2000\n"
+            ),
+        )
+        .expect("write source csv");
+
+        let datasets_dir = options_datasets_dir(&app_local_data_dir).expect("datasets dir");
+        let orphan_dir = datasets_dir.join(".options-dataset-staging-spy_retry-orphan-from-crash");
+        std::fs::create_dir_all(&orphan_dir).expect("create orphan staging directory");
+        std::fs::write(orphan_dir.join("rows.csv"), b"partial")
+            .expect("write partial orphan dataset");
+
+        let req = OptionsDatasetImportRequest {
+            csv_path: source_csv.to_string_lossy().to_string(),
+            options_dataset_id: Some("spy_retry".to_string()),
+            root_symbol: Some("SPY".to_string()),
+            provider_name: "polygon.io".to_string(),
+            provider_source_surface: "minute_aggregate".to_string(),
+            provider_entitlement_profile: None,
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: Some(1),
+            quote_semantics_version: Some(1),
+            corporate_action_mapping_version: Some(1),
+            contract_reference_source: "polygon_contract_reference".to_string(),
+            contract_reference_as_of_utc: None,
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: Some("close".to_string()),
+        };
+
+        let manifest = import_options_dataset_blocking_headless(req, &app_local_data_dir)
+            .expect("retry import");
+        let final_dir = datasets_dir.join("spy_retry");
+        assert!(final_dir.join("rows.csv").is_file());
+        assert!(final_dir.join("manifest.json").is_file());
+        assert_eq!(
+            std::path::Path::new(&manifest.dataset_path),
+            final_dir.join("rows.csv")
+        );
+        assert!(!orphan_dir.exists());
 
         let _ = std::fs::remove_dir_all(&app_local_data_dir);
     }

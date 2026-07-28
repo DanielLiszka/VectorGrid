@@ -1,0 +1,151 @@
+{
+  "mode": "host_only",
+  "scope": "optimize_only",
+  "backend": "CpuOnly",
+  "app_local_data_dir": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid",
+  "datasets": [
+    "\\\\?\\C:\\Rust Projects\\ta_desktop_demo\\_write_test\\perf_authority_support\\campaign_synthetic.csv",
+    "\\\\?\\C:\\Rust Projects\\ta_desktop_demo\\_write_test\\perf_authority_support\\campaign_synthetic_b.csv"
+  ],
+  "timeframe": null,
+  "fast_ma": "sma",
+  "slow_ma": "ema",
+  "ma_source": "close",
+  "fast_range": [
+    5,
+    15,
+    5
+  ],
+  "slow_range": [
+    20,
+    40,
+    10
+  ],
+  "top_k": 4,
+  "validation_max_candidates": 1,
+  "warmup_trials": 0,
+  "measured_trials": 1,
+  "mean_total_wall_ms": 22.619400000000002,
+  "mean_initial_dataset_pack_preload_ms": null,
+  "mean_campaign_runtime_ms": 20.0,
+  "prefetch_economics": {
+    "mode_note": "observational heuristic telemetry only; compare modes before promoting policy changes",
+    "attempted": 0,
+    "staged": 0,
+    "already_resident": 0,
+    "warnings": 0,
+    "fatals": 0,
+    "successful": 0,
+    "mean_wall_ms": 0.0,
+    "mean_stage_cost_vs_optimize_frac": 0.0,
+    "mean_stage_cost_vs_prepare_wait_frac": 0.0
+  },
+  "measured_trials_detail": [
+    {
+      "trial_index": 1,
+      "warmup": false,
+      "total_wall_ms": 22.619400000000002,
+      "initial_dataset_pack_preload_ms": null,
+      "campaign_runtime_ms": 20,
+      "optimized": 2,
+      "validated": 0,
+      "skipped": 0,
+      "failed": 0,
+      "cancelled": false,
+      "warning_count": 1,
+      "warnings": [
+        "campaign summary manifest is missing strict source identity for at least one dataset; exact artifact reuse will fail closed unless the current prepared dataset and saved artifact both expose matching source identity."
+      ],
+      "dataset_routes": [
+        {
+          "label": "campaign_synthetic",
+          "prepare_source": "background_preload_waited",
+          "prepare_wait_ms": 2.6687,
+          "vram_prefetch_outcome": "not_attempted",
+          "vram_prefetch_note": null,
+          "vram_prefetch_wall_ms": 0.0,
+          "vram_prefetch_policy": "heuristic_observational",
+          "vram_prefetch_attempted": false,
+          "vram_prefetch_success": false,
+          "vram_prefetch_failure_risk_event": false,
+          "vram_prefetch_stage_cost_vs_optimize_frac": 0.0,
+          "vram_prefetch_stage_cost_vs_prepare_wait_frac": 0.0,
+          "optimize_wall_ms": 1.2442,
+          "optimize_artifact_save_ms": 1.4834,
+          "checkpoint_save_ms": 2.2342,
+          "optimize_backend_used": "Cpu",
+          "optimize_backend_route": "CpuOnly",
+          "optimize_fallback_reason": null,
+          "validate_backend_used": null,
+          "validate_backend_route": null,
+          "validate_fallback_reason": null
+        },
+        {
+          "label": "campaign_synthetic_b",
+          "prepare_source": "background_preload_ready",
+          "prepare_wait_ms": 0.0037,
+          "vram_prefetch_outcome": "not_attempted",
+          "vram_prefetch_note": null,
+          "vram_prefetch_wall_ms": 0.0,
+          "vram_prefetch_policy": "heuristic_observational",
+          "vram_prefetch_attempted": false,
+          "vram_prefetch_success": false,
+          "vram_prefetch_failure_risk_event": false,
+          "vram_prefetch_stage_cost_vs_optimize_frac": 0.0,
+          "vram_prefetch_stage_cost_vs_prepare_wait_frac": 0.0,
+          "optimize_wall_ms": 0.5861,
+          "optimize_artifact_save_ms": 1.3608,
+          "checkpoint_save_ms": 3.1042,
+          "optimize_backend_used": "Cpu",
+          "optimize_backend_route": "CpuOnly",
+          "optimize_fallback_reason": null,
+          "validate_backend_used": null,
+          "validate_backend_route": null,
+          "validate_fallback_reason": null
+        }
+      ],
+      "progress_events": [
+        {
+          "elapsed_ms": 2.4548,
+          "stage": "checkpoint",
+          "dataset_index": 0,
+          "dataset_total": 2,
+          "label": "DoubleMa",
+          "message": "campaign initialized"
+        },
+        {
+          "elapsed_ms": 5.1739999999999995,
+          "stage": "prepare",
+          "dataset_index": 1,
+          "dataset_total": 2,
+          "label": "campaign_synthetic",
+          "message": "dataset ready"
+        },
+        {
+          "elapsed_ms": 5.3543,
+          "stage": "optimize",
+          "dataset_index": 1,
+          "dataset_total": 2,
+          "label": "campaign_synthetic",
+          "message": "running optimization"
+        },
+        {
+          "elapsed_ms": 12.779499999999999,
+          "stage": "prepare",
+          "dataset_index": 2,
+          "dataset_total": 2,
+          "label": "campaign_synthetic_b",
+          "message": "dataset ready"
+        },
+        {
+          "elapsed_ms": 12.905899999999999,
+          "stage": "optimize",
+          "dataset_index": 2,
+          "dataset_total": 2,
+          "label": "campaign_synthetic_b",
+          "message": "running optimization"
+        }
+      ]
+    }
+  ]
+}

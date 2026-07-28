@@ -1,0 +1,55 @@
+﻿{
+    "schema_version":  1,
+    "case_registry_version":  1,
+    "generated_at_utc":  "2026-04-24T03:39:30.5571759Z",
+    "mode":  "baseline",
+    "environment":  {
+                        "hostname":  "LISZKA",
+                        "os":  "Microsoft Windows NT 10.0.26200.0",
+                        "architecture":  "X64",
+                        "powershell_edition":  "Desktop",
+                        "powershell_version":  "5.1.26100.7462"
+                    },
+    "gpu":  "NVIDIA GeForce RTX 4090, 595.71",
+    "gpu_info":  {
+                     "name":  "NVIDIA GeForce RTX 4090",
+                     "driver_version":  "595.71",
+                     "raw":  "NVIDIA GeForce RTX 4090, 595.71"
+                 },
+    "criterion_cases":  [
+                            {
+                                "id":  "double_ma_gpu_followup_cold",
+                                "schema_version":  1,
+                                "workflow_family":  "conventional_double_ma_followup",
+                                "timing_boundary":  "Criterion",
+                                "timing_boundary_note":  "Criterion bench profile estimate for Double-MA candidate detail plus local-stability follow-up. The benchmark asserts the seed optimization route remains resident GpuKernel.",
+                                "build_profile":  "bench",
+                                "bench_name":  "double_ma_followup_workflow",
+                                "bench_filter":  "double_ma_followup/gpu_kernel/50k",
+                                "bench_function":  "drilldown_then_local_stability_cold",
+                                "estimates_json":  "C:\\Rust Projects\\ta_desktop_demo\\target\\criterion\\double_ma_followup_gpu_kernel_50k\\drilldown_then_local_stability_cold\\new\\estimates.json",
+                                "expected_seed_backend_route":  "GpuKernel",
+                                "mean_ms":  15.329874,
+                                "mean_ci_lower_ms":  14.289218,
+                                "mean_ci_upper_ms":  16.370816,
+                                "median_ms":  15.454835
+                            },
+                            {
+                                "id":  "double_ma_gpu_followup_cached",
+                                "schema_version":  1,
+                                "workflow_family":  "conventional_double_ma_followup",
+                                "timing_boundary":  "Criterion",
+                                "timing_boundary_note":  "Criterion bench profile estimate for Double-MA candidate detail plus local-stability follow-up. The benchmark asserts the seed optimization route remains resident GpuKernel.",
+                                "build_profile":  "bench",
+                                "bench_name":  "double_ma_followup_workflow",
+                                "bench_filter":  "double_ma_followup/gpu_kernel/50k",
+                                "bench_function":  "drilldown_then_local_stability_cached",
+                                "estimates_json":  "C:\\Rust Projects\\ta_desktop_demo\\target\\criterion\\double_ma_followup_gpu_kernel_50k\\drilldown_then_local_stability_cached\\new\\estimates.json",
+                                "expected_seed_backend_route":  "GpuKernel",
+                                "mean_ms":  15.610707,
+                                "mean_ci_lower_ms":  13.983556,
+                                "mean_ci_upper_ms":  18.309874,
+                                "median_ms":  14.517757
+                            }
+                        ]
+}

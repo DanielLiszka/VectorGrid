@@ -107,6 +107,16 @@ function Assert-CatBoostSourceDirMatchesTag {
   if ($head -ne $tagCommit) {
     throw "Existing SourceDir '$SourceDir' is checked out at $head, not requested tag '$CatBoostTag' ($tagCommit)."
   }
+  $dirty = Get-GitText -Arguments @(
+    '-C',
+    $SourceDir,
+    'status',
+    '--porcelain=v1',
+    '--untracked-files=all'
+  )
+  if (-not [string]::IsNullOrWhiteSpace($dirty)) {
+    throw "Existing SourceDir '$SourceDir' contains tracked or untracked changes. A release CatBoost DLL must be built from a clean checkout of '$CatBoostTag'. Use scripts/acquire_catboost_native.ps1 for the reviewed upstream release artifact, or clean this dedicated source checkout before rebuilding."
+  }
 }
 
 if ([string]::IsNullOrWhiteSpace($BuildRootDir)) {

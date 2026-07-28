@@ -182,6 +182,29 @@ export interface ValidationRequestPayload {
     csv_path: string | null;
     timeframe: string | null;
     label: string | null;
+    optimization_trials?: number;
+    search_distribution?: {
+      metric_surface_kind: string;
+      sharpe_metric_id: string;
+      attempted_count: number;
+      unique_count: number;
+      feasible_count: number;
+      finite_sharpe_count: number;
+      finite_sharpe_mean: number;
+      finite_sharpe_sample_std: number;
+    };
+    data_realism?: {
+      price_adjustment:
+        | "adjusted"
+        | "unadjusted"
+        | "not_applicable"
+        | "unknown";
+      corporate_actions: "documented" | "not_applicable" | "unknown";
+      survivorship_bias: "documented" | "not_applicable" | "unknown";
+      liquidity_capacity: "documented" | "not_applicable" | "unknown";
+      market_impact: "documented" | "not_applicable" | "unknown";
+      borrow_availability: "documented" | "not_applicable" | "unknown";
+    };
   };
 }
 
@@ -197,6 +220,115 @@ export interface ValidationCapabilitySummary {
 function num(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function positiveIntegerOrNull(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const normalized = Math.floor(parsed);
+  return Number.isSafeInteger(normalized) && normalized > 0 ? normalized : null;
+}
+
+function optimizationTrialsFromResult(value: unknown): number | null {
+  const result = asRecord(value);
+  if (!result) return null;
+  const candidates = [
+    result.num_combos,
+    result.numCombos,
+    result.total_evaluations,
+    result.totalEvaluations,
+  ];
+  for (const candidate of candidates) {
+    const normalized = positiveIntegerOrNull(candidate);
+    if (normalized != null) return normalized;
+  }
+  return null;
+}
+
+function searchDistributionFromResult(
+  value: unknown,
+): ValidationRequestPayload["validation_context"]["search_distribution"] | null {
+  const result = asRecord(value);
+  if (!result) return null;
+  const semantics = asRecord(result.search_semantics ?? result.searchSemantics);
+  const raw =
+    asRecord(
+      semantics?.search_distribution ?? semantics?.searchDistribution,
+    ) ??
+    asRecord(result.search_distribution ?? result.searchDistribution);
+  if (!raw) return null;
+
+  const metricSurfaceKind = normalizeText(
+    raw.metric_surface_kind ?? raw.metricSurfaceKind,
+  );
+  const sharpeMetricId = normalizeText(
+    raw.sharpe_metric_id ?? raw.sharpeMetricId,
+  );
+  const count = (snake: string, camel: string): number | null => {
+    const candidate = raw[snake] ?? raw[camel];
+    return typeof candidate === "number" &&
+      Number.isSafeInteger(candidate) &&
+      candidate >= 0
+      ? candidate
+      : null;
+  };
+  const attemptedCount = count("attempted_count", "attemptedCount");
+  const uniqueCount = count("unique_count", "uniqueCount");
+  const feasibleCount = count("feasible_count", "feasibleCount");
+  const finiteSharpeCount = count("finite_sharpe_count", "finiteSharpeCount");
+  const finiteSharpeMean =
+    raw.finite_sharpe_mean ?? raw.finiteSharpeMean;
+  const finiteSharpeSampleStd =
+    raw.finite_sharpe_sample_std ?? raw.finiteSharpeSampleStd;
+
+  if (
+    !metricSurfaceKind ||
+    !sharpeMetricId ||
+    attemptedCount == null ||
+    uniqueCount == null ||
+    feasibleCount == null ||
+    finiteSharpeCount == null ||
+    finiteSharpeCount <= 0 ||
+    attemptedCount < uniqueCount ||
+    uniqueCount < feasibleCount ||
+    feasibleCount < finiteSharpeCount ||
+    typeof finiteSharpeMean !== "number" ||
+    !Number.isFinite(finiteSharpeMean) ||
+    typeof finiteSharpeSampleStd !== "number" ||
+    !Number.isFinite(finiteSharpeSampleStd) ||
+    finiteSharpeSampleStd < 0
+  ) {
+    return null;
+  }
+
+  return {
+    metric_surface_kind: metricSurfaceKind,
+    sharpe_metric_id: sharpeMetricId,
+    attempted_count: attemptedCount,
+    unique_count: uniqueCount,
+    feasible_count: feasibleCount,
+    finite_sharpe_count: finiteSharpeCount,
+    finite_sharpe_mean: finiteSharpeMean,
+    finite_sharpe_sample_std: finiteSharpeSampleStd,
+  };
+}
+
+function dataRealismFromDatasetMeta(
+  datasetMeta: Record<string, unknown> | null,
+): NonNullable<
+  ValidationRequestPayload["validation_context"]["data_realism"]
+> | null {
+  if (!datasetMeta || typeof datasetMeta.adjusted !== "boolean") return null;
+  return {
+    price_adjustment: datasetMeta.adjusted ? "adjusted" : "unadjusted",
+    corporate_actions: "unknown",
+    survivorship_bias: "unknown",
+    liquidity_capacity: "unknown",
+    market_impact: "unknown",
+    borrow_availability: "unknown",
+  };
 }
 
 function normalizeText(value: unknown): string {
@@ -1283,7 +1415,7 @@ export function buildValidationCapabilitySummary(
           ? `${base} | finalists only (cap=4)`
           : crossMode === "full_stack"
             ? `${base} | full stack finalists (cap=4)`
-          : `${base} | lightweight reruns`;
+            : `${base} | lightweight reruns`;
     } else {
       crossSummary = base;
     }
@@ -1334,6 +1466,9 @@ export function buildValidationRequest(
   const min_cscv_oos_metric = parseFiniteNumber(inputs.minCscvOosMetric);
   const max_pbo = parseProbabilityGate(inputs.maxPbo);
   const datasetMeta = asRecord(inputs.runDatasetMeta);
+  const optimizationTrials = optimizationTrialsFromResult(inputs.currentRunRes);
+  const searchDistribution = searchDistributionFromResult(inputs.currentRunRes);
+  const dataRealism = dataRealismFromDatasetMeta(datasetMeta);
   const validation_context = {
     strategy_kind: kind,
     csv_path:
@@ -1350,6 +1485,13 @@ export function buildValidationRequest(
         datasetMeta?.label,
         inputs.runCsvPath,
       ) || null,
+    ...(optimizationTrials == null
+      ? {}
+      : { optimization_trials: optimizationTrials }),
+    ...(searchDistribution == null
+      ? {}
+      : { search_distribution: searchDistribution }),
+    ...(dataRealism == null ? {} : { data_realism: dataRealism }),
   };
 
   const rowsFiltered = Array.isArray(inputs.topRowsFiltered)
@@ -1668,14 +1810,14 @@ export function buildValidationRequest(
     );
   selection.provenance.post_cap_count = candidates.length;
 
-  const walk_forward = inputs.wfEnable
+  const walk_forward = normalizeBoolean(inputs.wfEnable)
     ? {
         window_bars: Math.max(64, Math.floor(num(inputs.wfWindow, 20000))),
         step_bars: Math.max(1, Math.floor(num(inputs.wfStep, 20000))),
       }
     : null;
 
-  const reopt_walk_forward = inputs.reoptWfEnable
+  const reopt_walk_forward = normalizeBoolean(inputs.reoptWfEnable)
     ? {
         window_bars: Math.max(64, Math.floor(num(inputs.reoptWfWindow, 20000))),
         step_bars: Math.max(1, Math.floor(num(inputs.reoptWfStep, 20000))),
@@ -1683,7 +1825,7 @@ export function buildValidationRequest(
       }
     : null;
 
-  const spa = inputs.spaEnable
+  const spa = normalizeBoolean(inputs.spaEnable)
     ? {
         slices: Math.max(4, Math.floor(num(inputs.spaSlices, 16))),
         bootstrap_samples: Math.max(
@@ -1695,7 +1837,7 @@ export function buildValidationRequest(
       }
     : null;
 
-  const perturb = inputs.perturbEnable
+  const perturb = normalizeBoolean(inputs.perturbEnable)
     ? {
         iterations: Math.max(0, Math.floor(num(inputs.perturbIters, 8))),
         pct_min: Math.max(0, num(inputs.perturbMin, 0.015)),
@@ -1704,7 +1846,7 @@ export function buildValidationRequest(
       }
     : null;
 
-  const trade_bootstrap = inputs.mcEnable
+  const trade_bootstrap = normalizeBoolean(inputs.mcEnable)
     ? (() => {
         const simulations = Math.max(0, Math.floor(num(inputs.mcSims, 500)));
         const mode = normalizeBootstrapMode(inputs.mcMode);
@@ -1726,10 +1868,9 @@ export function buildValidationRequest(
         modes:
           trade_bootstrap.stationary_mean_block_len === 0
             ? (["trade_iid"] as Array<"trade_iid" | "trade_stationary">)
-            : ([
-                "trade_iid",
-                "trade_stationary",
-              ] as Array<"trade_iid" | "trade_stationary">),
+            : (["trade_iid", "trade_stationary"] as Array<
+                "trade_iid" | "trade_stationary"
+              >),
         ...(trade_bootstrap.stationary_mean_block_len != null
           ? {
               stationary_mean_block_len:
@@ -1741,7 +1882,7 @@ export function buildValidationRequest(
       }
     : null;
 
-  const cscv_pbo = inputs.cscvEnable
+  const cscv_pbo = normalizeBoolean(inputs.cscvEnable)
     ? (() => {
         let slices = Math.max(4, Math.floor(num(inputs.cscvSlices, 16)));
         if ((slices & 1) === 1) slices = Math.max(4, slices - 1);
@@ -1749,15 +1890,23 @@ export function buildValidationRequest(
       })()
     : null;
 
-  const cross_ticker = inputs.crossEnable
+  const cross_ticker = normalizeBoolean(inputs.crossEnable)
     ? (() => {
         const max_datasets = Math.max(0, Math.floor(num(inputs.crossMax, 6)));
-        if (max_datasets <= 0) return null;
+        if (max_datasets <= 0) {
+          throw new Error(
+            "Cross-ticker validation is enabled, but Max datasets must be at least 1. Increase Max datasets or turn cross-ticker off.",
+          );
+        }
         const datasets = normalizeCrossDatasets(
           inputs.crossDatasets,
           max_datasets,
         );
-        if (!datasets.length) return null;
+        if (!datasets.length) {
+          throw new Error(
+            "Cross-ticker validation is enabled, but no eligible datasets are selected. Select at least one dataset or turn cross-ticker off.",
+          );
+        }
         const mode = normalizeCrossTickerMode(inputs.crossMode, kind);
         return {
           max_datasets,

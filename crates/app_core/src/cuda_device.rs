@@ -6,6 +6,8 @@ pub struct PreferredCudaDevice {
     pub device_id: u32,
     pub name: String,
     pub total_memory_bytes: u64,
+    pub compute_capability_major: u32,
+    pub compute_capability_minor: u32,
 }
 
 #[cfg(feature = "cuda")]
@@ -91,7 +93,10 @@ pub fn preferred_cuda_device() -> Result<Option<PreferredCudaDevice>, String> {
     static PREFERRED_CUDA_DEVICE: OnceLock<Mutex<Option<Option<PreferredCudaDevice>>>> =
         OnceLock::new();
     cached_successful_cuda_discovery(&PREFERRED_CUDA_DEVICE, || {
-        use cust::{device::Device, prelude::CudaFlags};
+        use cust::{
+            device::{Device, DeviceAttribute},
+            prelude::CudaFlags,
+        };
 
         let Some(device_id) = resolve_preferred_cuda_device_id()? else {
             return Ok(None);
@@ -99,10 +104,26 @@ pub fn preferred_cuda_device() -> Result<Option<PreferredCudaDevice>, String> {
 
         cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
+        let compute_capability_major = device
+            .get_attribute(DeviceAttribute::ComputeCapabilityMajor)
+            .map_err(|e| e.to_string())
+            .and_then(|value| {
+                u32::try_from(value)
+                    .map_err(|_| format!("invalid CUDA compute-capability major value {value}"))
+            })?;
+        let compute_capability_minor = device
+            .get_attribute(DeviceAttribute::ComputeCapabilityMinor)
+            .map_err(|e| e.to_string())
+            .and_then(|value| {
+                u32::try_from(value)
+                    .map_err(|_| format!("invalid CUDA compute-capability minor value {value}"))
+            })?;
         Ok(Some(PreferredCudaDevice {
             device_id,
             name: device.name().map_err(|e| e.to_string())?,
             total_memory_bytes: device.total_memory().map_err(|e| e.to_string())? as u64,
+            compute_capability_major,
+            compute_capability_minor,
         }))
     })
 }

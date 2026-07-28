@@ -57,6 +57,19 @@ describe('strategy store actions', () => {
     harness = installDocumentHarness()
   })
 
+  it('starts new research with the existing conservative liquid-stock cost preset', () => {
+    const store = useStrategyStore()
+
+    expect(store.costPreset).toBe('stocks_liquid')
+    expect(store.feeBps).toBe('0.10')
+    expect(store.spreadBps).toBe('1.00')
+    expect(store.slippageBps).toBe('0.50')
+    expect(store.commission).toBe('0.00011')
+    expect(store.costHint).toBe(
+      'Total: 1.10 bps/side (2.20 bps round-trip)',
+    )
+  })
+
   it('applies strategy field updates via Vue-first state sync without legacy DOM mirroring', () => {
     const store = useStrategyStore()
     store.setInputField('feeBps', '1.25')
@@ -122,5 +135,27 @@ describe('strategy store actions', () => {
     expect(store.tradeOnNext).toBe(true)
     expect(store.source).toBe('vue')
     expect(store.updatedAtUnixMs).toBeGreaterThan(0)
+  })
+
+  it('preserves explicit frictionless values from persisted legacy snapshots', () => {
+    const store = useStrategyStore()
+
+    store.applyLegacySnapshot({
+      costPreset: 'custom',
+      feeBps: '0',
+      spreadBps: '0',
+      slippageBps: '0',
+      commission: '0',
+      costHint: 'Total: 0.00 bps/side (0.00 bps round-trip)',
+    })
+
+    expect(store.costPreset).toBe('custom')
+    expect(store.feeBps).toBe('0')
+    expect(store.spreadBps).toBe('0')
+    expect(store.slippageBps).toBe('0')
+    expect(store.commission).toBe('0')
+    expect(store.costHint).toBe(
+      'Total: 0.00 bps/side (0.00 bps round-trip)',
+    )
   })
 })

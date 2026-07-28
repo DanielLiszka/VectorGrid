@@ -920,6 +920,7 @@ onBeforeUnmount(() => {
 .dataPanelVueRoot {
   display: grid;
   gap: 0.85rem;
+  container: data-panel / inline-size;
 }
 
 .head {
@@ -1099,7 +1100,7 @@ onBeforeUnmount(() => {
   font-family: var(--mono);
 }
 
-@media (max-width: 980px) {
+@container data-panel (max-width: 42rem) {
   .inputWithActions {
     grid-template-columns: 1fr;
   }

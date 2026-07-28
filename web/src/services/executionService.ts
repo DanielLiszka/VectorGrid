@@ -50,6 +50,8 @@ interface ExecutionRiskPayload {
   take_profit_pct: number | null;
   max_order_notional: number | null;
   max_position_notional: number | null;
+  max_daily_loss: number | null;
+  max_daily_orders: number | null;
   allow_short: boolean | null;
   require_bracket: boolean | null;
 }
@@ -70,6 +72,8 @@ interface ExecutionActionOptions {
   riskTakeProfitPct: string;
   riskMaxOrderNotional?: string;
   riskMaxPositionNotional?: string;
+  riskMaxDailyLoss?: string;
+  riskMaxDailyOrders?: string;
   riskAllowShort?: boolean | null;
   riskRequireBracket?: boolean | null;
   manualFastLen: string;
@@ -118,6 +122,8 @@ interface ExecutionConnectionResponse {
 export interface ExecutionRiskPolicy {
   max_order_notional: number | null;
   max_position_notional: number | null;
+  max_daily_loss: number | null;
+  max_daily_orders: number | null;
   allow_short: boolean | null;
   require_bracket: boolean | null;
 }
@@ -950,6 +956,18 @@ function parsePositiveOptionalNumber(
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error(`${label} must be finite and > 0.`);
+  }
+  return parsed;
+}
+
+function parsePositiveOptionalInteger(
+  raw: unknown,
+  label: string,
+): number | null {
+  const parsed = parsePositiveOptionalNumber(raw, label);
+  if (parsed == null) return null;
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${label} must be a positive integer.`);
   }
   return parsed;
 }
@@ -2221,6 +2239,14 @@ async function buildExecutionInvokePayload(
       options.riskMaxPositionNotional,
       "Max position notional",
     ),
+    max_daily_loss: parsePositiveOptionalNumber(
+      options.riskMaxDailyLoss,
+      "Max daily loss",
+    ),
+    max_daily_orders: parsePositiveOptionalInteger(
+      options.riskMaxDailyOrders,
+      "Max daily orders",
+    ),
     allow_short: nullableBoolean(options.riskAllowShort),
     require_bracket: nullableBoolean(options.riskRequireBracket),
   };
@@ -2314,6 +2340,8 @@ function normalizeExecutionRiskPolicy(raw: unknown): ExecutionRiskPolicy {
   return {
     max_order_notional: positiveNumberOrNull(row.max_order_notional),
     max_position_notional: positiveNumberOrNull(row.max_position_notional),
+    max_daily_loss: positiveNumberOrNull(row.max_daily_loss),
+    max_daily_orders: positiveNumberOrNull(row.max_daily_orders),
     allow_short: nullableBoolean(row.allow_short),
     require_bracket: nullableBoolean(row.require_bracket),
   };
@@ -2330,6 +2358,14 @@ function serializeExecutionRiskPolicy(
     max_position_notional: parsePositiveOptionalNumber(
       policy.max_position_notional,
       "Max position notional",
+    ),
+    max_daily_loss: parsePositiveOptionalNumber(
+      policy.max_daily_loss,
+      "Max daily loss",
+    ),
+    max_daily_orders: parsePositiveOptionalInteger(
+      policy.max_daily_orders,
+      "Max daily orders",
     ),
     allow_short: nullableBoolean(policy.allow_short),
     require_bracket: nullableBoolean(policy.require_bracket),

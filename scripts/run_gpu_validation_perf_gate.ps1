@@ -19,11 +19,18 @@ param(
   [string]$CriterionEstimatesGlob = "",
   [switch]$Quick,
   [switch]$ListCases,
-  [switch]$PlanOnly
+  [switch]$PlanOnly,
+  [ValidateRange(50, 60000)]
+  [int]$ProcessSnapshotTimeoutMilliseconds = 5000,
+  [ValidateRange(1, 7200)]
+  [int]$ChildProcessTimeoutSeconds = 1800,
+  [ValidateRange(1, 120)]
+  [int]$ChildCleanupTimeoutSeconds = 15
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "benchmark_lock.ps1")
+. (Join-Path $PSScriptRoot "performance_child_process.ps1")
 
 $SchemaVersion = 1
 $CaseRegistryVersion = 1
@@ -126,142 +133,28 @@ function Write-PassFailLine([string]$name, [bool]$pass, [string]$msg) {
   }
 }
 
-function Get-ProcessStartTicks {
-  param([Parameter(Mandatory = $true)]$Process)
-
-  try {
-    return [int64]$Process.StartTime.ToUniversalTime().Ticks
-  } catch {
-    return $null
-  }
-}
-
-function Get-CimProcessStartTicks {
-  param($CreationDate)
-
-  if ($null -eq $CreationDate) {
-    return $null
-  }
-
-  try {
-    return [int64]([System.Management.ManagementDateTimeConverter]::ToDateTime($CreationDate).ToUniversalTime().Ticks)
-  } catch {
-    return $null
-  }
-}
-
-function Get-ProcessCommandLine {
-  param([Parameter(Mandatory = $true)][int]$ProcessId)
-
-  try {
-    return "$((Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop).CommandLine)"
-  } catch {
-    return ""
-  }
-}
-
-function Test-BenchmarkCommandLine {
-  param([string]$CommandLine)
-
-  if ([string]::IsNullOrWhiteSpace($CommandLine)) {
-    return $false
-  }
-  if ($CommandLine -match '(^|[ \t])--no-run([ \t]|$)') {
-    return $false
-  }
-  return $CommandLine -match '(^|[ \t])bench([ \t]|$)' `
-    -or $CommandLine -match '(^|[ \t])--bench([ \t]|$)' `
-    -or $CommandLine -match 'criterion'
-}
-
-function Test-KnownCompletedPerfProcess {
+function Register-CompletedPerfProcessIdentity {
   param(
-    [Parameter(Mandatory = $true)][int]$ProcessId,
+    [int]$ProcessId,
     $StartTicks
   )
 
-  $key = "$ProcessId"
-  if (-not $script:CompletedPerfProcessStartTicksById.ContainsKey($key)) {
-    return $false
-  }
-  if ($null -eq $StartTicks) {
-    return $false
-  }
-  return [int64]$script:CompletedPerfProcessStartTicksById[$key] -eq [int64]$StartTicks
-}
-
-function Register-CompletedPerfProcess {
-  param($Process)
-
-  if ($null -eq $Process) {
+  if ($ProcessId -le 0 -or $null -eq $StartTicks) {
     return
   }
-
-  try {
-    if ($Process.HasExited) {
-      $startTicks = Get-ProcessStartTicks -Process $Process
-      if ($null -ne $startTicks) {
-        $script:CompletedPerfProcessStartTicksById["$($Process.Id)"] = $startTicks
-      }
-    }
-  } catch {
-  } finally {
-    try {
-      $Process.Dispose()
-    } catch {
-    }
-  }
+  $script:CompletedPerfProcessStartTicksById["$ProcessId"] = [int64]$StartTicks
 }
 
 function Get-PerfProcesses() {
-  $byId = [ordered]@{}
-
-  foreach ($proc in @(Get-Process | Where-Object {
-        $_.ProcessName -match '^(cargo|rustup|criterion|nsys|ncu|compute-sanitizer)$' `
-          -or $_.ProcessName -like 'double_ma_validation_workflow*' `
-          -or $_.ProcessName -like 'composite_validation_workflow*' `
-          -or $_.ProcessName -like 'ta_double_ma_validation_cost*'
-      })) {
-    $commandLine = Get-ProcessCommandLine -ProcessId $proc.Id
-    if ($proc.ProcessName -match '^(cargo|rustup)$' -and -not (Test-BenchmarkCommandLine -CommandLine $commandLine)) {
-      continue
-    }
-    $startTicks = Get-ProcessStartTicks -Process $proc
-    if (-not (Test-KnownCompletedPerfProcess -ProcessId $proc.Id -StartTicks $startTicks)) {
-      $byId["$($proc.Id)"] = [pscustomobject]@{
-        ProcessName = $proc.ProcessName
-        Id = $proc.Id
-        CPU = $proc.CPU
-        StartTime = $proc.StartTime
-        CommandLine = $commandLine
-      }
-    }
-  }
-
-  foreach ($proc in @(Get-CimInstance Win32_Process | Where-Object {
-        $name = "$($_.Name)"
-        $commandLine = "$($_.CommandLine)"
-        $isShell = $name -match '^(pwsh|powershell|cmd|conhost|WindowsTerminal)\.exe$'
-        -not $isShell -and (Test-BenchmarkCommandLine -CommandLine $commandLine)
-      })) {
-    $startTicks = Get-CimProcessStartTicks -CreationDate $proc.CreationDate
-    if (-not (Test-KnownCompletedPerfProcess -ProcessId $proc.ProcessId -StartTicks $startTicks)) {
-      $processName = [System.IO.Path]::GetFileNameWithoutExtension($proc.Name)
-      $startTime = $null
-      if ($null -ne $startTicks) {
-        $startTime = ([DateTime]::new($startTicks, [DateTimeKind]::Utc)).ToLocalTime()
-      }
-      $byId["$($proc.ProcessId)"] = [pscustomobject]@{
-        ProcessName = $processName
-        Id = $proc.ProcessId
-        CPU = $null
-        StartTime = $startTime
-        CommandLine = "$($proc.CommandLine)"
-      }
-    }
-  }
-
-  @($byId.Values)
+  $processSnapshot = @(
+    Get-VectorGridWin32ProcessSnapshot `
+      -TimeoutMilliseconds $ProcessSnapshotTimeoutMilliseconds
+  )
+  return @(
+    Select-VectorGridGpuValidationPerformanceProcesses `
+      -Snapshot $processSnapshot `
+      -CompletedProcessStartTicksById $script:CompletedPerfProcessStartTicksById
+  )
 }
 
 function Wait-NoPerfProcesses(
@@ -300,36 +193,20 @@ function Invoke-CargoCommandAndEcho(
   [string[]]$ArgumentList,
   [string]$FailureContext
 ) {
-  $stdoutPath = [System.IO.Path]::GetTempFileName()
-  $stderrPath = [System.IO.Path]::GetTempFileName()
-  $proc = $null
-  try {
-    $proc = Start-Process -FilePath "cargo" `
-      -ArgumentList $ArgumentList `
-      -NoNewWindow `
-      -Wait `
-      -PassThru `
-      -RedirectStandardOutput $stdoutPath `
-      -RedirectStandardError $stderrPath
-    $output = @()
-    if (Test-Path $stdoutPath) {
-      $output += Get-Content $stdoutPath
-    }
-    if (Test-Path $stderrPath) {
-      $output += Get-Content $stderrPath
-    }
-    foreach ($line in $output) {
-      Write-Host $line
-    }
-    $exitCode = $proc.ExitCode
-    Register-CompletedPerfProcess -Process $proc
-    $proc = $null
-    if ($exitCode -ne 0) {
-      throw "${FailureContext} (cargo exit code $exitCode)"
-    }
-  } finally {
-    Register-CompletedPerfProcess -Process $proc
-    Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
+  $result = Invoke-VectorGridBoundedChildProcess `
+    -FilePath "cargo" `
+    -ArgumentList $ArgumentList `
+    -TimeoutSeconds $ChildProcessTimeoutSeconds `
+    -SnapshotTimeoutMilliseconds $ProcessSnapshotTimeoutMilliseconds `
+    -CleanupTimeoutSeconds $ChildCleanupTimeoutSeconds
+  foreach ($line in @($result.output)) {
+    Write-Host $line
+  }
+  Register-CompletedPerfProcessIdentity `
+    -ProcessId ([int]$result.process_id) `
+    -StartTicks $result.process_start_ticks
+  if ([int]$result.exit_code -ne 0) {
+    throw "${FailureContext} (cargo exit code $($result.exit_code))"
   }
 }
 
@@ -338,38 +215,22 @@ function Invoke-ProcessAndEcho(
   [string[]]$ArgumentList,
   [string]$FailureContext
 ) {
-  $stdoutPath = [System.IO.Path]::GetTempFileName()
-  $stderrPath = [System.IO.Path]::GetTempFileName()
-  $proc = $null
-  try {
-    $proc = Start-Process -FilePath $FilePath `
-      -ArgumentList $ArgumentList `
-      -NoNewWindow `
-      -Wait `
-      -PassThru `
-      -RedirectStandardOutput $stdoutPath `
-      -RedirectStandardError $stderrPath
-    $output = @()
-    if (Test-Path $stdoutPath) {
-      $output += Get-Content $stdoutPath
-    }
-    if (Test-Path $stderrPath) {
-      $output += Get-Content $stderrPath
-    }
-    foreach ($line in $output) {
-      Write-Host $line
-    }
-    $exitCode = $proc.ExitCode
-    Register-CompletedPerfProcess -Process $proc
-    $proc = $null
-    if ($exitCode -ne 0) {
-      throw "${FailureContext} ($FilePath exit code $exitCode)"
-    }
-    return $output
-  } finally {
-    Register-CompletedPerfProcess -Process $proc
-    Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
+  $result = Invoke-VectorGridBoundedChildProcess `
+    -FilePath $FilePath `
+    -ArgumentList $ArgumentList `
+    -TimeoutSeconds $ChildProcessTimeoutSeconds `
+    -SnapshotTimeoutMilliseconds $ProcessSnapshotTimeoutMilliseconds `
+    -CleanupTimeoutSeconds $ChildCleanupTimeoutSeconds
+  foreach ($line in @($result.output)) {
+    Write-Host $line
   }
+  Register-CompletedPerfProcessIdentity `
+    -ProcessId ([int]$result.process_id) `
+    -StartTicks $result.process_start_ticks
+  if ([int]$result.exit_code -ne 0) {
+    throw "${FailureContext} ($FilePath exit code $($result.exit_code))"
+  }
+  return @($result.output)
 }
 
 function Find-LatestBenchExecutable([string]$benchName) {
@@ -640,6 +501,13 @@ function New-GpuValidationPerfPlan {
     out_path = $OutPath
     regression_pct = $RegressionPct
     structured_regression_pct = $StructuredRegressionPct
+    process_safety = [ordered]@{
+      snapshot_timeout_milliseconds = $ProcessSnapshotTimeoutMilliseconds
+      child_process_timeout_seconds = $ChildProcessTimeoutSeconds
+      child_cleanup_timeout_seconds = $ChildCleanupTimeoutSeconds
+      snapshot_failure_policy = "fail_closed"
+      cleanup_scope = "launched_root_and_verified_descendants_only"
+    }
   }
 }
 
@@ -660,6 +528,9 @@ function Write-GpuValidationPerfPlan {
   if ($Plan.structured_probe_enabled) {
     Write-Host "  structured_probe=DoubleMa ${StructuredProbeBars} bars, ${StructuredProbeRepeats} repeat(s), expected_route=GpuKernel"
   }
+  Write-Host "  process_snapshot_timeout_ms=$($Plan.process_safety.snapshot_timeout_milliseconds)"
+  Write-Host "  child_process_timeout_s=$($Plan.process_safety.child_process_timeout_seconds)"
+  Write-Host "  child_cleanup_scope=$($Plan.process_safety.cleanup_scope)"
 }
 
 function Invoke-GpuValidationBenchCase {
@@ -750,7 +621,7 @@ function Invoke-StructuredDoubleMaValidationProbe {
     "-p", "ta_desktop_demo_app",
     "--bin", "ta_double_ma_validation_cost",
     "--release",
-    "--features", "cuda,cuda-backtest-kernel"
+    "--features", "maintainer-tools,cuda,cuda-backtest-kernel"
   ) -FailureContext "Failed to build ta_double_ma_validation_cost"
 
   $csvPath = $StructuredProbeCsv
@@ -947,6 +818,13 @@ $summary = [ordered]@{
   criterion_cases = $criterionCaseSummaries
   structured_probe_path = if ($null -ne $structuredProbe) { $StructuredProbeOutPath } else { $null }
   structured_probe = $structuredProbe
+  process_safety = [ordered]@{
+    snapshot_timeout_milliseconds = $ProcessSnapshotTimeoutMilliseconds
+    child_process_timeout_seconds = $ChildProcessTimeoutSeconds
+    child_cleanup_timeout_seconds = $ChildCleanupTimeoutSeconds
+    snapshot_failure_policy = "fail_closed"
+    cleanup_scope = "launched_root_and_verified_descendants_only"
+  }
 }
 
 Write-JsonUtf8 -Path $OutPath -Value $summary

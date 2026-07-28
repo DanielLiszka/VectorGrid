@@ -50,7 +50,6 @@ function defaultCompositeMoSearchSpace(): CompositeMoSearchSpace {
         name: 'ott_ma_type',
         domain: { Categorical: { choices: ['VAR', 'EMA', 'SMA', 'WMA', 'TMA', 'WWMA', 'ZLEMA', 'TSF'] } },
       },
-      { name: 'strategy_commission', domain: { FloatRange: { low: 0.0, high: 0.001, log: false } } },
       { name: 'strategy_eps_rel', domain: { FloatRange: { low: 0.0, high: 0.005, log: false } } },
       { name: 'strategy_long_only', domain: 'Bool' },
       { name: 'strategy_allow_flip', domain: 'Bool' },

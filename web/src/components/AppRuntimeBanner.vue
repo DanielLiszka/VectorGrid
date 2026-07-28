@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import AppVisualIcon from './AppVisualIcon.vue'
+import { retryLatestWorkflowArtifactHydration } from '../services/workflowBootstrap'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { runtimeReadyIcon } from '../utils/appSvgAssets'
@@ -10,16 +11,35 @@ import { describeRuntimePhase, runtimePhaseLabel } from '../utils/statusPresenta
 
 const runtime = useRuntimeStore()
 const workflowStore = useWorkflowStore()
-const { bootPhase, bootStage, bootError, bootErrorDetail, bootElapsedMs } = storeToRefs(runtime)
+const {
+  bootPhase,
+  bootStage,
+  bootError,
+  bootErrorDetail,
+  bootElapsedMs,
+  latestArtifactHydrationPhase,
+  latestArtifactHydrationError,
+} = storeToRefs(runtime)
 
-const visible = computed(() => bootPhase.value === 'booting' || bootPhase.value === 'error')
+const latestArtifactRestoreFailed = computed(
+  () => bootPhase.value === 'ready' && latestArtifactHydrationPhase.value === 'error',
+)
+
+const visible = computed(
+  () => bootPhase.value === 'booting' || bootPhase.value === 'error' || latestArtifactRestoreFailed.value,
+)
 
 const phaseLabel = computed(() => {
   if (bootPhase.value === 'error') return 'Runtime Error'
+  if (latestArtifactRestoreFailed.value) return 'Restore warning'
   return runtimePhaseLabel(bootPhase.value)
 })
 
 const detail = computed(() => {
+  if (latestArtifactRestoreFailed.value) {
+    const error = String(latestArtifactHydrationError.value || 'Unknown restore error').trim()
+    return `Latest saved artifact could not be restored: ${error}. The workspace remains usable.`
+  }
   return describeRuntimePhase({
     phase: bootPhase.value,
     stage: bootStage.value,
@@ -33,10 +53,24 @@ const errorDetail = computed(() => {
   return String(bootErrorDetail.value || '').trim()
 })
 
-const bannerIcon = computed(() => (bootPhase.value === 'error' ? taskLevelIcon('error') : runtimeReadyIcon))
+const bannerIcon = computed(() => {
+  if (bootPhase.value === 'error') return taskLevelIcon('error')
+  if (latestArtifactRestoreFailed.value) return taskLevelIcon('warn')
+  return runtimeReadyIcon
+})
+
+const bannerClass = computed(() => {
+  if (bootPhase.value === 'error') return 'error'
+  if (latestArtifactRestoreFailed.value) return 'restoreWarning'
+  return bootPhase.value
+})
 
 function openDiagnostics(): void {
   workflowStore.selectWorkspace('settings')
+}
+
+function retryLatestArtifactRestore(): void {
+  void retryLatestWorkflowArtifactHydration().catch(() => undefined)
 }
 </script>
 
@@ -44,7 +78,7 @@ function openDiagnostics(): void {
   <div
     v-if="visible"
     class="runtimeBanner"
-    :class="bootPhase"
+    :class="bannerClass"
     role="status"
     :aria-live="bootPhase === 'error' ? 'assertive' : 'polite'"
     aria-atomic="true"
@@ -57,6 +91,14 @@ function openDiagnostics(): void {
       </div>
       <button v-if="bootPhase === 'error'" type="button" class="runtimeAction" @click="openDiagnostics">
         Open diagnostics
+      </button>
+      <button
+        v-else-if="latestArtifactRestoreFailed"
+        type="button"
+        class="runtimeAction"
+        @click="retryLatestArtifactRestore"
+      >
+        Retry latest artifact
       </button>
     </div>
     <details v-if="errorDetail" class="runtimeErrorTrace">
@@ -114,6 +156,13 @@ function openDiagnostics(): void {
   --runtime-accent-soft: var(--danger-soft);
   --runtime-border: color-mix(in oklab, var(--runtime-accent) 48%, var(--border));
   --runtime-surface: color-mix(in oklab, var(--danger-soft) 54%, var(--surface-sticky));
+}
+
+.runtimeBanner.restoreWarning {
+  --runtime-accent: var(--warning);
+  --runtime-accent-soft: var(--warning-soft);
+  --runtime-border: color-mix(in oklab, var(--runtime-accent) 48%, var(--border));
+  --runtime-surface: color-mix(in oklab, var(--warning-soft) 52%, var(--surface-sticky));
 }
 
 .runtimeLabel {

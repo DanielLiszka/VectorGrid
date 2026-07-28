@@ -17,6 +17,16 @@ import {
   failureScreenshotPath,
   writeTextFile,
 } from './e2e/desktop/support/artifacts.js'
+import {
+  activateDesktopProfileEnvironment,
+  cleanupDesktopProfileIsolation,
+  desktopDriverEnvironment,
+  finalizeDesktopProfileIsolation,
+  prepareDesktopProfileIsolation,
+  type DesktopProfileIsolation,
+  type DesktopProfileIsolationSummary,
+  writeDesktopProfileIsolationBlockedEvidence,
+} from './e2e/desktop/support/profileIsolation.js'
 import { buildDesktopSmokeApp } from './scripts/desktop/build-smoke-app.ts'
 import { verifyDesktopSmokePrereqs } from './scripts/desktop/verify-prereqs.ts'
 
@@ -35,20 +45,109 @@ let tauriDriverExpectedExit = false
 let previewServerExpectedExit = false
 let tauriDriverPath = ''
 let edgeDriverPath = ''
+let desktopProfileIsolation: DesktopProfileIsolation | null = null
+let profileIsolationSummary: DesktopProfileIsolationSummary | null = null
 const tauriDriverPort = 4444
 const previewServerPort = 1420
 const vitePreviewEntrypoint = path.resolve(webRoot, 'node_modules', 'vite', 'bin', 'vite.js')
+const titlebarNativeControlsSpec = './e2e/desktop/specs/desktop-titlebar-native-controls.spec.ts'
 const stableSmokeSpecs = [
   './e2e/desktop/specs/desktop-shell-readiness.spec.ts',
   './e2e/desktop/specs/desktop-workspace-navigation.spec.ts',
   './e2e/desktop/specs/desktop-command-palette.spec.ts',
   './e2e/desktop/specs/desktop-task-center.spec.ts',
   './e2e/desktop/specs/desktop-settings-diagnostics.spec.ts',
-  './e2e/desktop/specs/desktop-titlebar-native-controls.spec.ts',
+  titlebarNativeControlsSpec,
   './e2e/desktop/specs/desktop-app-close.spec.ts',
 ]
 const geometrySmokeSpec = './e2e/desktop/specs/desktop-window-geometry.spec.ts'
-const expandedSmokeSpecs = [...stableSmokeSpecs, geometrySmokeSpec]
+const launchBoundsSmokeSpec = './e2e/desktop/specs/desktop-window-launch-bounds.spec.ts'
+const nativeWorkflowSmokeSpec = './e2e/desktop/specs/desktop-native-data-flow.spec.ts'
+const isolatedCleanStartSpec = './e2e/desktop/specs/desktop-isolated-clean-start.spec.ts'
+const nativeRouteMatrixSpec = './e2e/desktop/specs/desktop-native-route-matrix.spec.ts'
+
+type ReleaseProofJourneyEntry = {
+  journeyId: string
+  spec: string
+  evidenceFile: string
+  evidenceContract: string
+}
+
+function loadReleaseProofJourneyManifest(): ReleaseProofJourneyEntry[] {
+  const manifestPath = path.resolve(webRoot, '..', 'scripts', 'release_proof_journeys.json')
+  const manifestStat = fs.lstatSync(manifestPath)
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+    throw new Error(`Release-proof journey manifest must be an ordinary file: ${manifestPath}`)
+  }
+  const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+    schema_version?: unknown
+    desktop_suite?: unknown
+    journeys?: unknown
+  }
+  if (
+    raw.schema_version !== 1
+    || raw.desktop_suite !== 'release-proof'
+    || !Array.isArray(raw.journeys)
+    || raw.journeys.length === 0
+  ) {
+    throw new Error(`Release-proof journey manifest has an unsupported schema: ${manifestPath}`)
+  }
+  const seenIds = new Set<string>()
+  const seenSpecs = new Set<string>()
+  const seenEvidenceFiles = new Set<string>()
+  const seenEvidenceContracts = new Set<string>()
+  return raw.journeys.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`Release-proof journey ${String(index)} must be an object.`)
+    }
+    const record = value as Record<string, unknown>
+    const journeyId = String(record.id ?? '').trim()
+    const repoSpec = String(record.spec ?? '').trim().replace(/\\/g, '/')
+    const evidenceFile = String(record.evidence_file ?? '').trim()
+    const evidenceContract = String(record.evidence_contract ?? '').trim()
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(journeyId)
+      || !repoSpec.startsWith('web/e2e/desktop/specs/')
+      || !repoSpec.endsWith('.spec.ts')
+      || repoSpec.split('/').includes('..')
+      || evidenceFile !== `${journeyId}-proof.json`
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(evidenceContract)
+      || seenIds.has(journeyId)
+      || seenSpecs.has(repoSpec)
+      || seenEvidenceFiles.has(evidenceFile)
+      || seenEvidenceContracts.has(evidenceContract)
+    ) {
+      throw new Error(`Release-proof journey ${String(index)} is unsafe or duplicated.`)
+    }
+    const absoluteSpec = path.resolve(webRoot, repoSpec.slice('web/'.length))
+    const specStat = fs.lstatSync(absoluteSpec)
+    if (!specStat.isFile() || specStat.isSymbolicLink()) {
+      throw new Error(`Release-proof journey spec must be an ordinary file: ${absoluteSpec}`)
+    }
+    seenIds.add(journeyId)
+    seenSpecs.add(repoSpec)
+    seenEvidenceFiles.add(evidenceFile)
+    seenEvidenceContracts.add(evidenceContract)
+    return {
+      journeyId,
+      spec: `./${repoSpec.slice('web/'.length)}`,
+      evidenceFile,
+      evidenceContract,
+    }
+  })
+}
+
+export const releaseProofJourneyManifest = loadReleaseProofJourneyManifest()
+const releaseProofSpecs = releaseProofJourneyManifest.map(({ spec }) => spec)
+const releaseProofEvidenceFiles = releaseProofJourneyManifest.map(
+  ({ evidenceFile }) => evidenceFile,
+)
+const expandedSmokeSpecs = [
+  ...stableSmokeSpecs,
+  geometrySmokeSpec,
+  launchBoundsSmokeSpec,
+  nativeWorkflowSmokeSpec,
+]
 
 type TauriDesktopCapability = WebdriverIO.Capabilities & {
   'tauri:options': {
@@ -94,9 +193,17 @@ function selectedSuiteName(): string {
 
 function selectedSuiteSpecCount(suiteName: string): number {
   if (suiteName === 'smoke') return stableSmokeSpecs.length
-  if (suiteName === 'geometry') return 1
+  if (suiteName === 'geometry') return 3
+  if (suiteName === 'workflow') return 1
+  if (suiteName === 'clean-start') return 1
+  if (suiteName === 'route-matrix') return 1
+  if (suiteName === 'release-proof') return releaseProofSpecs.length
   if (suiteName === 'smoke-expanded' || suiteName === 'all') return expandedSmokeSpecs.length
   return stableSmokeSpecs.length
+}
+
+function selectedSuiteRequiresProfileIsolation(): boolean {
+  return ['clean-start', 'route-matrix', 'release-proof'].includes(selectedSuiteName())
 }
 
 function writeDesktopSmokeSummary(exitCode: number): void {
@@ -109,6 +216,14 @@ function writeDesktopSmokeSummary(exitCode: number): void {
     suite: suiteName,
     runId: artifactContext.runId,
     specCount: selectedSuiteSpecCount(suiteName),
+    profileIsolation: profileIsolationSummary,
+    releaseProof: suiteName === 'release-proof'
+      ? {
+          contract: 'vectorgrid-release-proof-manifest-v1',
+          journeys: releaseProofJourneyManifest,
+          requiredEvidenceFiles: releaseProofEvidenceFiles,
+        }
+      : null,
     artifacts: {
       runDir: path.relative(path.resolve(webRoot, '..'), artifactContext.runDir).replace(/\\/g, '/'),
       logsDir: path.relative(path.resolve(webRoot, '..'), artifactContext.logsDir).replace(/\\/g, '/'),
@@ -143,6 +258,8 @@ function registerShutdown(): void {
   const cleanup = () => {
     closeTauriDriver()
     closePreviewServer()
+    cleanupDesktopProfileIsolation(desktopProfileIsolation)
+    desktopProfileIsolation = null
   }
   process.on('exit', cleanup)
   process.on('SIGINT', cleanup)
@@ -361,8 +478,9 @@ async function startTauriDriver(): Promise<void> {
   appendLogLine(artifactContext.driverLogPath, `Resolved EdgeDriver ${edgeDriverPath}`)
   const nextPath = [path.dirname(edgeDriverPath), process.env.PATH || ''].filter(Boolean).join(path.delimiter)
   tauriDriverProcess = spawn(tauriDriverPath, [], {
+    cwd: desktopProfileIsolation?.userProfile,
     env: {
-      ...process.env,
+      ...desktopDriverEnvironment(desktopProfileIsolation),
       PATH: nextPath,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -398,9 +516,18 @@ export const config: WebdriverIO.Config = {
   port: tauriDriverPort,
   specs: stableSmokeSpecs,
   maxInstances: 1,
+  connectionRetryTimeout: 15_000,
+  connectionRetryCount: 1,
+  specFileRetries: selectedSuiteName() === 'release-proof' ? 0 : 1,
+  specFileRetriesDelay: 1,
+  specFileRetriesDeferred: true,
   suites: {
     smoke: stableSmokeSpecs,
-    geometry: [geometrySmokeSpec],
+    geometry: [geometrySmokeSpec, titlebarNativeControlsSpec, launchBoundsSmokeSpec],
+    workflow: [nativeWorkflowSmokeSpec],
+    'clean-start': [isolatedCleanStartSpec],
+    'route-matrix': [nativeRouteMatrixSpec],
+    'release-proof': releaseProofSpecs,
     'smoke-expanded': expandedSmokeSpecs,
     all: expandedSmokeSpecs,
   },
@@ -419,10 +546,40 @@ export const config: WebdriverIO.Config = {
   reporters: ['spec'],
   mochaOpts: {
     ui: 'bdd',
-    timeout: 90_000,
+    timeout: ['release-proof', 'route-matrix'].includes(selectedSuiteName())
+      ? 600_000
+      : 90_000,
   },
   async onPrepare() {
     process.env.VECTORGRID_DESKTOP_SMOKE_RUN_ID = artifactContext.runId
+    if (
+      selectedSuiteName() === 'release-proof'
+      && process.env.VECTORGRID_DESKTOP_SMOKE_EXACT_PACKAGE !== '1'
+    ) {
+      throw new Error(
+        'The release-proof suite requires VECTORGRID_DESKTOP_SMOKE_EXACT_PACKAGE=1 from the exact-package wrapper.',
+      )
+    }
+    try {
+      desktopProfileIsolation = prepareDesktopProfileIsolation(artifactContext)
+    } catch (error) {
+      profileIsolationSummary = writeDesktopProfileIsolationBlockedEvidence(
+        artifactContext,
+        error,
+      )
+      throw error
+    }
+    if (selectedSuiteRequiresProfileIsolation() && !desktopProfileIsolation) {
+      const error = new Error(
+        `The ${selectedSuiteName()} suite requires a sentinel-owned isolated profile root.`,
+      )
+      profileIsolationSummary = writeDesktopProfileIsolationBlockedEvidence(
+        artifactContext,
+        error,
+      )
+      throw error
+    }
+    if (desktopProfileIsolation) registerShutdown()
     const prereqs = verifyDesktopSmokePrereqs()
     tauriDriverPath = prereqs.tauriDriverPath
     edgeDriverPath = prereqs.edgeDriverPath
@@ -443,6 +600,7 @@ export const config: WebdriverIO.Config = {
         'Skipping preview bootstrap because VECTORGRID_DESKTOP_SMOKE_DISABLE_PREVIEW=1.',
       )
     }
+    activateDesktopProfileEnvironment(desktopProfileIsolation)
     await startTauriDriver()
   },
   afterTest: async function (test, _context, result) {
@@ -451,9 +609,23 @@ export const config: WebdriverIO.Config = {
       await browser.saveScreenshot(screenshotPath)
     }
   },
-  onComplete(exitCode) {
-    writeDesktopSmokeSummary(Number(exitCode || 0))
+  async onComplete(exitCode) {
     closeTauriDriver()
     closePreviewServer()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    let finalExitCode = Number(exitCode || 0)
+    let isolationError: unknown = null
+    try {
+      if (profileIsolationSummary?.status !== 'blocked') {
+        profileIsolationSummary = finalizeDesktopProfileIsolation(desktopProfileIsolation)
+      }
+    } catch (error) {
+      finalExitCode = 1
+      isolationError = error
+    } finally {
+      desktopProfileIsolation = null
+    }
+    writeDesktopSmokeSummary(finalExitCode)
+    if (isolationError) throw isolationError
   },
 }

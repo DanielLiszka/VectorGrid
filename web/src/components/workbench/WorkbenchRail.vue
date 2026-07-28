@@ -162,7 +162,7 @@ function onItemKeydown(event: KeyboardEvent, item: WorkbenchNavigationItem): voi
   display: grid;
   justify-items: center;
   gap: 0.2rem;
-  font-size: 0.66rem;
+  font-size: var(--text-xs);
   font-weight: 650;
   line-height: 1.12;
 }
@@ -200,7 +200,8 @@ function onItemKeydown(event: KeyboardEvent, item: WorkbenchNavigationItem): voi
   .railTabList {
     min-height: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    width: 100%;
     gap: 0.12rem;
   }
 
@@ -216,7 +217,7 @@ function onItemKeydown(event: KeyboardEvent, item: WorkbenchNavigationItem): voi
     width: 100%;
     min-height: 44px;
     padding: 0.36rem 0.08rem;
-    font-size: 0.58rem;
+    font-size: var(--text-xs);
   }
 }
 </style>

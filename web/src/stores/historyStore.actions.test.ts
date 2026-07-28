@@ -223,6 +223,65 @@ describe("history store actions", () => {
     expect(refreshSavedRunsMock).toHaveBeenCalledTimes(2);
   });
 
+  it("retains saved validation and dataset evidence for fail-closed History review", async () => {
+    const store = useHistoryStore();
+    const validationReq = {
+      backend: { backend: "Cpu" },
+    };
+    const validationRes = {
+      validation_evidence_pack: {
+        schema_version: "1-0-0",
+        version: 1,
+        status: "incomplete",
+      },
+    };
+    const datasetMeta = {
+      dataset_id: "spy-1d",
+    };
+    loadSavedRunDetailMock.mockResolvedValueOnce({
+      strategyKind: "DoubleMa",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      reportPath: "C:/runs/run1.xlsx",
+      reportPathExists: true,
+      hasValidation: true,
+      replayClass: "exact_evidence_review",
+      replayReasons: ["saved_run_result_payload_present"],
+      datasetMeta,
+      runRes: { num_combos: 42 },
+      validationReq,
+      validationRes,
+      tags: ["review"],
+      paramsText: "strategy: DoubleMa",
+    });
+    store.savedRunsRaw = [
+      {
+        ts: "2026-02-25T00:00:00Z",
+        path: "C:/runs/run1.json",
+        bytes: 1024,
+        strategyKind: "DoubleMa",
+        hasValidation: true,
+        reportXlsxPath: "C:/runs/run1.xlsx",
+        csvPath: "C:/data/spy.csv",
+        tags: ["review"],
+      },
+    ];
+
+    store.syncSavedRunsView("C:/runs/run1.json");
+    await flushServiceImports();
+    await flushServiceImports();
+
+    expect(store.savedRunDetailCache["C:/runs/run1.json"]).toMatchObject({
+      reportPathExists: true,
+      replayClass: "exact_evidence_review",
+      replayReasons: ["saved_run_result_payload_present"],
+      datasetMeta,
+      runRes: { num_combos: 42 },
+      validationReq,
+      validationRes,
+    });
+  });
+
   it("surfaces saved-run action failures in the Vue status line", async () => {
     const store = useHistoryStore();
     store.savedRunsRaw = [

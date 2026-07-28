@@ -2,11 +2,13 @@ use crate::redaction::redact_sensitive_text_with_values;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::ffi::OsString;
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SETTINGS_FILE: &str = "polygon_settings.json";
@@ -16,6 +18,8 @@ const BARS_PER_REQUEST_LIMIT: u32 = 50_000;
 const CHUNK_DAYS: i64 = 30;
 const KEYRING_USERNAME: &str = "polygon_api_key";
 const FREE_PLAN_LOOKBACK_DAYS: i64 = 365 * 2;
+const QA_PROFILE_OVERRIDE_ENV: &str = "VECTORGRID_DESKTOP_SMOKE_APP_DATA_OVERRIDE";
+static POLYGON_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolygonSettings {
@@ -48,6 +52,10 @@ pub struct PolygonDatasetIntegrity {
     pub duplicates: u64,
     pub out_of_order: u64,
     pub same_day_gaps_gt_2min: u64,
+    #[serde(default)]
+    pub csv_size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csv_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -285,6 +293,14 @@ fn direct_env_api_key_fallback() -> Option<String> {
     None
 }
 
+fn inherited_credential_fallbacks_allowed_for(value: Option<&std::ffi::OsStr>) -> bool {
+    value != Some(std::ffi::OsStr::new("1"))
+}
+
+fn inherited_credential_fallbacks_allowed() -> bool {
+    inherited_credential_fallbacks_allowed_for(std::env::var_os(QA_PROFILE_OVERRIDE_ENV).as_deref())
+}
+
 fn dotenv_api_key_fallback_from_dir(start_dir: &Path) -> Option<String> {
     for dir in start_dir.ancestors().take(8) {
         let env_path = dir.join(".env");
@@ -435,24 +451,26 @@ fn read_api_key_with_status(
         }
     }
 
-    if let Some(key) = direct_env_api_key_fallback() {
-        return Ok(api_key_status(
-            Some(key),
-            PolygonCredentialStorageState::EnvFallback,
-            "environment",
-            true,
-            Some("Polygon API key is sourced from a process environment fallback.".to_string()),
-        ));
-    }
-    let cwd = std::env::current_dir().ok();
-    if let Some(key) = cwd.as_deref().and_then(dotenv_api_key_fallback_from_dir) {
-        return Ok(api_key_status(
-            Some(key),
-            PolygonCredentialStorageState::DotenvFallback,
-            "dotenv",
-            true,
-            Some("Polygon API key is sourced from a .env fallback.".to_string()),
-        ));
+    if inherited_credential_fallbacks_allowed() {
+        if let Some(key) = direct_env_api_key_fallback() {
+            return Ok(api_key_status(
+                Some(key),
+                PolygonCredentialStorageState::EnvFallback,
+                "environment",
+                true,
+                Some("Polygon API key is sourced from a process environment fallback.".to_string()),
+            ));
+        }
+        let cwd = std::env::current_dir().ok();
+        if let Some(key) = cwd.as_deref().and_then(dotenv_api_key_fallback_from_dir) {
+            return Ok(api_key_status(
+                Some(key),
+                PolygonCredentialStorageState::DotenvFallback,
+                "dotenv",
+                true,
+                Some("Polygon API key is sourced from a .env fallback.".to_string()),
+            ));
+        }
     }
 
     if keyring_unavailable {
@@ -512,16 +530,262 @@ fn load_manifest(cache_dir: &Path) -> Result<PolygonCacheManifest, String> {
     Ok(m)
 }
 
+fn polygon_temp_path(parent: &Path, target: &Path) -> Result<PathBuf, String> {
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| format!("Polygon cache path has no file name: {}", target.display()))?;
+    let counter = POLYGON_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut temp_name = OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!(".{}.{}.{}.tmp", std::process::id(), nonce, counter));
+    Ok(parent.join(temp_name))
+}
+
+fn create_polygon_staged_file(parent: &Path, target: &Path) -> Result<(PathBuf, fs::File), String> {
+    for _ in 0..64 {
+        let temp_path = polygon_temp_path(parent, target)?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "create staged Polygon cache file {}: {error}",
+                    temp_path.display()
+                ));
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to allocate a unique staged Polygon cache path for {}",
+        target.display()
+    ))
+}
+
+fn existing_regular_polygon_target(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "refusing to replace symlink Polygon cache target {}",
+                    path.display()
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(format!(
+                    "refusing to replace non-file Polygon cache target {}",
+                    path.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "inspect Polygon cache target {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn replace_polygon_target_with_staged(staged: &Path, target: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let staged_wide: Vec<u16> = staged.as_os_str().encode_wide().chain(Some(0)).collect();
+    let ok = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            staged_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        Err(format!(
+            "replace Polygon cache target {} with {}: {}",
+            target.display(),
+            staged.display(),
+            io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_polygon_target_with_staged(staged: &Path, target: &Path) -> Result<(), String> {
+    fs::rename(staged, target).map_err(|error| {
+        format!(
+            "replace Polygon cache target {} with {}: {error}",
+            target.display(),
+            staged.display()
+        )
+    })
+}
+
+fn publish_polygon_staged_file(
+    staged: &Path,
+    target: &Path,
+    target_exists: bool,
+) -> Result<(), String> {
+    if target_exists {
+        replace_polygon_target_with_staged(staged, target)
+    } else {
+        fs::rename(staged, target).map_err(|error| {
+            format!(
+                "publish staged Polygon cache file {} to {}: {error}",
+                staged.display(),
+                target.display()
+            )
+        })
+    }
+}
+
+#[cfg(unix)]
+fn sync_polygon_parent_dir(parent: &Path) -> Result<(), String> {
+    fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| format!("sync Polygon cache directory {}: {error}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_polygon_parent_dir(_parent: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn write_polygon_file_atomically<T>(
+    path: &Path,
+    write_contents: impl FnOnce(&mut fs::File) -> Result<T, String>,
+) -> Result<T, String> {
+    let parent = path
+        .parent()
+        .filter(|entry| !entry.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "create Polygon cache directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let target_exists = existing_regular_polygon_target(path)?;
+    let (staged_path, mut staged_file) = create_polygon_staged_file(parent, path)?;
+    let write_result = (|| {
+        let output = write_contents(&mut staged_file)?;
+        staged_file.sync_all().map_err(|error| {
+            format!(
+                "sync staged Polygon cache file {}: {error}",
+                staged_path.display()
+            )
+        })?;
+        Ok::<T, String>(output)
+    })();
+    drop(staged_file);
+
+    let output = match write_result {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_file(&staged_path);
+            return Err(error);
+        }
+    };
+
+    if let Err(error) = publish_polygon_staged_file(&staged_path, path, target_exists) {
+        let _ = fs::remove_file(&staged_path);
+        return Err(error);
+    }
+    sync_polygon_parent_dir(parent)?;
+    Ok(output)
+}
+
+fn update_polygon_file_atomically<T>(
+    path: &Path,
+    update_staged: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let parent = path
+        .parent()
+        .filter(|entry| !entry.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "create Polygon cache directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let target_exists = existing_regular_polygon_target(path)?;
+    let (staged_path, mut staged_file) = create_polygon_staged_file(parent, path)?;
+
+    let stage_result = (|| {
+        if target_exists {
+            let mut source = fs::File::open(path)
+                .map_err(|error| format!("open Polygon cache file {}: {error}", path.display()))?;
+            io::copy(&mut source, &mut staged_file).map_err(|error| {
+                format!(
+                    "copy Polygon cache file {} to staged file {}: {error}",
+                    path.display(),
+                    staged_path.display()
+                )
+            })?;
+        }
+        staged_file.sync_all().map_err(|error| {
+            format!(
+                "sync staged Polygon cache file {}: {error}",
+                staged_path.display()
+            )
+        })
+    })();
+    drop(staged_file);
+    if let Err(error) = stage_result {
+        let _ = fs::remove_file(&staged_path);
+        return Err(error);
+    }
+
+    let output = match update_staged(&staged_path) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_file(&staged_path);
+            return Err(error);
+        }
+    };
+    OpenOptions::new()
+        .write(true)
+        .open(&staged_path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| {
+            let _ = fs::remove_file(&staged_path);
+            format!(
+                "sync updated staged Polygon cache file {}: {error}",
+                staged_path.display()
+            )
+        })?;
+
+    if let Err(error) = publish_polygon_staged_file(&staged_path, path, target_exists) {
+        let _ = fs::remove_file(&staged_path);
+        return Err(error);
+    }
+    sync_polygon_parent_dir(parent)?;
+    Ok(output)
+}
+
 fn save_manifest(cache_dir: &Path, m: &PolygonCacheManifest) -> Result<(), String> {
-    fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
     let json = serde_json::to_string_pretty(m).map_err(|e| e.to_string())?;
     let p = manifest_path(cache_dir);
-    let tmp = p.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|e| e.to_string())?;
-    if p.exists() {
-        let _ = fs::remove_file(&p);
-    }
-    fs::rename(tmp, p).map_err(|e| e.to_string())
+    write_polygon_file_atomically(&p, |file| {
+        file.write_all(json.as_bytes())
+            .map_err(|error| format!("write staged Polygon manifest {}: {error}", p.display()))
+    })
 }
 
 pub fn get_cache_info(app_identifier: &str, cache_dir: &Path) -> Result<PolygonCacheInfo, String> {
@@ -582,6 +846,76 @@ fn integrity_is_clean(integrity: Option<&PolygonDatasetIntegrity>) -> bool {
             same_day_gaps_gt_2min: 0,
             ..
         })
+    )
+}
+
+fn csv_fingerprint(path: &Path) -> Result<(u64, String), String> {
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("open CSV {}: {error}", path.display()))?;
+    let expected_size = file
+        .metadata()
+        .map_err(|error| format!("inspect CSV {}: {error}", path.display()))?
+        .len();
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut bytes_read = 0u64;
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read CSV {}: {error}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        bytes_read = bytes_read.saturating_add(count as u64);
+    }
+    let final_size = file
+        .metadata()
+        .map_err(|error| format!("re-inspect CSV {}: {error}", path.display()))?
+        .len();
+    if bytes_read != expected_size || final_size != expected_size {
+        return Err(format!(
+            "CSV changed while computing its integrity fingerprint: {}",
+            path.display()
+        ));
+    }
+    Ok((expected_size, format!("{:x}", hasher.finalize())))
+}
+
+fn cached_csv_matches_clean_integrity(path: &Path, meta: Option<&PolygonDatasetMeta>) -> bool {
+    let Some(meta) = meta else {
+        return false;
+    };
+    let Some(integrity) = meta.integrity.as_ref() else {
+        return false;
+    };
+    if !integrity_is_clean(Some(integrity))
+        || meta.row_count == 0
+        || meta.min_ts <= 0
+        || meta.max_ts < meta.min_ts
+        || integrity.csv_size_bytes == 0
+    {
+        return false;
+    }
+    let Some(expected_sha256) = integrity
+        .csv_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    else {
+        return false;
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() != integrity.csv_size_bytes {
+        return false;
+    }
+    matches!(
+        csv_fingerprint(path),
+        Ok((size, actual_sha256))
+            if size == integrity.csv_size_bytes
+                && actual_sha256.eq_ignore_ascii_case(expected_sha256)
     )
 }
 
@@ -912,29 +1246,27 @@ fn append_bars(
 }
 
 fn overwrite_bars(path: &Path, all_bars: &[AggBar]) -> Result<(usize, i64, i64), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let f = fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut w = BufWriter::new(f);
-    w.write_all(b"timestamp,open,close,high,low,volume\n")
-        .map_err(|e| e.to_string())?;
-    let mut min_ts = 0i64;
-    let mut max_ts = 0i64;
-    let mut wrote = 0usize;
-    for b in all_bars {
-        if min_ts == 0 || b.t < min_ts {
-            min_ts = b.t;
-        }
-        if b.t > max_ts {
-            max_ts = b.t;
-        }
-        writeln!(w, "{},{},{},{},{},{}", b.t, b.o, b.c, b.h, b.l, b.v)
+    write_polygon_file_atomically(path, |file| {
+        let mut w = BufWriter::new(file);
+        w.write_all(b"timestamp,open,close,high,low,volume\n")
             .map_err(|e| e.to_string())?;
-        wrote += 1;
-    }
-    w.flush().map_err(|e| e.to_string())?;
-    Ok((wrote, min_ts, max_ts))
+        let mut min_ts = 0i64;
+        let mut max_ts = 0i64;
+        let mut wrote = 0usize;
+        for b in all_bars {
+            if min_ts == 0 || b.t < min_ts {
+                min_ts = b.t;
+            }
+            if b.t > max_ts {
+                max_ts = b.t;
+            }
+            writeln!(w, "{},{},{},{},{},{}", b.t, b.o, b.c, b.h, b.l, b.v)
+                .map_err(|e| e.to_string())?;
+            wrote += 1;
+        }
+        w.flush().map_err(|e| e.to_string())?;
+        Ok((wrote, min_ts, max_ts))
+    })
 }
 
 fn csv_day_id_utc(ts_ms: i64) -> i64 {
@@ -945,6 +1277,7 @@ fn scan_csv_integrity(
     path: &Path,
     timeframe_interval_ms: i64,
 ) -> Result<(u64, i64, i64, PolygonDatasetIntegrity), String> {
+    let fingerprint_before = csv_fingerprint(path)?;
     let f = fs::File::open(path).map_err(|e| e.to_string())?;
     let r = BufReader::new(f);
 
@@ -1007,6 +1340,14 @@ fn scan_csv_integrity(
     if row_count == 0 || min_ts == 0 || max_ts == 0 {
         return Err("dataset CSV has no valid rows".to_string());
     }
+    let fingerprint_after = csv_fingerprint(path)?;
+    if fingerprint_before != fingerprint_after {
+        return Err(format!(
+            "dataset CSV changed while it was being validated: {}",
+            path.display()
+        ));
+    }
+    let (csv_size_bytes, csv_sha256) = fingerprint_after;
 
     Ok((
         row_count,
@@ -1018,6 +1359,8 @@ fn scan_csv_integrity(
             duplicates,
             out_of_order,
             same_day_gaps_gt_2min: gaps,
+            csv_size_bytes,
+            csv_sha256: Some(csv_sha256),
         },
     ))
 }
@@ -1205,6 +1548,7 @@ pub fn repair_cached_dataset(
 
     let gaps = compute_same_day_gaps_gt_threshold(&bars, gap_threshold_ms);
     let (wrote, new_min, new_max) = overwrite_bars(&p, &bars)?;
+    let (csv_size_bytes, csv_sha256) = csv_fingerprint(&p)?;
 
     let Some(ds) = manifest.datasets.get_mut(&key) else {
         return Err("dataset not found in Polygon manifest".to_string());
@@ -1220,6 +1564,8 @@ pub fn repair_cached_dataset(
         duplicates: 0,
         out_of_order: 0,
         same_day_gaps_gt_2min: gaps,
+        csv_size_bytes,
+        csv_sha256: Some(csv_sha256),
     });
 
     let out = ds.clone();
@@ -1396,11 +1742,7 @@ pub fn download_1m_to_cache(
         cached_max_date,
         min_ts,
         max_ts,
-        integrity_is_clean(
-            cached_meta
-                .as_ref()
-                .and_then(|meta| meta.integrity.as_ref()),
-        ),
+        cached_csv_matches_clean_integrity(&csv_path, cached_meta.as_ref()),
         from_date,
         to_date,
     );
@@ -1425,32 +1767,36 @@ pub fn download_1m_to_cache(
             let next_ms = max_ts.saturating_add(tf.interval_ms);
             let next_dt = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(next_ms)
                 .ok_or_else(|| "cached timestamp out of range".to_string())?;
-            let mut chunk_from = next_dt.date_naive();
-            let chunk_end = to_date;
+            update_polygon_file_atomically(&csv_path, |staged_path| {
+                let mut chunk_from = next_dt.date_naive();
+                let chunk_end = to_date;
 
-            while chunk_from <= chunk_end {
-                check_cancelled(cancel)?;
-                let chunk_to =
-                    std::cmp::min(chunk_from + Duration::days(CHUNK_DAYS - 1), chunk_end);
-                let from_s = chunk_from.format("%Y-%m-%d").to_string();
-                let to_s = chunk_to.format("%Y-%m-%d").to_string();
-                let bars = fetch_chunk(
-                    &client,
-                    &api_key,
-                    &polygon_ticker,
-                    &from_s,
-                    &to_s,
-                    adjusted,
-                    &tf,
-                )?;
-                check_cancelled(cancel)?;
-                let wrote = append_bars(&csv_path, &bars, &mut min_ts, &mut max_ts)?;
-                downloaded += wrote;
-                if row_count > 0 {
-                    row_count = row_count.saturating_add(wrote as u64);
+                while chunk_from <= chunk_end {
+                    check_cancelled(cancel)?;
+                    let chunk_to =
+                        std::cmp::min(chunk_from + Duration::days(CHUNK_DAYS - 1), chunk_end);
+                    let from_s = chunk_from.format("%Y-%m-%d").to_string();
+                    let to_s = chunk_to.format("%Y-%m-%d").to_string();
+                    let bars = fetch_chunk(
+                        &client,
+                        &api_key,
+                        &polygon_ticker,
+                        &from_s,
+                        &to_s,
+                        adjusted,
+                        &tf,
+                    )?;
+                    check_cancelled(cancel)?;
+                    let wrote = append_bars(staged_path, &bars, &mut min_ts, &mut max_ts)?;
+                    downloaded += wrote;
+                    if row_count > 0 {
+                        row_count = row_count.saturating_add(wrote as u64);
+                    }
+                    chunk_from = chunk_to + Duration::days(1);
                 }
-                chunk_from = chunk_to + Duration::days(1);
-            }
+                check_cancelled(cancel)?;
+                Ok(())
+            })?;
         } else {
             let mut all: Vec<AggBar> = Vec::new();
             let mut chunk_from = from_date;
@@ -1525,6 +1871,164 @@ mod tests {
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).expect("create temp dir");
         p
+    }
+
+    fn polygon_temp_artifacts(dir: &Path, target: &Path) -> Vec<PathBuf> {
+        let target_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("target file name");
+        let prefix = format!(".{target_name}.");
+        fs::read_dir(dir)
+            .expect("read temp directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn atomic_polygon_write_failure_preserves_existing_file_and_cleans_stage() {
+        let dir = make_temp_dir("vectorta_polygon_atomic_failure");
+        let target = dir.join("polygon_manifest.json");
+        fs::write(&target, b"old-manifest").expect("seed target");
+
+        let result: Result<(), String> = write_polygon_file_atomically(&target, |file| {
+            file.write_all(b"new-but-incomplete")
+                .map_err(|error| error.to_string())?;
+            Err("injected write failure".to_string())
+        });
+
+        assert_eq!(
+            result.expect_err("write must fail"),
+            "injected write failure"
+        );
+        assert_eq!(
+            fs::read(&target).expect("read preserved target"),
+            b"old-manifest"
+        );
+        assert!(polygon_temp_artifacts(&dir, &target).is_empty());
+    }
+
+    #[test]
+    fn staged_polygon_update_cancellation_preserves_existing_file_and_cleans_stage() {
+        let dir = make_temp_dir("vectorta_polygon_atomic_cancel");
+        let target = dir.join("polygon_stocks_TEST_1m.csv");
+        let original = b"timestamp,open,close,high,low,volume\n1700000000000,1,1,1,1,1\n";
+        fs::write(&target, original).expect("seed target");
+        let cancel = AtomicBool::new(false);
+
+        let result: Result<(), String> = update_polygon_file_atomically(&target, |staged| {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(staged)
+                .map_err(|error| error.to_string())?;
+            file.write_all(b"1700000060000,2,2,2,2,2\n")
+                .map_err(|error| error.to_string())?;
+            file.flush().map_err(|error| error.to_string())?;
+            cancel.store(true, Ordering::Relaxed);
+            check_cancelled(Some(&cancel))?;
+            Ok(())
+        });
+
+        assert_eq!(result.expect_err("update must cancel"), "cancelled");
+        assert_eq!(fs::read(&target).expect("read preserved target"), original);
+        assert!(polygon_temp_artifacts(&dir, &target).is_empty());
+    }
+
+    #[test]
+    fn save_manifest_atomically_replaces_existing_file_without_temp_leaks() {
+        let cache_dir = make_temp_dir("vectorta_polygon_atomic_manifest");
+        let target = manifest_path(&cache_dir);
+        let mut first = PolygonCacheManifest::default();
+        first.datasets.insert(
+            "stocks:FIRST:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "FIRST".to_string(),
+                polygon_ticker: "FIRST".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: cache_dir.join("first.csv").to_string_lossy().to_string(),
+                min_ts: 1,
+                max_ts: 1,
+                last_updated_utc_ms: 1,
+                row_count: 1,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+        save_manifest(&cache_dir, &first).expect("save first manifest");
+
+        let mut second = PolygonCacheManifest::default();
+        second.datasets.insert(
+            "stocks:SECOND:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "SECOND".to_string(),
+                polygon_ticker: "SECOND".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: cache_dir.join("second.csv").to_string_lossy().to_string(),
+                min_ts: 2,
+                max_ts: 2,
+                last_updated_utc_ms: 2,
+                row_count: 1,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+        save_manifest(&cache_dir, &second).expect("replace manifest");
+
+        let loaded = load_manifest(&cache_dir).expect("load replaced manifest");
+        assert_eq!(
+            loaded.datasets.keys().cloned().collect::<Vec<_>>(),
+            vec!["stocks:SECOND:1m"]
+        );
+        assert!(polygon_temp_artifacts(&cache_dir, &target).is_empty());
+    }
+
+    #[test]
+    fn clean_manifest_fingerprint_rejects_truncated_and_same_size_corrupt_csv() {
+        let cache_dir = make_temp_dir("vectorta_polygon_fingerprint");
+        let csv_path = cache_dir.join("polygon_stocks_TEST_1m.csv");
+        let original =
+            b"timestamp,open,close,high,low,volume\n1700000000000,1,1,1,1,1\n1700000060000,2,2,2,2,2\n";
+        fs::write(&csv_path, original).expect("seed csv");
+        let (row_count, min_ts, max_ts, integrity) =
+            scan_csv_integrity(&csv_path, 60_000).expect("scan seeded csv");
+        let meta = PolygonDatasetMeta {
+            market: "stocks".to_string(),
+            display_symbol: "TEST".to_string(),
+            polygon_ticker: "TEST".to_string(),
+            timeframe: "1m".to_string(),
+            csv_path: csv_path.to_string_lossy().to_string(),
+            min_ts,
+            max_ts,
+            last_updated_utc_ms: 1,
+            row_count,
+            adjusted: true,
+            integrity: Some(integrity),
+        };
+        assert!(cached_csv_matches_clean_integrity(&csv_path, Some(&meta)));
+
+        let mut same_size_corruption = original.to_vec();
+        let value = same_size_corruption
+            .iter()
+            .rposition(|byte| *byte == b'2')
+            .expect("numeric value to corrupt");
+        same_size_corruption[value] = b'9';
+        fs::write(&csv_path, &same_size_corruption).expect("write same-size corruption");
+        assert_eq!(
+            fs::metadata(&csv_path).expect("corrupt metadata").len(),
+            original.len() as u64
+        );
+        assert!(!cached_csv_matches_clean_integrity(&csv_path, Some(&meta)));
+
+        fs::write(&csv_path, &original[..original.len() / 2]).expect("truncate csv");
+        assert!(!cached_csv_matches_clean_integrity(&csv_path, Some(&meta)));
     }
 
     #[test]
@@ -1744,6 +2248,17 @@ badline\n",
     }
 
     #[test]
+    fn qa_profile_disables_inherited_credential_fallbacks() {
+        assert!(!inherited_credential_fallbacks_allowed_for(Some(
+            std::ffi::OsStr::new("1"),
+        )));
+        assert!(inherited_credential_fallbacks_allowed_for(None));
+        assert!(inherited_credential_fallbacks_allowed_for(Some(
+            std::ffi::OsStr::new("0"),
+        )));
+    }
+
+    #[test]
     fn dotenv_api_key_fallback_from_dir_reads_repo_style_env_file() {
         let dir = make_temp_dir("vectorta_polygon_dotenv_test");
         fs::write(
@@ -1892,6 +2407,8 @@ badline\n",
                 duplicates: 0,
                 out_of_order: 0,
                 same_day_gaps_gt_2min: 0,
+                csv_size_bytes: 123,
+                csv_sha256: Some("a".repeat(64)),
             }),
         };
 
@@ -1910,6 +2427,8 @@ badline\n",
             "timestamp,open,close,high,low,volume\n1704067200000,1,1,1,1,1\n1706659200000,1,1,1,1,1\n",
         )
         .expect("seed csv");
+        let (_, _, _, integrity) =
+            scan_csv_integrity(&csv_path, 60_000).expect("fingerprint seeded csv");
 
         let mut manifest = PolygonCacheManifest::default();
         manifest.datasets.insert(
@@ -1925,13 +2444,7 @@ badline\n",
                 last_updated_utc_ms: 111,
                 row_count: 2,
                 adjusted: true,
-                integrity: Some(PolygonDatasetIntegrity {
-                    checked_utc_ms: 222,
-                    parse_errors: 0,
-                    duplicates: 0,
-                    out_of_order: 0,
-                    same_day_gaps_gt_2min: 0,
-                }),
+                integrity: Some(integrity),
             },
         );
         save_manifest(&cache_dir, &manifest).expect("save manifest");

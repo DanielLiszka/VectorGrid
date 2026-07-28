@@ -17,6 +17,27 @@ const EXPECTED_PACKAGE_MANAGER = 'npm@11.6.4'
 const EXPECTED_NODE_ENGINE = '^20.19.0 || >=22.12.0'
 const EXPECTED_CANONICAL_DIST = '../web/dist'
 const EXPECTED_MIRROR_DIST = './web/dist'
+const CATBOOST_NATIVE_BASELINE_PATH = 'scripts/baselines/catboost-native-v1.2.10.json'
+const EXPECTED_TAURI_SUPPORT_BINS = [
+  'ta_app_path_faceoff',
+  'ta_campaign_perf',
+  'ta_campaign_restart_qa',
+  'ta_cpu_reliability_soak',
+  'ta_double_ma_validation_cost',
+  'ta_headless_validate',
+  'ta_options_dataset_download',
+  'ta_options_dataset_import',
+  'ta_options_expression_compare',
+  'ta_options_expression_feasibility',
+  'ta_options_expression_lifecycle',
+  'ta_options_expression_smoke',
+  'ta_options_parent_artifact',
+  'ta_perf_authority_support',
+  'ta_profile_route_matrix',
+  'ta_refactor_snapshots',
+  'ta_release_readiness',
+  'ta_workflow_regression',
+]
 const DOCS_CONTRACT_DIR = 'docs/feature_expansion_implementation_plans_2026-04-30'
 const DOCS_CONTRACT_FILE = `${DOCS_CONTRACT_DIR}/13_manifest_toolchain_dependency_contract.md`
 
@@ -54,6 +75,19 @@ const outPath = path.resolve(
   repoRoot,
   argValue('--out', path.join('output', 'qa', 'manifest-toolchain-contract.json')),
 )
+
+function readCargoMetadata() {
+  const result = spawnSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    shell: false,
+  })
+  if (result.error) throw result.error
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(`cargo metadata failed: ${String(result.stderr || result.stdout || '').trim()}`)
+  }
+  return JSON.parse(result.stdout)
+}
 
 function toPosix(value) {
   return String(value).replace(/\\/g, '/')
@@ -467,6 +501,13 @@ const cargo = Object.fromEntries(
     .filter(([, relativePath]) => fs.existsSync(path.join(repoRoot, relativePath)))
     .map(([key, relativePath]) => [key, parseToml(relativePath)]),
 )
+const cargoMetadata = readCargoMetadata()
+const tauriMetadataPackage = cargoMetadata.packages.find(
+  (pkg) => pkg.name === 'ta_desktop_demo_app',
+)
+const tauriBinTargets = (tauriMetadataPackage?.targets ?? [])
+  .filter((target) => Array.isArray(target.kind) && target.kind.includes('bin'))
+  .sort((left, right) => left.name.localeCompare(right.name))
 
 for (const [key, relativePath] of Object.entries(manifestPaths)) {
   record(
@@ -585,16 +626,59 @@ record(
 
 const tauriFeatures = cargo.tauri?.sections.features ?? {}
 const tauriDefault = asFeatureList(tauriFeatures.default)
+const tauriMaintainerTools = asFeatureList(tauriFeatures['maintainer-tools'])
 const tauriCuda = asFeatureList(tauriFeatures.cuda)
 const tauriCudaKernel = asFeatureList(tauriFeatures['cuda-backtest-kernel'])
 const tauriNvtx = asFeatureList(tauriFeatures['nvtx-profiling'])
 const tauriCust = cargo.tauri?.sections.dependencies?.cust ?? null
 
 record(
-  'features.tauri.default-custom-protocol-only',
-  arrayEquals(tauriDefault, ['custom-protocol']),
-  'src-tauri default features only enable custom-protocol',
+  'features.tauri.default-desktop-runtime',
+  arrayEquals(tauriDefault, ['custom-protocol', 'desktop-ui']),
+  'src-tauri default features enable the custom protocol and the required desktop runtime',
   { actual: tauriDefault },
+)
+record(
+  'features.tauri.maintainer-tools-non-default',
+  Object.prototype.hasOwnProperty.call(tauriFeatures, 'maintainer-tools') &&
+    tauriMaintainerTools.length === 0 &&
+    !tauriDefault.includes('maintainer-tools'),
+  'src-tauri declares an opt-in maintainer-tools gate that is excluded from product defaults',
+  { actual: tauriMaintainerTools, defaults: tauriDefault },
+)
+const mainTauriBin = tauriBinTargets.find((target) => target.name === 'ta_desktop_demo_app')
+const supportTauriBins = tauriBinTargets.filter((target) => target.name !== 'ta_desktop_demo_app')
+record(
+  'targets.tauri.main-desktop-gate',
+  arrayEquals(mainTauriBin?.['required-features'], ['desktop-ui']),
+  'the product desktop binary is gated only by desktop-ui',
+  { actual: mainTauriBin?.['required-features'] ?? null },
+)
+record(
+  'targets.tauri.support-bin-inventory',
+  arrayEquals(
+    supportTauriBins.map((target) => target.name),
+    EXPECTED_TAURI_SUPPORT_BINS,
+  ),
+  'the explicit Tauri support-binary inventory matches the release contract',
+  {
+    expected: EXPECTED_TAURI_SUPPORT_BINS,
+    actual: supportTauriBins.map((target) => target.name),
+  },
+)
+record(
+  'targets.tauri.support-bins-maintainer-only',
+  supportTauriBins.length === EXPECTED_TAURI_SUPPORT_BINS.length &&
+    supportTauriBins.every((target) =>
+      arrayEquals(target['required-features'], ['maintainer-tools']),
+    ),
+  'every non-product Tauri binary is gated by maintainer-tools',
+  {
+    actual: supportTauriBins.map((target) => ({
+      name: target.name,
+      required_features: target['required-features'] ?? null,
+    })),
+  },
 )
 record(
   'features.tauri.cuda-forwarding',
@@ -750,6 +834,16 @@ for (const [label, shape] of [
     `${label} Windows Tauri config maps the CatBoost native DLL`,
     { resources: shape.bundle.resources },
   )
+  record(
+    `tauri.windows.${label}.catboost-license-resource-mapping`,
+    hasResourceMapping(
+      shape.bundle.resources,
+      'src-tauri/resources/licenses/CatBoost-LICENSE.txt',
+      'licenses/CatBoost-LICENSE.txt',
+    ),
+    `${label} Windows Tauri config maps the CatBoost license`,
+    { resources: shape.bundle.resources },
+  )
   const iconPath = shape.bundle.windows?.nsis?.installerIcon ?? ''
   record(
     `tauri.windows.${label}.installer-icon-exists`,
@@ -763,12 +857,17 @@ const requiredResources = [
   {
     id: 'sample-csv',
     path: 'src-tauri/resources/sample-data/vectorgrid_synthetic_ohlcv.csv',
-    role: 'Simple Mode clean-machine first-run path',
+    role: 'Advanced workbench clean-machine first-run path',
   },
   {
     id: 'catboost-dll',
     path: 'src-tauri/resources/native/catboostmodel.dll',
     role: 'ML Signal native CPU fallback resource',
+  },
+  {
+    id: 'catboost-license',
+    path: 'src-tauri/resources/licenses/CatBoost-LICENSE.txt',
+    role: 'Required third-party license notice for the packaged CatBoost native resource',
   },
   {
     id: 'double-crossover-ptx',
@@ -801,6 +900,48 @@ for (const resource of resourceSummary) {
   )
 }
 
+const catboostBaselinePath = path.join(repoRoot, CATBOOST_NATIVE_BASELINE_PATH)
+const catboostBaselineExists = fs.existsSync(catboostBaselinePath)
+record(
+  'resources.catboost-baseline.exists',
+  catboostBaselineExists,
+  `${CATBOOST_NATIVE_BASELINE_PATH} exists`,
+  { path: CATBOOST_NATIVE_BASELINE_PATH },
+)
+if (catboostBaselineExists) {
+  const baseline = readJson(CATBOOST_NATIVE_BASELINE_PATH)
+  const catboostDll = resourceSummary.find((resource) => resource.id === 'catboost-dll')
+  const catboostLicense = resourceSummary.find((resource) => resource.id === 'catboost-license')
+  const expectedDllSha256 = String(baseline.asset_sha256 ?? '').toLowerCase()
+  const expectedLicenseSha256 = String(baseline.license_sha256 ?? '').toLowerCase()
+  record(
+    'resources.catboost-dll.matches-reviewed-baseline',
+    catboostDll?.exists === true &&
+      catboostDll.sha256 === expectedDllSha256 &&
+      catboostDll.bytes === Number(baseline.asset_size_bytes),
+    'Bundled CatBoost DLL matches the reviewed upstream release asset',
+    {
+      version: baseline.version ?? null,
+      expected_sha256: expectedDllSha256,
+      actual_sha256: catboostDll?.sha256 ?? null,
+      expected_bytes: baseline.asset_size_bytes ?? null,
+      actual_bytes: catboostDll?.bytes ?? null,
+      release_url: baseline.release_url ?? null,
+    },
+  )
+  record(
+    'resources.catboost-license.matches-reviewed-baseline',
+    catboostLicense?.exists === true && catboostLicense.sha256 === expectedLicenseSha256,
+    'Bundled CatBoost license matches the reviewed upstream tag',
+    {
+      license: baseline.license ?? null,
+      expected_sha256: expectedLicenseSha256,
+      actual_sha256: catboostLicense?.sha256 ?? null,
+      license_url: baseline.license_url ?? null,
+    },
+  )
+}
+
 for (const [label, shape] of [
   ['canonical', canonicalWindowsShape],
   ['mirror', mirrorWindowsShape],
@@ -814,7 +955,349 @@ for (const [label, shape] of [
   )
 }
 
+const packagedSmokeText = readText('scripts/run_packaged_smoke.ps1')
+const releaseManifestText = readText('scripts/generate_release_manifest.ps1')
+const releaseCandidateText = readText('scripts/run_release_candidate_gate.ps1')
+const publicReleaseText = readText('scripts/run_public_release_gate.ps1')
+const provenanceText = readText('scripts/capture_release_provenance.ps1')
+const cpuCiWorkflowText = readText('.github/workflows/cpu-quality.yml')
+const dependabotText = readText('.github/dependabot.yml')
+const cpuCiGateText = readText('scripts/run_cpu_ci_gate.ps1')
+const ciDocsText = readText('docs/CI.md')
 const gitignoreText = readText('.gitignore')
+const outputParityPack = readJson('scripts/headless_output_parity_pack.json')
+const releaseCandidateSmokeArgs =
+  releaseCandidateText.match(/\$smokeArgs\s*=\s*@\(([\s\S]*?)\r?\n\s*\)/)?.[1] ?? ''
+record(
+  'release.packaged-smoke.extracts-staged-bundle',
+  packagedSmokeText.includes('function Expand-NsisBundleProduct') &&
+    packagedSmokeText.includes('Resolve-ManifestBundleArtifact') &&
+    packagedSmokeText.includes('binaryOrigin = "extracted-bundle"'),
+  'bundle-mode smoke resolves and extracts the staged installer product',
+)
+record(
+  'release.packaged-smoke.rejects-raw-override',
+  packagedSmokeText.includes('-BinaryPath cannot override a bundle manifest') &&
+    !releaseCandidateSmokeArgs.includes('"-BinaryPath"'),
+  'bundle-mode smoke cannot be redirected to the raw target executable',
+)
+record(
+  'release.candidate-desktop-suite-contract',
+  releaseCandidateText.includes(
+    '[ValidateSet("smoke", "smoke-expanded", "workflow", "clean-start", "route-matrix", "release-proof")]',
+  ) &&
+    releaseCandidateText.includes('[string]$DesktopSuite = "smoke"') &&
+    releaseCandidateText.includes('$PSBoundParameters.ContainsKey("DesktopSuite")') &&
+    releaseCandidateText.includes(
+      '-DesktopSuite requires -IncludeDesktopSmoke and cannot be combined with -SkipPackagedSmoke.',
+    ) &&
+    releaseCandidateSmokeArgs.includes('"-DesktopSuite"') &&
+    releaseCandidateSmokeArgs.includes('$DesktopSuite') &&
+    releaseCandidateText.includes('desktop_suite = $DesktopSuite'),
+  'release candidates validate, forward, and record the selected packaged desktop suite while defaulting ordinary rehearsals to smoke',
+)
+record(
+  'release.packaged-smoke-schema2-app-attestation',
+  packagedSmokeText.includes('[int]$profileIsolationEvidence.schemaVersion -ne 2') &&
+    packagedSmokeText.includes(
+      '-not [bool]$profileIsolationEvidence.effectiveIsolationProven',
+    ) &&
+    packagedSmokeText.includes(
+      '[string]$appAttestation.kind -ne "vectorgrid-qa-profile-attestation"',
+    ) &&
+    packagedSmokeText.includes(
+      'Test-PathEquals -Left ([string]$appAttestation.effectiveIdentifier) -Right $expectedIsolatedAppData',
+    ) &&
+    packagedSmokeText.includes('effective_isolation_proven = if') &&
+    packagedSmokeText.includes('app_attestation = if') &&
+    packagedSmokeText.includes(
+      'did not prove a schema-2 isolated-profile lifecycle with an exact matching application attestation',
+    ),
+  'release-proof packaged smoke requires schema-2 effective app-data isolation and exports the exact application attestation',
+)
+record(
+  'release.public-gate-requires-exact-package-suite',
+  publicReleaseText.includes('"-DesktopSuite", "release-proof"') &&
+    publicReleaseText.includes('[string]$candidateSummary.desktop_suite -ne "release-proof"') &&
+    publicReleaseText.includes('[string]$smoke.desktop_suite -ne "release-proof"') &&
+    publicReleaseText.includes('-not [bool]$smoke.exact_package_release_proof') &&
+    publicReleaseText.includes('[string]$smoke.release_variant -ne $Variant') &&
+    publicReleaseText.includes(
+      'Public release requires the exact-package release-proof desktop suite for the current release variant.',
+    ) &&
+    publicReleaseText.includes('$profileIsolation = $smoke.profile_isolation') &&
+    publicReleaseText.includes('$null -eq $profileIsolation') &&
+    publicReleaseText.includes('[int]$profileIsolation.schema_version -ne 2') &&
+    publicReleaseText.includes('[string]$profileIsolation.status -ne "passed"') &&
+    publicReleaseText.includes('-not [bool]$profileIsolation.real_profile_unchanged') &&
+    publicReleaseText.includes('-not [bool]$profileIsolation.effective_isolation_proven') &&
+    publicReleaseText.includes('[string]$profileIsolation.teardown -ne "completed"') &&
+    publicReleaseText.includes('$null -eq $appAttestation') &&
+    publicReleaseText.includes(
+      '[string]$appAttestation.kind -ne "vectorgrid-qa-profile-attestation"',
+    ) &&
+    publicReleaseText.includes(
+      'Test-PathEquals -Left ([string]$appAttestation.app_data_dir) -Right $expectedIsolatedAppData',
+    ) &&
+    publicReleaseText.includes(
+      'exact_package_release_proof = if ($null -ne $smoke)',
+    ) &&
+    publicReleaseText.includes(
+      'profile_isolation_status = if ($null -ne $smoke',
+    ) &&
+    publicReleaseText.includes('profile_isolation_schema_version = if') &&
+    publicReleaseText.includes('effective_profile_isolation_proven = if') &&
+    publicReleaseText.includes('profile_app_attestation = if') &&
+    packagedSmokeText.includes('$requiresIsolatedProfile') &&
+    packagedSmokeText.includes('VECTORGRID_DESKTOP_SMOKE_ISOLATED_PROFILE_ROOT') &&
+    packagedSmokeText.includes(
+      'did not prove a schema-2 isolated-profile lifecycle with an exact matching application attestation',
+    ),
+  'public release explicitly requires the exact-package suite plus schema-2 effective-isolation and exact application-attestation evidence',
+)
+record(
+  'release.release-proof-journey-evidence-authority',
+  packagedSmokeText.includes('release_proof_evidence_contract.mjs') &&
+    packagedSmokeText.includes('"--mode", "write"') &&
+    packagedSmokeText.includes(
+      '@($releaseProofEvidence.journeys).Count -ne [int]$releaseProofEvidence.required_journey_count',
+    ) &&
+    publicReleaseText.includes('"--mode", "verify"') &&
+    publicReleaseText.includes('$script:ReleaseProofEvidenceVerification') &&
+    publicReleaseText.includes(
+      '[int]$script:ReleaseProofEvidenceVerification.manifest.required_journey_count -ne [int]$releaseProofEvidence.required_journey_count',
+    ) &&
+    publicReleaseText.includes(
+      '[string]$script:ReleaseProofEvidenceVerification.manifest_sha256 -ne [string]$releaseProofEvidence.manifest_sha256',
+    ),
+  'packaged smoke binds every allowlisted journey to one run/variant/binary manifest and the public gate independently revalidates it',
+)
+record(
+  'release.packaged-smoke.static-mode-not-runtime-proof',
+  packagedSmokeText.includes('"bundle-static-inspection"') &&
+    packagedSmokeText.includes('runtime_executed = -not [bool]$StaticInspectionOnly'),
+  'static package inspection remains distinct from runtime packaged-smoke evidence',
+)
+record(
+  'release.packaged-smoke.allowlists-and-hashes-payload',
+  packagedSmokeText.includes('Extracted NSIS payload contains unexpected files') &&
+    packagedSmokeText.includes('catboost_bundle_resource_sha256') &&
+    packagedSmokeText.includes('catboost_bundle_resource_expected_sha256') &&
+    packagedSmokeText.includes('catboost_license_sha256') &&
+    packagedSmokeText.includes('catboost_license_expected_sha256') &&
+    packagedSmokeText.includes('synthetic_sample_csv_sha256') &&
+    packagedSmokeText.includes('bundle_verified_resources'),
+  'bundle inspection rejects unexpected payloads and verifies required resource hashes',
+)
+record(
+  'release.public-gate.requires-extracted-inner-signature',
+  publicReleaseText.includes('[string]$smoke.binary_origin -ne "extracted-bundle"') &&
+    publicReleaseText.includes('[string]$smoke.binary_code_signature.status -ne "Valid"'),
+  'public release requires runtime smoke and a valid signature on the installer-embedded application',
+)
+record(
+  'release.public-gate.dirty-runs-are-rehearsal-only',
+  publicReleaseText.includes('-AllowDirtyWorktree is rehearsal-only and requires -AllowUnsignedBeta') &&
+    publicReleaseText.includes('"rehearsal-passed"') &&
+    publicReleaseText.includes('public_release_eligible'),
+  'dirty worktrees cannot produce publishable public-release success evidence',
+)
+record(
+  'release.manifest-is-staging-not-publication-authority',
+  releaseManifestText.includes('publishable = $false') &&
+    releaseManifestText.includes('installer_signature_eligible') &&
+    releaseManifestText.includes('public-release-summary.json is final publication authority') &&
+    releaseCandidateText.includes('installer_signature_eligible'),
+  'staging manifests cannot independently claim final publication eligibility',
+)
+record(
+  'release.output-directories-reject-stale-evidence',
+  releaseCandidateText.includes('function Assert-FreshOutputDirectory') &&
+    releaseCandidateText.includes('Release output directory is not empty.') &&
+    publicReleaseText.includes('function Assert-FreshOutputDirectory') &&
+    publicReleaseText.includes('Public release output directory is not empty.'),
+  'candidate and public release gates require a new or empty ordinary output directory',
+)
+record(
+  'release.staged-artifact-directory-is-exact',
+  releaseManifestText.includes('function Assert-EmptyArtifactStagingDirectory') &&
+    releaseManifestText.includes('function Assert-ExactStagedArtifactSet') &&
+    releaseManifestText.includes(
+      'Release artifact staging directory does not exactly match the generated manifest artifact set.',
+    ) &&
+    publicReleaseText.includes(
+      'Staged release artifacts directory contains files not declared exactly once by manifest.staged_artifacts.',
+    ) &&
+    publicReleaseText.includes(
+      'Staged release artifact is not an immediate child of manifest.staged_artifacts_dir',
+    ),
+  'release staging rejects stale or nested artifacts and the public gate rechecks the exact manifest-declared file set',
+)
+record(
+  'release.candidate-skip-workflow-is-rehearsal-only',
+  releaseCandidateText.includes('[switch]$SkipWorkflowGate') &&
+    releaseCandidateText.includes('skip_workflow_gate = [bool]$SkipWorkflowGate') &&
+    releaseCandidateText.includes('workflow_authority_complete = -not [bool]$SkipWorkflowGate') &&
+    releaseCandidateText.includes('if ($SkipWorkflowGate -and -not $UnsignedBeta)') &&
+    releaseCandidateText.includes('if ($SkipWorkflowGate -and ($IncludePerf -or $IncludeGpuValidationPerf))') &&
+    releaseCandidateText.includes('-SkipWorkflowGate is rehearsal-only and requires -UnsignedBeta.') &&
+    releaseCandidateText.includes('Workflow gate was explicitly deferred for this unsigned rehearsal.') &&
+    publicReleaseText.includes('Public release requires complete workflow authority; a candidate created with -SkipWorkflowGate is rehearsal-only.'),
+  'skipping the workflow/performance authority is explicit, recorded, and restricted to unsigned rehearsals',
+)
+record(
+  'release.output-parity-authority-is-eligible-for-clean-clone-landing',
+  [
+    'scripts/run_output_parity_check.mjs',
+    'scripts/check_output_parity.mjs',
+    'scripts/check_output_semantic_parity.mjs',
+    'scripts/headless_output_parity_pack.json',
+    'scripts/output_parity_pairs.json',
+    'scripts/output_parity_semantic_pairs.json',
+    'scripts/baselines/samples/report.json',
+    'scripts/baselines/samples/report.xlsx',
+  ].every((filePath) => fs.existsSync(path.join(repoRoot, filePath))) &&
+    gitignoreText.includes('!/scripts/run_output_parity_check.mjs') &&
+    gitignoreText.includes('!/scripts/baselines/samples/report.json') &&
+    gitignoreText.includes('!/scripts/baselines/samples/report.xlsx'),
+  'public-release output-parity scripts, configs, and minimal baselines are present and explicitly unignored so they can be landed',
+)
+const outputParityArgs = Array.isArray(outputParityPack.args)
+  ? outputParityPack.args.map((value) => String(value))
+  : []
+record(
+  'release.output-parity-uses-tracked-sample',
+  outputParityArgs.filter(
+    (value) => value === 'src-tauri/resources/sample-data/vectorgrid_synthetic_ohlcv.csv',
+  ).length === 2 &&
+    !outputParityArgs.some((value) => /(?:^|[\\/])data[\\/]AAPL\.csv$/i.test(value)),
+  'clean-clone output parity uses the tracked deterministic sample for primary and cross inputs',
+)
+record(
+  'release.public-gate.pins-and-timestamps-signer',
+  publicReleaseText.includes('ExpectedSignerThumbprint') &&
+    publicReleaseText.includes('VECTORGRID_EXPECTED_SIGNER_THUMBPRINT') &&
+    publicReleaseText.includes('timestamp_thumbprint') &&
+    publicReleaseText.includes('signatures must match the expected publisher'),
+  'final public release pins and timestamps both inner and outer Authenticode signatures',
+)
+record(
+  'release.public-gate.final-rehash',
+  publicReleaseText.includes('Staged artifact hash changed after manifest generation') &&
+    publicReleaseText.includes('SHA256SUMS.txt') &&
+    publicReleaseText.includes('final_artifact_hashes') &&
+    publicReleaseText.includes('Final Authenticode recheck failed for the embedded application') &&
+    publicReleaseText.includes('Embedded application hash changed after packaged smoke'),
+  'final public gate re-hashes staged and embedded artifacts and rechecks their signatures',
+)
+record(
+  'release.public-gpu-variants-require-performance-authority',
+  publicReleaseText.includes(
+    '@("gpu-ma", "gpu-kernel") -contains $Variant -and -not $IncludePerf',
+  ) &&
+    publicReleaseText.includes(
+      'Public GPU releases require -IncludePerf for the variant-specific optimization performance authority.',
+    ) &&
+    publicReleaseText.includes(
+      '$Variant -eq "gpu-kernel" -and -not $IncludeGpuValidationPerf',
+    ) &&
+    publicReleaseText.includes(
+      'Public gpu-kernel releases require -IncludeGpuValidationPerf for fixed-candidate GPU validation authority.',
+    ),
+  'public GPU variants cannot claim eligibility without their documented optimization and validation performance lanes',
+)
+record(
+  'release.provenance.repo-context-and-cuda-tools',
+  provenanceText.includes('git -C $repoRoot') &&
+    provenanceText.includes('Push-Location $repoRoot') &&
+    provenanceText.includes('selected_nvcc') &&
+    provenanceText.includes('path_nvcc'),
+  'release provenance is repo-context anchored and distinguishes selected versus PATH CUDA tools',
+)
+record(
+  'ci.required-cpu-workflow-prepared',
+  cpuCiWorkflowText.includes('pull_request:') &&
+    cpuCiWorkflowText.includes('push:') &&
+    cpuCiWorkflowText.includes('merge_group:') &&
+    cpuCiWorkflowText.includes('workflow_dispatch:') &&
+    cpuCiWorkflowText.includes('name: Required CPU quality') &&
+    cpuCiWorkflowText.includes('runs-on: windows-2022') &&
+    cpuCiWorkflowText.includes('scripts/run_cpu_ci_gate.ps1'),
+  'prepared CPU workflow exposes the stable required check on PR, push, merge-queue, and manual triggers',
+)
+const cpuCiActionRefs = Array.from(
+  cpuCiWorkflowText.matchAll(/uses:\s+([^\s#]+)/g),
+  (match) => match[1],
+)
+record(
+  'ci.workflow-actions-use-immutable-revisions',
+  cpuCiActionRefs.length > 0 &&
+    cpuCiActionRefs.every((reference) => /@[0-9a-f]{40}$/i.test(reference)) &&
+    dependabotText.includes('package-ecosystem: github-actions') &&
+    dependabotText.includes('interval: weekly'),
+  'every external GitHub Action is pinned to a full immutable commit SHA and has a weekly update lane',
+  { action_refs: cpuCiActionRefs },
+)
+record(
+  'ci.required-cpu-toolchain-and-browser-contract',
+  cpuCiWorkflowText.includes('node-version: "22.12.0"') &&
+    cpuCiWorkflowText.includes('web/package.json') &&
+    cpuCiWorkflowText.includes('npm.cmd --prefix web ci') &&
+    cpuCiWorkflowText.includes('playwright.cmd install chromium') &&
+    cpuCiWorkflowText.includes('CARGO_BUILD_JOBS: "1"') &&
+    cpuCiWorkflowText.includes('CARGO_INCREMENTAL: "0"') &&
+    cpuCiWorkflowText.includes('RUST_TEST_THREADS: "1"'),
+  'required CPU workflow pins a supported Node selection, derives npm from the repo contract, installs locked dependencies/Chromium, and serializes Rust work',
+)
+record(
+  'ci.required-cpu-gate-scope',
+  cpuCiGateText.includes('cargo metadata --locked --no-deps') &&
+    cpuCiGateText.includes('run_repo_quality_gate.ps1') &&
+    cpuCiGateText.includes('Strict Clippy: ta_strategies') &&
+    cpuCiGateText.includes('cargo clippy --locked -p ta_strategies') &&
+    cpuCiGateText.includes('Strict Clippy: ta_optimizer') &&
+    cpuCiGateText.includes('cargo clippy --locked -p ta_optimizer') &&
+    !cpuCiGateText.includes('-StrictClippy') &&
+    cpuCiGateText.includes('-IncludeWorkspaceTests') &&
+    cpuCiGateText.includes('--maxWorkers=1') &&
+    cpuCiGateText.includes('--fileParallelism=false') &&
+    cpuCiGateText.includes('-IncludeFullWorkflow') &&
+    cpuCiGateText.includes('-IncludeWcag22Smoke') &&
+    cpuCiGateText.includes('run_output_parity_check.mjs') &&
+    !cpuCiGateText.includes('run_gpu_perf_gate.ps1') &&
+    !cpuCiGateText.includes('run_cpu_perf_gate.ps1') &&
+    !cpuCiGateText.includes('test:desktop:smoke') &&
+    !cpuCiGateText.includes('-IncludeDesktopSmoke'),
+  'required CPU gate is comprehensive, serialized, headless, strictly lints the warning-free crates, and excludes performance/GPU/native-desktop execution',
+)
+record(
+  'ci.required-check-documented',
+  ciDocsText.includes('Required CPU quality') &&
+    ciDocsText.includes('branch protection') &&
+    ciDocsText.includes('Separate lanes') &&
+    ciDocsText.includes('clean-VM') &&
+    gitignoreText.includes('!/docs/CI.md'),
+  'required check name and separate GPU/native/clean-machine lanes are documented',
+)
+record(
+  'ci.required-evidence-is-redacted',
+  cpuCiGateText.includes('build_support_evidence_bundle.ps1') &&
+    cpuCiGateText.includes('output\\qa\\required-cpu-quality') &&
+    cpuCiGateText.includes('-EvidenceRoot $currentEvidenceRoot') &&
+    cpuCiGateText.includes('-AutomaticUpload') &&
+    cpuCiWorkflowText.includes(
+      'output/support-evidence/ci/**/vectorgrid-support-evidence.zip',
+    ) &&
+    cpuCiWorkflowText.includes(
+      'output/support-evidence/ci/**/vectorgrid-support-evidence.zip.sha256',
+    ) &&
+    !cpuCiWorkflowText.includes('output/qa/**') &&
+    !cpuCiWorkflowText.includes('output/playwright/**') &&
+    ciDocsText.includes('Raw QA directories') &&
+    ciDocsText.includes('are not uploaded'),
+  'required CPU CI uploads only the fixed-allowlist redacted support archive and checksum',
+)
+
 const docsRequiredPatterns = [`!/${DOCS_CONTRACT_DIR}/`, `!/${DOCS_CONTRACT_DIR}/**`]
 const missingDocsPatterns = docsRequiredPatterns.filter((pattern) => !gitignoreText.includes(pattern))
 record(

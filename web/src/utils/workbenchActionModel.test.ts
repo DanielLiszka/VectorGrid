@@ -129,4 +129,47 @@ describe('workbenchActionModel', () => {
     expect(missingBundle.disabled).toBe(true)
     expect(missingBundle.disabledReason).toBe('Choose an ML model bundle before native scoring.')
   })
+
+  it('keeps Options labels and readiness aligned with the selected stage', () => {
+    const expression = resolveWorkbenchPrimaryAction({
+      mode: 'options',
+      workflowStep: 'validate',
+      dataLoaded: true,
+      optionsDatasetReady: true,
+    })
+    expect(expression).toMatchObject({
+      kind: 'options',
+      label: 'Run expression search',
+      disabled: false,
+    })
+
+    const validation = resolveWorkbenchPrimaryAction({
+      mode: 'options',
+      workflowStep: 'analyze',
+      dataLoaded: true,
+      optionsArtifactReady: false,
+    })
+    expect(validation.label).toBe('Run options validation')
+    expect(validation.disabled).toBe(true)
+    expect(validation.disabledReason).toContain('options expression artifact')
+
+    const invalidValidation = resolveWorkbenchPrimaryAction({
+      mode: 'options',
+      workflowStep: 'analyze',
+      dataLoaded: true,
+      optionsArtifactReady: true,
+      optionsValidationReady: false,
+    })
+    expect(invalidValidation.disabled).toBe(true)
+    expect(invalidValidation.disabledReason).toContain('validation setup')
+
+    const stale = resolveWorkbenchPrimaryAction({
+      mode: 'options',
+      workflowStep: 'validate',
+      dataLoaded: false,
+      optionsDatasetReady: true,
+    })
+    expect(stale.disabled).toBe(true)
+    expect(stale.disabledReason).toContain('underlying dataset')
+  })
 })

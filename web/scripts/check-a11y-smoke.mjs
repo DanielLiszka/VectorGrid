@@ -296,7 +296,9 @@ async function main() {
   await scan(page, 'command palette')
   await wcag22Scan(page, 'command palette')
 
-  await dispatchClick(page, '.overlayToggle')
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.cmdPaletteDialog', { state: 'detached', timeout: 5000 })
+  await dispatchClick(page, '[data-qa-action="shell.taskCenter.open"]')
   await page.waitForTimeout(150)
   await scan(page, 'task center overlay')
   await wcag22Scan(page, 'task center overlay')

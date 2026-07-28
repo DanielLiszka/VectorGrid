@@ -1,0 +1,135 @@
+name: CPU Quality
+
+on:
+  pull_request:
+  push:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required_cpu_quality:
+    name: Required CPU quality
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+      CI: "true"
+      RUST_TEST_THREADS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install repo Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: required-cpu-quality
+
+      - name: Install supported Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22.12.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install repo-pinned npm
+        shell: pwsh
+        run: |
+          $packageManager = (Get-Content -Raw web/package.json | ConvertFrom-Json).packageManager
+          if ($packageManager -notmatch '^npm@(?<version>\d+\.\d+\.\d+)$') {
+            throw "web/package.json packageManager must be pinned as npm@<version>; got '$packageManager'."
+          }
+          & npm.cmd install --global $packageManager
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install $packageManager."
+          }
+          & npm.cmd --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to query the installed npm version."
+          }
+
+      - name: Install locked web dependencies
+        shell: pwsh
+        run: |
+          & npm.cmd --prefix web ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed."
+          }
+
+      - name: Install headless Chromium
+        shell: pwsh
+        run: |
+          & .\web\node_modules\.bin\playwright.cmd install chromium
+          if ($LASTEXITCODE -ne 0) {
+            throw "Playwright Chromium installation failed."
+          }
+
+      - name: Run required CPU quality gate
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_cpu_ci_gate.ps1
+
+      - name: Ensure redacted QA evidence exists
+        if: always()
+        shell: pwsh
+        run: |
+          $existing = @(
+            Get-ChildItem output/support-evidence/ci -Recurse -Filter vectorgrid-support-evidence.zip -ErrorAction SilentlyContinue
+          )
+          if ($existing.Count -eq 0) {
+            $runId = "github-${{ github.run_id }}-${{ github.run_attempt }}"
+            $evidenceRoot = Join-Path $PWD "output/qa/required-cpu-quality-fallback/$runId"
+            New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
+            $failureSummary = [ordered]@{
+              schema_version = 1
+              report_kind = "required-cpu-quality"
+              run_id = $runId
+              generated_at_utc = [DateTime]::UtcNow.ToString("o")
+              status = "failed_before_primary_evidence_bundle"
+              caller_context = "github-actions-required-cpu-quality"
+              caller_automatic_upload = $true
+              note = "The required gate failed; consult the workflow log. This summary intentionally excludes raw failure output."
+            }
+            $summaryPath = Join-Path $evidenceRoot "required-cpu-quality-summary.json"
+            [System.IO.File]::WriteAllText(
+              $summaryPath,
+              (($failureSummary | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+            $outDir = Join-Path $PWD "output/support-evidence/ci/workflow-${{ github.run_id }}-${{ github.run_attempt }}"
+            powershell -NoProfile -ExecutionPolicy Bypass `
+              -File scripts/build_support_evidence_bundle.ps1 `
+              -EvidenceRoot $evidenceRoot `
+              -OutDir $outDir `
+              -CallerContext "github-actions-required-cpu-quality-failure" `
+              -AutomaticUpload
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to build redacted QA evidence."
+            }
+          }
+
+      - name: Upload sanitized QA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cpu-quality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            output/support-evidence/ci/**/vectorgrid-support-evidence.zip
+            output/support-evidence/ci/**/vectorgrid-support-evidence.zip.sha256
+          if-no-files-found: ignore
+          retention-days: 7

@@ -10,5 +10,9 @@ describe('advancedService', () => {
     expect(result.json).toContain('"params"')
     expect(result.json).toContain('"halftrend_amplitude"')
     expect(result.json).toContain('"ott_ma_type"')
+    expect(result.searchSpace.params.map((param) => param.name)).not.toContain(
+      'strategy_commission',
+    )
+    expect(result.json).not.toContain('"strategy_commission"')
   })
 })

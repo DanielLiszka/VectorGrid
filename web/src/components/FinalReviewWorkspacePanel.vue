@@ -9,6 +9,7 @@ import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
+import CompactEvidenceValue from './CompactEvidenceValue.vue'
 
 const { mountReady } = useShellMount('#finalReviewVueShellMount', {
   paneSelector: '[data-vue-panel="final"]',
@@ -111,7 +112,7 @@ const incompleteCount = computed(
 const verdict = computed(() =>
   incompleteCount.value === 0
     ? 'Evidence packet ready for export or replay.'
-    : `${incompleteCount.value} evidence item${incompleteCount.value === 1 ? '' : 's'} still need review.`,
+    : `${incompleteCount.value} evidence item${incompleteCount.value === 1 ? '' : 's'} still ${incompleteCount.value === 1 ? 'needs' : 'need'} review.`,
 )
 
 function openCandidates(): void {
@@ -164,7 +165,14 @@ function openLibrary(): void {
             <span>{{ item.label }}</span>
             <strong>{{ item.status }}</strong>
           </div>
-          <p>{{ item.detail }}</p>
+          <CompactEvidenceValue
+            v-if="item.key === 'artifacts' && currentRun?.artifactPath"
+            class="finalReviewEvidence"
+            label="Run artifact path"
+            :value="currentRun.artifactPath"
+            kind="path"
+          />
+          <p v-else>{{ item.detail }}</p>
         </article>
       </div>
 
@@ -246,6 +254,11 @@ function openLibrary(): void {
 
 .finalReviewItem p {
   margin: 0.35rem 0 0;
+  color: var(--text-muted);
+}
+
+.finalReviewEvidence {
+  margin-top: 0.35rem;
   color: var(--text-muted);
 }
 

@@ -130,6 +130,7 @@ struct DatasetEntry {
 pub struct AppState {
     candles: Mutex<HashMap<String, DatasetEntry>>,
     loaded_data_context: Mutex<HashMap<String, LoadedDataContext>>,
+    loaded_source_fingerprints: Mutex<HashMap<String, String>>,
     next_dataset_id: AtomicU64,
     access_seq: AtomicU64,
     running: Arc<AtomicBool>,
@@ -219,6 +220,7 @@ impl Default for AppState {
         Self {
             candles: Mutex::new(HashMap::new()),
             loaded_data_context: Mutex::new(HashMap::new()),
+            loaded_source_fingerprints: Mutex::new(HashMap::new()),
             next_dataset_id: AtomicU64::new(0),
             access_seq: AtomicU64::new(0),
             running: Arc::new(AtomicBool::new(false)),
@@ -347,17 +349,17 @@ impl AppState {
         let pathbuf = Path::new(path);
         let source_identity = data_cache::identity_for_source(pathbuf)?;
 
-        if let Some(existing) = self.find_matching_loaded_base(path, source_identity)? {
-            return Ok(existing);
-        }
-
         let outcome =
             data_cache::load_or_build_with_identity(pathbuf, app_cache_dir, source_identity)?;
         let mut candles = outcome.candles;
         normalize_timestamps_to_millis(&mut candles.timestamp)?;
         #[cfg(test)]
         run_load_before_insert_hook(self);
-        if let Some(existing) = self.find_matching_loaded_base(path, outcome.source_identity)? {
+        if let Some(existing) = self.find_matching_loaded_base(
+            path,
+            outcome.source_identity,
+            &outcome.source_content_fingerprint,
+        )? {
             return Ok(existing);
         }
         let meta = build_price_data_meta(
@@ -403,6 +405,11 @@ impl AppState {
                 source_identity: Some(outcome.source_identity),
             },
         );
+        drop(ctx_map);
+        self.loaded_source_fingerprints
+            .lock()
+            .map_err(|_| "failed to lock loaded source fingerprint map".to_string())?
+            .insert(id.clone(), outcome.source_content_fingerprint);
         let cache_path = outcome
             .cache_path
             .as_ref()
@@ -493,6 +500,12 @@ impl AppState {
 
         let base = self.get_candles(base_data_id)?;
         let base_ctx = self.get_loaded_data_context(base_data_id)?;
+        let base_source_fingerprint = self
+            .loaded_source_fingerprints
+            .lock()
+            .map_err(|_| "failed to lock loaded source fingerprint map".to_string())?
+            .get(base_data_id)
+            .cloned();
         let derived = ta_app_core::resample_candles(base.as_ref(), tf.interval_ms)?;
         let meta = build_price_data_meta(&derived, Some(tf.label.clone()), None, None);
         #[cfg(test)]
@@ -613,6 +626,13 @@ impl AppState {
                 source_identity: base_ctx.source_identity,
             },
         );
+        drop(ctx_map);
+        if let Some(fingerprint) = base_source_fingerprint {
+            self.loaded_source_fingerprints
+                .lock()
+                .map_err(|_| "failed to lock loaded source fingerprint map".to_string())?
+                .insert(out_id.clone(), fingerprint);
+        }
 
         Ok(LoadPriceDataResponse {
             id: out_id,
@@ -635,6 +655,38 @@ impl AppState {
                 entry.candles.clone()
             })
             .ok_or_else(|| format!("unknown data id: {id}"))
+    }
+
+    pub fn get_candles_for_run(&self, id: &str) -> Result<Arc<Candles>, String> {
+        let context = self.get_loaded_data_context(id)?;
+        if let Some(expected_identity) = context.source_identity {
+            let source_path = Path::new(context.csv_path.trim());
+            let current_identity = data_cache::identity_for_source(source_path).map_err(|error| {
+                format!(
+                    "loaded source CSV is no longer readable; reload the dataset before optimization or validation: {error}"
+                )
+            })?;
+            if current_identity != expected_identity {
+                return Err(
+                    "loaded source CSV changed after it was loaded; reload the dataset before optimization or validation"
+                        .to_string(),
+                );
+            }
+
+            let has_loaded_fingerprint = self
+                .loaded_source_fingerprints
+                .lock()
+                .map_err(|_| "failed to lock loaded source fingerprint map".to_string())?
+                .get(id)
+                .is_some_and(|value| !value.trim().is_empty());
+            if !has_loaded_fingerprint {
+                return Err(
+                    "loaded source CSV has no content fingerprint; reload the dataset before optimization or validation"
+                        .to_string(),
+                );
+            }
+        }
+        self.get_candles(id)
     }
 
     pub fn get_loaded_data_context(&self, id: &str) -> Result<LoadedDataContext, String> {
@@ -1003,6 +1055,7 @@ impl AppState {
         &self,
         path: &str,
         source_identity: data_cache::SourceIdentity,
+        source_content_fingerprint: &str,
     ) -> Result<Option<LoadPriceDataResponse>, String> {
         let access_seq = self.next_access_seq();
 
@@ -1014,9 +1067,16 @@ impl AppState {
             .loaded_data_context
             .lock()
             .map_err(|_| "failed to lock loaded-data context map".to_string())?;
+        let fingerprint_map = self
+            .loaded_source_fingerprints
+            .lock()
+            .map_err(|_| "failed to lock loaded source fingerprint map".to_string())?;
         let mut selected_id = None;
         for (id, ctx) in ctx_map.iter() {
-            if ctx.csv_path != path || ctx.source_identity != Some(source_identity) {
+            if ctx.csv_path != path
+                || ctx.source_identity != Some(source_identity)
+                || fingerprint_map.get(id).map(String::as_str) != Some(source_content_fingerprint)
+            {
                 continue;
             }
             let Some(entry) = map.get(id) else {
@@ -1027,6 +1087,7 @@ impl AppState {
                 break;
             }
         }
+        drop(fingerprint_map);
         drop(ctx_map);
 
         let Some(id) = selected_id else {
@@ -1063,6 +1124,14 @@ impl AppState {
             .map_err(|_| "failed to lock loaded-data context map".to_string())?;
         for id in ids {
             ctx_map.remove(id);
+        }
+        drop(ctx_map);
+        let mut fingerprint_map = self
+            .loaded_source_fingerprints
+            .lock()
+            .map_err(|_| "failed to lock loaded source fingerprint map".to_string())?;
+        for id in ids {
+            fingerprint_map.remove(id);
         }
         Ok(())
     }
@@ -1629,6 +1698,136 @@ mod state_residency_tests {
             loaded.source_identity,
             Some(data_cache::identity_for_source(&csv).expect("source identity"))
         );
+    }
+
+    #[test]
+    fn run_access_rejects_same_size_mtime_drift_until_dataset_is_reloaded() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_run_source_content_drift");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(36, 0.2));
+        let original = std::fs::read(&csv).expect("read original CSV");
+        let original_modified = std::fs::metadata(&csv)
+            .expect("source metadata")
+            .modified()
+            .expect("source modified time");
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+        state
+            .get_candles_for_run(&load.id)
+            .expect("unchanged source should be usable");
+
+        let mut drifted = original.clone();
+        let byte = drifted
+            .iter_mut()
+            .find(|byte| **byte == b'1')
+            .expect("mutable numeric byte");
+        *byte = b'2';
+        std::fs::write(&csv, &drifted).expect("write same-size drift");
+        let reopened = std::fs::File::options()
+            .write(true)
+            .open(&csv)
+            .expect("reopen drifted source");
+        reopened
+            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .expect("restore source mtime");
+        drop(reopened);
+
+        assert!(
+            state.get_candles(&load.id).is_ok(),
+            "the loaded in-memory snapshot remains available for inspection"
+        );
+        let err = state
+            .get_candles_for_run(&load.id)
+            .expect_err("same-identity source drift must fail closed");
+        assert!(err.contains("changed after it was loaded"));
+        assert!(err.contains("reload the dataset"));
+
+        std::fs::write(&csv, &original).expect("restore original source");
+        let reopened = std::fs::File::options()
+            .write(true)
+            .open(&csv)
+            .expect("reopen restored source");
+        reopened
+            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .expect("restore original source mtime");
+        drop(reopened);
+        state
+            .get_candles_for_run(&load.id)
+            .expect_err("a source with a new change marker still requires an explicit reload");
+
+        let reloaded = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("reload restored source");
+        assert_ne!(reloaded.id, load.id);
+        state
+            .get_candles_for_run(&reloaded.id)
+            .expect("reloaded source should be usable");
+    }
+
+    #[test]
+    fn run_access_rejects_deleted_source_but_preserves_inspection_snapshot() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_run_deleted_source");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(24, 0.2));
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+        std::fs::remove_file(&csv).expect("delete source");
+
+        assert!(
+            state.get_candles(&load.id).is_ok(),
+            "deleting the source must not corrupt the already loaded snapshot"
+        );
+        let err = state
+            .get_candles_for_run(&load.id)
+            .expect_err("deleted source must fail closed for a run");
+        assert!(err.contains("no longer readable"));
+        assert!(err.contains("reload the dataset"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_access_recovers_after_transient_windows_read_denial() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_run_windows_read_denial");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(24, 0.2));
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+        let exclusive = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&csv)
+            .expect("open source with sharing denied");
+
+        let err = state
+            .get_candles_for_run(&load.id)
+            .expect_err("transient source read denial must fail closed");
+        assert!(err.contains("no longer readable"));
+        drop(exclusive);
+
+        state
+            .get_candles_for_run(&load.id)
+            .expect("unchanged source should recover after the read denial clears");
     }
 
     #[test]

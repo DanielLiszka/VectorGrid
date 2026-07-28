@@ -1293,6 +1293,11 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(2);
         });
+    let cuda_graph_timing_mode = parse_toggle_mode("--cuda-graph-timing", "inherit")
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
     let nvtx_mode = parse_toggle_mode("--nvtx", "inherit").unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
@@ -1358,6 +1363,7 @@ fn main() {
         std::env::remove_var("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL");
     }
     apply_env_toggle("VECTORBT_KERNEL_USE_CUDA_GRAPHS", cuda_graphs_mode);
+    apply_env_toggle("VECTORBT_KERNEL_CUDA_GRAPH_TIMING", cuda_graph_timing_mode);
     apply_nvtx_phase(nvtx_mode, warmup_iterations > 0);
 
     let mut strategy = strategy_config(strategy_kind, adx_mode);
@@ -1554,6 +1560,11 @@ fn main() {
                     ToggleMode::Off => "off",
                     ToggleMode::On => "on",
                 },
+                "cuda_graph_timing": match cuda_graph_timing_mode {
+                    ToggleMode::Inherit => "inherit",
+                    ToggleMode::Off => "off",
+                    ToggleMode::On => "on",
+                },
                 "nvtx": match nvtx_mode {
                     ToggleMode::Inherit => "inherit",
                     ToggleMode::Off => "off",
@@ -1602,7 +1613,7 @@ fn main() {
             continue;
         }
         println!(
-            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={} score_mode={} metric_contract={} extra_shortlist_objectives={} shortlist_union_mode={} shortlist_confidence_mode={} shortlist_slice_mode={} shortlist_slice_benchmark={} eval_range={} include_trade_metrics={} include_all={} stop_loss_pct={} take_profit_pct={} hurdle_tau={} runtime_ms={} wall_ms={} candles_len={} top_k={} heatmap_bins={} constraints={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
+            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={} score_mode={} metric_contract={} extra_shortlist_objectives={} shortlist_union_mode={} shortlist_confidence_mode={} shortlist_slice_mode={} shortlist_slice_benchmark={} eval_range={} include_trade_metrics={} include_all={} stop_loss_pct={} take_profit_pct={} hurdle_tau={} runtime_ms={} wall_ms={} candles_len={} top_k={} heatmap_bins={} constraints={} cuda_graphs={} cuda_graph_timing={} best=({}, {}) sharpe={:.6} pnl={:.6}",
             if is_warmup { "warmup" } else { "measure" },
             iter_index,
             fast_ma_type,
@@ -1646,6 +1657,11 @@ fn main() {
                 ToggleMode::Off => "off",
                 ToggleMode::On => "on",
             },
+            match cuda_graph_timing_mode {
+                ToggleMode::Inherit => "inherit",
+                ToggleMode::Off => "off",
+                ToggleMode::On => "on",
+            },
             res.best_params.fast_len,
             res.best_params.slow_len,
             res.best_metrics.sharpe,
@@ -1653,7 +1669,7 @@ fn main() {
         );
         if let Some(timing) = res.gpu_kernel_timing_ms.as_ref() {
             println!(
-                "gpu_kernel_timing_ms=route_wall:{} runtime_init:{} set_current:{} gpu_indicator_prep:{} h2d_upload:{} launch_submit_us:{} d2h_copy:{} host_decode:{} explicit_sync:{} host_shortlist_materialize:{} host_finalize:{} host_finalize_agg_finalize:{} host_finalize_finalist_recompute:{} host_finalize_shortlist_union:{} host_finalize_shortlist_confidence:{} host_finalize_shortlist_slice:{} host_finalize_shortlist_slice_replay:{} host_finalize_shortlist_slice_replay_descriptor_prep:{} host_finalize_shortlist_slice_replay_descriptor_upload:{} host_finalize_shortlist_slice_record_assembly:{} host_finalize_shortlist_slice_sort:{} host_finalize_shortlist_slice_diagnostics:{} host_finalize_export_flush:{} host_finalize_cleanup:{} graph_capture:{} graph_replay_count:{}",
+                "gpu_kernel_timing_ms=route_wall:{} runtime_init:{} set_current:{} gpu_indicator_prep:{} h2d_upload:{} launch_submit_us:{} d2h_copy:{} host_decode:{} explicit_sync:{} host_shortlist_materialize:{} host_finalize:{} host_finalize_agg_finalize:{} host_finalize_finalist_recompute:{} host_finalize_shortlist_union:{} host_finalize_shortlist_confidence:{} host_finalize_shortlist_slice:{} host_finalize_shortlist_slice_replay:{} host_finalize_shortlist_slice_replay_descriptor_prep:{} host_finalize_shortlist_slice_replay_descriptor_upload:{} host_finalize_shortlist_slice_record_assembly:{} host_finalize_shortlist_slice_sort:{} host_finalize_shortlist_slice_diagnostics:{} host_finalize_export_flush:{} host_finalize_cleanup:{} graph_capture:{} graph_replay_count:{} cuda_graph_timing_us:{}",
                 timing.route_wall_ms,
                 format_optional_ms(timing.runtime_init_ms),
                 format_optional_ms(timing.set_current_ms),
@@ -1681,7 +1697,12 @@ fn main() {
                 format_optional_ms(timing.host_finalize_export_flush_ms),
                 format_optional_ms(timing.host_finalize_cleanup_ms),
                 format_optional_ms(timing.graph_capture_ms),
-                timing.graph_replay_count.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+                timing.graph_replay_count.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
+                timing
+                    .cuda_graph_timing_us
+                    .as_ref()
+                    .and_then(|value| serde_json::to_string(value).ok())
+                    .unwrap_or_else(|| "-".to_string())
             );
         }
         if let Some(timing) = res.hybrid_timing_ms.as_ref() {

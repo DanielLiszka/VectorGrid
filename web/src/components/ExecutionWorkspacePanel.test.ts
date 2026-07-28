@@ -1138,7 +1138,15 @@ describe('ExecutionWorkspacePanel', () => {
     expect(text).toContain('Saved session evidence')
     expect(text).toContain('Loaded 1 saved live session artifact.')
     expect(text).toContain('sess_latest')
-    expect(text).toContain('C:/runs/vectorgrid_run_2026-04-12.json')
+    const sourceRunPath = 'C:/runs/vectorgrid_run_2026-04-12.json'
+    const sourceRunEvidence = document.querySelector(
+      '.compactEvidenceText[aria-label^="Source run:"]',
+    )
+    expect(sourceRunEvidence?.textContent).toBe('vectorgrid_run_2026-04-12.json')
+    expect(sourceRunEvidence?.getAttribute('title')).toBe(sourceRunPath)
+    expect(sourceRunEvidence?.getAttribute('aria-label')).toBe(
+      `Source run: ${sourceRunPath}`,
+    )
     expect(text).toContain('order_submitted')
     expect(text).toContain('submitted buy order')
     expect(text).toContain('get_live_execution_snapshot')

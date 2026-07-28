@@ -4,6 +4,39 @@ import {
   buildValidationRequest,
 } from "./validationRequestBuilder";
 
+function buildTrialAccountingRequest(
+  currentRunRes: unknown,
+  adjusted?: unknown,
+) {
+  return buildValidationRequest({
+    currentRunReq: {
+      strategy_kind: "DoubleMa",
+      data_id: "data-trial-accounting",
+      ma_source: "close",
+      fast_ma_types: ["sma"],
+      slow_ma_types: ["ema"],
+    },
+    currentRunRes,
+    runDatasetMeta: {
+      csv_path: "C:/data/SPY.csv",
+      timeframe: "1h",
+      symbol: "SPY",
+      adjusted,
+    },
+    runCsvPath: "C:/fallback.csv",
+    topRows: [
+      {
+        params: {
+          fast_ma_type: "sma",
+          slow_ma_type: "ema",
+          fast_len: 10,
+          slow_len: 40,
+        },
+      },
+    ],
+  });
+}
+
 describe("validationRequestBuilder", () => {
   it("builds double-like validation request from top rows with gates and aux configs", () => {
     const req = buildValidationRequest({
@@ -119,6 +152,239 @@ describe("validationRequestBuilder", () => {
         { csv_path: "C:/data/b.csv", label: "B" },
       ],
     });
+  });
+
+  it("bridges canonical and legacy optimization trial-count fields", () => {
+    const cases: Array<[Record<string, unknown>, number]> = [
+      [
+        {
+          num_combos: 123.9,
+          numCombos: 999,
+          total_evaluations: 1000,
+          totalEvaluations: 1001,
+        },
+        123,
+      ],
+      [{ numCombos: "456" }, 456],
+      [{ total_evaluations: "789.8" }, 789],
+      [{ totalEvaluations: 321 }, 321],
+      [
+        {
+          num_combos: 0,
+          numCombos: "invalid",
+          total_evaluations: 42,
+        },
+        42,
+      ],
+    ];
+
+    for (const [currentRunRes, expected] of cases) {
+      const req = buildTrialAccountingRequest(currentRunRes);
+      expect(req.validation_context.optimization_trials).toBe(expected);
+      expect(req.validation_context).toMatchObject({
+        strategy_kind: "DoubleMa",
+        csv_path: "C:/data/SPY.csv",
+        timeframe: "1h",
+        label: "SPY",
+      });
+    }
+  });
+
+  it("bridges a structurally valid full-search Sharpe distribution", () => {
+    const searchDistribution = {
+      metric_surface_kind: "core17",
+      sharpe_metric_id: "double_ma_log_return_sharpe_v1",
+      attempted_count: 600,
+      unique_count: 550,
+      feasible_count: 510,
+      finite_sharpe_count: 500,
+      finite_sharpe_mean: 0.15,
+      finite_sharpe_sample_std: 0.4,
+    };
+    const req = buildTrialAccountingRequest({
+      num_combos: 600,
+      search_semantics: {
+        search_distribution: searchDistribution,
+      },
+    });
+
+    expect(req.validation_context.search_distribution).toEqual(
+      searchDistribution,
+    );
+  });
+
+  it("omits malformed or finalist-only Sharpe distributions", () => {
+    const malformed = [
+      {
+        metric_surface_kind: "core17",
+        sharpe_metric_id: "double_ma_log_return_sharpe_v1",
+        attempted_count: 10,
+        unique_count: 11,
+        feasible_count: 9,
+        finite_sharpe_count: 8,
+        finite_sharpe_mean: 0.15,
+        finite_sharpe_sample_std: 0.4,
+      },
+      {
+        metric_surface_kind: "core17",
+        sharpe_metric_id: "double_ma_log_return_sharpe_v1",
+        attempted_count: 10,
+        unique_count: 10,
+        feasible_count: 9,
+        finite_sharpe_count: 8,
+        finite_sharpe_mean: Number.NaN,
+        finite_sharpe_sample_std: 0.4,
+      },
+      null,
+    ];
+
+    for (const search_distribution of malformed) {
+      const req = buildTrialAccountingRequest({
+        num_combos: 10,
+        search_semantics: {
+          search_distribution,
+          search_distribution_unavailable_reason:
+            "only retained finalists were materialized",
+        },
+      });
+      expect(req.validation_context).not.toHaveProperty("search_distribution");
+    }
+  });
+
+  it("omits invalid optimization trial counts without changing validation context", () => {
+    const invalidResults: Array<Record<string, unknown>> = [
+      { num_combos: 0 },
+      { num_combos: -1 },
+      { num_combos: 0.5 },
+      { num_combos: "" },
+      { num_combos: true },
+      { num_combos: Number.POSITIVE_INFINITY },
+      { num_combos: Number.MAX_SAFE_INTEGER + 1 },
+      {
+        num_combos: "invalid",
+        numCombos: null,
+        total_evaluations: undefined,
+        totalEvaluations: " ",
+      },
+    ];
+
+    for (const currentRunRes of invalidResults) {
+      const req = buildTrialAccountingRequest(currentRunRes);
+      expect(req.validation_context).toEqual({
+        strategy_kind: "DoubleMa",
+        csv_path: "C:/data/SPY.csv",
+        timeframe: "1h",
+        label: "SPY",
+      });
+      expect(req.validation_context).not.toHaveProperty("optimization_trials");
+    }
+  });
+
+  it("propagates only a known boolean price-adjustment state and leaves other realism evidence unknown", () => {
+    const adjusted = buildTrialAccountingRequest({}, true);
+    expect(adjusted.validation_context.data_realism).toEqual({
+      price_adjustment: "adjusted",
+      corporate_actions: "unknown",
+      survivorship_bias: "unknown",
+      liquidity_capacity: "unknown",
+      market_impact: "unknown",
+      borrow_availability: "unknown",
+    });
+
+    const unadjusted = buildTrialAccountingRequest({}, false);
+    expect(unadjusted.validation_context.data_realism).toEqual({
+      price_adjustment: "unadjusted",
+      corporate_actions: "unknown",
+      survivorship_bias: "unknown",
+      liquidity_capacity: "unknown",
+      market_impact: "unknown",
+      borrow_availability: "unknown",
+    });
+  });
+
+  it("does not coerce absent or non-boolean adjusted metadata into realism evidence", () => {
+    for (const adjusted of [undefined, null, 0, 1, "true", "false"]) {
+      const req = buildTrialAccountingRequest({}, adjusted);
+      expect(req.validation_context).not.toHaveProperty("data_realism");
+    }
+  });
+
+  it("blocks enabled cross-ticker validation until its dataset contract is valid", () => {
+    const baseInputs = {
+      currentRunReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-cross-blocked",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 10,
+            slow_len: 40,
+          },
+        },
+      ],
+      crossEnable: true,
+    };
+
+    expect(() =>
+      buildValidationRequest({
+        ...baseInputs,
+        crossMax: "6",
+        crossDatasets: [],
+      }),
+    ).toThrow(/no eligible datasets are selected/i);
+    expect(() =>
+      buildValidationRequest({
+        ...baseInputs,
+        crossMax: "0",
+        crossDatasets: [{ csv_path: "C:/data/SPY.csv", label: "SPY" }],
+      }),
+    ).toThrow(/Max datasets must be at least 1/i);
+  });
+
+  it("normalizes string false module toggles instead of enabling them", () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-string-false",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 10,
+            slow_len: 40,
+          },
+        },
+      ],
+      wfEnable: "false",
+      reoptWfEnable: "false",
+      spaEnable: "false",
+      perturbEnable: "false",
+      mcEnable: "false",
+      cscvEnable: "false",
+      crossEnable: "false",
+    });
+
+    expect(req.walk_forward).toBeNull();
+    expect(req.reopt_walk_forward).toBeNull();
+    expect(req.spa).toBeNull();
+    expect(req.perturb).toBeNull();
+    expect(req.trade_bootstrap).toBeNull();
+    expect(req.monte_carlo).toBeNull();
+    expect(req.cscv_pbo).toBeNull();
+    expect(req.cross_ticker).toBeNull();
   });
 
   it("builds composite request and enforces halftrend presence", () => {
@@ -298,20 +564,45 @@ describe("validationRequestBuilder", () => {
       currentRunRes: { ok: true },
       topRows: [
         {
-          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 6, slow_len: 24 },
-          metrics: { sharpe: Number.NaN, omega: Number.NaN, calmar: Number.NaN, max_dd: Number.NaN },
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 6,
+            slow_len: 24,
+          },
+          metrics: {
+            sharpe: Number.NaN,
+            omega: Number.NaN,
+            calmar: Number.NaN,
+            max_dd: Number.NaN,
+          },
         },
         {
-          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 10, slow_len: 40 },
-          metrics: { sharpe: 1.25, omega: 1.0, calmar: 0.8, max_dd: 0.20 },
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 10,
+            slow_len: 40,
+          },
+          metrics: { sharpe: 1.25, omega: 1.0, calmar: 0.8, max_dd: 0.2 },
         },
         {
-          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 12, slow_len: 48 },
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 12,
+            slow_len: 48,
+          },
           metrics: { sharpe: 1.25, omega: 0.9, calmar: 0.7, max_dd: 0.22 },
         },
         {
-          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 8, slow_len: 30 },
-          metrics: { sharpe: Number.NaN, omega: 1.6, calmar: 1.4, max_dd: 0.10 },
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 8,
+            slow_len: 30,
+          },
+          metrics: { sharpe: Number.NaN, omega: 1.6, calmar: 1.4, max_dd: 0.1 },
         },
       ],
       candidates: "2",

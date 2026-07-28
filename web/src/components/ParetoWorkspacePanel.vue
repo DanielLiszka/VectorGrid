@@ -180,8 +180,6 @@ function selectParetoPoint(point: ParetoRenderPoint): void {
           :title="paretoReadiness.title"
           :body="paretoReadiness.body"
           :status="String(statusLine || '')"
-          action-label="Review Top results"
-          @action="reviewTopResults"
         />
         <div class="chartAssist">
           <div id="paretoKeyboardHint" class="panelMuted">

@@ -39,6 +39,7 @@ import {
   VALIDATION_RESULTS_TABLE_STATE_KEY,
 } from "../utils/core/storageKeys";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
+import { resolveRovingRowIndex } from "../utils/rovingRowFocus";
 import {
   buildMetricColumnVisualRanges,
   resolveMetricCellVisual,
@@ -131,7 +132,7 @@ const VALIDATION_VIEW_PRESET_KEYS: Record<
 
 const validationStore = useValidationStore();
 const workflowStore = useWorkflowStore();
-const { validationStage } = useUiReadiness();
+const { hasOptimizationResults, validationStage } = useUiReadiness();
 const {
   validationHint,
   validationAccelerationStatus,
@@ -267,6 +268,9 @@ const visible = computed(
   () => String(resultsTab.value || "").trim() === "validate",
 );
 const showValidationResults = computed(() => validationStage.value === "ready");
+const validationActionDisabled = computed(
+  () => validateDisabled.value || !hasOptimizationResults.value,
+);
 const renderedColumns = computed<ValidationColumn[]>(
   () => validationColumns.value as ValidationColumn[],
 );
@@ -849,9 +853,23 @@ function isSelectedValidationRow(index: number): boolean {
 }
 
 function onValidationRowKeydown(event: KeyboardEvent, index: number): void {
-  if (event.key !== "Enter" && event.key !== " ") return;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    selectValidationRow(index);
+    return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
-  selectValidationRow(index);
+  const total = rowModelRows.value.length;
+  if (!total) return;
+  const nextIndex = resolveRovingRowIndex(index, total, event.key);
+  if (nextIndex == null) return;
+  selectValidationRow(nextIndex);
+  const viewport = tableScrollElementRef.value;
+  if (viewport) viewport.scrollTop = Math.max(0, nextIndex * 30 - viewport.clientHeight / 2);
+  void nextTick(() => {
+    document.querySelector<HTMLElement>(`[data-validation-row-index="${nextIndex}"]`)?.focus();
+  });
 }
 
 function validationColumnToggleId(columnKey: string): string {
@@ -1118,7 +1136,7 @@ onBeforeUnmount(() => {
             type="button"
             class="primary"
             data-qa-action="validation.run"
-            :disabled="validateDisabled"
+            :disabled="validationActionDisabled"
             @click="runValidationAction"
           >
             Run validation
@@ -2059,7 +2077,8 @@ onBeforeUnmount(() => {
                   :class="{
                     selected: isSelectedValidationRow(virtualRow.index),
                   }"
-                  tabindex="0"
+                  :tabindex="isSelectedValidationRow(virtualRow.index) ? 0 : -1"
+                  :data-validation-row-index="virtualRow.index"
                   :aria-selected="
                     isSelectedValidationRow(virtualRow.index) ? 'true' : 'false'
                   "

@@ -30,7 +30,10 @@ import {
 import { HISTORY_SAVED_RUNS_TABLE_DENSITY_KEY } from "../utils/core/storageKeys";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
+import { buildValidationEvidenceSummary } from "../utils/validationEvidenceSummary";
+import CompactEvidenceValue from "./CompactEvidenceValue.vue";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
+import HistoryValidationRealismPanel from "./HistoryValidationRealismPanel.vue";
 import OptionsExpressionPanel from "./OptionsExpressionPanel.vue";
 import AppDataTableShell from "./ui/AppDataTableShell.vue";
 import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
@@ -41,6 +44,7 @@ const { historyStage } = useUiReadiness();
 const {
   sessionRunsRaw,
   sessionSelectedValue,
+  savedRunDetailCache,
   savedRunsVisible,
   savedSelectedValue,
   savedRunsSearch,
@@ -206,6 +210,20 @@ const savedRunsSearchSummary = computed(() => {
 const sessionRunListSummary = computed(() => {
   const count = visibleSessionRuns.value.length;
   return `${count} run${count === 1 ? "" : "s"} captured in this session`;
+});
+const savedRunValidationEvidence = computed(() => {
+  const selectedPath = String(savedSelectedValue.value || "").trim();
+  const detail = selectedPath
+    ? savedRunDetailCache.value[selectedPath]
+    : undefined;
+  return buildValidationEvidenceSummary({
+    validationReq: detail?.validationReq,
+    validationRes: detail?.validationRes,
+    optimizationRes: detail?.runRes,
+    datasetMeta: detail?.datasetMeta,
+    reportPath: detail?.reportPath,
+    replayClass: detail?.replayClass,
+  });
 });
 
 function basename(value: string): string {
@@ -948,10 +966,12 @@ onBeforeUnmount(() => {
             }}</span>
           </div>
           <div>
-            <span class="panelMetricKey">Config Fingerprint</span
-            ><span class="panelMetricValue mono panelNumeric">{{
-              savedRunDetailConfigFingerprint
-            }}</span>
+            <span class="panelMetricKey">Config Fingerprint</span>
+            <CompactEvidenceValue
+              label="Config fingerprint"
+              :value="savedRunDetailConfigFingerprint"
+              kind="hash"
+            />
           </div>
           <div>
             <span class="panelMetricKey">Dataset</span
@@ -1094,6 +1114,7 @@ onBeforeUnmount(() => {
             }}</span>
           </div>
         </div>
+        <HistoryValidationRealismPanel :summary="savedRunValidationEvidence" />
         <details class="panelDetails">
           <summary>Request snapshot</summary>
           <div class="panelDetailsBody">

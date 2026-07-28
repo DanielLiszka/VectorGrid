@@ -58,6 +58,35 @@ try {
     Write-Host '== training script syntax/config checks =='
     Invoke-NativeChecked -FilePath 'python' -ArgumentList @('-m', 'py_compile', 'scripts/train_ml_signal_catboost.py')
     Invoke-NativeChecked -FilePath 'python' -ArgumentList @('-c', "import json, pathlib; json.load(open(pathlib.Path('configs/ml_signal_catboost_default.json'), encoding='utf-8'))")
+    $trainingLock = @(Get-Content -LiteralPath 'scripts/requirements-ml-signal-training.lock.txt')
+    foreach ($requiredPin in @('catboost==1.2.10', 'scikit-learn==1.7.2')) {
+      if ($trainingLock -notcontains $requiredPin) {
+        throw "MlSignal training lock is missing required pin '$requiredPin'."
+      }
+    }
+    $parseErrors = $null
+    $parseTokens = $null
+    [System.Management.Automation.Language.Parser]::ParseFile(
+      (Join-Path $repoRoot 'scripts\setup_ml_signal_training_env.ps1'),
+      [ref]$parseTokens,
+      [ref]$parseErrors
+    ) | Out-Null
+    if (@($parseErrors).Count -gt 0) {
+      throw "setup_ml_signal_training_env.ps1 failed PowerShell parsing: $($parseErrors[0].Message)"
+    }
+
+    Write-Host '== real native QA harness safety contract =='
+    Invoke-NativeChecked -FilePath 'node' -ArgumentList @(
+      '--test',
+      'scripts/ml_signal_real_native_qa_contract.test.mjs'
+    )
+
+    Write-Host '== reviewed CatBoost native artifact contract =='
+    Invoke-NativeChecked -FilePath 'powershell' -ArgumentList @(
+      '-NoProfile',
+      '-File', 'scripts/acquire_catboost_native.ps1',
+      '-VerifyOnly'
+    )
   }
 } finally {
   Pop-Location

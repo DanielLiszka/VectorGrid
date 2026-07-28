@@ -16,7 +16,9 @@ param(
   [string]$BackendPreference = 'native_cpu',
   [int]$PredictionBatchSize = 0,
   [int]$GpuDeviceId = 0,
-  [switch]$PassGpuDeviceId
+  [switch]$PassGpuDeviceId,
+  [switch]$RunValidation,
+  [switch]$RunPolicySweep
 )
 
 Set-StrictMode -Version Latest
@@ -99,6 +101,12 @@ if ($PassGpuDeviceId) {
 }
 if ($PredictionBatchSize -gt 0) {
   $args += @('--prediction-batch-size', $PredictionBatchSize.ToString())
+}
+if ($RunValidation) {
+  $args += '--run-validation'
+}
+if ($RunPolicySweep) {
+  $args += '--run-policy-sweep'
 }
 
 cargo @args

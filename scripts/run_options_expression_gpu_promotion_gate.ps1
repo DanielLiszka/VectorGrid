@@ -86,6 +86,59 @@ function Write-PassFailLine([string]$Name, [bool]$Passed, [string]$Message) {
   Write-Host ("[{0}] {1}: {2}" -f (Format-Status $Passed), $Name, $Message)
 }
 
+function Invoke-CargoTestEvidence {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+    [bool]$UsePrebuiltPtx = $false,
+    [int]$MinimumPassedTests = 1
+  )
+
+  $startedAt = (Get-Date).ToUniversalTime()
+  $previousPrebuiltPtx = $env:VECTORBT_USE_PREBUILT_PTX
+  $passedTestCount = 0
+  try {
+    if ($UsePrebuiltPtx) {
+      $env:VECTORBT_USE_PREBUILT_PTX = "1"
+    }
+    $outputLines = @(& cargo @ArgumentList 2>&1)
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $outputLines) {
+      Write-Host $line
+      $testResultMatch = [regex]::Match(
+        [string]$line,
+        'test result:\s+ok\.\s+(\d+)\s+passed;'
+      )
+      if ($testResultMatch.Success) {
+        $passedTestCount += [int]$testResultMatch.Groups[1].Value
+      }
+    }
+    if ($exitCode -ne 0) {
+      throw "$Name failed with cargo exit code $exitCode."
+    }
+    if ($passedTestCount -lt $MinimumPassedTests) {
+      throw "$Name did not execute the required test count ($passedTestCount passed; minimum $MinimumPassedTests)."
+    }
+  } finally {
+    if ($UsePrebuiltPtx) {
+      if ($null -ne $previousPrebuiltPtx) {
+        $env:VECTORBT_USE_PREBUILT_PTX = $previousPrebuiltPtx
+      } else {
+        Remove-Item Env:VECTORBT_USE_PREBUILT_PTX -ErrorAction SilentlyContinue
+      }
+    }
+  }
+
+  return [ordered]@{
+    name = $Name
+    command = "cargo " + ($ArgumentList -join " ")
+    passed = $true
+    passed_test_count = $passedTestCount
+    started_at_utc = $startedAt.ToString("o")
+    finished_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+  }
+}
+
 function Get-OptionsPerfProcesses() {
   @(Get-Process | Where-Object {
       $_.ProcessName -match '^(cargo|criterion|nsys|ncu)$' -or
@@ -157,8 +210,14 @@ function Get-EnvironmentFingerprint {
 $repoRoot = Resolve-RepoRoot
 $phase05Script = Join-Path $repoRoot "scripts\run_options_expression_phase05.ps1"
 $resolvedOutRoot = Join-IfRelative -Path $OutDir -Root $repoRoot
+$BaselinePath = Join-IfRelative -Path $BaselinePath -Root $repoRoot
+$SummaryOutPath = Join-IfRelative -Path $SummaryOutPath -Root $repoRoot
+if ($Mode -eq "candidate" -and -not (Test-Path -LiteralPath $BaselinePath -PathType Leaf)) {
+  throw "Missing options expression performance baseline: $BaselinePath. Run with -Mode baseline first."
+}
 $timestamp = Get-Date -Format "yyyy-MM-ddTHH-mm-ss"
 $runOutRoot = Join-Path $resolvedOutRoot $timestamp
+$correctnessEvidence = @()
 
 $phase05Args = @(
   "-ExecutionPolicy",
@@ -212,8 +271,18 @@ try {
 
   Push-Location $repoRoot
   try {
-    & powershell @phase05Args
-    $promotionExitCode = $LASTEXITCODE
+    $previousPrebuiltPtx = $env:VECTORBT_USE_PREBUILT_PTX
+    try {
+      $env:VECTORBT_USE_PREBUILT_PTX = "1"
+      & powershell @phase05Args
+      $promotionExitCode = $LASTEXITCODE
+    } finally {
+      if ($null -ne $previousPrebuiltPtx) {
+        $env:VECTORBT_USE_PREBUILT_PTX = $previousPrebuiltPtx
+      } else {
+        Remove-Item Env:VECTORBT_USE_PREBUILT_PTX -ErrorAction SilentlyContinue
+      }
+    }
   } finally {
     Pop-Location
   }
@@ -224,6 +293,48 @@ try {
 }
 if ($promotionExitCode -ne 0) {
   exit $promotionExitCode
+}
+
+Push-Location $repoRoot
+try {
+  $correctnessEvidence += ,(Invoke-CargoTestEvidence `
+    -Name "Options expression CPU test suite" `
+    -ArgumentList @(
+      "test",
+      "-p", "ta_app_core",
+      "--lib",
+      "options_expression::tests::",
+      "--",
+      "--test-threads=1"
+    ))
+  $correctnessEvidence += ,(Invoke-CargoTestEvidence `
+    -Name "Options expression GPU aggregate parity" `
+    -UsePrebuiltPtx $true `
+    -ArgumentList @(
+      "test",
+      "-p", "ta_app_core",
+      "--lib",
+      "--features", "cuda,cuda-backtest-kernel",
+      "options_expression::tests::fused_gpu_search_holdout_stress_aggregates_match_exact_cpu_aggregates",
+      "--",
+      "--exact",
+      "--test-threads=1"
+    ))
+  $correctnessEvidence += ,(Invoke-CargoTestEvidence `
+    -Name "Options expression CPU/GPU ranking parity" `
+    -UsePrebuiltPtx $true `
+    -ArgumentList @(
+      "test",
+      "-p", "ta_app_core",
+      "--lib",
+      "--features", "cuda,cuda-backtest-kernel",
+      "options_expression::tests::gpu_combined_ranking_matches_cpu_topk_on_small_surface",
+      "--",
+      "--exact",
+      "--test-threads=1"
+    ))
+} finally {
+  Pop-Location
 }
 
 $summaryJson = Get-ChildItem $runOutRoot -Recurse -Filter "phase05_summary.json" -File |
@@ -333,6 +444,7 @@ $gateSummary = [ordered]@{
   regression_pct = $RegressionPct
   preview_wall_regression_abs_ms = $PreviewWallRegressionAbsMs
   ranking_regression_abs_us = $RankingRegressionAbsUs
+  correctness_evidence = $correctnessEvidence
   checks = $checks
   phase05_gates = $phase05
   backend_comparison = $comparison

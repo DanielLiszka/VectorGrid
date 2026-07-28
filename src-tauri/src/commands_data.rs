@@ -1108,9 +1108,10 @@ fn disarm_runner_after_nonmanual_feed_interruption(
     message: &str,
 ) {
     if should_force_runner_review_posture(status) {
-        let _ = super::commands_execution::stop_live_execution_runner_for_interruption(app.clone());
-        let _ = super::commands_execution::record_live_session_interruption_and_finalize(
-            app, status, message,
+        let _ = super::commands_execution::stop_live_execution_runner_for_interruption(
+            app.clone(),
+            status,
+            message,
         );
     }
 }

@@ -137,6 +137,23 @@ function validateWindowsReleaseBundleConfig(label, shape, failures) {
       `${label} must bundle src-tauri/resources/native/catboostmodel.dll as native/catboostmodel.dll.`,
     )
   }
+  const expectedCatboostLicenseSource = path.resolve(
+    ROOT,
+    'src-tauri',
+    'resources',
+    'licenses',
+    'CatBoost-LICENSE.txt',
+  )
+  const hasCatboostLicenseResource = resources.some(
+    (entry) =>
+      entry?.source === expectedCatboostLicenseSource &&
+      String(entry?.target || '').replaceAll('\\', '/') === 'licenses/CatBoost-LICENSE.txt',
+  )
+  if (!hasCatboostLicenseResource) {
+    failures.push(
+      `${label} must bundle src-tauri/resources/licenses/CatBoost-LICENSE.txt as licenses/CatBoost-LICENSE.txt.`,
+    )
+  }
 
   const targets = Array.isArray(shape.bundle.targets) ? shape.bundle.targets : []
   if (!targets.includes('nsis')) {

@@ -5,6 +5,8 @@ import { useDataStore } from "../stores/dataStore";
 import { useHistoryStore } from "../stores/historyStore";
 import { useValidationStore } from "../stores/validationStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { useWorkflowStore } from "../stores/workflowStore";
+import { activeRunCompatibility } from "../utils/activeContextCompatibility";
 import {
   latestStageCompletionForStage,
   stageCompletionIsComplete,
@@ -127,6 +129,7 @@ export function useUiReadiness() {
   const historyStore = useHistoryStore();
   const validationStore = useValidationStore();
   const workflowArtifactsStore = useWorkflowArtifactsStore();
+  const workflowStore = useWorkflowStore();
 
   const {
     bestMeta,
@@ -137,11 +140,14 @@ export function useUiReadiness() {
     metaTableRows,
     topRows,
   } = storeToRefs(analysisStore);
-  const { dataId, datasetLabel } = storeToRefs(dataStore);
+  const { baseCsvPath, csvPath, dataId, dataTimeframe, datasetLabel } =
+    storeToRefs(dataStore);
   const { savedRunCount, savedSelectedValue } = storeToRefs(historyStore);
   const { tableRowCount, tableVisible, validationOutputPreview } =
     storeToRefs(validationStore);
-  const { currentRun, currentValidation } = storeToRefs(workflowArtifactsStore);
+  const { currentRun, currentValidation, source: workflowArtifactsSource } =
+    storeToRefs(workflowArtifactsStore);
+  const { mode } = storeToRefs(workflowStore);
   const optimizationCompletion = computed(() =>
     latestStageCompletionForStage(
       currentRun.value?.stageCompletions,
@@ -154,6 +160,15 @@ export function useUiReadiness() {
       "validation",
     ),
   );
+  const currentRunCompatibility = computed(() =>
+    activeRunCompatibility({
+      activeDataId: dataId.value,
+      activeDatasetPath: baseCsvPath.value || csvPath.value,
+      activeMode: mode.value,
+      activeTimeframe: dataTimeframe.value,
+      run: currentRun.value,
+    }),
+  );
 
   const datasetReady = computed(() => {
     const id = String(dataId.value || "").trim();
@@ -162,6 +177,10 @@ export function useUiReadiness() {
   });
 
   const hasOptimizationResults = computed(() => {
+    if (currentRun.value && !currentRunCompatibility.value.compatible)
+      return false;
+    if (!currentRun.value && workflowArtifactsSource.value !== "unknown")
+      return false;
     if (stageCompletionIsComplete(optimizationCompletion.value)) return true;
     if (currentRun.value?.res) return true;
     if (Number(topRows.value || 0) > 0) return true;
@@ -172,6 +191,12 @@ export function useUiReadiness() {
   });
 
   const hasValidationResults = computed(() => {
+    if (currentRun.value && !currentRunCompatibility.value.compatible)
+      return false;
+    if (!currentRun.value && workflowArtifactsSource.value !== "unknown")
+      return false;
+    if (!currentValidation.value && workflowArtifactsSource.value !== "unknown")
+      return false;
     if (stageCompletionIsComplete(validationCompletion.value)) return true;
     if (currentValidation.value?.res) return true;
     if (Boolean(tableVisible.value)) return true;
@@ -238,6 +263,7 @@ export function useUiReadiness() {
 
   return {
     datasetReady,
+    currentRunCompatibility,
     hasOptimizationResults,
     hasValidationResults,
     hasSavedRuns,

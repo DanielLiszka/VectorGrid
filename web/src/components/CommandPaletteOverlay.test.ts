@@ -3,6 +3,8 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 import CommandPaletteOverlay from './CommandPaletteOverlay.vue'
+import { useUiReadiness } from '../composables/useUiReadiness'
+import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useWorkflowStore } from '../stores/workflowStore'
@@ -197,6 +199,52 @@ describe('CommandPaletteOverlay', () => {
 
     expect(taskCenterOpen.value).toBe(true)
     expect(paletteStore.open).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('characterizes FUI-020 readiness leakage in Diagnostics with ML Signal and no current dataset', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+
+    // Retain output produced by the prior Conventional context, then leave that
+    // context without loading a dataset for the active ML Signal posture.
+    analysisStore.applyLegacySnapshot({
+      bestTitle: 'Retained Conventional candidate',
+      topRows: 1,
+      canExportCsv: true,
+      canExportJson: true,
+    })
+    workflowStore.selectWorkspace('pro', undefined, { persist: false })
+    workflowStore.selectMode('ml-signal', { persist: false })
+    paletteStore.openPalette()
+
+    const { datasetReady } = useUiReadiness()
+    expect(workflowStore.workspace).toBe('pro')
+    expect(workflowStore.mode).toBe('ml-signal')
+    expect(datasetReady.value).toBe(false)
+    expect(analysisStore.bestTitle).toBe('Retained Conventional candidate')
+
+    const wrapper = mount(CommandPaletteOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    function commandRow(name: string): HTMLElement | undefined {
+      return Array.from(
+        document.querySelectorAll<HTMLElement>('.cmdPaletteDialog [role="option"]'),
+      ).find((row) => row.querySelector('.name')?.textContent?.trim() === name)
+    }
+
+    expect(commandRow('Run validation')?.getAttribute('aria-disabled')).toBe('true')
+    expect(commandRow('Run validation')?.textContent).toContain('Open Research')
+    expect(commandRow('Export Top CSV')?.getAttribute('aria-disabled')).toBe('true')
+    expect(commandRow('Export Top JSON')?.getAttribute('aria-disabled')).toBe('true')
 
     wrapper.unmount()
   })

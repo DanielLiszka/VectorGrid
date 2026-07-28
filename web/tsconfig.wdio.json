@@ -5,6 +5,7 @@
   },
   "include": [
     "wdio.desktop.conf.ts",
+    "scripts/desktop/**/*.ts",
     "e2e/desktop/**/*.ts",
     "e2e/desktop/**/*.d.ts"
   ]

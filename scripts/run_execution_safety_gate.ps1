@@ -26,11 +26,23 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 
 $credentialEnvNames = @(
   "ALPACA_API_KEY",
+  "ALPACA_API_KEY_ID",
   "ALPACA_API_SECRET",
+  "ALPACA_API_SECRET_KEY",
+  "ALPACA_KEY",
   "ALPACA_KEY_ID",
+  "ALPACA_SECRET",
   "ALPACA_SECRET_KEY",
+  "ALPACA_API_BASE_URL",
+  "APCA_API_KEY",
+  "APCA_API_KEY_ID",
+  "APCA_API_SECRET",
+  "APCA_API_SECRET_KEY",
+  "APCA_API_BASE_URL",
   "POLYGON_KEY",
-  "POLYGON_API_KEY"
+  "POLYGON_API_KEY",
+  "POLYGON_TOKEN",
+  "POLYGON_API_BASE_URL"
 )
 
 $previousEnv = @{}

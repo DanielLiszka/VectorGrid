@@ -8,10 +8,15 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{hash_map::DefaultHasher, BTreeSet};
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{BufReader, BufWriter};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use std::time::UNIX_EPOCH;
 use ta_app_core::options_types::{
     OptionsExpressionContractQuoteQualitySummary, OptionsExpressionCoverageAdequacyVerdict,
@@ -37,6 +42,53 @@ use tauri::Manager;
 
 const OPTIONS_REPLAY_CACHE_LIMIT: usize = 4;
 const OPTIONS_DATASET_REPLAY_CACHE_VERSION: u32 = 1;
+static OPTIONS_OUTPUT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn ensure_options_expression_not_cancelled(
+    cancel: Option<&AtomicBool>,
+    phase: &str,
+) -> Result<(), String> {
+    if cancel.is_some_and(|token| token.load(Ordering::SeqCst)) {
+        return Err(format!(
+            "options expression operation cancelled before {phase}"
+        ));
+    }
+    Ok(())
+}
+
+struct OptionsOutputStageGuard {
+    path: PathBuf,
+    published: bool,
+}
+
+impl OptionsOutputStageGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            published: false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn mark_published(&mut self) {
+        self.published = true;
+    }
+
+    fn preserve_for_recovery(&mut self) {
+        self.published = true;
+    }
+}
+
+impl Drop for OptionsOutputStageGuard {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunOptionsExpressionResponse {
@@ -1078,44 +1130,445 @@ fn suggest_options_expression_artifact_path(
     app_local_data_dir: &std::path::Path,
     ts: &str,
 ) -> Result<std::path::PathBuf, String> {
+    suggest_options_json_artifact_path_with_limit(
+        app_local_data_dir,
+        ts,
+        "vectorgrid_options_expression",
+        999,
+    )
+}
+
+fn suggest_options_json_artifact_path_with_limit(
+    app_local_data_dir: &std::path::Path,
+    ts: &str,
+    prefix: &str,
+    max_suffix: u32,
+) -> Result<std::path::PathBuf, String> {
     let runs_dir = runs_dir(app_local_data_dir)?;
     std::fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
     let safe_ts = super::sanitize_filename_component(ts);
-    let base_name = format!("vectorgrid_options_expression_{safe_ts}");
-    let mut path = runs_dir.join(format!("{base_name}.json"));
+    let base_name = format!("{prefix}_{safe_ts}");
+    let path = runs_dir.join(format!("{base_name}.json"));
     if !path.exists() {
         return Ok(path);
     }
-    for suffix in 2..=999u32 {
+    for suffix in 2..=max_suffix {
         let candidate = runs_dir.join(format!("{base_name}_{suffix}.json"));
         if !candidate.exists() {
-            path = candidate;
-            break;
+            return Ok(candidate);
         }
     }
-    Ok(path)
+    Err(format!(
+        "no available options artifact filename slots for {}",
+        runs_dir.join(format!("{base_name}.json")).display()
+    ))
 }
 
 fn suggest_options_expression_validation_artifact_path(
     app_local_data_dir: &std::path::Path,
     ts: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let runs_dir = runs_dir(app_local_data_dir)?;
-    std::fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
-    let safe_ts = super::sanitize_filename_component(ts);
-    let base_name = format!("vectorgrid_options_validation_{safe_ts}");
-    let mut path = runs_dir.join(format!("{base_name}.json"));
-    if !path.exists() {
-        return Ok(path);
+    suggest_options_json_artifact_path_with_limit(
+        app_local_data_dir,
+        ts,
+        "vectorgrid_options_validation",
+        999,
+    )
+}
+
+fn options_output_staging_path(parent: &Path, target: &Path) -> Result<PathBuf, String> {
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| format!("options output path has no file name: {}", target.display()))?;
+    let counter = OPTIONS_OUTPUT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut staged_name = OsString::from(".");
+    staged_name.push(file_name);
+    staged_name.push(format!(".{}.{}.{}.tmp", std::process::id(), nanos, counter));
+    Ok(parent.join(staged_name))
+}
+
+fn existing_regular_options_output_target(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "refusing to replace non-regular options output target {}",
+                    path.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect options output target {}: {error}",
+            path.display()
+        )),
     }
-    for suffix in 2..=999u32 {
-        let candidate = runs_dir.join(format!("{base_name}_{suffix}.json"));
-        if !candidate.exists() {
-            path = candidate;
-            break;
+}
+
+#[cfg(windows)]
+fn reserve_options_output_backup_path(
+    final_path: &Path,
+) -> Result<OptionsOutputStageGuard, String> {
+    let parent = final_path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    for _ in 0..64 {
+        let candidate = options_output_staging_path(parent, final_path)?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                drop(file);
+                fs::remove_file(&candidate).map_err(|error| {
+                    format!(
+                        "failed to prepare options output recovery backup {}: {error}",
+                        candidate.display()
+                    )
+                })?;
+                return Ok(OptionsOutputStageGuard::new(candidate));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to reserve options output recovery backup {}: {error}",
+                    candidate.display()
+                ));
+            }
         }
     }
-    Ok(path)
+    Err(format!(
+        "failed to allocate a unique recovery backup for options output {}",
+        final_path.display()
+    ))
+}
+
+#[cfg(windows)]
+fn restore_options_output_backup_after_replace_failure(
+    backup: &mut OptionsOutputStageGuard,
+    final_path: &Path,
+    replace_error: &io::Error,
+    unexpected_state: bool,
+) -> String {
+    match fs::rename(backup.path(), final_path) {
+        Ok(()) => format!(
+            "failed to atomically replace options output {}; restored the previous target after \
+             {}Windows error {replace_error}",
+            final_path.display(),
+            if unexpected_state { "unexpected " } else { "" }
+        ),
+        Err(restore_error) => {
+            let recovery_path = backup.path().to_path_buf();
+            backup.preserve_for_recovery();
+            format!(
+                "failed to atomically replace options output {} ({replace_error}); failed to \
+                 restore the previous target ({restore_error}); the previous target is preserved \
+                 for recovery at {}",
+                final_path.display(),
+                recovery_path.display()
+            )
+        }
+    }
+}
+
+#[cfg(windows)]
+fn replace_existing_options_output(staged_path: &Path, final_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    // Supplying a backup path is important here. ReplaceFileW can otherwise report
+    // ERROR_UNABLE_TO_MOVE_REPLACEMENT after it has already removed the original target.
+    // With a backup, the documented partial-move state keeps the original at this path so
+    // that we can restore it before returning an error.
+    let mut backup = reserve_options_output_backup_path(final_path)?;
+    let final_wide: Vec<u16> = final_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let staged_wide: Vec<u16> = staged_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let backup_wide: Vec<u16> = backup
+        .path()
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let replaced = unsafe {
+        ReplaceFileW(
+            final_wide.as_ptr(),
+            staged_wide.as_ptr(),
+            backup_wide.as_ptr(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced == 0 {
+        let replace_error = io::Error::last_os_error();
+
+        // ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177) means Windows moved the old
+        // target to the supplied backup but could not move the staged replacement.
+        if replace_error.raw_os_error() == Some(1177) {
+            return Err(restore_options_output_backup_after_replace_failure(
+                &mut backup,
+                final_path,
+                &replace_error,
+                false,
+            ));
+        }
+
+        // With a backup name supplied, all other documented ReplaceFileW failures
+        // retain the original target name. Verify that invariant before allowing
+        // the staging guards to clean up.
+        match existing_regular_options_output_target(final_path) {
+            Ok(true) => {
+                return Err(format!(
+                    "failed to atomically replace options output {}: {replace_error}",
+                    final_path.display()
+                ));
+            }
+            Ok(false) => {}
+            Err(target_error) => {
+                backup.preserve_for_recovery();
+                return Err(format!(
+                    "failed to atomically replace options output {} ({replace_error}); \
+                     could not verify the previous target ({target_error}); recovery backup: {}",
+                    final_path.display(),
+                    backup.path().display()
+                ));
+            }
+        }
+
+        // Defensive reconciliation for an undocumented partial state: restore the
+        // previous target when the backup exists, or publish the already-synced
+        // replacement if Windows consumed the original without creating a backup.
+        if backup.path().is_file() {
+            return Err(restore_options_output_backup_after_replace_failure(
+                &mut backup,
+                final_path,
+                &replace_error,
+                true,
+            ));
+        }
+        if staged_path.is_file() {
+            fs::rename(staged_path, final_path).map_err(|publish_error| {
+                format!(
+                    "failed to atomically replace options output {} ({replace_error}) and failed \
+                     to publish the synchronized replacement ({publish_error})",
+                    final_path.display()
+                )
+            })?;
+            return Ok(());
+        }
+
+        return Err(format!(
+            "failed to atomically replace options output {} ({replace_error}); neither the \
+             previous target nor synchronized replacement could be located",
+            final_path.display()
+        ));
+    }
+
+    // ReplaceFileW leaves the old target at the backup name on success. It is no
+    // longer needed once the synchronized replacement owns the final name.
+    drop(backup);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_options_output(staged_path: &Path, final_path: &Path) -> Result<(), String> {
+    fs::rename(staged_path, final_path).map_err(|error| {
+        format!(
+            "failed to atomically replace options output {}: {error}",
+            final_path.display()
+        )
+    })
+}
+
+fn publish_options_output(
+    staged_path: &Path,
+    final_path: &Path,
+    target_exists: bool,
+) -> Result<(), String> {
+    if target_exists {
+        replace_existing_options_output(staged_path, final_path)
+    } else {
+        fs::rename(staged_path, final_path).map_err(|error| {
+            format!(
+                "failed to atomically publish options output {}: {error}",
+                final_path.display()
+            )
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn sync_options_output_parent_directory(parent: &Path) -> Result<(), String> {
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed to sync options output directory {} after publication: {error}",
+                parent.display()
+            )
+        })
+}
+
+#[cfg(windows)]
+fn sync_options_output_parent_directory(_parent: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preserve_existing_options_output_permissions(
+    staged_path: &Path,
+    final_path: &Path,
+    target_exists: bool,
+) -> Result<(), String> {
+    if !target_exists {
+        return Ok(());
+    }
+    let permissions = fs::metadata(final_path)
+        .map_err(|error| {
+            format!(
+                "failed to inspect existing options output permissions {}: {error}",
+                final_path.display()
+            )
+        })?
+        .permissions();
+    fs::set_permissions(staged_path, permissions).map_err(|error| {
+        format!(
+            "failed to preserve options output permissions for {}: {error}",
+            final_path.display()
+        )
+    })?;
+    File::open(staged_path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed to sync staged options output metadata {}: {error}",
+                staged_path.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+fn preserve_existing_options_output_permissions(
+    _staged_path: &Path,
+    _final_path: &Path,
+    _target_exists: bool,
+) -> Result<(), String> {
+    Ok(())
+}
+
+fn write_options_output_with_publish(
+    path: &Path,
+    context: &str,
+    write_contents: impl FnOnce(&mut BufWriter<File>) -> Result<(), String>,
+    publish: impl FnOnce(&Path, &Path, bool) -> Result<(), String>,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create {context} directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let target_exists = existing_regular_options_output_target(path)?;
+
+    let (staged_path, staged_file) = {
+        let mut staged = None;
+        for _ in 0..64 {
+            let candidate = options_output_staging_path(parent, path)?;
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    staged = Some((candidate, file));
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "failed to create staged {context} {}: {error}",
+                        candidate.display()
+                    ));
+                }
+            }
+        }
+        staged.ok_or_else(|| {
+            format!(
+                "failed to allocate a unique staged {context} for {}",
+                path.display()
+            )
+        })?
+    };
+
+    let mut staged = OptionsOutputStageGuard::new(staged_path);
+    let mut writer = BufWriter::new(staged_file);
+    let stage_result = (|| -> Result<(), String> {
+        write_contents(&mut writer)?;
+        writer.flush().map_err(|error| {
+            format!(
+                "failed to flush staged {context} {}: {error}",
+                staged.path().display()
+            )
+        })?;
+        writer.get_ref().sync_all().map_err(|error| {
+            format!(
+                "failed to sync staged {context} {}: {error}",
+                staged.path().display()
+            )
+        })
+    })();
+    drop(writer);
+    stage_result?;
+
+    preserve_existing_options_output_permissions(staged.path(), path, target_exists)?;
+    publish(staged.path(), path, target_exists)?;
+    staged.mark_published();
+    if let Err(error) = sync_options_output_parent_directory(parent) {
+        log::warn!(
+            "options output was published successfully but its parent directory sync failed: {}",
+            error
+        );
+    }
+    Ok(())
+}
+
+fn write_options_output_bytes_atomically(
+    path: &Path,
+    bytes: &[u8],
+    context: &str,
+) -> Result<(), String> {
+    write_options_output_with_publish(
+        path,
+        context,
+        |writer| {
+            writer.write_all(bytes).map_err(|error| {
+                format!(
+                    "failed to write staged {context} for {}: {error}",
+                    path.display()
+                )
+            })
+        },
+        publish_options_output,
+    )
 }
 
 fn read_artifact_value(path: &std::path::Path) -> Result<Value, String> {
@@ -2463,15 +2916,23 @@ fn build_options_expression_replay_inputs(
 fn run_options_expression_blocking_impl(
     req: OptionsExpressionRunRequest,
     app_local_data_dir: &std::path::Path,
+    cancel: Option<&AtomicBool>,
 ) -> Result<RunOptionsExpressionResponse, String> {
     let _nvtx_scope = ta_app_core::nvtx::scope("engine", "options_expression_run_total");
+    ensure_options_expression_not_cancelled(cancel, "replay preparation")?;
     let replay = build_options_expression_replay_inputs(req, app_local_data_dir)?;
+    ensure_options_expression_not_cancelled(cancel, "optimization")?;
     let result = run_options_expression_blocking(
         replay.normalized_req.clone(),
         replay.signal_manifest.as_ref(),
         replay.dataset.as_ref(),
     )?;
+    ensure_options_expression_not_cancelled(cancel, "artifact publication")?;
     let ts = chrono::Utc::now().to_rfc3339();
+    let _artifact_library_lock =
+        crate::commands::run_artifacts::acquire_artifact_library_process_lock_for_app_local_data(
+            app_local_data_dir,
+        )?;
     let artifact_path = suggest_options_expression_artifact_path(app_local_data_dir, &ts)?;
     let artifact = build_options_expression_artifact(
         &artifact_path,
@@ -2487,16 +2948,15 @@ fn run_options_expression_blocking_impl(
     );
     let bytes = serde_json::to_vec_pretty(&artifact)
         .map_err(|e| format!("failed to serialize options expression artifact: {e}"))?;
-    std::fs::write(&artifact_path, bytes).map_err(|e| {
-        format!(
-            "failed to write options expression artifact {}: {e}",
-            artifact_path.display()
-        )
-    })?;
+    ensure_options_expression_not_cancelled(cancel, "artifact publication")?;
+    crate::commands::run_artifacts::invalidate_artifact_catalog_for_base_under_process_lock(
+        app_local_data_dir,
+    )?;
+    crate::commands::run_artifacts::publish_new_artifact_file_atomically(&artifact_path, &bytes)?;
     let runs_dir = app_local_data_dir.join("runs");
     let retention =
         crate::commands::run_artifacts::artifact_retention_policy_for_base(app_local_data_dir);
-    crate::commands::run_artifacts::prune_old_options_expression_artifacts_in_dir(
+    crate::commands::run_artifacts::prune_old_options_expression_artifacts_in_dir_under_process_lock(
         &runs_dir,
         retention.options_expression_keep_newest,
     );
@@ -2546,7 +3006,7 @@ pub fn run_options_expression_blocking_headless(
     req: OptionsExpressionRunRequest,
     app_local_data_dir: &std::path::Path,
 ) -> Result<RunOptionsExpressionResponse, String> {
-    run_options_expression_blocking_impl(req, app_local_data_dir)
+    run_options_expression_blocking_impl(req, app_local_data_dir, None)
 }
 
 pub fn inspect_options_expression_tuple_blocking_headless(
@@ -2927,7 +3387,9 @@ fn build_options_expression_validation_result(
 fn validate_options_expression_artifact_blocking_impl(
     req: OptionsExpressionValidationRequest,
     app_local_data_dir: &std::path::Path,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ValidateOptionsExpressionArtifactResponse, String> {
+    ensure_options_expression_not_cancelled(cancel, "validation artifact loading")?;
     let source_artifact_path = std::path::PathBuf::from(req.artifact_path.trim());
     let (artifact, source_artifact_hash) =
         load_options_expression_artifact_with_hash(&source_artifact_path, app_local_data_dir)?;
@@ -2937,6 +3399,7 @@ fn validate_options_expression_artifact_blocking_impl(
     let replay_start = std::time::Instant::now();
     let replay =
         build_options_expression_replay_inputs_with_timing(replay_req, app_local_data_dir)?;
+    ensure_options_expression_not_cancelled(cancel, "validation")?;
     let replay_build_ms = replay_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let replacement_dataset = validate_options_expression_validation_replay_provenance(
         &artifact,
@@ -2952,11 +3415,16 @@ fn validate_options_expression_artifact_blocking_impl(
         &req.validation_plan,
         req.min_valid_trades.or(artifact.request.min_valid_trades),
     )?;
+    ensure_options_expression_not_cancelled(cancel, "validation artifact publication")?;
     let validation_ms = validation_start
         .elapsed()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64;
     let ts = chrono::Utc::now().to_rfc3339();
+    let _artifact_library_lock =
+        crate::commands::run_artifacts::acquire_artifact_library_process_lock_for_app_local_data(
+            app_local_data_dir,
+        )?;
     let validation_artifact_path =
         suggest_options_expression_validation_artifact_path(app_local_data_dir, &ts)?;
     let result = build_options_expression_validation_result(
@@ -2971,12 +3439,21 @@ fn validate_options_expression_artifact_blocking_impl(
     );
     let bytes = serde_json::to_vec_pretty(&result)
         .map_err(|e| format!("failed to serialize options validation artifact: {e}"))?;
-    std::fs::write(&validation_artifact_path, bytes).map_err(|e| {
-        format!(
-            "failed to write options validation artifact {}: {e}",
-            validation_artifact_path.display()
-        )
-    })?;
+    ensure_options_expression_not_cancelled(cancel, "validation artifact publication")?;
+    crate::commands::run_artifacts::invalidate_artifact_catalog_for_base_under_process_lock(
+        app_local_data_dir,
+    )?;
+    crate::commands::run_artifacts::publish_new_artifact_file_atomically(
+        &validation_artifact_path,
+        &bytes,
+    )?;
+    let runs_dir = app_local_data_dir.join("runs");
+    let retention =
+        crate::commands::run_artifacts::artifact_retention_policy_for_base(app_local_data_dir);
+    crate::commands::run_artifacts::prune_old_options_validation_artifacts_in_dir_under_process_lock(
+        &runs_dir,
+        retention.options_expression_keep_newest,
+    );
     Ok(ValidateOptionsExpressionArtifactResponse {
         artifact_path: validation_artifact_path.to_string_lossy().to_string(),
         replay_build_ms,
@@ -2984,6 +3461,13 @@ fn validate_options_expression_artifact_blocking_impl(
         replay_build_timing: Some(replay.timing),
         result,
     })
+}
+
+pub fn validate_options_expression_artifact_blocking_headless(
+    req: OptionsExpressionValidationRequest,
+    app_local_data_dir: &std::path::Path,
+) -> Result<ValidateOptionsExpressionArtifactResponse, String> {
+    validate_options_expression_artifact_blocking_impl(req, app_local_data_dir, None)
 }
 
 fn analyze_options_expression_validation_feasibility_blocking_impl(
@@ -3054,6 +3538,13 @@ fn analyze_options_expression_validation_feasibility_blocking_impl(
     })
 }
 
+pub fn analyze_options_expression_validation_feasibility_blocking_headless(
+    req: OptionsExpressionValidationRequest,
+    app_local_data_dir: &std::path::Path,
+) -> Result<AnalyzeOptionsExpressionValidationFeasibilityResponse, String> {
+    analyze_options_expression_validation_feasibility_blocking_impl(req, app_local_data_dir)
+}
+
 pub fn save_options_csv_blocking_headless(
     req: SaveOptionsCsvRequest,
 ) -> Result<SaveOptionsCsvResponse, String> {
@@ -3100,18 +3591,7 @@ fn write_options_csv_to_path(
     output_path: &Path,
     csv_text: &str,
 ) -> Result<SaveOptionsCsvResponse, String> {
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "failed to create CSV output directory {}: {e}",
-                    parent.display()
-                )
-            })?;
-        }
-    }
-    std::fs::write(output_path, csv_text.as_bytes())
-        .map_err(|e| format!("failed to write CSV export {}: {e}", output_path.display()))?;
+    write_options_output_bytes_atomically(output_path, csv_text.as_bytes(), "options CSV export")?;
     Ok(SaveOptionsCsvResponse {
         path: output_path.to_string_lossy().to_string(),
         bytes: csv_text.as_bytes().len(),
@@ -3125,10 +3605,11 @@ pub async fn run_options_expression(
     app: tauri::AppHandle,
 ) -> Result<RunOptionsExpressionResponse, String> {
     let _run_guard = state.try_begin_run()?;
+    let cancel = state.cancel_token();
     tauri::async_runtime::spawn_blocking(move || {
         let _nvtx_scope = ta_app_core::nvtx::scope("engine", "tauri_options_expression_request");
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        run_options_expression_blocking_impl(req, &app_local_data_dir)
+        run_options_expression_blocking_impl(req, &app_local_data_dir, Some(cancel.as_ref()))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3156,11 +3637,16 @@ pub async fn validate_options_expression_artifact(
     app: tauri::AppHandle,
 ) -> Result<ValidateOptionsExpressionArtifactResponse, String> {
     let _run_guard = state.try_begin_run()?;
+    let cancel = state.cancel_token();
     tauri::async_runtime::spawn_blocking(move || {
         let _nvtx_scope =
             ta_app_core::nvtx::scope("engine", "tauri_options_expression_validation_request");
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        validate_options_expression_artifact_blocking_impl(req, &app_local_data_dir)
+        validate_options_expression_artifact_blocking_impl(
+            req,
+            &app_local_data_dir,
+            Some(cancel.as_ref()),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3405,6 +3891,58 @@ mod tests {
         let dir = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn options_artifact_path_suggestion_fails_closed_when_slots_are_exhausted() {
+        let base = temp_app_local_data_dir("artifact_path_slots");
+        let runs = runs_dir(&base).expect("runs dir");
+        std::fs::create_dir_all(&runs).expect("create runs dir");
+
+        for prefix in [
+            "vectorgrid_options_expression",
+            "vectorgrid_options_validation",
+        ] {
+            let timestamp = format!("2026-07-28-{prefix}");
+            let safe_timestamp = super::super::sanitize_filename_component(&timestamp);
+            let base_name = format!("{prefix}_{safe_timestamp}");
+            for suffix in [None, Some(2), Some(3)] {
+                let file_name = match suffix {
+                    None => format!("{base_name}.json"),
+                    Some(suffix) => format!("{base_name}_{suffix}.json"),
+                };
+                std::fs::write(runs.join(file_name), b"occupied").expect("occupy artifact slot");
+            }
+
+            let error = suggest_options_json_artifact_path_with_limit(&base, &timestamp, prefix, 3)
+                .expect_err("exhausted slots must not return an existing path");
+            assert!(
+                error.contains("no available options artifact filename slots"),
+                "unexpected error: {error}"
+            );
+        }
+
+        std::fs::remove_dir_all(base).expect("remove temp dir");
+    }
+
+    fn options_output_staging_siblings(target: &Path) -> Vec<PathBuf> {
+        let file_name = target
+            .file_name()
+            .expect("target file name")
+            .to_string_lossy();
+        let prefix = format!(".{file_name}.");
+        std::fs::read_dir(target.parent().expect("target parent"))
+            .expect("read target parent")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default();
+                name.starts_with(&prefix) && name.ends_with(".tmp")
+            })
+            .collect()
     }
 
     #[cfg(windows)]
@@ -3982,9 +4520,12 @@ mod tests {
     }
 
     #[test]
-    fn save_options_csv_blocking_headless_writes_the_requested_text() {
+    fn successful_options_output_csv_save_atomically_replaces_existing_target() {
         let temp_root = temp_app_local_data_dir("save_options_csv");
         let output_path = temp_root.join("exports").join("options_results.csv");
+        std::fs::create_dir_all(output_path.parent().expect("export parent"))
+            .expect("create export parent");
+        std::fs::write(&output_path, "old,valid\r\n").expect("write existing valid CSV");
         let req = SaveOptionsCsvRequest {
             path: output_path.to_string_lossy().to_string(),
             csv_text: "col_a,col_b\r\n1,2\r\n".to_string(),
@@ -3996,8 +4537,115 @@ mod tests {
         assert_eq!(response.bytes, "col_a,col_b\r\n1,2\r\n".len());
         let saved = std::fs::read_to_string(&output_path).expect("read saved csv");
         assert_eq!(saved, "col_a,col_b\r\n1,2\r\n");
+        assert!(options_output_staging_siblings(&output_path).is_empty());
 
         let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn cancelled_options_output_preserves_existing_target_and_cleans_staging() {
+        let temp_root = temp_app_local_data_dir("atomic_output_cancelled");
+        let output_path = temp_root.join("artifact.json");
+        std::fs::write(&output_path, b"{\"valid\":true}\n").expect("write existing artifact");
+
+        let error = write_options_output_with_publish(
+            &output_path,
+            "test artifact",
+            |writer| {
+                writer
+                    .write_all(b"{\"partial\":")
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(options_output_staging_siblings(&output_path).len(), 1);
+                Err("cancelled".to_string())
+            },
+            publish_options_output,
+        )
+        .expect_err("cancelled output must fail");
+
+        assert_eq!(error, "cancelled");
+        assert_eq!(
+            std::fs::read(&output_path).expect("read preserved artifact"),
+            b"{\"valid\":true}\n"
+        );
+        assert!(options_output_staging_siblings(&output_path).is_empty());
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn pre_cancelled_options_expression_phase_fails_closed() {
+        let cancel = AtomicBool::new(true);
+        let error = ensure_options_expression_not_cancelled(Some(&cancel), "artifact publication")
+            .expect_err("pre-cancelled phase must not continue");
+
+        assert_eq!(
+            error,
+            "options expression operation cancelled before artifact publication"
+        );
+    }
+
+    #[test]
+    fn failed_options_output_publish_preserves_existing_target_and_cleans_staging() {
+        let temp_root = temp_app_local_data_dir("atomic_output_publish_failure");
+        let output_path = temp_root.join("artifact.json");
+        std::fs::write(&output_path, b"{\"valid\":true}\n").expect("write existing artifact");
+
+        let error = write_options_output_with_publish(
+            &output_path,
+            "test artifact",
+            |writer| {
+                writer
+                    .write_all(b"{\"replacement\":true}\n")
+                    .map_err(|error| error.to_string())
+            },
+            |_staged_path, _final_path, _target_exists| {
+                Err("simulated publication failure".to_string())
+            },
+        )
+        .expect_err("publication must fail");
+
+        assert_eq!(error, "simulated publication failure");
+        assert_eq!(
+            std::fs::read(&output_path).expect("read preserved artifact"),
+            b"{\"valid\":true}\n"
+        );
+        assert!(options_output_staging_siblings(&output_path).is_empty());
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_options_output_replacement_preserves_existing_target_and_cleans_staging() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let temp_root = temp_app_local_data_dir("atomic_output_locked_target");
+        let output_path = temp_root.join("artifact.json");
+        let previous = b"{\"valid\":true}\n";
+        std::fs::write(&output_path, previous).expect("write existing artifact");
+        let locked_target = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&output_path)
+            .expect("open target without delete sharing");
+
+        let error = write_options_output_bytes_atomically(
+            &output_path,
+            b"{\"replacement\":true}\n",
+            "test artifact",
+        )
+        .expect_err("locked target must reject replacement");
+
+        assert!(error.contains("failed to atomically replace options output"));
+        assert_eq!(
+            std::fs::read(&output_path).expect("read preserved target"),
+            previous
+        );
+        assert!(options_output_staging_siblings(&output_path).is_empty());
+
+        drop(locked_target);
+        std::fs::remove_dir_all(temp_root).expect("remove test directory");
     }
 
     #[test]

@@ -3,6 +3,41 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationPriceAdjustmentState {
+    Adjusted,
+    Unadjusted,
+    NotApplicable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationRealismEvidenceStatus {
+    Documented,
+    NotApplicable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ValidationRealismContext {
+    #[serde(default)]
+    pub price_adjustment: ValidationPriceAdjustmentState,
+    #[serde(default)]
+    pub corporate_actions: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub survivorship_bias: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub liquidity_capacity: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub market_impact: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub borrow_availability: ValidationRealismEvidenceStatus,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ValidationArtifactContext {
     #[serde(default)]
@@ -13,6 +48,12 @@ pub struct ValidationArtifactContext {
     pub timeframe: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization_trials: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_distribution: Option<ta_optimizer::SearchDistributionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_realism: Option<ValidationRealismContext>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -687,7 +728,7 @@ pub struct EvidencePolicySummary {
     pub caveats: Vec<String>,
 }
 
-pub const VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION: &str = "1-0-0";
+pub const VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION: &str = "1-1-0";
 pub const VALIDATION_EVIDENCE_PACK_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -722,6 +763,51 @@ pub struct ValidationEvidenceDatasetV1 {
     pub timeframe: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default)]
+    pub data_realism: ValidationRealismEvidenceV1,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ValidationRealismEvidenceV1 {
+    #[serde(default)]
+    pub price_adjustment: ValidationPriceAdjustmentState,
+    #[serde(default)]
+    pub corporate_actions: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub survivorship_bias: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub liquidity_capacity: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub market_impact: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub borrow_availability: ValidationRealismEvidenceStatus,
+    #[serde(default)]
+    pub complete: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_or_unknown: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationPromotionEligibilityState {
+    Blocked,
+    #[default]
+    ResearchOnly,
+    EligibleForReview,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ValidationPromotionEligibilityV1 {
+    #[serde(default)]
+    pub eligible: bool,
+    #[serde(default)]
+    pub state: ValidationPromotionEligibilityState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates_passed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates_failed: Vec<String>,
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -756,6 +842,10 @@ pub struct ValidationEvidenceCandidateUniverseV1 {
     pub approved_candidates: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimization_trials: Option<usize>,
+    /// Comparable full-search Sharpe distribution used by probability metrics.
+    /// A supplied but incompatible distribution is intentionally omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_distribution: Option<ta_optimizer::SearchDistributionSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission_policy: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -848,6 +938,8 @@ pub struct ValidationEvidencePackV1 {
     pub route: ValidationEvidenceRouteV1,
     pub candidate_universe: ValidationEvidenceCandidateUniverseV1,
     pub verdict: ValidationEvidenceVerdictV1,
+    #[serde(default)]
+    pub promotion_eligibility: ValidationPromotionEligibilityV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<ValidationEvidenceMetricV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1083,6 +1175,23 @@ mod tests {
         assert_eq!(cfg.pct_min, 0.0);
         assert_eq!(cfg.pct_max, 0.0);
         assert_eq!(cfg.flip_bool_prob, 0.0);
+    }
+
+    #[test]
+    fn legacy_validation_metadata_defaults_missing_search_distribution_to_none() {
+        let context: ValidationArtifactContext =
+            serde_json::from_str(r#"{"strategy_kind":"DoubleMa","optimization_trials":42}"#)
+                .expect("deserialize legacy validation context");
+        let universe: ValidationEvidenceCandidateUniverseV1 =
+            serde_json::from_str(r#"{"source":"legacy","optimization_trials":42}"#)
+                .expect("deserialize legacy candidate universe");
+
+        assert!(context.search_distribution.is_none());
+        assert!(universe.search_distribution.is_none());
+        assert!(serde_json::to_value(ValidationArtifactContext::default())
+            .expect("serialize default validation context")
+            .get("search_distribution")
+            .is_none());
     }
 
     #[test]

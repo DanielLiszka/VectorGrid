@@ -970,6 +970,9 @@ fn main() -> Result<(), String> {
         csv_path: Some(cli.csv.to_string_lossy().to_string()),
         timeframe: None,
         label: None,
+        optimization_trials: None,
+        search_distribution: None,
+        data_realism: None,
     };
     let cross_cfg = make_cross_config(&cli);
     let cross_dataset_count = cross_cfg

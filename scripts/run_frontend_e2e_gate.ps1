@@ -10,6 +10,7 @@ param(
   [switch]$IncludeQaStatic,
   [switch]$IncludeQaReport,
   [switch]$IncludeUiPerfBudget,
+  [switch]$IncludeInteractionLatency,
   [switch]$IncludeExploratory
 )
 
@@ -80,6 +81,12 @@ try {
 
   if ($IncludeUiPerfBudget) {
     Invoke-Step "UI performance budget" { & npm.cmd --prefix web run perf:ui:budget }
+  }
+
+  if ($IncludeInteractionLatency) {
+    Invoke-Step "Scoped warm mocked-browser click-to-painted-stable latency" {
+      & powershell -File (Join-Path $repoRoot "scripts\run_frontend_interaction_latency.ps1")
+    }
   }
 
   if ($IncludeQaReport) {

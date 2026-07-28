@@ -10,15 +10,18 @@ param(
   [switch]$IncludeOptions,
   [switch]$IncludeSupport,
   [switch]$IncludeFrontendBudget,
+  [switch]$IncludeFrontendInteractionLatency,
   [switch]$AllowLocalBaselineCapture,
   [int]$GateTimeoutSec = 1800,
   [switch]$FailOnCoverageGap,
-  [switch]$FailOnActivePerfProcess
+  [switch]$FailOnActivePerfProcess,
+  [switch]$FailOnMissingReleaseBaseline
 )
 
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+. (Join-Path $PSScriptRoot "performance_audit_preflight.ps1")
 if ([string]::IsNullOrWhiteSpace($OutDir)) {
   $OutDir = Join-Path $RepoRoot ("output/performance_audit/{0}/authority_baseline_pack" -f (Get-Date).ToString("yyyy-MM-dd"))
 } elseif (-not [System.IO.Path]::IsPathRooted($OutDir)) {
@@ -161,19 +164,11 @@ function Get-GpuIdentity {
 }
 
 function Get-EnvironmentFingerprint {
-  $osCaption = ""
-  try {
-    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-    $osCaption = "$($os.Caption) $($os.Version)"
-  } catch {
-    $osCaption = [System.Environment]::OSVersion.VersionString
-  }
-
   return [ordered]@{
     timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
     host = [System.Environment]::MachineName
     user = [System.Environment]::UserName
-    os = $osCaption
+    os = [System.Environment]::OSVersion.VersionString
     arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
     powershell = $PSVersionTable.PSVersion.ToString()
     rustc = Get-ToolVersion -Command "rustc" -Arguments @("--version")
@@ -185,73 +180,11 @@ function Get-EnvironmentFingerprint {
 }
 
 function Get-PerfProcesses {
-  $patterns = @(
-    "cargo bench",
-    "criterion",
-    "nsys",
-    "ncu",
-    "compute-sanitizer",
-    "ta_workflow_regression",
-    "ta_double_ma_validation_cost",
-    "ta_campaign_perf",
-    "ta_perf_authority_support",
-    "ta_profile_route_matrix",
-    "ta_app_path_faceoff",
-    "profile_gpu_dynamic_runner",
-    "profile_doublema_campaign_prefetch",
-    "run_cpu_perf_gate.ps1",
-    "run_gpu_perf_gate.ps1",
-    "run_gpu_validation_perf_gate.ps1",
-    "run_gpu_followup_perf_gate.ps1",
-    "run_options_expression_gpu_promotion_gate.ps1",
-    "run_support_perf_gate.ps1",
-    "run_campaign_perf_gate.ps1",
-    "capture-baseline-ui.mjs",
-    "check-ui-perf-budget.mjs"
+  return @(
+    Get-VectorGridActivePerformanceProcesses `
+      -TimeoutMilliseconds 5000 `
+      -ExcludeProcessId @($PID)
   )
-
-  try {
-    $processes = Get-CimInstance Win32_Process
-    return @(
-      foreach ($p in $processes) {
-        if ([int]$p.ProcessId -eq [int]$PID) {
-          continue
-        }
-        $haystack = "$($p.Name) $($p.CommandLine)"
-        $matched = $false
-        foreach ($pattern in $patterns) {
-          if ($haystack -match [regex]::Escape($pattern)) {
-            $matched = $true
-            break
-          }
-        }
-        if ($matched) {
-          [ordered]@{
-            id = [int]$p.ProcessId
-            name = $p.Name
-            command_line = $p.CommandLine
-          }
-        }
-      }
-    )
-  } catch {
-    return @(
-      Get-Process | Where-Object {
-        $_.Id -ne $PID -and (
-          $_.ProcessName -match "^(cargo|criterion|nsys|ncu)$" -or
-          $_.ProcessName -like "ta_workflow_regression*" -or
-          $_.ProcessName -like "ta_double_ma_validation_cost*" -or
-          $_.ProcessName -like "ta_campaign_perf*"
-        )
-      } | ForEach-Object {
-        [ordered]@{
-          id = $_.Id
-          name = $_.ProcessName
-          command_line = ""
-        }
-      }
-    )
-  }
 }
 
 function Get-PathStatus {
@@ -338,6 +271,7 @@ function Build-CaseHealth {
         default_output = $outStatus
         script_missing = $scriptMissing
         baseline_missing = $baselineMissing
+        release_required_baseline = [bool]$case.release_required_baseline
         missing_automated_authority = $isMissingAuthority
         heavy = [bool]$case.heavy
         gpu_required = [bool]$case.gpu_required
@@ -674,6 +608,22 @@ function Get-GateRuns {
       -Notes "Budget check only; does not run baseline:ui capture."
   }
 
+  if ($IncludeFrontendInteractionLatency) {
+    $frontendInteractionOut = Join-Path $rawDir "frontend_interaction_latency_summary.json"
+    $runs += New-GateRun `
+      -Id "frontend_interaction_latency" `
+      -Command "powershell" `
+      -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", (Resolve-RepoPath "scripts/run_frontend_interaction_latency.ps1"),
+        "-OutPath", $frontendInteractionOut
+      ) `
+      -ExpectedOutput $frontendInteractionOut `
+      -BaselinePath (Resolve-RepoPath "scripts/frontend_interaction_latency_policy.json") `
+      -Notes "Scoped warm mocked-browser trusted click-to-painted-stable authority with fixed policy budgets; full/native latency remains outside this lane."
+  }
+
   return $runs
 }
 
@@ -779,6 +729,7 @@ function Write-MarkdownSummary {
   $lines += "- Tauri handlers covered: ``$($Coverage.registry_command_count)`` / ``$($Coverage.tauri_handler_count)``"
   $lines += "- Command modules covered: ``$($Coverage.registry_module_count)`` / ``$($Coverage.command_module_count)``"
   $lines += "- Missing authority actions: ``$(@($MissingAuthorityActions).Count)``"
+  $lines += "- Missing release-required baselines: ``$($Summary.release_baselines.missing_count)``"
   $lines += "- Active benchmark/profiler processes at inventory time: ``$(@($ActivePerfProcesses).Count)``"
   $lines += ""
   $lines += "## Coverage"
@@ -825,7 +776,7 @@ function Write-MarkdownSummary {
   $lines += ""
   $lines += "## Safe Next Commands"
   $lines += ""
-  $lines += "- Inventory with strict coverage: ``powershell -File scripts/run_performance_audit_baseline_pack.ps1 -FailOnCoverageGap``"
+  $lines += "- Strict inventory: ``powershell -File scripts/run_performance_audit_baseline_pack.ps1 -FailOnCoverageGap -FailOnActivePerfProcess -FailOnMissingReleaseBaseline``"
   $lines += "- GPU validation plans only: ``powershell -File scripts/run_performance_audit_baseline_pack.ps1 -Mode plan-only -IncludeGpuValidationHeavy``"
   $lines += "- Core candidate gate only: ``powershell -File scripts/run_performance_audit_baseline_pack.ps1 -Mode candidate``"
   $lines += "- CPU candidate pack: ``powershell -File scripts/run_performance_audit_baseline_pack.ps1 -Mode candidate -IncludeCpu``"
@@ -850,6 +801,8 @@ $coverage = Build-Coverage -Registry $registry
 $caseHealth = Build-CaseHealth -Registry $registry
 $workflowMatrix = Build-WorkflowMatrix -Registry $registry -CaseHealth $caseHealth
 $missingAuthorityActions = @(Build-MissingAuthorityActions -CaseHealth $caseHealth)
+$releaseBaselineHealth = @(Get-VectorGridReleaseBaselineHealth -Registry $registry -RepoRoot $RepoRoot)
+$missingReleaseBaselines = @($releaseBaselineHealth | Where-Object { -not $_.exists })
 $activePerfProcesses = @(Get-PerfProcesses)
 $environment = Get-EnvironmentFingerprint
 $git = Get-GitFingerprint
@@ -858,6 +811,14 @@ $runManifest = @()
 if ($FailOnActivePerfProcess -and $activePerfProcesses.Count -gt 0) {
   Write-JsonUtf8 -Path (Join-Path $OutDir "active_perf_processes.json") -Value $activePerfProcesses
   throw "Active benchmark/profiler processes were detected. See $((Join-Path $OutDir 'active_perf_processes.json'))."
+}
+
+if ($FailOnMissingReleaseBaseline -and $missingReleaseBaselines.Count -gt 0) {
+  Write-JsonUtf8 -Path (Join-Path $OutDir "release_baseline_health.json") -Value $releaseBaselineHealth
+  $missingSummary = ($missingReleaseBaselines | ForEach-Object {
+      "$($_.case_id) [$($_.path)]"
+    }) -join ", "
+  throw "Release-required performance baselines are missing: $missingSummary"
 }
 
 if ($Mode -ne "inventory" -and $activePerfProcesses.Count -gt 0) {
@@ -875,10 +836,26 @@ if ($Mode -ne "inventory") {
   $lock = Enter-BenchmarkLock -Context "performance audit baseline pack" -TimeoutSeconds 900
   try {
     foreach ($run in @(Get-GateRuns)) {
-      Write-Host "Running $($run.id): $($run.command_line)"
-      $runResult = Invoke-GateRun -Run $run
-      $runManifest += $runResult
-      Write-Host "$($run.id): $($runResult.status)"
+      $requiresDirectFrontendLock = "$($run.id)" -eq "frontend_interaction_latency"
+      if ($requiresDirectFrontendLock) {
+        if ($null -eq $lock -or -not [bool]$lock.acquired) {
+          throw "The performance audit pack cannot delegate inherited benchmark-lock authority to frontend_interaction_latency; run that authority directly."
+        }
+        Exit-BenchmarkLock -Handle $lock
+        $lock = $null
+      }
+      try {
+        Write-Host "Running $($run.id): $($run.command_line)"
+        $runResult = Invoke-GateRun -Run $run
+        $runManifest += $runResult
+        Write-Host "$($run.id): $($runResult.status)"
+      } finally {
+        if ($requiresDirectFrontendLock) {
+          $lock = Enter-BenchmarkLock `
+            -Context "performance audit baseline pack" `
+            -TimeoutSeconds 900
+        }
+      }
       if ($runResult.status -ne "passed") {
         break
       }
@@ -911,6 +888,10 @@ $summary = [ordered]@{
   }
   workflow_matrix = $workflowMatrix
   missing_authority_action_count = @($missingAuthorityActions).Count
+  release_baselines = [ordered]@{
+    required_count = $releaseBaselineHealth.Count
+    missing_count = $missingReleaseBaselines.Count
+  }
   active_perf_process_count = @($activePerfProcesses).Count
   gate_run_count = @($runManifest).Count
   gate_fail_count = @($runManifest | Where-Object { $_.status -ne "passed" }).Count
@@ -921,6 +902,7 @@ Write-JsonUtf8 -Path (Join-Path $OutDir "command_surface_coverage.json") -Value 
 Write-JsonUtf8 -Path (Join-Path $OutDir "case_health.json") -Value $caseHealth
 Write-JsonUtf8 -Path (Join-Path $OutDir "workflow_matrix.json") -Value $workflowMatrix
 Write-JsonUtf8 -Path (Join-Path $OutDir "missing_authority_actions.json") -Value $missingAuthorityActions
+Write-JsonUtf8 -Path (Join-Path $OutDir "release_baseline_health.json") -Value $releaseBaselineHealth
 Write-JsonUtf8 -Path (Join-Path $OutDir "active_perf_processes.json") -Value $activePerfProcesses
 Write-JsonUtf8 -Path (Join-Path $OutDir "gate_run_manifest.json") -Value $runManifest
 Write-JsonUtf8 -Path (Join-Path $OutDir "summary.json") -Value $summary

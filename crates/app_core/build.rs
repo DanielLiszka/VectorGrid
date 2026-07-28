@@ -350,8 +350,8 @@ fn resolve_cuda_arch() -> String {
         if t.starts_with("compute_") {
             return t;
         }
-        if t.starts_with("sm_") {
-            return format!("compute_{}", &t[3..]);
+        if let Some(architecture) = t.strip_prefix("sm_") {
+            return format!("compute_{architecture}");
         }
         let digits = if t.contains('.') {
             t.replace('.', "")

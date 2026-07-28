@@ -655,7 +655,13 @@ describe("OptionsExpressionPanel", () => {
     );
     expect(wrapper.text()).toContain("Dataset manifest");
     expect(wrapper.text()).toContain("options_business");
-    expect(wrapper.text()).toContain("C:/datasets/spy_options");
+    expect(
+      wrapper
+        .find(
+          '[aria-label="Dataset path: C:/datasets/spy_options"]',
+        )
+        .attributes("title"),
+    ).toBe("C:/datasets/spy_options");
     expect(wrapper.text()).toContain("spy_options");
     expect(wrapper.text()).toContain(
       "polygon.io | minute_aggregate | 1m | close | 2026-04-05T00:00:00Z",
@@ -723,6 +729,119 @@ describe("OptionsExpressionPanel", () => {
     expect(useOptionsExpressionStore().splitAssignmentMode).toBe(
       "event_chronological",
     );
+  });
+
+  it("compacts path and hash evidence while preserving full values and dataset reveal behavior", async () => {
+    const datasetPath =
+      "C:/research/options/datasets/2026/snapshots/selected_dataset_bundle";
+    const underlyingCsvPath =
+      "C:/cache/polygon/underliers/2026/polygon_stocks_raw_SPY_1m.csv";
+    const rowsHash =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const manifestHash =
+      "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    const runDatasetHash =
+      "a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718";
+    const dataset = {
+      version: 1,
+      optionsDatasetId: "spy_options",
+      rootSymbol: "SPY",
+      providerName: "polygon.io",
+      providerSourceSurface: "minute_aggregate",
+      providerEntitlementProfile: "options_business",
+      quoteResolution: "1m",
+      priceSemantics: "minute_aggregate",
+      calendarId: "market_hours_utc",
+      timezone: "UTC",
+      coverageStart: 1_700_000_000_000,
+      coverageEnd: 1_700_000_120_000,
+      normalizationVersion: 1,
+      quoteSemanticsVersion: 1,
+      corporateActionMappingVersion: 1,
+      contractReferenceSource: "polygon_contract_reference",
+      contractReferenceAsOfUtc: "2026-04-05T00:00:00Z",
+      underlierReferenceSource: "underlying_dataset",
+      datasetPath,
+      contractCount: 3,
+      rowCount: 42,
+      aggregatePriceField: "close",
+      normalizedRowsSha256: rowsHash,
+      manifestSemanticSha256: manifestHash,
+    };
+    listOptionsDatasetsMock.mockResolvedValue([dataset]);
+    listOptionsExpressionArtifactsMock.mockResolvedValue([]);
+    revealOptionsPathMock.mockResolvedValue({
+      path: datasetPath,
+      openedWith: "reveal_path",
+    });
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: "C:/runs/vectorgrid_run_1.json",
+        parentStrategyKind: "DoubleMa",
+        parentDatasetLabel: "SPY.csv",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1);
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1);
+    });
+
+    const store = useOptionsExpressionStore();
+    store.latestDatasetDownload = {
+      manifest: dataset,
+      contractsDiscovered: 3,
+      contractsSelected: 3,
+      contractsWithRows: 3,
+      downloadedOptionRows: 42,
+      skippedContracts: 0,
+      underlyingCsvPath,
+      usedUnderlyingCacheOnly: true,
+    };
+    store.latestRun = makeRunSummary({
+      optionsDatasetHash: runDatasetHash,
+      request: makeArtifactRecord().request,
+    });
+    await wrapper.vm.$nextTick();
+
+    const evidenceValues = wrapper.findAll(".compactEvidenceText");
+    const findEvidence = (label: string, value: string) => {
+      const evidence = evidenceValues.find(
+        (entry) => entry.attributes("aria-label") === `${label}: ${value}`,
+      );
+      expect(evidence).toBeDefined();
+      expect(evidence!.attributes("title")).toBe(value);
+      return evidence!;
+    };
+
+    expect(findEvidence("Dataset path", datasetPath).text()).toBe(
+      "selected_dataset_bundle",
+    );
+    expect(findEvidence("Rows SHA-256", rowsHash).text()).toBe(
+      "0123456789…abcdef",
+    );
+    expect(findEvidence("Manifest SHA-256", manifestHash).text()).toBe(
+      "fedcba9876…543210",
+    );
+    expect(findEvidence("Underlying CSV", underlyingCsvPath).text()).toBe(
+      "polygon_stocks_raw_SPY_1m.csv",
+    );
+    expect(findEvidence("Dataset hash", runDatasetHash).text()).toBe(
+      "a1b2c3d4e5…f60718",
+    );
+    expect(wrapper.text()).not.toContain(rowsHash);
+    expect(wrapper.text()).not.toContain(manifestHash);
+    expect(wrapper.text()).not.toContain(runDatasetHash);
+
+    const revealButtons = wrapper.findAll(
+      '[data-qa-action="options.datasets.revealSelected"]',
+    );
+    expect(revealButtons).toHaveLength(1);
+    await revealButtons[0]!.trigger("click");
+    await vi.waitFor(() => {
+      expect(revealOptionsPathMock).toHaveBeenCalledWith(datasetPath);
+    });
   });
 
   it("shows validation plan controls for date-range and walk-forward modes", async () => {
@@ -1144,7 +1263,14 @@ describe("OptionsExpressionPanel", () => {
     );
     expect(wrapper.text()).toContain("Latest download audit");
     expect(wrapper.text()).toContain("cache-only reuse");
-    expect(wrapper.text()).toContain("C:/cache/polygon_stocks_raw_SPY_1m.csv");
+    expect(
+      wrapper
+        .find(
+          '[aria-label="Underlying CSV: C:/cache/polygon_stocks_raw_SPY_1m.csv"]',
+        )
+        .attributes("title"),
+    ).toBe("C:/cache/polygon_stocks_raw_SPY_1m.csv");
+    expect(wrapper.text()).toContain("polygon_stocks_raw_SPY_1m.csv");
   });
 
   it("boots once the parent strategy becomes a supported double-like family after mount", async () => {
@@ -2353,7 +2479,10 @@ describe("OptionsExpressionPanel", () => {
       ".resultCard > .tableWrap .resultTable tbody tr",
     );
     expect(rows).toHaveLength(2);
-    expect(rows[0]?.attributes("tabindex")).toBe("0");
+    expect(rows.filter((entry) => entry.attributes("tabindex") === "0")).toHaveLength(1);
+    expect(
+      rows.find((entry) => entry.attributes("aria-selected") === "true")?.attributes("tabindex"),
+    ).toBe("0");
     expect(rows.some((entry) => entry.attributes("aria-selected") === "true")).toBe(
       true,
     );
@@ -2361,6 +2490,9 @@ describe("OptionsExpressionPanel", () => {
     expect(promotedRow).toBeTruthy();
     expect(promotedRow?.attributes("aria-label")).toContain("Select tuple #2");
     await promotedRow!.trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(promotedRow?.attributes("tabindex")).toBe("0");
+    expect(rows.filter((entry) => entry.attributes("tabindex") === "0")).toHaveLength(1);
     await wrapper.vm.$nextTick();
 
     await vi.waitFor(() => {
@@ -2375,6 +2507,11 @@ describe("OptionsExpressionPanel", () => {
     await wrapper.vm.$nextTick();
     expect(wrapper.text()).toContain("fixed_hold_or_target_stop");
     expect(wrapper.text()).toContain("aggregate_research");
+    await originalRow!.trigger("keydown", {
+      key: originalRow!.element === rows[0]?.element ? "ArrowDown" : "ArrowUp",
+    });
+    await wrapper.vm.$nextTick();
+    expect(promotedRow?.attributes("aria-selected")).toBe("true");
   });
 
   it("surfaces explicit validation verdicts for selected tuples", async () => {
@@ -4122,6 +4259,7 @@ describe("OptionsExpressionPanel", () => {
     const inspectionRows = wrapper.findAll(".inspectionTable tbody tr");
     expect(inspectionRows).toHaveLength(2);
     expect(inspectionRows[0]?.attributes("tabindex")).toBe("0");
+    expect(inspectionRows[1]?.attributes("tabindex")).toBe("-1");
     expect(inspectionRows[0]?.attributes("aria-selected")).toBe("true");
     expect(inspectionRows[1]?.attributes("aria-label")).toBe(
       "Select inspection event event-2",
@@ -4133,6 +4271,10 @@ describe("OptionsExpressionPanel", () => {
       "candidate_missing / no_expiration_in_bucket",
     );
     expect(wrapper.text()).not.toContain("Event path replay");
+
+    await inspectionRows[0]!.trigger("keydown", { key: "ArrowDown" });
+    await wrapper.vm.$nextTick();
+    expect(inspectionRows[1]?.attributes("aria-selected")).toBe("true");
 
     await inspectionRows[0]!.trigger("keydown", { key: " " });
     await wrapper.vm.$nextTick();

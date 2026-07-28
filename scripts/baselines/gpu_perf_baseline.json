@@ -1,0 +1,85 @@
+﻿{
+    "schema_version":  1,
+    "case_registry_version":  1,
+    "generated_at_utc":  "2026-04-02T15:24:56.0127948Z",
+    "mode":  "baseline",
+    "environment":  {
+                        "hostname":  "LISZKA",
+                        "os":  "Microsoft Windows NT 10.0.26200.0",
+                        "architecture":  "X64",
+                        "powershell_edition":  "Desktop",
+                        "powershell_version":  "5.1.26100.7462"
+                    },
+    "gpu":  "NVIDIA GeForce RTX 4090, 595.71",
+    "gpu_info":  {
+                     "name":  "NVIDIA GeForce RTX 4090",
+                     "driver_version":  "595.71",
+                     "raw":  "NVIDIA GeForce RTX 4090, 595.71"
+                 },
+    "criterion":  {
+                      "id":  "gpu_sma_small",
+                      "schema_version":  1,
+                      "timing_boundary":  "Criterion",
+                      "timing_boundary_note":  "Criterion bench profile estimate for a single deterministic GPU-kernel optimization case.",
+                      "build_profile":  "bench",
+                      "bench_filter":  "double_ma/gpu_kernel/sma_sma/200k/small",
+                      "estimates_json":  "target/criterion/double_ma_gpu_kernel_sma_sma_200k/small_1590pairs/new/estimates.json",
+                      "mean_ms":  70.640588,
+                      "mean_ci_lower_ms":  70.439481,
+                      "mean_ci_upper_ms":  70.82457,
+                      "median_ms":  70.684516
+                  },
+    "criterion_cases":  [
+                            {
+                                "id":  "gpu_sma_small",
+                                "schema_version":  1,
+                                "timing_boundary":  "Criterion",
+                                "timing_boundary_note":  "Criterion bench profile estimate for a single deterministic GPU-kernel optimization case.",
+                                "build_profile":  "bench",
+                                "bench_filter":  "double_ma/gpu_kernel/sma_sma/200k/small",
+                                "estimates_json":  "target/criterion/double_ma_gpu_kernel_sma_sma_200k/small_1590pairs/new/estimates.json",
+                                "mean_ms":  70.640588,
+                                "mean_ci_lower_ms":  70.439481,
+                                "mean_ci_upper_ms":  70.82457,
+                                "median_ms":  70.684516
+                            },
+                            {
+                                "id":  "gpu_alma_large",
+                                "schema_version":  1,
+                                "timing_boundary":  "Criterion",
+                                "timing_boundary_note":  "Criterion bench profile estimate for a single deterministic GPU-kernel optimization case.",
+                                "build_profile":  "bench",
+                                "bench_filter":  "double_ma/gpu_kernel/alma_alma/200k/large",
+                                "estimates_json":  "target/criterion/double_ma_gpu_kernel_alma_alma_200k/large_58300pairs/new/estimates.json",
+                                "mean_ms":  85.373831,
+                                "mean_ci_lower_ms":  85.343746,
+                                "mean_ci_upper_ms":  85.404883,
+                                "median_ms":  85.371754
+                            }
+                        ],
+    "bench_filter":  "double_ma/gpu_kernel/sma_sma/200k/small",
+    "criterion_estimates_json":  "target/criterion/double_ma_gpu_kernel_sma_sma_200k/small_1590pairs/new/estimates.json",
+    "criterion_mean_ms":  70.640588,
+    "criterion_mean_ci_lower_ms":  70.439481,
+    "criterion_mean_ci_upper_ms":  70.82457,
+    "criterion_median_ms":  70.684516,
+    "dynamic_strategy":  {
+                             "checked":  true,
+                             "schema_version":  1,
+                             "timing_boundary":  "RunnerSteadyStateWallClock",
+                             "timing_boundary_note":  "Release-built profile_gpu_dynamic_runner steady-state wall-clock ratio between dynamic-strategy off and on runs.",
+                             "build_profile":  "release",
+                             "method":  "profile_gpu_dynamic_runner_steady_state",
+                             "runner":  "profile_gpu_dynamic_runner",
+                             "device_id":  0,
+                             "iterations":  5,
+                             "steady_state_iterations":  4,
+                             "off_first_wall_ms":  87,
+                             "on_first_wall_ms":  135,
+                             "off_mean_ms":  67.5,
+                             "on_mean_ms":  65.25,
+                             "off_runtime_ms":  67.5,
+                             "on_runtime_ms":  65,
+                             "ratio_on_over_off":  0.966667
+                         }
+}

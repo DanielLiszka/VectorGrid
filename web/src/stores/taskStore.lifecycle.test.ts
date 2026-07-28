@@ -126,6 +126,7 @@ describe('task-store lifecycle smoke', () => {
     expect(store.history[0]).toMatchObject({
       command: 'run_meta_selection',
       status: 'failed',
+      message: 'Failed. Open Details for technical information.',
     })
     expect(store.history[1]).toMatchObject({
       command: 'run_double_ma_validation',
@@ -153,6 +154,18 @@ describe('task-store lifecycle smoke', () => {
     expect(serialized).toContain('[redacted]')
     expect(serialized).not.toContain('poly_secret_123')
     expect(serialized).not.toContain('abcdefghijkl')
+  })
+
+  it('deduplicates repeated failure toasts for the same command', () => {
+    const firstId = beginTrackedCommand('run_meta_selection')
+    failTrackedCommand(firstId, new Error('same failure'))
+    const secondId = beginTrackedCommand('run_meta_selection')
+    failTrackedCommand(secondId, new Error('same failure'))
+
+    const store = useTaskStore(pinia)
+    expect(
+      store.toasts.filter((toast) => toast.source === 'run_meta_selection'),
+    ).toHaveLength(1)
   })
 
   it('keeps posture counts coherent across queued, cancelling, and terminal tasks', async () => {
@@ -256,10 +269,67 @@ describe('task-store lifecycle smoke', () => {
     expect(store.toasts).toEqual([])
   })
 
+  it('ignores malformed persisted entries without breaking task-center hydration', () => {
+    const validHistory = makeCompletedTask('valid_history', 'success')
+    globalThis.window.localStorage.setItem(
+      TASK_TIMELINE_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        history: [null, 'bad', { id: 'missing_fields' }, validHistory],
+        events: [
+          null,
+          { id: 'bad_event', message: null },
+          {
+            id: 'valid_event',
+            atUnixMs: 1_700_000_000_000,
+            source: 'run_double_ma_optimization',
+            message: 'Recovered event.',
+            level: 'info',
+          },
+        ],
+        timeline: [
+          42,
+          {
+            id: 'valid_timeline',
+            atUnixMs: 1_700_000_000_000,
+            source: 'run_double_ma_optimization',
+            phase: 'complete',
+            message: 'Recovered timeline.',
+            level: 'success',
+          },
+        ],
+        toasts: [
+          null,
+          { id: 'bad_toast', atUnixMs: 'now' },
+          {
+            id: 'valid_toast',
+            atUnixMs: Date.now(),
+            source: 'run_double_ma_optimization',
+            message: 'Recovered toast.',
+            level: 'warn',
+          },
+        ],
+      }),
+    )
+
+    resetTaskStoreForTests()
+    const store = useTaskStore(pinia)
+    expect(() => hydrateTaskCenterForTests()).not.toThrow()
+
+    expect(store.history.map((task) => task.id)).toEqual(['valid_history'])
+    expect(store.events.map((event) => event.id)).toEqual(['valid_event'])
+    expect(store.timeline.map((event) => event.id)).toEqual(['valid_timeline'])
+    expect(store.toasts.map((toast) => toast.id)).toEqual(['valid_toast'])
+    expect(store.centerStatus).toBe('success')
+  })
+
   it('persists toast additions and dismissals in the bounded task-center payload', async () => {
     vi.useFakeTimers()
     try {
       for (let index = 0; index < 9; index += 1) {
+        // Keep these outside the duplicate-suppression window so this case
+        // continues to exercise the persisted toast bound itself.
+        vi.setSystemTime(new Date(1_700_000_000_000 + index * 6_000))
         const taskId = beginTrackedCommand('run_double_ma_optimization')
         completeTrackedCommand(taskId)
       }

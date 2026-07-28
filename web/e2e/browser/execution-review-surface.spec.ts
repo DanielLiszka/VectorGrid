@@ -172,7 +172,10 @@ test.describe('browser execution review surface', () => {
     await expect(page.getByText('sess_latest').first()).toBeVisible()
     await expect(page.getByText('submitted buy order').first()).toBeVisible()
     await expect(page.getByText('get_live_execution_snapshot').first()).toBeVisible()
-    await expect(page.getByText('C:/runs/vectorgrid_run_2026-04-12.json').first()).toBeVisible()
+    const sourceRunPath = 'C:/runs/vectorgrid_run_2026-04-12.json'
+    const sourceRunEvidence = page.getByLabel(`Source run: ${sourceRunPath}`)
+    await expect(sourceRunEvidence).toHaveText('vectorgrid_run_2026-04-12.json')
+    await expect(sourceRunEvidence).toHaveAttribute('title', sourceRunPath)
   })
 
   test('shows the live safety matrix and broker-facing confirmation copy', async ({ context, page }) => {

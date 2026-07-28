@@ -837,7 +837,7 @@ const stage3ScoreContractSummary = computed(() => {
 });
 
 const stage3EvidenceContractSummary = computed(() => {
-  return "Evidence flags remain warnings, not hard gates. After holdout runs, flags are refreshed on the holdout-enriched group state. Workbook output is score-first, so JSON and saved artifact detail remain the strongest evidence surface.";
+  return "Evidence flags remain warnings, not hard gates. Statistical validation approval is not deployability or deployment approval. Promotion stays blocked unless the validation evidence pack reports complete dataset realism and eligible_for_review; fee/slippage stress alone is not liquidity/capacity or market-impact evidence. After holdout runs, flags are refreshed on the holdout-enriched group state. Workbook output is score-first, so JSON and saved artifact detail remain the strongest evidence surface.";
 });
 
 const metaMlWarningText = computed(() => {
@@ -1650,7 +1650,8 @@ onBeforeUnmount(() => {
           <h2 class="panelTitle">Meta Analysis</h2>
           <div class="panelSubtitle">
             Group saved runs, generate meta artifacts, review saved aggregate
-            outputs, and compare baselines before promotion.
+            outputs, and compare baselines before research promotion review.
+            Meta decisions are not deployment approval.
           </div>
         </div>
         <div class="panelMeta mono panelNumeric">

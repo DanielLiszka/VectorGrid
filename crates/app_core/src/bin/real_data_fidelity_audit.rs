@@ -831,6 +831,9 @@ fn run_validation_with_preset(
             csv_path: None,
             timeframe: Some(timeframe.to_string()),
             label: Some(label.to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         }),
     };
     run_double_ma_validation_blocking_with_candles(req, candles, cancel, None)
@@ -1794,6 +1797,8 @@ mod tests {
                 base_ranker: None,
                 rerank_operator: None,
                 heatmap_semantics: None,
+                search_distribution: None,
+                search_distribution_unavailable_reason: None,
             }),
         }
     }

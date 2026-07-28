@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
-import { ListTodo, SlidersHorizontal, X } from "@lucide/vue";
+import { ListTodo, PanelRightOpen, SlidersHorizontal, X } from "@lucide/vue";
 import {
   TASK_CENTER_PANEL_ID,
   openTaskCenter as requestTaskCenterOpen,
@@ -27,7 +27,6 @@ import {
   type WorkbenchInspectorMode,
 } from "../../utils/inspectorModel";
 import { storeErrorText } from "../../utils/storeErrorText";
-import { resolveWorkbenchPrimaryAction } from "../../utils/workbenchActionModel";
 import {
   buildWorkbenchNavigationState,
   workbenchWorkspaceLabel,
@@ -64,24 +63,16 @@ const {
   workflowSubtitle,
 } = storeToRefs(workflowStore);
 const { controlsCollapsed } = storeToRefs(settingsStore);
-const { dataId, dataLen, dataTimeframe, datasetLabel, datasetRange } =
+const { dataLen, dataTimeframe, datasetLabel, datasetRange } =
   storeToRefs(dataStore);
 const {
   backend,
-  canCancel,
   gpuStatus,
-  mlSignalDatasetExportPath,
-  mlSignalModelBundleId,
-  mlSignalScoreCachePath,
-  mlSignalScoreInputPath,
-  mlSignalScoreSource,
   objective,
   pairsPreview,
   progressMeta,
-  runDisabled,
   runReadinessHint,
   strategyKind,
-  validateDisabled,
 } = storeToRefs(optimizeStore);
 const { bestMeta, selectedTopSummary, selectedTopTitle } =
   storeToRefs(analysisStore);
@@ -93,7 +84,6 @@ const {
   statusLine: validationStatusLine,
   tableRowCount,
   updatedAtUnixMs: validationUpdatedAtUnixMs,
-  validationHint,
   validationAccelerationStatus,
   validationMeta,
   validationOutputPreview,
@@ -124,8 +114,29 @@ const { datasetReady, hasOptimizationResults, validationStage } =
   useUiReadiness();
 
 const inspectorCollapsed = ref(false);
+const compactInspector = ref(false);
+const compactInspectorOpen = ref(false);
 const requestedInspectorMode = ref<WorkbenchInspectorMode | "">("");
 const advancedDrawerOpen = ref(false);
+let compactInspectorQuery: MediaQueryList | null = null;
+
+function syncCompactInspector(event?: MediaQueryListEvent): void {
+  const matches = event?.matches ?? compactInspectorQuery?.matches ?? false;
+  compactInspector.value = matches;
+  if (!matches) compactInspectorOpen.value = false;
+}
+
+onMounted(() => {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  compactInspectorQuery = window.matchMedia("(max-width: 1180px)");
+  syncCompactInspector();
+  compactInspectorQuery.addEventListener("change", syncCompactInspector);
+});
+
+onBeforeUnmount(() => {
+  compactInspectorQuery?.removeEventListener("change", syncCompactInspector);
+  compactInspectorQuery = null;
+});
 
 const modeItems = [
   {
@@ -279,27 +290,6 @@ const dataContextLabel = computed(() => {
     .filter(Boolean)
     .join(" · ");
 });
-const primaryActionPreview = computed(() =>
-  resolveWorkbenchPrimaryAction({
-    canCancel: canCancel.value,
-    mode: currentMode.value,
-    workflowStep: currentWorkflowStep.value,
-    dataLoaded:
-      datasetReady.value || String(dataId.value || "").trim().length > 0,
-    hasOptimizationResults: hasOptimizationResults.value,
-    runDisabled: runDisabled.value,
-    validateDisabled: validateDisabled.value,
-    runReadinessHint: runReadinessHint.value,
-    validationHint: validationHint.value,
-    validationStage: validationStage.value,
-    workspace: currentWorkspace.value,
-    mlSignalDatasetExportPath: mlSignalDatasetExportPath.value,
-    mlSignalModelBundleId: mlSignalModelBundleId.value,
-    mlSignalScoreInputPath: mlSignalScoreInputPath.value,
-    mlSignalScoreCachePath: mlSignalScoreCachePath.value,
-    mlSignalScoreSource: mlSignalScoreSource.value,
-  }),
-);
 const validationCompatibilityPreview = computed(() => {
   void dataStore.updatedAtUnixMs;
   void validationUpdatedAtUnixMs.value;
@@ -332,13 +322,17 @@ const inspectorState = computed(() =>
     datasetLabel: dataContextLabel.value,
     strategyLabel: strategyContextLabel.value,
     backendLabel: backendContextLabel.value,
-    selectedCandidateTitle: selectedTopTitle.value,
-    selectedCandidateSummary: String(
-      selectedTopSummary.value || bestMeta.value || "",
-    ).trim(),
+    selectedCandidateTitle: hasOptimizationResults.value
+      ? selectedTopTitle.value
+      : "No candidate",
+    selectedCandidateSummary: hasOptimizationResults.value
+      ? String(selectedTopSummary.value || bestMeta.value || "").trim()
+      : "Run optimization for the active dataset.",
     status: String(
       progressMeta.value ||
-        runReadinessHint.value ||
+        (datasetReady.value && !hasOptimizationResults.value
+          ? "Ready to configure and run optimization."
+          : runReadinessHint.value) ||
         centerStatusLabel.value ||
         "",
     ).trim(),
@@ -497,7 +491,7 @@ const advancedDrawerActions = computed<AdvancedDrawerAction[]>(() => {
   const strategyDetail = strategyContextLabel.value || "No strategy";
   const backendDetail = backendContextLabel.value || "Backend route";
   const metaDetail = String(validationMeta.value || validationStage.value || "Meta and final evidence").trim();
-  const libraryDetail = savedRunsMeta.value || "Saved runs";
+  const libraryDetail = `Saved-run catalog · ${savedRunsMeta.value || "not refreshed"}`;
   const diagnosticsDetail = gpuStatus.value || "Operator tools";
 
   const strategyAction: AdvancedDrawerAction = {
@@ -551,6 +545,15 @@ const advancedDrawerActions = computed<AdvancedDrawerAction[]>(() => {
 
 function toggleInspector(): void {
   inspectorCollapsed.value = !inspectorCollapsed.value;
+}
+
+function openCompactInspector(): void {
+  inspectorCollapsed.value = false;
+  compactInspectorOpen.value = true;
+}
+
+function closeCompactInspector(): void {
+  compactInspectorOpen.value = false;
 }
 
 function selectInspectorMode(mode: WorkbenchInspectorMode): void {
@@ -750,17 +753,12 @@ function onResultsKeydown(
           >
             <span class="contextChip mono">{{ navState.modeLabel }}</span>
             <span class="contextChip mono">{{ dataContextLabel }}</span>
-            <span
-              class="contextChip mono"
-              :class="{ blocked: primaryActionPreview.disabled }"
-            >
-              {{ primaryActionPreview.label }}
-            </span>
           </div>
         </div>
 
         <div class="toolbarRow">
           <div
+            v-if="currentWorkspace === 'workflow'"
             id="modeBar"
             class="segmentedBar"
             role="tablist"
@@ -797,6 +795,20 @@ function onResultsKeydown(
           >
             <SlidersHorizontal aria-hidden="true" />
             <span>Advanced</span>
+          </button>
+
+          <button
+            v-if="compactInspector"
+            type="button"
+            class="compactInspectorButton"
+            :class="{ open: compactInspectorOpen }"
+            aria-controls="workbenchInspector"
+            :aria-expanded="compactInspectorOpen ? 'true' : 'false'"
+            data-qa-action="workbench.inspector.compactOpen"
+            @click="openCompactInspector"
+          >
+            <PanelRightOpen aria-hidden="true" />
+            <span>Inspector</span>
           </button>
 
           <button
@@ -1013,6 +1025,7 @@ function onResultsKeydown(
             v-show="resultsColumnVisible"
             class="workbenchLane resultsLane"
             aria-label="Results pane"
+            tabindex="0"
           >
             <div
               v-if="resultsTabsVisible"
@@ -1307,10 +1320,21 @@ function onResultsKeydown(
       </main>
     </div>
 
+    <div
+      v-if="compactInspector && compactInspectorOpen"
+      class="compactInspectorBackdrop"
+      aria-hidden="true"
+      @click="closeCompactInspector"
+    ></div>
+
     <WorkbenchInspector
+      id="workbenchInspector"
       :state="inspectorState"
       :collapsed="inspectorCollapsed"
+      :compact="compactInspector"
+      :compact-open="compactInspectorOpen"
       @toggle="toggleInspector"
+      @close-compact="closeCompactInspector"
       @select-mode="selectInspectorMode"
       @run-action="runInspectorAction"
     />
@@ -1408,7 +1432,7 @@ function onResultsKeydown(
 }
 
 .eyebrow {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1430,7 +1454,7 @@ function onResultsKeydown(
   background: color-mix(in oklab, var(--surface-working) 92%, var(--panel));
   color: var(--muted-strong);
   padding: 0.22rem 0.46rem;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
@@ -1479,7 +1503,7 @@ function onResultsKeydown(
   background: transparent;
   color: var(--muted);
   font-weight: 650;
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   line-height: 1.16;
   padding: 0.32rem 0.52rem;
   white-space: nowrap;
@@ -1515,7 +1539,8 @@ function onResultsKeydown(
 }
 
 .taskLauncher,
-.advancedDrawerButton {
+.advancedDrawerButton,
+.compactInspectorButton {
   margin-left: auto;
   min-width: 0;
   min-height: 34px;
@@ -1527,12 +1552,14 @@ function onResultsKeydown(
   color: var(--muted-strong);
 }
 
-.advancedDrawerButton {
+.advancedDrawerButton,
+.compactInspectorButton {
   margin-left: 0;
 }
 
 .taskLauncher svg,
 .advancedDrawerButton svg,
+.compactInspectorButton svg,
 .iconOnlyButton svg {
   width: 1rem;
   height: 1rem;
@@ -1540,7 +1567,8 @@ function onResultsKeydown(
 
 .taskLauncher.active,
 .taskLauncher.open,
-.advancedDrawerButton.open {
+.advancedDrawerButton.open,
+.compactInspectorButton.open {
   color: var(--text);
   border-color: color-mix(in oklab, var(--panel-focus-edge) 72%, var(--border));
   background: color-mix(
@@ -1550,13 +1578,17 @@ function onResultsKeydown(
   );
 }
 
-.workbenchMain {
+.workbenchContent > .workbenchMain {
   position: relative;
   min-width: 0;
   min-height: 0;
+  padding: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  grid-template-columns: none;
+  gap: 0;
+  align-items: stretch;
 }
 
 .advancedDrawer {
@@ -1594,7 +1626,7 @@ function onResultsKeydown(
   margin: 0.26rem 0 0;
   max-width: 46ch;
   color: var(--muted-strong);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   line-height: 1.34;
 }
 
@@ -1633,7 +1665,7 @@ function onResultsKeydown(
 }
 
 .advancedDrawerAction span {
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   font-weight: 760;
   line-height: 1.2;
 }
@@ -1641,7 +1673,7 @@ function onResultsKeydown(
 .advancedDrawerAction strong {
   min-width: 0;
   color: var(--muted-strong);
-  font-size: 0.69rem;
+  font-size: var(--text-xs);
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
@@ -1763,7 +1795,7 @@ function onResultsKeydown(
 }
 
 .liveSupportGrid span {
-  font-size: 0.66rem;
+  font-size: var(--text-xs);
   letter-spacing: 0.08em;
   color: var(--muted);
   text-transform: uppercase;
@@ -1771,7 +1803,7 @@ function onResultsKeydown(
 
 .liveSupportGrid strong {
   min-width: 0;
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
@@ -1808,6 +1840,18 @@ function onResultsKeydown(
   .workbenchRoot :deep(.workbenchActionBar) {
     grid-column: 2;
   }
+
+  .workbenchRoot :deep(.workbenchInspector) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .compactInspectorBackdrop {
+    position: fixed;
+    inset: var(--desktop-titlebar-h, 0px) 0 0;
+    z-index: 1250;
+    background: rgb(var(--shadow-overflow-rgb) / 0.32);
+  }
 }
 
 @media (max-width: 920px) {
@@ -1817,7 +1861,7 @@ function onResultsKeydown(
 
   .workbenchPaneGrid {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(180px, 1fr));
   }
 
   .liveSupportGrid {
@@ -1840,6 +1884,16 @@ function onResultsKeydown(
   .workbenchContent {
     grid-column: 1;
     grid-row: 2;
+  }
+
+  .workbenchContent > .workbenchMain {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .workbenchPaneGrid {
+    flex: 0 0 auto;
+    height: calc(360px + 1.5rem);
   }
 
   .workbenchRoot :deep(.workbenchActionBar) {
@@ -1899,6 +1953,10 @@ function onResultsKeydown(
   .workbenchPaneGrid {
     margin: 0;
     gap: 0.5rem;
+  }
+
+  .resultsLane {
+    scroll-margin-block-end: 2px;
   }
 
   .liveSupportGrid {

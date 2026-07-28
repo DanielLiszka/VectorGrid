@@ -1,6 +1,6 @@
 use crate::{
     compare_score_rank_desc, normalize_rank_score, BacktestEngine, ObjectiveKind,
-    OptimizationResult,
+    OptimizationResult, SearchDistributionAccumulator, DOUBLE_MA_SHARPE_METRIC_ID,
 };
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
@@ -73,6 +73,11 @@ pub fn grid_search<E: BacktestEngine>(
 
     let best_params = combos[best_idx].clone();
     let best_metrics = metrics[best_idx].clone();
+    let mut search_distribution =
+        SearchDistributionAccumulator::new("core17", DOUBLE_MA_SHARPE_METRIC_ID);
+    for candidate_metrics in &metrics {
+        search_distribution.record_unique_evaluation(candidate_metrics, true);
+    }
     let all = if include_all {
         Some(combos.iter().cloned().zip(metrics).collect())
     } else {
@@ -88,6 +93,8 @@ pub fn grid_search<E: BacktestEngine>(
         all,
         all_scores: None,
         heatmap: None,
+        search_distribution: Some(search_distribution.finalize()),
+        search_distribution_unavailable_reason: None,
         num_combos: combos.len(),
         num_candles,
     }))

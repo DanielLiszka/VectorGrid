@@ -454,6 +454,29 @@ interface ValidationState {
   updatedAtUnixMs: number;
 }
 
+const CROSS_TICKER_NO_SELECTION_REASON =
+  "Cross-ticker validation is enabled, but no eligible datasets are selected. Select at least one dataset or turn cross-ticker off.";
+const CROSS_TICKER_INVALID_MAX_REASON =
+  "Cross-ticker validation is enabled, but Max datasets must be at least 1. Increase Max datasets or turn cross-ticker off.";
+
+function validationCrossBlockedReason(
+  state: Pick<
+    ValidationState,
+    "crossEnable" | "crossMax" | "crossDatasets"
+  >,
+): string {
+  if (!state.crossEnable) return "";
+  const maxDatasets = Number(state.crossMax);
+  if (!Number.isFinite(maxDatasets) || Math.floor(maxDatasets) < 1) {
+    return CROSS_TICKER_INVALID_MAX_REASON;
+  }
+  const hasEligibleSelection = state.crossDatasets.some(
+    (entry) =>
+      entry.checked && !entry.disabled && normalizePath(entry.path).length > 0,
+  );
+  return hasEligibleSelection ? "" : CROSS_TICKER_NO_SELECTION_REASON;
+}
+
 export const useValidationStore = defineStore("validation", {
   state: (): ValidationState => ({
     activeResultsTab: "overview",
@@ -484,7 +507,7 @@ export const useValidationStore = defineStore("validation", {
     crossMeta: "—",
     tableRowCount: 0,
     candidates: "32",
-    admissionPolicy: "legacy_topk",
+    admissionPolicy: "auto",
     seed: "1",
     minPsr: "0.80",
     minDsr: "0.60",
@@ -505,20 +528,20 @@ export const useValidationStore = defineStore("validation", {
     wfEnable: true,
     wfWindow: "20000",
     wfStep: "5000",
-    perturbEnable: false,
+    perturbEnable: true,
     perturbIters: "8",
     perturbMin: "0.015",
     perturbMax: "0.06",
-    mcEnable: false,
+    mcEnable: true,
     mcSims: "500",
     mcBlockLen: "",
     mcMode: "compare",
     cscvEnable: true,
-    spaEnable: false,
-    reoptWfEnable: false,
+    spaEnable: true,
+    reoptWfEnable: true,
     crossEnable: false,
     crossMax: "6",
-    crossMode: "auto",
+    crossMode: "full_stack",
     crossSearch: "",
     crossDatasets: [],
     crossSelectedCount: 0,
@@ -538,6 +561,11 @@ export const useValidationStore = defineStore("validation", {
     source: "unknown",
     updatedAtUnixMs: 0,
   }),
+
+  getters: {
+    crossBlockedReason: (state): string =>
+      validationCrossBlockedReason(state),
+  },
 
   actions: {
     applyLegacySnapshot(snapshot: Partial<ValidationState>): void {
@@ -682,8 +710,8 @@ export const useValidationStore = defineStore("validation", {
         String(snapshot.candidates ?? this.candidates ?? "32").trim() || "32";
       this.admissionPolicy =
         String(
-          snapshot.admissionPolicy ?? this.admissionPolicy ?? "legacy_topk",
-        ).trim() || "legacy_topk";
+          snapshot.admissionPolicy ?? this.admissionPolicy ?? "auto",
+        ).trim() || "auto";
       this.seed = String(snapshot.seed ?? this.seed ?? "1").trim() || "1";
       this.minPsr = String(snapshot.minPsr ?? this.minPsr ?? "").trim();
       this.minDsr = String(snapshot.minDsr ?? this.minDsr ?? "").trim();
@@ -817,6 +845,13 @@ export const useValidationStore = defineStore("validation", {
       const key = String(field || "").trim();
       const next = String(value || "");
       if (applyVueTextFieldUpdate(this, key, next)) {
+        if (key === "valCrossMax") {
+          const blockedReason = validationCrossBlockedReason(this);
+          if (blockedReason) {
+            this.statusLine = blockedReason;
+            this.validationHint = blockedReason;
+          }
+        }
         this.source = "vue";
         this.updatedAtUnixMs = Date.now();
       }
@@ -826,12 +861,28 @@ export const useValidationStore = defineStore("validation", {
       const key = String(field || "").trim();
       const next = !!checked;
       if (applyVueCheckboxFieldUpdate(this, key, next)) {
+        if (key === "valCrossEnable") {
+          const blockedReason = validationCrossBlockedReason(this);
+          if (blockedReason) {
+            this.statusLine = blockedReason;
+            this.validationHint = blockedReason;
+          }
+        }
         this.source = "vue";
         this.updatedAtUnixMs = Date.now();
       }
     },
 
     runValidation(): void {
+      const blockedReason = validationCrossBlockedReason(this);
+      if (blockedReason) {
+        this.statusLine = blockedReason;
+        this.validationHint = blockedReason;
+        this.validationAccelerationStatus = "Validation not run.";
+        this.source = "vue";
+        this.updatedAtUnixMs = Date.now();
+        return;
+      }
       void loadValidationService()
         .then((service) => service.runValidation())
         .catch((error: unknown) => {

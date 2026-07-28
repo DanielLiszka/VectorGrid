@@ -1,7 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { mount } from '@vue/test-utils'
+
+vi.mock('../services/workflowBootstrap', () => ({
+  retryLatestWorkflowArtifactHydration: vi.fn(async () => true),
+}))
+
 import AppRuntimeBanner from './AppRuntimeBanner.vue'
+import { retryLatestWorkflowArtifactHydration } from '../services/workflowBootstrap'
 import { BOOT_STAGES, useRuntimeStore } from '../stores/runtimeStore'
 
 describe('AppRuntimeBanner', () => {
@@ -10,6 +16,7 @@ describe('AppRuntimeBanner', () => {
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)
+    vi.clearAllMocks()
   })
 
   it('renders the current boot stage while booting', () => {
@@ -68,5 +75,28 @@ describe('AppRuntimeBanner', () => {
 
     expect(wrapper.find('.runtimeBanner').exists()).toBe(false)
     expect(store.desktopLogs[0]?.message).toContain('simulated warning')
+  })
+
+  it('keeps the ready shell available while offering an actionable latest-artifact retry', async () => {
+    const store = useRuntimeStore()
+    store.markBooting(BOOT_STAGES.MOUNTING_WORKSPACE_SHELL)
+    store.markReady()
+    store.markLatestArtifactHydrationStarted()
+    store.markLatestArtifactHydrationError(new Error('artifact store unavailable'))
+
+    const wrapper = mount(AppRuntimeBanner, {
+      global: { plugins: [pinia] },
+    })
+
+    expect(store.bootPhase).toBe('ready')
+    expect(wrapper.find('.runtimeBanner.restoreWarning').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Latest saved artifact could not be restored')
+    expect(wrapper.text()).toContain('The workspace remains usable')
+    const retry = wrapper.get('button.runtimeAction')
+    expect(retry.text()).toContain('Retry latest artifact')
+
+    await retry.trigger('click')
+
+    expect(vi.mocked(retryLatestWorkflowArtifactHydration)).toHaveBeenCalledTimes(1)
   })
 })

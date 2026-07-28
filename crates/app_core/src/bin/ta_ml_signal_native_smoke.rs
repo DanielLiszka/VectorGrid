@@ -9,8 +9,13 @@ use ta_app_core::ml_signal::{
 };
 use ta_app_core::{
     build_ml_signal_score_cache_from_csv, read_candles_from_csv_compat, read_ml_signal_manifest,
-    MlSignalScoreCacheBuildRequest,
+    run_ml_signal_policy_sweep_blocking_with_candles,
+    run_ml_signal_validation_blocking_with_candles, IterativeSimConfig, MlSignalPolicyParams,
+    MlSignalPolicySweepRequest, MlSignalPolicySweepResult, MlSignalScoreCacheBuildRequest,
+    MlSignalScoreCacheContractMode, MlSignalSweepAxisF64, MlSignalSweepAxisUsize,
+    MlSignalValidationRequest, MlSignalValidationResult,
 };
+use ta_strategies::double_ma::StrategyConfig;
 
 #[path = "../bin_support/atomic_output.rs"]
 mod atomic_output;
@@ -48,6 +53,18 @@ struct Cli {
 
     #[arg(long)]
     include_local_paths: bool,
+
+    #[arg(
+        long,
+        help = "Run a conservative single-policy validation after native scoring"
+    )]
+    run_validation: bool,
+
+    #[arg(
+        long,
+        help = "Run a bounded 36-candidate policy sweep after native scoring"
+    )]
+    run_policy_sweep: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +77,10 @@ struct SmokeOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     prediction_batch_size: Option<usize>,
     result: ta_app_core::MlSignalScoreCacheBuildResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation: Option<MlSignalValidationResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_sweep: Option<MlSignalPolicySweepResult>,
 }
 
 fn parse_backend_preference(raw: &str) -> Result<MlSignalInferenceBackendPreference, String> {
@@ -141,6 +162,23 @@ fn artifact_path_label(path: &std::path::Path, include_local_paths: bool) -> Str
         .unwrap_or_else(|| "<external>".to_string())
 }
 
+fn conservative_strategy() -> StrategyConfig {
+    let mut strategy = StrategyConfig::default();
+    strategy.cost_preset = Some("stocks_liquid".to_string());
+    strategy.fee_bps = 0.10;
+    strategy.spread_bps = 1.00;
+    strategy.slippage_bps = 0.50;
+    strategy
+}
+
+fn conservative_policy() -> MlSignalPolicyParams {
+    MlSignalPolicyParams {
+        label: Some("qa_stocks_liquid".to_string()),
+        strategy: conservative_strategy(),
+        ..MlSignalPolicyParams::default()
+    }
+}
+
 fn main() -> Result<(), String> {
     let cli = Cli::parse();
     let backend_preference = parse_backend_preference(&cli.backend_preference)?;
@@ -166,7 +204,7 @@ fn main() -> Result<(), String> {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| default_data_id(&cli.csv_path));
     let req = MlSignalScoreCacheBuildRequest {
-        data_id,
+        data_id: data_id.clone(),
         input_path: String::new(),
         output_path: output_path.to_string_lossy().to_string(),
         model_bundle_id: Some(manifest.bundle_id.clone()),
@@ -188,6 +226,65 @@ fn main() -> Result<(), String> {
     };
     let cancel = AtomicBool::new(false);
     let result = build_ml_signal_score_cache_from_csv(req, &candles, &cancel)?;
+    let validation = if cli.run_validation {
+        Some(run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: data_id.clone(),
+                score_cache_path: output_path.to_string_lossy().to_string(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::ReleaseStrict,
+                candidates: vec![conservative_policy()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )?)
+    } else {
+        None
+    };
+    let policy_sweep = if cli.run_policy_sweep {
+        Some(run_ml_signal_policy_sweep_blocking_with_candles(
+            MlSignalPolicySweepRequest {
+                data_id,
+                score_cache_path: output_path.to_string_lossy().to_string(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::ReleaseStrict,
+                t_long: Some(MlSignalSweepAxisF64 {
+                    start: 0.45,
+                    end: 0.55,
+                    step: 0.05,
+                }),
+                t_short: Some(MlSignalSweepAxisF64 {
+                    start: 0.45,
+                    end: 0.55,
+                    step: 0.05,
+                }),
+                delta: Some(MlSignalSweepAxisF64 {
+                    start: 0.0,
+                    end: 0.05,
+                    step: 0.05,
+                }),
+                max_hold_bars: Some(MlSignalSweepAxisUsize {
+                    start: 10,
+                    end: 30,
+                    step: 20,
+                }),
+                exit_on_flat_values: Some(vec![false]),
+                exit_on_opposite_values: Some(vec![true]),
+                base_strategy: conservative_strategy(),
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+                top_k: 10,
+            },
+            &candles,
+            &cancel,
+        )?)
+    } else {
+        None
+    };
     let output = SmokeOutput {
         csv_path: artifact_path_label(&cli.csv_path, cli.include_local_paths),
         bundle_manifest: artifact_path_label(&cli.bundle_manifest, cli.include_local_paths),
@@ -198,6 +295,8 @@ fn main() -> Result<(), String> {
             .map(|path| artifact_path_label(path, cli.include_local_paths)),
         prediction_batch_size: cli.prediction_batch_size,
         result,
+        validation,
+        policy_sweep,
     };
     let rendered = serde_json::to_string_pretty(&output)
         .map_err(|e| format!("serialize smoke output: {e}"))?;

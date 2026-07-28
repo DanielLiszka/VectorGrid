@@ -8,6 +8,7 @@ import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 
 const tauriEventsMock = vi.hoisted(() => ({
@@ -195,6 +196,7 @@ describe('GlobalShortcutBridge', () => {
     const analysisStore = useAnalysisStore(pinia)
     const dataStore = useDataStore(pinia)
     const optimizeStore = useOptimizeStore(pinia)
+    const workflowArtifactsStore = useWorkflowArtifactsStore(pinia)
     const actionStore = useCommandActionStore(pinia)
 
     analysisStore.applyLegacySnapshot({ canExportCsv: true, canExportJson: true })
@@ -205,6 +207,19 @@ describe('GlobalShortcutBridge', () => {
     dataStore.dataId = 'data-1'
     dataStore.canPolygonOpen = true
     optimizeStore.$patch({ runDisabled: false, validateDisabled: false })
+    workflowArtifactsStore.currentRun = {
+      ts: '2026-07-18T00:00:00.000Z',
+      artifactPath: 'C:/runs/current.json',
+      reportXlsxPath: '',
+      csvPath: 'C:/data/current.csv',
+      datasetMeta: null,
+      mlSignal: null,
+      optimizationMetricSurface: null,
+      stageCompletions: [],
+      tags: [],
+      req: { data_id: 'data-1', strategy_kind: 'DoubleMa' },
+      res: { rows: [{}] },
+    }
 
     const openPolygonSpy = vi.spyOn(actionStore, 'openPolygon').mockImplementation(() => {})
     const toggleControlsSpy = vi.spyOn(actionStore, 'toggleControls').mockImplementation(() => {})

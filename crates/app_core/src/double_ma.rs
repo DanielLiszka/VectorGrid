@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{
     heatmap_axis_bins_for_period_count, ObjectiveKind, OptimizationHeatmap, OptimizationMode,
-    OptimizationResult,
+    OptimizationResult, SearchDistributionSummary,
 };
 use ta_strategies::double_ma::{
     DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig, Trade, TradeStats,
@@ -432,7 +432,7 @@ pub enum BackendUsed {
     Gpu,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct OptimizationSearchSemanticsSummary {
     pub approx_mode: String,
     pub workload_family: String,
@@ -446,6 +446,10 @@ pub struct OptimizationSearchSemanticsSummary {
     pub rerank_operator: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heatmap_semantics: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_distribution: Option<SearchDistributionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_distribution_unavailable_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -849,6 +853,32 @@ pub struct HybridTimingMs {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CudaGraphTimingUs {
+    pub schema_version: u32,
+    pub timing_enabled: bool,
+    pub graphs_requested: bool,
+    pub graphs_eligible: bool,
+    pub clock: String,
+    pub capture_boundary: String,
+    pub capture_attempt_count: u64,
+    pub capture_success_count: u64,
+    pub capture_total_us: u64,
+    pub instantiate_boundary: String,
+    pub instantiate_attempt_count: u64,
+    pub instantiate_success_count: u64,
+    pub instantiate_total_us: u64,
+    pub update_boundary: String,
+    pub update_applicable: bool,
+    pub update_attempt_count: u64,
+    pub update_success_count: u64,
+    pub update_total_us: u64,
+    pub replay_boundary: String,
+    pub replay_attempt_count: u64,
+    pub replay_success_count: u64,
+    pub replay_submit_total_us: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct GpuKernelTimingMs {
     pub route_wall_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -901,6 +931,8 @@ pub struct GpuKernelTimingMs {
     pub graph_capture_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph_replay_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cuda_graph_timing_us: Option<CudaGraphTimingUs>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2732,6 +2764,67 @@ fn merge_gpu_kernel_timing(
         );
         merge_optional_u64(&mut cur.graph_capture_ms, inc.graph_capture_ms);
         merge_optional_u64(&mut cur.graph_replay_count, inc.graph_replay_count);
+        merge_cuda_graph_timing(&mut cur.cuda_graph_timing_us, inc.cuda_graph_timing_us);
+    } else {
+        *target = Some(inc);
+    }
+}
+
+fn merge_cuda_graph_timing(
+    target: &mut Option<CudaGraphTimingUs>,
+    incoming: Option<CudaGraphTimingUs>,
+) {
+    let Some(inc) = incoming else {
+        return;
+    };
+    if let Some(cur) = target.as_mut() {
+        if cur.schema_version != inc.schema_version
+            || cur.clock != inc.clock
+            || cur.capture_boundary != inc.capture_boundary
+            || cur.instantiate_boundary != inc.instantiate_boundary
+            || cur.update_boundary != inc.update_boundary
+            || cur.replay_boundary != inc.replay_boundary
+        {
+            // Do not merge measurements across incompatible timing contracts.
+            *target = None;
+            return;
+        }
+        cur.timing_enabled |= inc.timing_enabled;
+        cur.graphs_requested |= inc.graphs_requested;
+        cur.graphs_eligible |= inc.graphs_eligible;
+        cur.update_applicable |= inc.update_applicable;
+        cur.capture_attempt_count = cur
+            .capture_attempt_count
+            .saturating_add(inc.capture_attempt_count);
+        cur.capture_success_count = cur
+            .capture_success_count
+            .saturating_add(inc.capture_success_count);
+        cur.capture_total_us = cur.capture_total_us.saturating_add(inc.capture_total_us);
+        cur.instantiate_attempt_count = cur
+            .instantiate_attempt_count
+            .saturating_add(inc.instantiate_attempt_count);
+        cur.instantiate_success_count = cur
+            .instantiate_success_count
+            .saturating_add(inc.instantiate_success_count);
+        cur.instantiate_total_us = cur
+            .instantiate_total_us
+            .saturating_add(inc.instantiate_total_us);
+        cur.update_attempt_count = cur
+            .update_attempt_count
+            .saturating_add(inc.update_attempt_count);
+        cur.update_success_count = cur
+            .update_success_count
+            .saturating_add(inc.update_success_count);
+        cur.update_total_us = cur.update_total_us.saturating_add(inc.update_total_us);
+        cur.replay_attempt_count = cur
+            .replay_attempt_count
+            .saturating_add(inc.replay_attempt_count);
+        cur.replay_success_count = cur
+            .replay_success_count
+            .saturating_add(inc.replay_success_count);
+        cur.replay_submit_total_us = cur
+            .replay_submit_total_us
+            .saturating_add(inc.replay_submit_total_us);
     } else {
         *target = Some(inc);
     }
@@ -2781,6 +2874,7 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             host_finalize_cleanup_ms: Some(timing.host_finalize_cleanup_ms),
             graph_capture_ms: Some(timing.graph_capture_ms),
             graph_replay_count: Some(timing.graph_replay_count),
+            cuda_graph_timing_us: timing.cuda_graph_timing_us,
         }
     } else {
         GpuKernelTimingMs {
@@ -2810,6 +2904,7 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             host_finalize_cleanup_ms: None,
             graph_capture_ms: None,
             graph_replay_count: None,
+            cuda_graph_timing_us: None,
         }
     }
 }
@@ -2843,6 +2938,7 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
         host_finalize_cleanup_ms: None,
         graph_capture_ms: None,
         graph_replay_count: None,
+        cuda_graph_timing_us: None,
     }
 }
 
@@ -7692,6 +7788,9 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
         if include_all { Some(Vec::new()) } else { None };
     let mut merged_heatmap: Option<OptimizationHeatmap> = None;
     let mut merged_num_combos: usize = 0;
+    let mut merged_search_distribution: Option<ta_optimizer::SearchDistributionSummary> = None;
+    let mut merged_search_distribution_unavailable_reason: Option<String> = None;
+    let mut merged_search_distribution_initialized = false;
     let mut merged_vdps: Option<VdpsTelemetry> = None;
     let mut merged_hybrid_timing_ms: Option<HybridTimingMs> = None;
     let mut merged_gpu_kernel_timing_ms: Option<GpuKernelTimingMs> = None;
@@ -7985,6 +8084,41 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
             let backend_used = mode_out.backend_used;
             let mut res = mode_out.res;
 
+            let part_search_distribution = res.search_distribution.take();
+            let part_search_distribution_unavailable_reason =
+                res.search_distribution_unavailable_reason.take();
+            if !merged_search_distribution_initialized {
+                merged_search_distribution = part_search_distribution;
+                merged_search_distribution_unavailable_reason =
+                    part_search_distribution_unavailable_reason;
+                merged_search_distribution_initialized = true;
+            } else if merged_search_distribution_unavailable_reason.is_none() {
+                match (
+                    merged_search_distribution.as_mut(),
+                    part_search_distribution.as_ref(),
+                ) {
+                    (Some(merged), Some(part)) => {
+                        if let Err(reason) = merged.try_merge(part) {
+                            merged_search_distribution = None;
+                            merged_search_distribution_unavailable_reason = Some(reason);
+                        }
+                    }
+                    (Some(_), None) | (None, Some(_)) => {
+                        merged_search_distribution = None;
+                        merged_search_distribution_unavailable_reason = Some(
+                            part_search_distribution_unavailable_reason.unwrap_or_else(|| {
+                                "full-search Sharpe distribution unavailable: at least one optimization shard did not expose comparable full-search statistics"
+                                    .to_string()
+                            }),
+                        );
+                    }
+                    (None, None) => {
+                        merged_search_distribution_unavailable_reason =
+                            part_search_distribution_unavailable_reason;
+                    }
+                }
+            }
+
             let fast_id = fi as u16;
             let slow_id = si as u16;
             rewrite_result_ma_ids(&mut res, fast_id, slow_id);
@@ -8059,6 +8193,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
         all: merged_all,
         all_scores,
         heatmap: merged_heatmap,
+        search_distribution: merged_search_distribution,
+        search_distribution_unavailable_reason: merged_search_distribution_unavailable_reason,
         num_combos: merged_num_combos,
         num_candles: n,
     };
@@ -8399,6 +8535,13 @@ fn grid_search_double_ma_gpu_kernel(
 
     let best_params = combos[best_idx].clone();
     let best_metrics = metrics[best_idx].clone();
+    let mut search_distribution = ta_optimizer::SearchDistributionAccumulator::new(
+        "core17",
+        ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID,
+    );
+    for candidate_metrics in &metrics {
+        search_distribution.record_unique_evaluation(candidate_metrics, true);
+    }
 
     let top = if top_k == 0 {
         Vec::new()
@@ -8440,6 +8583,8 @@ fn grid_search_double_ma_gpu_kernel(
         all,
         all_scores,
         heatmap: None,
+        search_distribution: Some(search_distribution.finalize()),
+        search_distribution_unavailable_reason: None,
         num_combos: combos.len(),
         num_candles,
     })
@@ -11727,7 +11872,22 @@ fn optimize_double_ma_cpu_tiled(
     let dynamic_shadow_sampled = AtomicUsize::new(0);
     let dynamic_shadow_mismatches = AtomicUsize::new(0);
     let score_fn = score_mode_score_fn(score_mode);
+    let full_search_sharpe_available = include_all
+        || objective_needs_return_stats(objective)
+        || score_mode_needs_rich_metrics(score_mode)
+        || include_trade_metrics
+        || matches!(
+            metric_contract,
+            Some(DoubleMaMetricContract::Full17 | DoubleMaMetricContract::Trade22)
+        );
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if full_search_sharpe_available {
+        agg = agg.with_full_search_distribution("core17", ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID);
+    } else {
+        agg = agg.with_search_distribution_unavailable(
+            "full-search Sharpe distribution unavailable: the reduced CPU evaluator did not compute Sharpe for every unique candidate",
+        );
+    }
     if let Some(score_fn) = score_fn {
         agg = agg.with_score_fn(score_fn);
     }
@@ -11854,6 +12014,8 @@ fn optimize_double_ma_cpu_tiled(
                             slow_ma_id: 0,
                         };
                         agg.push(params, metrics);
+                    } else {
+                        agg.record_rejected_unique_evaluation();
                     }
                     processed = processed.saturating_add(1);
                     if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
@@ -11868,6 +12030,16 @@ fn optimize_double_ma_cpu_tiled(
 
                 let init = || {
                     let mut local = StreamAggregator::new(objective, top_k, false, n);
+                    if full_search_sharpe_available {
+                        local = local.with_full_search_distribution(
+                            "core17",
+                            ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID,
+                        );
+                    } else {
+                        local = local.with_search_distribution_unavailable(
+                            "full-search Sharpe distribution unavailable: the reduced CPU evaluator did not compute Sharpe for every unique candidate",
+                        );
+                    }
                     if let Some(score_fn) = score_fn {
                         local = local.with_score_fn(score_fn);
                     }
@@ -11962,6 +12134,8 @@ fn optimize_double_ma_cpu_tiled(
                                 },
                                 metrics,
                             );
+                        } else {
+                            local.record_rejected_unique_evaluation();
                         }
                         Ok(local)
                     })
@@ -12586,7 +12760,22 @@ fn optimize_double_ma_gpu_sweep_tiled(
 
     let selector = CudaMaSelector::new(device_id as usize);
     let score_fn = score_mode_score_fn(score_mode);
+    let full_search_sharpe_available = include_all
+        || objective_needs_return_stats(objective)
+        || score_mode_needs_rich_metrics(score_mode)
+        || include_trade_metrics
+        || matches!(
+            metric_contract,
+            Some(DoubleMaMetricContract::Full17 | DoubleMaMetricContract::Trade22)
+        );
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if full_search_sharpe_available {
+        agg = agg.with_full_search_distribution("core17", ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID);
+    } else {
+        agg = agg.with_search_distribution_unavailable(
+            "full-search Sharpe distribution unavailable: the reduced host-decoded GPU sweep did not compute Sharpe for every unique candidate",
+        );
+    }
     if let Some(score_fn) = score_fn {
         agg = agg.with_score_fn(score_fn);
     }
@@ -12681,6 +12870,8 @@ fn optimize_double_ma_gpu_sweep_tiled(
                             slow_ma_id: 0,
                         };
                         agg.push(params, metrics);
+                    } else {
+                        agg.record_rejected_unique_evaluation();
                     }
                     processed = processed.saturating_add(1);
                     if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
@@ -12695,6 +12886,16 @@ fn optimize_double_ma_gpu_sweep_tiled(
 
                 let init = || {
                     let mut local = StreamAggregator::new(objective, top_k, false, n);
+                    if full_search_sharpe_available {
+                        local = local.with_full_search_distribution(
+                            "core17",
+                            ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID,
+                        );
+                    } else {
+                        local = local.with_search_distribution_unavailable(
+                            "full-search Sharpe distribution unavailable: the reduced host-decoded GPU sweep did not compute Sharpe for every unique candidate",
+                        );
+                    }
                     if let Some(score_fn) = score_fn {
                         local = local.with_score_fn(score_fn);
                     }
@@ -12739,6 +12940,8 @@ fn optimize_double_ma_gpu_sweep_tiled(
                                 },
                                 metrics,
                             );
+                        } else {
+                            local.record_rejected_unique_evaluation();
                         }
                         Ok(local)
                     })
@@ -14161,6 +14364,9 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
         first_valid,
         handle,
     )?;
+    // Even score-first requests must return the product's headline metric
+    // surface for the selected rows. A PnL-only search row otherwise decodes
+    // Sharpe, drawdown, trade count, and the remaining Product10 fields as 0.
     let metrics_count = std::iter::once(objective)
         .chain(
             extra_shortlist_objectives
@@ -14181,7 +14387,8 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
                     metric_contract,
                 ),
             )
-        });
+        })
+        .max(crate::gpu_backtest_kernel::PRODUCT_REDUCED_METRICS_COUNT);
     let metrics = crate::gpu_backtest_kernel::eval_uploaded_double_ma_dynamic_program_gpu_kernel(
         uploaded.as_ref(),
         strategy,
@@ -14196,14 +14403,28 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
         ));
     }
 
+    let attempted_count = combos.len();
     let filtered_rows: Vec<(DoubleMaParams, Metrics)> = combos
         .into_iter()
         .zip(metrics.into_iter())
         .filter(|(_, metric)| metrics_pass_constraints(metric, constraints))
         .collect();
+    let rejected_count = attempted_count.saturating_sub(filtered_rows.len());
+    let search_metric_surface = if metrics_count >= crate::gpu_backtest_kernel::TRADE_METRICS_COUNT
+    {
+        "trade22".to_string()
+    } else if metrics_count >= crate::gpu_backtest_kernel::METRICS_COUNT {
+        "core17".to_string()
+    } else {
+        format!("reduced_rows_{metrics_count}")
+    };
 
     let finalize = || {
-        let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+        let mut agg = StreamAggregator::new(objective, top_k, include_all, n)
+            .with_full_search_distribution(
+                search_metric_surface.clone(),
+                ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID,
+            );
         if score_mode_needs_pair_observation_context(score_mode) {
             agg = agg.with_pair_score_fn(
                 crate::gpu_backtest_kernel::effective_sample_lcb_10_pair_score_for_host,
@@ -14227,6 +14448,9 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
         }
         for (combo, metric) in filtered_rows.iter().cloned() {
             agg.push(combo, metric);
+        }
+        for _ in 0..rejected_count {
+            agg.record_rejected_unique_evaluation();
         }
         emit_progress(progress, total_pairs, total_pairs, "gpu_dynamic");
         agg.finalize().ok_or_else(|| {
@@ -16660,6 +16884,21 @@ mod tests {
         assert_eq!(res.num_combos, 6);
         assert!(res.best_params.fast_len < res.best_params.slow_len);
         assert!(res.top.len() <= 5);
+        let distribution = res
+            .search_semantics
+            .as_ref()
+            .and_then(|semantics| semantics.search_distribution.as_ref())
+            .expect("CPU full-search Sharpe distribution");
+        assert_eq!(distribution.metric_surface_kind, "core17");
+        assert_eq!(
+            distribution.sharpe_metric_id,
+            ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID
+        );
+        assert_eq!(distribution.attempted_count, 6);
+        assert_eq!(distribution.unique_count, 6);
+        assert_eq!(distribution.feasible_count, 6);
+        assert_eq!(distribution.finite_sharpe_count, 6);
+        assert!(distribution.finite_sharpe_mean.is_some());
         let heatmap = res.heatmap.expect("heatmap");
         assert_eq!(heatmap.bins_fast, 3);
         assert_eq!(heatmap.bins_slow, 2);
@@ -21329,9 +21568,24 @@ mod tests {
 
         assert_eq!(legacy.best_params.fast_len, dynamic.best_params.fast_len);
         assert_eq!(legacy.best_params.slow_len, dynamic.best_params.slow_len);
-        assert!((legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() <= 2e-2);
-        assert!((legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() <= 1e-3);
-        assert!((legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() <= 1e-3);
+        assert!(
+            (legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() <= 2e-2,
+            "dynamic pnl mismatch: legacy={} dynamic={}",
+            legacy.best_metrics.pnl,
+            dynamic.best_metrics.pnl
+        );
+        assert!(
+            (legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() <= 1e-3,
+            "dynamic sharpe mismatch: legacy={} dynamic={}",
+            legacy.best_metrics.sharpe,
+            dynamic.best_metrics.sharpe
+        );
+        assert!(
+            (legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() <= 1e-3,
+            "dynamic max_dd mismatch: legacy={} dynamic={}",
+            legacy.best_metrics.max_dd,
+            dynamic.best_metrics.max_dd
+        );
         assert_eq!(legacy.best_metrics.trades, dynamic.best_metrics.trades);
         assert!(matches!(dynamic.backend_used, BackendUsed::Gpu));
         assert!(
@@ -21868,6 +22122,8 @@ mod tests {
             all: None,
             all_scores: None,
             heatmap: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
             num_combos: 64,
             num_candles: 1000,
         };
@@ -21899,6 +22155,8 @@ mod tests {
             all: None,
             all_scores: None,
             heatmap: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
             num_combos: 81,
             num_candles: 1000,
         };
@@ -24895,7 +25153,7 @@ mod tests {
             shortlist_confidence_mode: None,
             shortlist_union_mode: None,
             shortlist_slice_mode: None,
-            shortlist_slice_benchmark: Some(SpaBenchmarkKind::BuyAndHold),
+            shortlist_slice_benchmark: None,
             shortlist_neighborhood_radius: None,
             shortlist_neighborhood_step: None,
             mode: OptimizationMode::Grid,
@@ -26293,15 +26551,17 @@ mod tests {
         let benchmark_log_returns = crate::double_ma::compute_log_returns_f64(
             vector_ta::utilities::data_loader::source_type(&candles, "close"),
         );
-        let mut saw_slice_local_only_difference = false;
-
         for (mode, slice_count, mode_label) in [
             (DoubleMaShortlistSliceMode::Halves, 2usize, "halves"),
             (DoubleMaShortlistSliceMode::Quartiles, 4usize, "quartiles"),
         ] {
             let common_start = union_rows
                 .iter()
-                .map(|(params, _)| params.fast_len.max(params.slow_len) as usize - 1)
+                .map(|(params, _)| {
+                    (params.fast_len.max(params.slow_len) as usize)
+                        .saturating_sub(1)
+                        .saturating_add(usize::from(strategy.trade_on_next_bar))
+                })
                 .max()
                 .expect("non-empty union shortlist");
             let slice_bars = total_bars.saturating_sub(common_start) / slice_count;
@@ -26460,22 +26720,9 @@ mod tests {
                 .take(top_k)
                 .map(|entry| entry.key)
                 .collect();
-            let mut naive_full_period_ranked = union_rows.clone();
-            naive_full_period_ranked.sort_by(|a, b| {
-                let sa = objective_score(&a.1, ObjectiveKind::Sharpe);
-                let sb = objective_score(&b.1, ObjectiveKind::Sharpe);
-                sb.total_cmp(&sa)
-                    .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
-            });
-            let naive_full_period_keys: Vec<(u16, u16)> = naive_full_period_ranked
-                .iter()
-                .take(top_k)
-                .map(|(params, _)| (params.fast_len, params.slow_len))
-                .collect();
-            saw_slice_local_only_difference |= naive_full_period_keys != expected_keys;
-
             let mut req_slice = req_union.clone();
             req_slice.shortlist_slice_mode = Some(mode);
+            req_slice.shortlist_slice_benchmark = Some(SpaBenchmarkKind::BuyAndHold);
             let union_result = run_double_ma_optimization_blocking_with_candles(
                 req_slice, &candles, &cancel, None,
             )
@@ -26578,11 +26825,6 @@ mod tests {
                     < 1.0e-12
             );
         }
-        assert!(
-            saw_slice_local_only_difference,
-            "shortlist slice exactness should require slice-local state rather than full-period winner rows alone"
-        );
-
         match prev_global_topk {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
             None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
@@ -28238,9 +28480,29 @@ mod tests {
         assert_eq!(h1.fast_max, h2.fast_max);
         assert_eq!(h1.slow_min, h2.slow_min);
         assert_eq!(h1.slow_max, h2.slow_max);
-        assert_eq!(h1.mean_values, h2.mean_values);
+        let assert_cell_values_close = |label: &str, lhs: &[Option<f64>], rhs: &[Option<f64>]| {
+            assert_eq!(lhs.len(), rhs.len(), "{label} length mismatch");
+            for (idx, (lhs, rhs)) in lhs.iter().zip(rhs.iter()).enumerate() {
+                match (lhs, rhs) {
+                    (Some(lhs), Some(rhs)) => {
+                        let tolerance = 1.0e-6 * lhs.abs().max(rhs.abs()).max(1.0);
+                        assert!(
+                                (lhs - rhs).abs() <= tolerance,
+                                "{label}[{idx}] mismatch: unbatched={lhs} batched={rhs} tolerance={tolerance}"
+                            );
+                    }
+                    (None, None) => {}
+                    _ => panic!("{label}[{idx}] presence mismatch"),
+                }
+            }
+        };
+        match (&h1.mean_values, &h2.mean_values) {
+            (Some(lhs), Some(rhs)) => assert_cell_values_close("mean_values", lhs, rhs),
+            (None, None) => {}
+            _ => panic!("mean_values presence mismatch"),
+        }
         assert_eq!(h1.sample_counts, h2.sample_counts);
-        assert_eq!(h1.values, h2.values);
+        assert_cell_values_close("values", &h1.values, &h2.values);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

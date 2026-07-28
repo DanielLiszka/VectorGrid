@@ -47,11 +47,67 @@ function Resolve-ExistingPath {
   return $null
 }
 
+function Resolve-CargoTargetDirectory {
+  $manifestPath = Join-Path $repoRoot "Cargo.toml"
+  $metadataText = (& cargo metadata --manifest-path $manifestPath --no-deps --format-version 1 2>&1 | Out-String)
+  if ($LASTEXITCODE -ne 0) {
+    throw "cargo metadata failed while resolving the canonical target directory."
+  }
+  $metadata = $metadataText | ConvertFrom-Json
+  if ([string]::IsNullOrWhiteSpace([string]$metadata.target_directory)) {
+    throw "cargo metadata did not report target_directory."
+  }
+  return [System.IO.Path]::GetFullPath([string]$metadata.target_directory)
+}
+
 function Get-ArtifactCandidates {
   param([Parameter(Mandatory = $true)][string]$Root)
   Get-ChildItem -Path $Root -Recurse -File | Where-Object {
     @(".msi", ".exe", ".zip", ".sig") -contains $_.Extension.ToLowerInvariant()
   } | Sort-Object FullName
+}
+
+function Assert-EmptyArtifactStagingDirectory {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    return
+  }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (
+    -not $item.PSIsContainer -or
+    ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+  ) {
+    throw "Release artifact staging path must be an ordinary directory: $Path"
+  }
+  if ($null -ne (Get-ChildItem -LiteralPath $Path -Force | Select-Object -First 1)) {
+    throw "Release artifact staging directory is not empty. Use a fresh release output directory: $Path"
+  }
+}
+
+function Assert-ExactStagedArtifactSet {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][array]$Artifacts
+  )
+
+  $entries = @(Get-ChildItem -LiteralPath $Path -Force)
+  if (@($entries | Where-Object {
+    $_.PSIsContainer -or
+    ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+  }).Count -gt 0) {
+    throw "Release artifact staging directory may contain only ordinary files."
+  }
+  $expectedNames = @($Artifacts | ForEach-Object { [string]$_.staged_name } | Sort-Object -Unique)
+  $actualNames = @($entries | ForEach-Object { [string]$_.Name } | Sort-Object -Unique)
+  if (
+    $expectedNames.Count -ne $Artifacts.Count -or
+    $actualNames.Count -ne $expectedNames.Count -or
+    @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames).Count -gt 0
+  ) {
+    throw "Release artifact staging directory does not exactly match the generated manifest artifact set."
+  }
 }
 
 function ConvertTo-SafeNamePart {
@@ -73,6 +129,8 @@ function Get-CodeSignatureInfo {
       status = "not_applicable"
       signer_subject = $null
       thumbprint = $null
+      timestamp_subject = $null
+      timestamp_thumbprint = $null
     }
   }
 
@@ -83,6 +141,8 @@ function Get-CodeSignatureInfo {
       status = [string]$signature.Status
       signer_subject = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { $null }
       thumbprint = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Thumbprint } else { $null }
+      timestamp_subject = if ($null -ne $signature.TimeStamperCertificate) { [string]$signature.TimeStamperCertificate.Subject } else { $null }
+      timestamp_thumbprint = if ($null -ne $signature.TimeStamperCertificate) { [string]$signature.TimeStamperCertificate.Thumbprint } else { $null }
     }
   } catch {
     return [ordered]@{
@@ -90,6 +150,8 @@ function Get-CodeSignatureInfo {
       status = "SignatureCheckFailed"
       signer_subject = $null
       thumbprint = $null
+      timestamp_subject = $null
+      timestamp_thumbprint = $null
       error = $_.Exception.Message
     }
   }
@@ -156,23 +218,23 @@ function New-RequiredResourceDetail {
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$targetDirectory = Resolve-CargoTargetDirectory
 $resolvedOutDir = Resolve-OutDir -Value $OutDir
 New-Item -ItemType Directory -Force -Path $resolvedOutDir | Out-Null
 
 $resolvedBundleRoot = Resolve-ExistingPath -Candidates @(
   $BundleRoot,
-  (Join-Path $repoRoot "src-tauri\\target\\release\\bundle"),
-  (Join-Path $repoRoot "target\\release\\bundle")
+  (Join-Path $targetDirectory "release\\bundle")
 )
 
 $resolvedReleaseBinary = Resolve-ExistingPath -Candidates @(
   $ReleaseBinaryPath,
-  (Join-Path $repoRoot "src-tauri\\target\\release\\ta_desktop_demo_app.exe"),
-  (Join-Path $repoRoot "target\\release\\ta_desktop_demo_app.exe")
+  (Join-Path $targetDirectory "release\\ta_desktop_demo_app.exe")
 )
 if ($null -eq $resolvedReleaseBinary) {
-  throw "Could not resolve a release executable. Expected src-tauri\\target\\release\\ta_desktop_demo_app.exe or target\\release\\ta_desktop_demo_app.exe."
+  throw "Could not resolve the release executable under the canonical Cargo target directory '$targetDirectory'."
 }
+$releaseBinaryItem = Get-Item -LiteralPath $resolvedReleaseBinary
 
 $tauriConfig = Get-Content -Raw (Join-Path $repoRoot "src-tauri\\tauri.conf.json") | ConvertFrom-Json
 $windowsTauriConfig = Get-Content -Raw (Join-Path $repoRoot "src-tauri\\tauri.windows.conf.json") | ConvertFrom-Json
@@ -187,7 +249,7 @@ if ($null -ne $resolvedBundleRoot) {
 }
 
 $artifactsDir = Join-Path $resolvedOutDir "artifacts"
-New-Item -ItemType Directory -Force -Path $artifactsDir | Out-Null
+Assert-EmptyArtifactStagingDirectory -Path $artifactsDir
 
 $stagedArtifacts = @()
 $hashLines = @()
@@ -234,10 +296,14 @@ if ($bundleArtifacts.Count -gt 0) {
   }
 }
 
+Assert-ExactStagedArtifactSet -Path $artifactsDir -Artifacts $stagedArtifacts
+
 $hashPath = Join-Path $resolvedOutDir "SHA256SUMS.txt"
 Set-Content -Path $hashPath -Encoding UTF8 -Value $hashLines
 
 $catboostPath = Join-Path $repoRoot "src-tauri\\resources\\native\\catboostmodel.dll"
+$catboostBaselinePath = Join-Path $repoRoot "scripts\\baselines\\catboost-native-v1.2.10.json"
+$catboostLicensePath = Join-Path $repoRoot "src-tauri\\resources\\licenses\\CatBoost-LICENSE.txt"
 $sampleCsvPath = Join-Path $repoRoot "src-tauri\\resources\\sample-data\\vectorgrid_synthetic_ohlcv.csv"
 $kernelPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\double_crossover.prebuilt.ptx"
 $optionsPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\options_expression.prebuilt.ptx"
@@ -245,9 +311,31 @@ $catboostExists = Test-Path -LiteralPath $catboostPath -PathType Leaf
 if (-not $AllowMissingCatboostNative -and -not $catboostExists) {
   throw "Required packaged CatBoost native library is missing: $catboostPath. Use -AllowMissingCatboostNative only for non-shipping diagnostic manifests."
 }
+if (-not (Test-Path -LiteralPath $catboostBaselinePath -PathType Leaf)) {
+  throw "Reviewed CatBoost provenance baseline is missing: $catboostBaselinePath"
+}
+if (-not (Test-Path -LiteralPath $catboostLicensePath -PathType Leaf)) {
+  throw "Required CatBoost license notice is missing: $catboostLicensePath"
+}
+$catboostBaseline = Get-Content -Raw -LiteralPath $catboostBaselinePath | ConvertFrom-Json
+$expectedCatboostSha256 = ([string]$catboostBaseline.asset_sha256).ToLowerInvariant()
+$expectedCatboostBytes = [int64]$catboostBaseline.asset_size_bytes
+$expectedCatboostLicenseSha256 = ([string]$catboostBaseline.license_sha256).ToLowerInvariant()
+if ($catboostExists) {
+  $actualCatboostSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $catboostPath).Hash.ToLowerInvariant()
+  $actualCatboostBytes = [int64](Get-Item -LiteralPath $catboostPath).Length
+  if ($actualCatboostSha256 -ne $expectedCatboostSha256 -or $actualCatboostBytes -ne $expectedCatboostBytes) {
+    throw "CatBoost native DLL does not match the reviewed v$($catboostBaseline.version) baseline. Run scripts/acquire_catboost_native.ps1; do not ship an arbitrary local build."
+  }
+}
+$actualCatboostLicenseSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $catboostLicensePath).Hash.ToLowerInvariant()
+if ($actualCatboostLicenseSha256 -ne $expectedCatboostLicenseSha256) {
+  throw "CatBoost license notice does not match the reviewed v$($catboostBaseline.version) baseline."
+}
 
 $requiredResourceDetails = @(
   (New-RequiredResourceDetail -Id "catboost_native_library" -Path $catboostPath -BundleTarget "native/catboostmodel.dll" -ExpectedInWindowsBundle $true),
+  (New-RequiredResourceDetail -Id "catboost_license" -Path $catboostLicensePath -BundleTarget "licenses/CatBoost-LICENSE.txt" -ExpectedInWindowsBundle $true),
   (New-RequiredResourceDetail -Id "synthetic_sample_csv" -Path $sampleCsvPath -BundleTarget "sample-data/vectorgrid_synthetic_ohlcv.csv" -ExpectedInWindowsBundle $true),
   (New-RequiredResourceDetail -Id "double_crossover_prebuilt_ptx" -Path $kernelPtxPath -BundleTarget "" -ExpectedInWindowsBundle $false),
   (New-RequiredResourceDetail -Id "options_expression_prebuilt_ptx" -Path $optionsPtxPath -BundleTarget "" -ExpectedInWindowsBundle $false)
@@ -262,12 +350,31 @@ $signatureCheckedArtifacts = @($stagedArtifacts | Where-Object {
 $unsignedOrInvalidArtifacts = @($signatureCheckedArtifacts | Where-Object {
   [string]$_.code_signature.status -ne "Valid"
 })
+$installerArtifacts = @($stagedArtifacts | Where-Object {
+  [string]$_.source_kind -eq "bundle" -and @(".exe", ".msi") -contains [string]$_.extension
+})
+$validSignedInstallerArtifacts = @($installerArtifacts | Where-Object {
+  $null -ne $_.code_signature -and [bool]$_.code_signature.checked -and [string]$_.code_signature.status -eq "Valid"
+})
+$unsignedOrInvalidInstallerArtifacts = @($installerArtifacts | Where-Object {
+  $null -eq $_.code_signature -or -not [bool]$_.code_signature.checked -or [string]$_.code_signature.status -ne "Valid"
+})
+$installerSignatureEligible = (
+  -not [bool]$UnsignedBeta -and
+  $installerArtifacts.Count -gt 0 -and
+  $validSignedInstallerArtifacts.Count -eq $installerArtifacts.Count -and
+  $unsignedOrInvalidInstallerArtifacts.Count -eq 0
+)
 
 $manifest = [ordered]@{
   schema_version = 1
   generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
   variant = $Variant
-  publishable = -not [bool]$UnsignedBeta
+  publishable = $false
+  installer_signature_eligible = [bool]$installerSignatureEligible
+  publication_scope = "staging evidence only; public-release-summary.json is final publication authority"
+  public_release_gate_required = $true
+  embedded_application_signature_verified = $false
   unsigned_beta = [bool]$UnsignedBeta
   artifact_source_kind = if ($bundleArtifacts.Count -gt 0) { "bundle" } else { "release_binary" }
   product_name = $productName
@@ -275,6 +382,13 @@ $manifest = [ordered]@{
   identifier = $identifier
   bundle_root = $resolvedBundleRoot
   release_binary_path = $resolvedReleaseBinary
+  release_binary = [ordered]@{
+    path = $resolvedReleaseBinary
+    size_bytes = $releaseBinaryItem.Length
+    sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedReleaseBinary).Hash.ToLowerInvariant()
+    last_write_time_utc = $releaseBinaryItem.LastWriteTimeUtc.ToString("o")
+    cargo_target_directory = $targetDirectory
+  }
   provenance_path = if ([string]::IsNullOrWhiteSpace($ProvenancePath)) { $null } else { [System.IO.Path]::GetFullPath($ProvenancePath) }
   staged_artifacts_dir = $artifactsDir
   hash_file = $hashPath
@@ -282,6 +396,16 @@ $manifest = [ordered]@{
     catboost_bundle_resource_path = $catboostPath
     catboost_bundle_resource_exists = $catboostExists
     catboost_bundle_resource_sha256 = Get-OptionalSha256 -Path $catboostPath
+    catboost_bundle_resource_expected_sha256 = $expectedCatboostSha256
+    catboost_bundle_resource_expected_size_bytes = $expectedCatboostBytes
+    catboost_provenance_baseline_path = $catboostBaselinePath
+    catboost_version = [string]$catboostBaseline.version
+    catboost_release_url = [string]$catboostBaseline.release_url
+    catboost_source_commit = [string]$catboostBaseline.tag_commit
+    catboost_license_id = [string]$catboostBaseline.license
+    catboost_license_path = $catboostLicensePath
+    catboost_license_sha256 = $actualCatboostLicenseSha256
+    catboost_license_expected_sha256 = $expectedCatboostLicenseSha256
     synthetic_sample_csv_path = $sampleCsvPath
     synthetic_sample_csv_exists = Test-Path -LiteralPath $sampleCsvPath -PathType Leaf
     synthetic_sample_csv_sha256 = Get-OptionalSha256 -Path $sampleCsvPath
@@ -297,6 +421,9 @@ $manifest = [ordered]@{
     checked_artifact_count = $signatureCheckedArtifacts.Count
     valid_signed_artifact_count = $signedArtifacts.Count
     unsigned_or_invalid_artifact_count = $unsignedOrInvalidArtifacts.Count
+    installer_artifact_count = $installerArtifacts.Count
+    valid_signed_installer_artifact_count = $validSignedInstallerArtifacts.Count
+    unsigned_or_invalid_installer_artifact_count = $unsignedOrInvalidInstallerArtifacts.Count
   }
   staged_artifacts = $stagedArtifacts
 }

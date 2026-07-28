@@ -12,12 +12,17 @@ import { useUiReadiness } from '../composables/useUiReadiness'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useOptionsExpressionStore } from '../stores/optionsExpressionStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { taskPostureSnapshot, useTaskStore } from '../stores/taskStore'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { AppButton, AppStatusChip } from './ui'
-import { mlSignalPrimaryActionForStep, workflowStepLabelForMode } from '../utils/core/workflowModel'
+import {
+  mlSignalPrimaryActionForStep,
+  optionsPrimaryActionForStep,
+  workflowStepLabelForMode,
+} from '../utils/core/workflowModel'
 import { mlSignalScoreCacheDisabledReason } from '../utils/workbenchActionModel'
 import { formatOverallProgressLabel, taskLifecycleLabel } from '../utils/statusPresentation'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
@@ -26,6 +31,7 @@ const analysisStore = useAnalysisStore()
 const commandActionStore = useCommandActionStore()
 const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
+const optionsExpressionStore = useOptionsExpressionStore()
 const taskStore = useTaskStore()
 const validationStore = useValidationStore()
 const workflowStore = useWorkflowStore()
@@ -64,8 +70,10 @@ const {
 const { mountReady } = useShellMount('#runFooterVueShellMount')
 const footerVisible = computed(() => String(workspace.value || '').trim() === 'workflow')
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
+const optionsModeActive = computed(() => String(mode.value || '').trim() === 'options')
 const stageLabel = computed(() => workflowStepLabelForMode(workflowStep.value, mode.value))
 const mlSignalPrimaryAction = computed(() => mlSignalPrimaryActionForStep(workflowStep.value))
+const optionsPrimaryAction = computed(() => optionsPrimaryActionForStep(workflowStep.value))
 const dataLoaded = computed(() => String(dataStore.dataId || '').trim().length > 0)
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 const hasRunActivity = computed(() => canCancel.value || String(progressMeta.value || '').trim().length > 0)
@@ -107,10 +115,33 @@ const optimizationDisabledReason = computed(() => {
   if (!datasetReady.value) return 'Load a dataset before running optimization.'
   return String(runReadinessHint.value || '').trim() || 'Configure data and strategy inputs before running.'
 })
+const optionsDisabledReason = computed(() => {
+  const descriptor = optionsPrimaryAction.value
+  if (!dataLoaded.value) return 'Load the underlying dataset used by the parent artifact before continuing.'
+  if (!descriptor.actionable) {
+    if (descriptor.kind === 'underlying') return 'Confirm the underlying dataset and parent artifact in this stage.'
+    if (descriptor.kind === 'options_data') return 'Import or select an options dataset with the controls in this stage.'
+    return 'Review finalist evidence and exports in this stage.'
+  }
+  if (descriptor.kind === 'expression') {
+    if (optionsExpressionStore.runBusy) return 'Expression search is already in progress.'
+    return String(optionsExpressionStore.selectedDatasetId || '').trim()
+      ? ''
+      : 'Select an options dataset before running the expression search.'
+  }
+  if (optionsExpressionStore.validationBusy) return 'Options validation is already in progress.'
+  if (!String(optionsExpressionStore.activeArtifactPath || '').trim()) {
+    return 'Run or load an options expression artifact before validation.'
+  }
+  return optionsExpressionStore.validationFormValid
+    ? ''
+    : 'Complete the options validation setup before running validation.'
+})
 
 const primaryActionLabel = computed(() => {
   if (canCancel.value) return 'Stop run'
   if (mlSignalModeActive.value) return mlSignalPrimaryAction.value.label
+  if (optionsModeActive.value) return optionsPrimaryAction.value.label
   if (String(workflowStep.value || '').trim() === 'validate') return 'Run validation'
   return 'Run optimization'
 })
@@ -124,7 +155,12 @@ const primaryActionDisabled = computed(() => {
       ? !!validateDisabled.value
       : !!runDisabled.value
   }
-  if (String(workflowStep.value || '').trim() === 'validate') return !!validateDisabled.value
+  if (optionsModeActive.value) {
+    return !optionsPrimaryAction.value.actionable || optionsDisabledReason.value.length > 0
+  }
+  if (String(workflowStep.value || '').trim() === 'validate') {
+    return !!validateDisabled.value || !datasetReady.value || !hasOptimizationResults.value
+  }
   return !!runDisabled.value || !datasetReady.value
 })
 
@@ -134,6 +170,7 @@ const primaryDisabledReason = computed(() => {
     const reason = mlSignalDisabledReason.value
     return reason || String(runReadinessHint.value || '').trim() || 'This ML Signal stage is not ready.'
   }
+  if (optionsModeActive.value) return optionsDisabledReason.value
   if (String(workflowStep.value || '').trim() === 'validate') return validationDisabledReason.value
   return optimizationDisabledReason.value
 })
@@ -141,6 +178,8 @@ const primaryDisabledReason = computed(() => {
 const footerSummary = computed(() => {
   const progress = String(progressMeta.value || '').trim()
   if (hasRunActivity.value && progress) return progress
+  if (!datasetReady.value) return 'Readiness: Load data first.'
+  if (!hasOptimizationResults.value) return 'Ready to configure and run optimization.'
   if (String(workflowStep.value || '').trim() === 'validate') {
     const meta = String(validationMeta.value || '').trim()
     if (meta && meta !== '-' && meta !== '—') return meta
@@ -152,6 +191,13 @@ const footerSummary = computed(() => {
 
 const analysisSummary = computed(() => {
   if (mlSignalModeActive.value) return 'ML Signal stages use dataset export, score cache, validation, and sweep artifacts.'
+  if (optionsModeActive.value) {
+    const artifact = String(optionsExpressionStore.activeArtifactPath || '').trim()
+    return artifact
+      ? `Options artifact ready · ${artifact.split(/[\\/]/u).pop() || artifact}`
+      : 'No active options expression artifact.'
+  }
+  if (!hasOptimizationResults.value) return 'No scored run yet.'
   const selectedTitle = String(selectedTopTitle.value || '').trim()
   const selectedSummary = String(selectedTopSummary.value || '').trim()
   if (selectedTitle && selectedTitle !== 'No ranked candidate selected.') {
@@ -208,6 +254,18 @@ function runPrimaryAction(): void {
     commandActionStore.runOptimization()
     return
   }
+  if (optionsModeActive.value) {
+    const actionId = optionsPrimaryAction.value.kind === 'expression'
+      ? 'options.expression.run'
+      : optionsPrimaryAction.value.kind === 'validation'
+        ? 'options.validation.run'
+        : ''
+    if (!actionId) return
+    Array.from(document.querySelectorAll<HTMLButtonElement>('[data-qa-action]'))
+      .find((button) => button.dataset.qaAction === actionId)
+      ?.click()
+    return
+  }
   if (String(workflowStep.value || '').trim() === 'validate') {
     commandActionStore.validateOptimization()
     return
@@ -250,7 +308,7 @@ function openTaskCenterDetails(): void {
         </AppStatusChip>
         <span class="statusCopy mono">{{ latestOutcome }}</span>
         <span class="statusCopy mono">{{ analysisSummary }}</span>
-        <span v-if="!mlSignalModeActive" class="statusCopy mono">
+        <span v-if="!mlSignalModeActive && !optionsModeActive" class="statusCopy mono">
           Tab {{ resultsTab || 'overview' }} · Top {{ topRows }} · Detail {{ drillStatus }} · Heatmap {{ heatmapMeta }}
         </span>
         <span class="statusCopy mono">{{ runPlanMeta || statusLine }}</span>
@@ -306,7 +364,7 @@ function openTaskCenterDetails(): void {
 }
 
 .eyebrow {
-  font-size: 0.67rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -321,7 +379,7 @@ function openTaskCenterDetails(): void {
 }
 
 .meta {
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 
@@ -331,7 +389,7 @@ function openTaskCenterDetails(): void {
   border-radius: 999px;
   background: color-mix(in oklab, var(--surface2) 88%, transparent);
   color: var(--muted-strong);
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   line-height: 1.2;
   padding: 0.2rem 0.5rem;
   white-space: nowrap;
@@ -341,7 +399,7 @@ function openTaskCenterDetails(): void {
 
 .blockedReason {
   color: var(--warning-ink);
-  font-size: 0.73rem;
+  font-size: var(--text-xs);
   line-height: 1.3;
 }
 
@@ -357,7 +415,7 @@ function openTaskCenterDetails(): void {
   min-width: 0;
   max-width: min(34ch, 100%);
   color: var(--muted);
-  font-size: 0.73rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

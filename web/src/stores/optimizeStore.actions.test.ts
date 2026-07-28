@@ -173,6 +173,23 @@ describe("optimize store actions", () => {
     expect(store.source).toBe("vue");
   });
 
+  it("preserves actionable source-integrity recovery guidance", async () => {
+    const store = useOptimizeStore(pinia);
+    runOptimizationMock.mockRejectedValueOnce(
+      new Error(
+        "loaded source CSV changed after it was loaded; reload the dataset before optimization or validation",
+      ),
+    );
+
+    store.runOptimization();
+    await flushServiceImports();
+
+    expect(store.statusLine).toBe(
+      "Optimization failed: Error: loaded source CSV changed after it was loaded; reload the dataset before optimization or validation",
+    );
+    expect(store.source).toBe("vue");
+  });
+
   it("formats optimize runtime rejections without constructor prefixes", async () => {
     const store = useOptimizeStore(pinia);
     runValidationMock.mockRejectedValueOnce(

@@ -4,24 +4,20 @@ import { RotateCcw } from '@lucide/vue'
 import {
   BufferGeometry,
   Color,
-  DirectionalLight,
   DoubleSide,
   Float32BufferAttribute,
-  GridHelper,
-  HemisphereLight,
   Mesh,
-  MeshStandardMaterial,
+  MeshBasicMaterial,
+  Object3D,
   PerspectiveCamera,
   PlaneGeometry,
-  Raycaster,
-  Scene,
+  Ray,
   SRGBColorSpace,
-  Vector2,
+  Vector3,
   WebGLRenderer,
-  type Material,
-  type Texture,
+  type Intersection,
+  type Raycaster,
 } from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import {
   buildHeatmapCellParams,
   formatHeatmapDisplay,
@@ -30,6 +26,7 @@ import {
 } from '../../visualizations/heatmapCanvasModel'
 import {
   buildHeatmapSurface3dModel,
+  resolveHeatmapSurface3dKeyboardIndex,
   type HeatmapSurface3dModel,
   type HeatmapSurface3dSample,
   type HeatmapSurface3dUnavailableBlock,
@@ -58,25 +55,24 @@ const SURFACE_WIDTH = 10
 const SURFACE_DEPTH = 10
 const SURFACE_HEIGHT = 2.8
 const SURFACE_BASE_Y = 0.08
-
+const ORBIT_TARGET_Y = 0.9
+const ORBIT_MIN_DISTANCE = 5
+const ORBIT_MAX_DISTANCE = 18
+const ORBIT_MIN_POLAR = 0.2
+const ORBIT_MAX_POLAR = Math.PI * 0.48
 const viewportRef = ref<HTMLElement | null>(null)
 const tooltipRef = ref<HTMLElement | null>(null)
 const legendRef = ref<InstanceType<typeof HeatmapLegend> | null>(null)
 const surfaceReady = ref(false)
 const renderError = ref('')
 const hoverSample = ref<HeatmapSurface3dSample | null>(null)
+const keyboardSampleIndex = ref(-1)
 const selectedSliceKey = ref('')
 
 const sliceModel = computed(() => props.renderModel?.slice3d ?? null)
 const activeSlice = computed(() => {
   const slices = sliceModel.value?.slices ?? []
-  if (!slices.length) return null
   return slices.find((slice) => slice.key === selectedSliceKey.value) ?? slices[0] ?? null
-})
-const activeSliceIndex = computed(() => {
-  const slices = sliceModel.value?.slices ?? []
-  const idx = slices.findIndex((slice) => slice.key === activeSlice.value?.key)
-  return idx >= 0 ? idx : 0
 })
 const surfaceModel = computed(() =>
   props.renderModel && activeSlice.value
@@ -86,83 +82,78 @@ const surfaceModel = computed(() =>
 const unavailableDomainSummary = computed(() => {
   const surface = surfaceModel.value
   if (!surface || !surface.unavailableCells || !surface.totalCells) return ''
-  const verb = surface.unavailableCells === 1 ? 'is' : 'are'
-  return `${surface.unavailableCells} of ${surface.totalCells} bins ${verb} unavailable in this retained slice and shown as the muted base plane.`
+  return `${surface.unavailableCells}/${surface.totalCells} bins unavailable; shown as muted base cells.`
 })
 const samplingSummary = computed(() => {
   const surface = surfaceModel.value
   if (!surface || (surface.colStride <= 1 && surface.rowStride <= 1)) return ''
-  return `3D slice sampled to ${surface.sampledBinsFast}x${surface.sampledBinsSlow} blocks for interactive rendering.`
+  return `Sampled to ${surface.sampledBinsFast}x${surface.sampledBinsSlow} blocks for responsive 3D interaction.`
 })
-const hoverSummary = computed(() => {
+function sampleLines(sample: HeatmapSurface3dSample | null): string[] | null {
   const renderModel = props.renderModel
-  const sample = hoverSample.value
-  if (!renderModel || !sample) return ''
+  if (!renderModel || !sample) return null
   const fastLabel = renderModel.request.fastMaType.toUpperCase() || 'FAST'
   const slowLabel = renderModel.request.slowMaType.toUpperCase() || 'SLOW'
-  return `${activeSlice.value?.label ?? 'Slice'} · ${fastLabel} ${sample.fast} · ${slowLabel} ${sample.slow} · ${sliceModel.value?.scoreLabel ?? renderModel.displayLabel} ${formatHeatmapDisplay(sample.displayValue, 4)}`
-})
-const visibleSelectedSummary = computed(() => hoverSummary.value || props.selectedSummary)
+  return [
+    activeSlice.value?.label ?? 'Slice',
+    `${fastLabel} ${sample.fast} · ${slowLabel} ${sample.slow}`,
+    `${sliceModel.value?.scoreLabel ?? renderModel.displayLabel} ${formatHeatmapDisplay(sample.displayValue, 4)}`,
+  ]
+}
+function sampleSummary(sample: HeatmapSurface3dSample | null): string {
+  return sampleLines(sample)?.join(' · ') ?? ''
+}
+const visibleSelectedSummary = computed(
+  () =>
+    sampleSummary(hoverSample.value) ||
+    sampleSummary(surfaceModel.value?.samples[keyboardSampleIndex.value] ?? null) ||
+    props.selectedSummary,
+)
 const sliceSummary = computed(() => {
   const model = sliceModel.value
   const slice = activeSlice.value
   if (!model || !slice) {
-    return '3D slices require include_all=true and at least two retained MA type or parameter slices.'
+    return '3D slices require include_all=true; add two retained variants.'
   }
-  return `${model.axisLabel}: ${slice.label} (${activeSliceIndex.value + 1} of ${model.slices.length}) · ${model.retainedSliceRowCount} retained rows across slices · ${model.scoreLabel} range ${formatHeatmapDisplay(model.range.min, 4)} to ${formatHeatmapDisplay(model.range.max, 4)}`
+  const index = Math.max(0, model.slices.findIndex((entry) => entry.key === slice.key))
+  return `${model.axisLabel}: ${slice.label} (${index + 1}/${model.slices.length}) · ${model.retainedSliceRowCount} retained rows · ${model.scoreLabel} ${formatHeatmapDisplay(model.range.min, 4)}–${formatHeatmapDisplay(model.range.max, 4)}`
 })
 
 let renderer: WebGLRenderer | null = null
-let scene: Scene | null = null
+let scene: Object3D | null = null
 let camera: PerspectiveCamera | null = null
-let controls: OrbitControls | null = null
 let surfaceMesh: Mesh | null = null
 let resizeObserver: ResizeObserver | null = null
-let animationFrame: number | null = null
 let pointerDownPoint: { x: number; y: number } | null = null
 let pointerDragged = false
+let orbitDistance: number
+let orbitPolar: number
+let orbitAzimuth: number
 type SurfaceFaceSample = HeatmapSurface3dSample | null
 
-const raycaster = new Raycaster()
-const pointer = new Vector2()
+const pointerRayOrigin = new Vector3()
+const pointerRayDirection = new Vector3()
+const pointerRaycaster = {
+  ray: new Ray(),
+  near: 0.1,
+  far: 100,
+} as Raycaster
 
-function disposeMaterial(material: Material | Material[]): void {
-  const materials = Array.isArray(material) ? material : [material]
-  for (const entry of materials) {
-    const maybeMap = (entry as Material & { map?: Texture | null }).map
-    maybeMap?.dispose()
-    entry.dispose()
-  }
-}
-
-function disposeSceneObjects(nextScene: Scene | null): void {
+function disposeSceneObjects(nextScene: Object3D | null): void {
   nextScene?.traverse((object) => {
     const mesh = object as Mesh
     mesh.geometry?.dispose?.()
-    if (mesh.material) disposeMaterial(mesh.material)
+    if (Array.isArray(mesh.material)) {
+      mesh.material.forEach((material) => material.dispose())
+    } else {
+      mesh.material?.dispose()
+    }
   })
-}
-
-function stopAnimation(): void {
-  if (animationFrame != null) {
-    window.cancelAnimationFrame(animationFrame)
-    animationFrame = null
-  }
 }
 
 function renderFrame(): void {
   if (!renderer || !scene || !camera) return
   renderer.render(scene, camera)
-}
-
-function startAnimation(): void {
-  if (animationFrame != null) return
-  const tick = () => {
-    controls?.update()
-    renderFrame()
-    animationFrame = window.requestAnimationFrame(tick)
-  }
-  animationFrame = window.requestAnimationFrame(tick)
 }
 
 function resizeRenderer(): void {
@@ -180,7 +171,7 @@ function resizeRenderer(): void {
 function ensureRenderer(): boolean {
   const viewport = viewportRef.value
   if (!viewport) return false
-  if (renderer && camera && controls) return true
+  if (renderer && camera) return true
 
   try {
     renderer = new WebGLRenderer({
@@ -203,13 +194,6 @@ function ensureRenderer(): boolean {
   viewport.prepend(renderer.domElement)
 
   camera = new PerspectiveCamera(42, 1, 0.1, 100)
-  controls = new OrbitControls(camera, renderer.domElement)
-  controls.enableDamping = true
-  controls.dampingFactor = 0.08
-  controls.minDistance = 5
-  controls.maxDistance = 18
-  controls.maxPolarAngle = Math.PI * 0.48
-  controls.target.set(0, 0.8, 0)
 
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(resizeRenderer)
@@ -219,16 +203,8 @@ function ensureRenderer(): boolean {
   return true
 }
 
-function surfaceX(col: number, binsFast: number): number {
-  return (col / Math.max(1, binsFast) - 0.5) * SURFACE_WIDTH
-}
-
-function surfaceZ(logicalRow: number, binsSlow: number): number {
-  return (logicalRow / Math.max(1, binsSlow) - 0.5) * SURFACE_DEPTH
-}
-
-function surfaceY(normalizedValue: number): number {
-  return SURFACE_BASE_Y + normalizedValue * SURFACE_HEIGHT
+function surfaceAxis(index: number, bins: number): number {
+  return (index / Math.max(1, bins) - 0.5) * SURFACE_WIDTH
 }
 
 function addVertex(
@@ -246,13 +222,17 @@ function addVertex(
 function addQuad(
   positions: number[],
   colors: number[],
-  points: Array<[number, number, number]>,
+  points: [
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+  ],
   color: Color,
   sample: SurfaceFaceSample,
   faceSamples: SurfaceFaceSample[],
 ): void {
   const [a, b, c, d] = points
-  if (!a || !b || !c || !d) return
   addVertex(positions, colors, a[0], a[1], a[2], color)
   addVertex(positions, colors, b[0], b[1], b[2], color)
   addVertex(positions, colors, c[0], c[1], c[2], color)
@@ -271,10 +251,10 @@ function addUnavailableBlock(
   faceSamples: SurfaceFaceSample[],
 ): void {
   const mutedColor = new Color(0xb7c4d3)
-  const x0 = surfaceX(block.colStart, binsFast)
-  const x1 = surfaceX(block.colEnd, binsFast)
-  const z0 = surfaceZ(block.logicalRowStart, binsSlow)
-  const z1 = surfaceZ(block.logicalRowEnd, binsSlow)
+  const x0 = surfaceAxis(block.colStart, binsFast)
+  const x1 = surfaceAxis(block.colEnd, binsFast)
+  const z0 = surfaceAxis(block.logicalRowStart, binsSlow)
+  const z1 = surfaceAxis(block.logicalRowEnd, binsSlow)
   const y = 0.026
   addQuad(positions, colors, [
     [x0, y, z0],
@@ -300,11 +280,11 @@ function buildSurfaceMesh(renderModel: HeatmapCanvasRenderModel, surface: Heatma
   for (const sample of surface.samples) {
     color.setStyle(sample.color)
     sideColor.copy(color).multiplyScalar(0.68)
-    const x0 = surfaceX(sample.colStart, binsFast)
-    const x1 = surfaceX(sample.colEnd, binsFast)
-    const z0 = surfaceZ(sample.logicalRowStart, binsSlow)
-    const z1 = surfaceZ(sample.logicalRowEnd, binsSlow)
-    const y = surfaceY(sample.normalizedValue)
+    const x0 = surfaceAxis(sample.colStart, binsFast)
+    const x1 = surfaceAxis(sample.colEnd, binsFast)
+    const z0 = surfaceAxis(sample.logicalRowStart, binsSlow)
+    const z1 = surfaceAxis(sample.logicalRowEnd, binsSlow)
+    const y = SURFACE_BASE_Y + sample.normalizedValue * SURFACE_HEIGHT
     const baseY = 0.015
     addQuad(positions, colors, [
       [x0, y, z0],
@@ -341,17 +321,47 @@ function buildSurfaceMesh(renderModel: HeatmapCanvasRenderModel, surface: Heatma
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
   geometry.setAttribute('color', new Float32BufferAttribute(colors, 3))
-  geometry.computeVertexNormals()
 
-  const material = new MeshStandardMaterial({
+  const material = new MeshBasicMaterial({
     vertexColors: true,
-    roughness: 0.58,
-    metalness: 0.04,
     side: DoubleSide,
   })
   const mesh = new Mesh(geometry, material)
   mesh.userData.faceSamples = faceSamples
   return mesh
+}
+
+function buildGridMesh(): Mesh {
+  const positions: number[] = []
+  const half = SURFACE_WIDTH / 2
+  const line = 0.012
+  const addRect = (x0: number, z0: number, x1: number, z1: number) => {
+    positions.push(
+      x0, line, z0,
+      x1, line, z0,
+      x1, line, z1,
+      x0, line, z0,
+      x1, line, z1,
+      x0, line, z1,
+    )
+  }
+  for (let index = 0; index <= 10; index += 1) {
+    const offset = index - half
+    addRect(offset - line, -half, offset + line, half)
+    addRect(-half, offset - line, half, offset + line)
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+  return new Mesh(
+    geometry,
+    new MeshBasicMaterial({
+      color: 0xcbd5e1,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+      side: DoubleSide,
+    }),
+  )
 }
 
 function rebuildScene(): void {
@@ -361,7 +371,6 @@ function rebuildScene(): void {
   hoverSample.value = null
   hideTooltip()
   if (!renderModel || !surface || !surface.samples.length) {
-    stopAnimation()
     disposeSceneObjects(scene)
     scene = null
     surfaceMesh = null
@@ -369,39 +378,25 @@ function rebuildScene(): void {
     return
   }
   if (!ensureRenderer()) {
-    stopAnimation()
     return
   }
 
   disposeSceneObjects(scene)
-  const nextScene = new Scene()
-  nextScene.add(new HemisphereLight(0xf8fafc, 0x1f2937, 1.7))
-  const keyLight = new DirectionalLight(0xffffff, 2.2)
-  keyLight.position.set(5, 8, 7)
-  nextScene.add(keyLight)
-  const fillLight = new DirectionalLight(0x60a5fa, 0.9)
-  fillLight.position.set(-6, 4, -5)
-  nextScene.add(fillLight)
+  const nextScene = new Object3D()
 
   const floor = new Mesh(
     new PlaneGeometry(SURFACE_WIDTH, SURFACE_DEPTH),
-    new MeshStandardMaterial({
+    new MeshBasicMaterial({
       color: 0x64748b,
       transparent: true,
       opacity: 0.16,
-      roughness: 0.82,
       side: DoubleSide,
     }),
   )
   floor.rotation.x = -Math.PI / 2
-  floor.position.y = 0
   nextScene.add(floor)
 
-  const grid = new GridHelper(SURFACE_WIDTH, 10, 0x94a3b8, 0xcbd5e1)
-  grid.material.transparent = true
-  grid.material.opacity = 0.28
-  grid.position.y = 0.012
-  nextScene.add(grid)
+  nextScene.add(buildGridMesh())
 
   surfaceMesh = buildSurfaceMesh(renderModel, surface)
   nextScene.add(surfaceMesh)
@@ -410,14 +405,24 @@ function rebuildScene(): void {
   legendRef.value?.paint(sliceModel.value?.range ?? renderModel.range, sliceModel.value?.palette ?? renderModel.palette)
   resetCamera()
   resizeRenderer()
-  startAnimation()
 }
 
 function resetCamera(): void {
-  if (!camera || !controls) return
-  camera.position.set(6.4, 4.9, 7.8)
-  controls.target.set(0, 0.9, 0)
-  controls.update()
+  orbitDistance = 10.85357084097211
+  orbitPolar = 1.1933558658631362
+  orbitAzimuth = 0.6871242101414392
+  updateCamera()
+}
+
+function updateCamera(): void {
+  if (!camera) return
+  const horizontalDistance = orbitDistance * Math.sin(orbitPolar)
+  camera.position.set(
+    horizontalDistance * Math.sin(orbitAzimuth),
+    ORBIT_TARGET_Y + orbitDistance * Math.cos(orbitPolar),
+    horizontalDistance * Math.cos(orbitAzimuth),
+  )
+  camera.lookAt(0, ORBIT_TARGET_Y, 0)
   renderFrame()
 }
 
@@ -425,21 +430,29 @@ function pickSample(clientX: number, clientY: number): HeatmapSurface3dSample | 
   if (!renderer || !camera || !surfaceMesh) return null
   const rect = renderer.domElement.getBoundingClientRect()
   if (!rect.width || !rect.height) return null
-  pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1
-  pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1
-  raycaster.setFromCamera(pointer, camera)
-  const hit = raycaster.intersectObject(surfaceMesh, false)[0]
+  camera.updateMatrixWorld()
+  pointerRayOrigin.setFromMatrixPosition(camera.matrixWorld)
+  pointerRayDirection
+    .set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+      0.5,
+    )
+    .unproject(camera)
+    .sub(pointerRayOrigin)
+    .normalize()
+  pointerRaycaster.ray.set(pointerRayOrigin, pointerRayDirection)
+  const hits: Intersection[] = []
+  surfaceMesh.raycast(pointerRaycaster, hits)
+  hits.sort((lhs, rhs) => lhs.distance - rhs.distance)
+  const hit = hits[0]
   if (!hit || hit.faceIndex == null) return null
   const faceSamples = surfaceMesh.userData.faceSamples as SurfaceFaceSample[] | undefined
   return faceSamples?.[hit.faceIndex] ?? null
 }
 
 function tooltipText(sample: HeatmapSurface3dSample): string {
-  const renderModel = props.renderModel
-  if (!renderModel) return ''
-  const fastLabel = renderModel.request.fastMaType.toUpperCase() || 'FAST'
-  const slowLabel = renderModel.request.slowMaType.toUpperCase() || 'SLOW'
-  return `${activeSlice.value?.label ?? 'Slice'}\n${fastLabel} ${sample.fast} · ${slowLabel} ${sample.slow}\n${sliceModel.value?.scoreLabel ?? renderModel.displayLabel} ${formatHeatmapDisplay(sample.displayValue, 4)}`
+  return sampleLines(sample)?.join('\n') ?? ''
 }
 
 function hideTooltip(): void {
@@ -461,8 +474,11 @@ function showTooltip(event: PointerEvent, sample: HeatmapSurface3dSample): void 
 }
 
 function handlePointerDown(event: PointerEvent): void {
+  if (event.button !== 0) return
   pointerDownPoint = { x: event.clientX, y: event.clientY }
   pointerDragged = false
+  const viewport = event.currentTarget as HTMLElement | null
+  viewport?.setPointerCapture?.(event.pointerId)
 }
 
 function handlePointerMove(event: PointerEvent): void {
@@ -470,6 +486,19 @@ function handlePointerMove(event: PointerEvent): void {
     const dx = event.clientX - pointerDownPoint.x
     const dy = event.clientY - pointerDownPoint.y
     if (Math.hypot(dx, dy) > 5) pointerDragged = true
+    if (pointerDragged) {
+      const viewportHeight = Math.max(1, viewportRef.value?.clientHeight || 520)
+      orbitAzimuth -= (dx / viewportHeight) * Math.PI * 2
+      orbitPolar = Math.max(
+        ORBIT_MIN_POLAR,
+        Math.min(ORBIT_MAX_POLAR, orbitPolar + (dy / viewportHeight) * Math.PI),
+      )
+      pointerDownPoint = { x: event.clientX, y: event.clientY }
+      hoverSample.value = null
+      hideTooltip()
+      updateCamera()
+      return
+    }
   }
   const sample = pickSample(event.clientX, event.clientY)
   hoverSample.value = sample
@@ -480,6 +509,14 @@ function handlePointerMove(event: PointerEvent): void {
   }
 }
 
+function handlePointerUp(event: PointerEvent): void {
+  const viewport = event.currentTarget as HTMLElement | null
+  if (viewport?.hasPointerCapture?.(event.pointerId)) {
+    viewport.releasePointerCapture(event.pointerId)
+  }
+  pointerDownPoint = null
+}
+
 function handlePointerLeave(): void {
   hoverSample.value = null
   pointerDownPoint = null
@@ -488,12 +525,46 @@ function handlePointerLeave(): void {
 }
 
 function handleClick(event: MouseEvent): void {
-  const renderModel = props.renderModel
-  if (!renderModel || pointerDragged) return
+  const wasDragged = pointerDragged
+  pointerDragged = false
+  if (wasDragged) return
   const sample = pickSample(event.clientX, event.clientY)
-  if (!sample) return
+  requestCandidateDetail(sample)
+}
+
+function handleSurfaceWheel(event: WheelEvent): void {
+  orbitDistance = Math.max(
+    ORBIT_MIN_DISTANCE,
+    Math.min(ORBIT_MAX_DISTANCE, orbitDistance * Math.exp(event.deltaY * 0.001)),
+  )
+  updateCamera()
+}
+
+function requestCandidateDetail(sample: HeatmapSurface3dSample | null): void {
+  const renderModel = props.renderModel
+  if (!renderModel || !sample) return
   const params = sample.params ?? buildHeatmapCellParams(renderModel, sample.representativeCell)
   if (params) emit('request-candidate-detail', params)
+}
+
+function handleSurfaceKeydown(event: KeyboardEvent): void {
+  const samples = surfaceModel.value?.samples ?? []
+  if (!samples.length) return
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    const index = keyboardSampleIndex.value >= 0 ? keyboardSampleIndex.value : 0
+    keyboardSampleIndex.value = index
+    requestCandidateDetail(samples[index] ?? null)
+    return
+  }
+  const nextIndex = resolveHeatmapSurface3dKeyboardIndex(
+    samples,
+    keyboardSampleIndex.value >= 0 ? keyboardSampleIndex.value : 0,
+    event.key,
+  )
+  if (nextIndex == null) return
+  event.preventDefault()
+  keyboardSampleIndex.value = nextIndex
 }
 
 function exportPng(fileName = 'heatmap-3d.png'): boolean {
@@ -527,16 +598,14 @@ watch(
 watch(
   () => `${props.renderModel?.signature ?? ''}:${activeSlice.value?.key ?? ''}`,
   () => {
+    keyboardSampleIndex.value = surfaceModel.value?.samples.length ? 0 : -1
     void nextTick(rebuildScene)
   },
 )
 
 onBeforeUnmount(() => {
-  stopAnimation()
   resizeObserver?.disconnect()
   resizeObserver = null
-  controls?.dispose()
-  controls = null
   disposeSceneObjects(scene)
   scene = null
   surfaceMesh = null
@@ -560,7 +629,7 @@ defineExpose({ exportPng, resetCamera })
     </div>
     <div class="heatmapSurface3dAssist">
       <div id="heatmapSurface3DInstructionsVue" class="panelMuted">
-        Use the slice selector to compare retained variants. Top results remains the keyboard-friendly exact candidate path; populated 3D bins can be clicked for retained candidate detail.
+        Choose a slice. On the focused 3D surface, use Arrow keys, Home, or End to move; Enter or Space opens candidate detail. Top results is exact.
       </div>
       <div class="actions">
         <button type="button" @click="$emit('review-top-results')">Review Top results</button>
@@ -617,14 +686,19 @@ defineExpose({ exportPng, resetCamera })
         id="heatmapSurface3DViewportVue"
         ref="viewportRef"
         class="heatmapSurface3dViewport chartSurface"
-        role="img"
+        role="region"
         :aria-label="ariaLabel"
+        :tabindex="renderModel && sliceModel ? 0 : -1"
         aria-describedby="heatmapSurface3DInstructionsVue heatmapSurface3DMetaVue"
         :data-render-ready="surfaceReady ? 'true' : 'false'"
         @pointerdown="handlePointerDown"
         @pointermove="handlePointerMove"
+        @pointerup="handlePointerUp"
+        @pointercancel="handlePointerUp"
         @pointerleave="handlePointerLeave"
+        @wheel.prevent="handleSurfaceWheel"
         @click="handleClick"
+        @keydown="handleSurfaceKeydown"
       >
         <div
           v-if="renderError"
@@ -641,7 +715,7 @@ defineExpose({ exportPng, resetCamera })
         <div>
           <div class="heatmapSurface3dLegendSpacer" aria-hidden="true"></div>
           <div class="panelMuted heatmapSurface3dLegendNote">
-            Height and color use exact retained full-output rows for the selected slice. Click a populated bin to inspect that retained candidate.
+            Exact retained rows drive height and color. Click or use keys to inspect a populated bin.
           </div>
         </div>
       </div>

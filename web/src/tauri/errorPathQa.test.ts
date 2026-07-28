@@ -102,7 +102,8 @@ describe('error-path QA through instrumented invoke', () => {
     const store = useTaskStore(pinia)
     expect(store.history[0]?.status).toBe('failed')
     expect(store.history[0]?.error).toContain('API key + secret')
-    expect(store.events[0]?.message).toContain('API key + secret')
+    expect(store.events[0]?.message).toContain('Open task Details')
+    expect(store.events[0]?.message).not.toContain('API key + secret')
   })
 
   it('classifies cancelled runs distinctly from failures', async () => {

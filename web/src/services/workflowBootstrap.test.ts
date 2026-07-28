@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import {
   applyWorkflowBootstrapFromStorage,
   readWorkflowBootstrapState,
+  retryLatestWorkflowArtifactHydration,
 } from "./workflowBootstrap";
 import {
   clearArtifactHistoryPerfEntries,
@@ -10,6 +11,7 @@ import {
 } from "./artifactHistoryPerf";
 import { useDataStore } from "../stores/dataStore";
 import { bindRuntimePinia } from "../stores/runtimePinia";
+import { useRuntimeStore } from "../stores/runtimeStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { CONTROLS_TAB_KEY, RESULTS_TAB_KEY } from "../utils/core/storageKeys";
 import { syncWorkflowArtifactsFromLegacyRuntime } from "./workflowArtifactsSync";
@@ -251,7 +253,9 @@ describe("workflow bootstrap service", () => {
     expect(store.mode).toBe("conventional");
     expect(store.workflowStep).toBe("finalize");
     expect(store.workflow).toBe("finalize");
-    expect(store.controlsTab).toBe("advanced");
+    // Final Review intentionally has no setup column; persisted setup tabs are
+    // clamped to the inert fallback while the persisted Meta result remains.
+    expect(store.controlsTab).toBe("data");
     expect(store.resultsTab).toBe("meta");
   });
 
@@ -402,6 +406,49 @@ describe("workflow bootstrap service", () => {
         }),
       ]),
     );
+  });
+
+  it("surfaces deferred latest-artifact failures as recoverable state and supports retry", async () => {
+    syncWorkflowArtifactsFromLegacyRuntimeMock
+      .mockRejectedValueOnce(new Error("artifact store unavailable"))
+      .mockResolvedValueOnce(true);
+
+    await applyWorkflowBootstrapFromStorage({
+      includeDeferredData: false,
+    });
+
+    const runtimeStore = useRuntimeStore(pinia);
+    await vi.waitFor(() => {
+      expect(runtimeStore.latestArtifactHydrationPhase).toBe("error");
+    });
+    expect(runtimeStore.latestArtifactHydrationError).toContain(
+      "artifact store unavailable",
+    );
+    expect(runtimeStore.latestArtifactHydrationAttempts).toBe(1);
+
+    await retryLatestWorkflowArtifactHydration();
+
+    expect(syncWorkflowArtifactsFromLegacyRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(runtimeStore.latestArtifactHydrationPhase).toBe("ready");
+    expect(runtimeStore.latestArtifactHydrationError).toBe("");
+    expect(runtimeStore.latestArtifactHydrationAttempts).toBe(2);
+  });
+
+  it("deduplicates overlapping latest-artifact retry attempts", async () => {
+    const artifactSyncDeferred = createDeferred<boolean>();
+    syncWorkflowArtifactsFromLegacyRuntimeMock.mockReturnValueOnce(
+      artifactSyncDeferred.promise,
+    );
+
+    const first = retryLatestWorkflowArtifactHydration();
+    const second = retryLatestWorkflowArtifactHydration();
+
+    expect(second).toBe(first);
+    expect(syncWorkflowArtifactsFromLegacyRuntimeMock).toHaveBeenCalledTimes(1);
+
+    artifactSyncDeferred.resolve(true);
+    await Promise.all([first, second]);
+    expect(useRuntimeStore(pinia).latestArtifactHydrationPhase).toBe("ready");
   });
 
   it("propagates startup hydration failures so boot can surface them", async () => {

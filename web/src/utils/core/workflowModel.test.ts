@@ -89,6 +89,10 @@ describe('workflowModel', () => {
       controls: 'opt',
       results: 'overview',
     })
+    expect(mlDefaults.data).toEqual({
+      controls: 'opt',
+      results: 'overview',
+    })
     expect(conventionalAllowed.optimize.controls).toEqual([
       'opt',
       'strategy',
@@ -126,6 +130,10 @@ describe('workflowModel', () => {
       results: ['meta', 'debug'],
     })
     expect(ML_SIGNAL_WORKFLOW_ALLOWED.optimize).toEqual({
+      controls: ['opt'],
+      results: ['overview'],
+    })
+    expect(ML_SIGNAL_WORKFLOW_ALLOWED.data).toEqual({
       controls: ['opt'],
       results: ['overview'],
     })

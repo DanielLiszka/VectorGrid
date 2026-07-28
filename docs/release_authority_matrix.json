@@ -1,0 +1,984 @@
+{
+  "schema_version": 1,
+  "matrix_id": "vectorgrid-release-verification-authority-v1",
+  "policy_document": "docs/verification_benchmark_release_authority.md",
+  "authority_classes": [
+    {
+      "id": "broad_authoritative_gate",
+      "description": "Repo-owned broad pass/fail gate for the claim named by the gate."
+    },
+    {
+      "id": "companion_diagnostic",
+      "description": "Evidence that explains a mechanism but cannot approve a claim alone."
+    },
+    {
+      "id": "non_authority_helper",
+      "description": "A useful helper that must not be promoted into unrelated claim authority."
+    },
+    {
+      "id": "release_authority_artifact",
+      "description": "Generated evidence that answers one specific release question."
+    },
+    {
+      "id": "required_cpu_ci_mirror",
+      "description": "Merge enforcement that delegates to repo-owned CPU, static, and headless contracts."
+    },
+    {
+      "id": "subsystem_authority",
+      "description": "A claim-specific gate for one subsystem or execution surface."
+    }
+  ],
+  "evidence_sources": [
+    {
+      "id": "alma_contract_rows_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_gpu_alma_contract_rows_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate",
+      "status": "specialized"
+    },
+    {
+      "id": "campaign_perf_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_campaign_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_campaign_perf_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "cpu_perf_gate",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_cpu_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "cuda_graph_multitile_parity_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_cuda_graph_multitile_parity.ps1",
+      "invocation": "powershell -File scripts/run_cuda_graph_multitile_parity.ps1",
+      "status": "specialized"
+    },
+    {
+      "id": "cuda_graph_timing_probe",
+      "authority_class": "companion_diagnostic",
+      "kind": "command",
+      "path": "scripts/run_cuda_graph_timing_probe.ps1",
+      "invocation": "powershell -File scripts/run_cuda_graph_timing_probe.ps1",
+      "status": "specialized"
+    },
+    {
+      "id": "execution_safety_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_execution_safety_gate.ps1",
+      "invocation": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_execution_safety_gate.ps1",
+      "status": "active"
+    },
+    {
+      "id": "frontend_e2e_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_frontend_e2e_gate.ps1",
+      "invocation": "powershell -File scripts/run_frontend_e2e_gate.ps1",
+      "status": "active"
+    },
+    {
+      "id": "frontend_interaction_latency_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "summary.json",
+      "producer": "frontend_interaction_latency_gate",
+      "status": "active"
+    },
+    {
+      "id": "frontend_interaction_latency_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_frontend_interaction_latency.ps1",
+      "invocation": "powershell -File scripts/run_frontend_interaction_latency.ps1",
+      "status": "active"
+    },
+    {
+      "id": "gpu_followup_perf_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_gpu_followup_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_gpu_followup_perf_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "gpu_ma_perf_gate",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_gpu_ma_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_gpu_ma_perf_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "gpu_perf_gate",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_gpu_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate -WorkloadProfile gpu-kernel",
+      "status": "active"
+    },
+    {
+      "id": "gpu_validation_perf_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_gpu_validation_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "live_safety_harness",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_live_execution_safety_harness.ps1",
+      "invocation": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_live_execution_safety_harness.ps1",
+      "status": "active"
+    },
+    {
+      "id": "manifest_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "manifest.json",
+      "producer": "release_manifest_generator",
+      "status": "active"
+    },
+    {
+      "id": "ml_native_smoke",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_ml_signal_native_smoke.ps1",
+      "invocation": "powershell -File scripts/run_ml_signal_native_smoke.ps1 <required args>",
+      "status": "active"
+    },
+    {
+      "id": "ml_quality_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_ml_signal_quality_gate.ps1",
+      "invocation": "powershell -File scripts/run_ml_signal_quality_gate.ps1",
+      "status": "active"
+    },
+    {
+      "id": "options_gpu_promotion_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_options_expression_gpu_promotion_gate.ps1",
+      "invocation": "powershell -File scripts/run_options_expression_gpu_promotion_gate.ps1 -Mode candidate -ArtifactPath <artifact> -DatasetId <id>",
+      "status": "active"
+    },
+    {
+      "id": "options_phase05_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_options_expression_phase05.ps1",
+      "invocation": "powershell -File scripts/run_options_expression_phase05.ps1",
+      "status": "active"
+    },
+    {
+      "id": "output_parity_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_output_parity_check.mjs",
+      "invocation": "node scripts/run_output_parity_check.mjs",
+      "status": "active"
+    },
+    {
+      "id": "output_structural_helper",
+      "authority_class": "non_authority_helper",
+      "kind": "command",
+      "path": "scripts/check_output_parity.mjs",
+      "invocation": "node scripts/check_output_parity.mjs",
+      "status": "active"
+    },
+    {
+      "id": "packaged_smoke_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "packaged-smoke-summary.json",
+      "producer": "packaged_smoke_runner",
+      "status": "active"
+    },
+    {
+      "id": "packaged_smoke_runner",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_packaged_smoke.ps1",
+      "invocation": "powershell -File scripts/run_packaged_smoke.ps1 <required args>",
+      "status": "active"
+    },
+    {
+      "id": "performance_inventory_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_performance_audit_baseline_pack.ps1",
+      "invocation": "powershell -File scripts/run_performance_audit_baseline_pack.ps1 -FailOnCoverageGap",
+      "status": "active"
+    },
+    {
+      "id": "provenance_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "provenance.json",
+      "producer": "provenance_capture",
+      "status": "active"
+    },
+    {
+      "id": "provenance_capture",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/capture_release_provenance.ps1",
+      "invocation": "powershell -File scripts/capture_release_provenance.ps1 <required args>",
+      "status": "active"
+    },
+    {
+      "id": "readiness_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "readiness.json",
+      "producer": "release_doctor",
+      "status": "active"
+    },
+    {
+      "id": "release_candidate_gate",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_release_candidate_gate.ps1",
+      "invocation": "powershell -File scripts/run_release_candidate_gate.ps1 -Variant <variant>",
+      "status": "active"
+    },
+    {
+      "id": "release_doctor",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_release_doctor.ps1",
+      "invocation": "powershell -File scripts/run_release_doctor.ps1 -Variant <variant>",
+      "status": "active"
+    },
+    {
+      "id": "release_manifest_generator",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/generate_release_manifest.ps1",
+      "invocation": "powershell -File scripts/generate_release_manifest.ps1 <required args>",
+      "status": "active"
+    },
+    {
+      "id": "repo_quality_gate",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "invocation": "powershell -File scripts/run_repo_quality_gate.ps1",
+      "status": "active"
+    },
+    {
+      "id": "required_cpu_ci",
+      "authority_class": "required_cpu_ci_mirror",
+      "kind": "ci_check",
+      "path": ".github/workflows/cpu-quality.yml",
+      "invocation": "Required CPU quality",
+      "delegate": "scripts/run_cpu_ci_gate.ps1",
+      "status": "active"
+    },
+    {
+      "id": "sha256sums_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "SHA256SUMS.txt",
+      "producer": "release_manifest_generator",
+      "status": "active"
+    },
+    {
+      "id": "support_perf_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_support_perf_gate.ps1",
+      "invocation": "powershell -File scripts/run_support_perf_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "workflow_gate",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_workflow_gate.ps1",
+      "invocation": "powershell -File scripts/run_workflow_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "workspace_tests_stable",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_workspace_tests_stable.ps1",
+      "invocation": "powershell -File scripts/run_workspace_tests_stable.ps1",
+      "status": "active"
+    }
+  ],
+  "claims": [
+    {
+      "id": "alma-metric-contract-rows",
+      "label": "ALMA metric contract rows",
+      "status": "specialized",
+      "primary_authority": ["alma_contract_rows_gate"],
+      "companion_sources": ["gpu_perf_gate"],
+      "required_companion_evidence": [
+        "Run the main GPU gate when general GPU behavior changes."
+      ],
+      "not_authority": ["Default pull-request GPU performance authority."]
+    },
+    {
+      "id": "artifact-report-shape",
+      "label": "Artifact/report shape",
+      "status": "active",
+      "primary_authority": ["output_parity_gate"],
+      "companion_sources": [],
+      "required_companion_evidence": [
+        "Add semantic parity checks when semantic claims change."
+      ],
+      "not_authority": [
+        "Release-candidate rehearsal alone.",
+        "The structural output helper alone for semantic claims."
+      ]
+    },
+    {
+      "id": "broad-repo-quality",
+      "label": "Broad repo quality",
+      "status": "active",
+      "primary_authority": ["repo_quality_gate"],
+      "companion_sources": ["required_cpu_ci", "workspace_tests_stable"],
+      "required_companion_evidence": [
+        "Targeted Rust or web tests for touched surfaces."
+      ],
+      "not_authority": ["Performance or profiling scripts."]
+    },
+    {
+      "id": "campaign-orchestration-performance",
+      "label": "Campaign orchestration performance",
+      "status": "active",
+      "primary_authority": ["campaign_perf_gate"],
+      "companion_sources": ["workflow_gate"],
+      "required_companion_evidence": [
+        "Campaign JSON summary.",
+        "Workflow gate when campaign behavior changes."
+      ],
+      "not_authority": ["Strategy-kernel-only benchmarks."]
+    },
+    {
+      "id": "cpu-performance",
+      "label": "CPU performance",
+      "status": "active",
+      "primary_authority": ["cpu_perf_gate"],
+      "companion_sources": ["workflow_gate"],
+      "required_companion_evidence": [
+        "Workflow gate when the product workflow path changes."
+      ],
+      "not_authority": ["GPU gates."]
+    },
+    {
+      "id": "frontend-scoped-warm-mocked-browser-latency",
+      "label": "Scoped warm mocked-browser frontend latency",
+      "status": "active",
+      "primary_authority": ["frontend_interaction_latency_gate"],
+      "companion_sources": [
+        "frontend_interaction_latency_artifact",
+        "frontend_e2e_gate"
+      ],
+      "required_companion_evidence": [
+        "Built-frontend workflow behavior for any interaction whose state contract changes.",
+        "Machine-readable exact-sample report with trusted clicks, path-matched asynchronous detail hydration, a canonical per-file build attestation, flat content-addressed immutable per-run distribution objects served from preloaded bytes, a child-verifiable lock lease, exact runner publication hash, wrapper-side sample/statistics recomputation, measurement-harness and scoped Git-status hashes, browser identity, effective-fixture hash, DOM-quiet boundary, and painted-stable budgets. Dirty exact snapshots are labeled local-candidate rehearsals with release_evidence_eligible=false; only clean scoped source can become a release-evidence candidate."
+      ],
+      "not_authority": [
+        "Full application or native Tauri/WebView2 latency.",
+        "Backend workflow, provider/network latency, or GPU follow-up timing.",
+        "Cold startup, cross-device behavior, or frontend E2E pass/fail without the scoped latency report.",
+        "Dirty-worktree publication authority; the public release gate remains the final publishability boundary."
+      ]
+    },
+    {
+      "id": "frontend-workflow-behavior",
+      "label": "Frontend workflow behavior",
+      "status": "active",
+      "primary_authority": ["frontend_e2e_gate"],
+      "companion_sources": [],
+      "required_companion_evidence": [
+        "Static QA checks, accessibility, and responsive or regression lanes as affected."
+      ],
+      "not_authority": ["Backend performance gates."]
+    },
+    {
+      "id": "full-local-release-rehearsal",
+      "label": "Full local release rehearsal",
+      "status": "active",
+      "primary_authority": ["release_candidate_gate"],
+      "companion_sources": [
+        "manifest_artifact",
+        "packaged_smoke_artifact",
+        "provenance_artifact",
+        "readiness_artifact",
+        "sha256sums_artifact"
+      ],
+      "required_companion_evidence": [
+        "Add GPU validation performance to gpu-kernel rehearsals for GPU validation or residency release claims.",
+        "Add the explicit options GPU promotion opt-in and fixed workload inputs for options scorer release claims."
+      ],
+      "not_authority": ["Archived workflows.", "Required CPU CI alone."]
+    },
+    {
+      "id": "gpu-cuda-performance",
+      "label": "GPU kernel/CUDA performance",
+      "status": "active",
+      "primary_authority": ["gpu_perf_gate"],
+      "companion_sources": ["cuda_graph_multitile_parity_gate"],
+      "required_companion_evidence": [
+        "CUDA tests, route diagnostics, and profiling only as companion evidence."
+      ],
+      "not_authority": ["ALMA contract rows alone."]
+    },
+    {
+      "id": "gpu-followup-candidate-detail-latency",
+      "label": "GPU follow-up/candidate-detail latency",
+      "status": "active",
+      "primary_authority": ["gpu_followup_perf_gate"],
+      "companion_sources": [],
+      "required_companion_evidence": [
+        "Analysis-command and frontend tests when the UI path changes."
+      ],
+      "not_authority": ["Generic GPU performance gate alone."]
+    },
+    {
+      "id": "gpu-ma-performance",
+      "label": "GPU MA-sweep performance",
+      "status": "active",
+      "primary_authority": ["gpu_ma_perf_gate"],
+      "companion_sources": [],
+      "required_companion_evidence": [
+        "CUDA tests and route diagnostics for the cuda-only GpuOnly path."
+      ],
+      "not_authority": ["The gpu-kernel workload profile or its baseline."]
+    },
+    {
+      "id": "gpu-validation-performance-residency",
+      "label": "GPU validation performance/residency",
+      "status": "active",
+      "primary_authority": ["gpu_validation_perf_gate"],
+      "companion_sources": ["output_parity_gate", "workflow_gate"],
+      "required_companion_evidence": [
+        "Output parity when validation artifacts or reports change.",
+        "Workflow gate."
+      ],
+      "not_authority": ["Generic GPU performance gate alone."]
+    },
+    {
+      "id": "live-execution-safety",
+      "label": "Live execution safety",
+      "status": "active",
+      "primary_authority": ["execution_safety_gate", "live_safety_harness"],
+      "companion_sources": [],
+      "required_companion_evidence": [
+        "Frontend execution tests.",
+        "Mock broker and feed tests."
+      ],
+      "not_authority": [
+        "Broker success or profitability.",
+        "Performance benchmarks."
+      ]
+    },
+    {
+      "id": "ml-signal-quality-native-cpu",
+      "label": "ML Signal quality/native CPU",
+      "status": "active",
+      "primary_authority": ["ml_native_smoke", "ml_quality_gate"],
+      "companion_sources": [],
+      "required_companion_evidence": [
+        "ML-specific artifact and provenance checks."
+      ],
+      "not_authority": ["Normal optimizer performance gates."]
+    },
+    {
+      "id": "options-expression-gpu-promotion",
+      "label": "Options-expression GPU promotion",
+      "status": "active",
+      "primary_authority": ["options_gpu_promotion_gate"],
+      "companion_sources": ["options_phase05_gate"],
+      "required_companion_evidence": [
+        "CPU/GPU ranking parity.",
+        "Options tests.",
+        "Phase 05 evidence."
+      ],
+      "not_authority": ["Options Criterion benchmarks alone."]
+    },
+    {
+      "id": "release-readiness",
+      "label": "Release readiness",
+      "status": "active",
+      "primary_authority": ["release_doctor"],
+      "companion_sources": ["readiness_artifact"],
+      "required_companion_evidence": [
+        "Inspect readiness.json for the requested variant."
+      ],
+      "not_authority": ["Manifest or provenance alone."]
+    },
+    {
+      "id": "repo-wide-performance-authority-inventory",
+      "label": "Repo-wide performance authority inventory",
+      "status": "active",
+      "primary_authority": ["performance_inventory_gate"],
+      "companion_sources": [],
+      "required_companion_evidence": ["Candidate packs for changed surfaces."],
+      "not_authority": [
+        "Baseline refresh.",
+        "Credentialed live or provider behavior.",
+        "CUDA residency proof."
+      ]
+    },
+    {
+      "id": "support-surface-performance",
+      "label": "Support-surface performance",
+      "status": "active",
+      "primary_authority": ["support_perf_gate"],
+      "companion_sources": ["output_parity_gate", "performance_inventory_gate"],
+      "required_companion_evidence": [
+        "Output parity when artifact or report shape changes.",
+        "Performance audit candidate pack with support enabled."
+      ],
+      "not_authority": [
+        "Credentialed provider stream start or live broker/API behavior."
+      ]
+    },
+    {
+      "id": "warm-workflow-regression",
+      "label": "Warm workflow regression",
+      "status": "active",
+      "primary_authority": ["workflow_gate"],
+      "companion_sources": ["output_parity_gate"],
+      "required_companion_evidence": [
+        "Output parity when artifact or report shape changes."
+      ],
+      "not_authority": ["Criterion-only benchmarks."]
+    }
+  ],
+  "release_variants": [
+    {
+      "id": "cpu",
+      "label": "CPU-only",
+      "required_claims": [
+        "artifact-report-shape",
+        "broad-repo-quality",
+        "full-local-release-rehearsal",
+        "live-execution-safety",
+        "release-readiness"
+      ],
+      "required_sources": [
+        "execution_safety_gate",
+        "live_safety_harness",
+        "manifest_artifact",
+        "provenance_artifact",
+        "release_candidate_gate",
+        "release_doctor",
+        "sha256sums_artifact"
+      ],
+      "conditional_sources": [],
+      "invariants": [
+        "Must not require a CUDA Toolkit, NVIDIA driver, or NVIDIA GPU.",
+        "The shipped desktop exposes Alpaca live execution, so public release requires both execution-safety authorities."
+      ]
+    },
+    {
+      "id": "gpu-kernel",
+      "label": "GPU kernel",
+      "required_claims": [
+        "artifact-report-shape",
+        "broad-repo-quality",
+        "full-local-release-rehearsal",
+        "gpu-cuda-performance",
+        "live-execution-safety",
+        "release-readiness"
+      ],
+      "required_sources": [
+        "execution_safety_gate",
+        "gpu_perf_gate",
+        "live_safety_harness",
+        "manifest_artifact",
+        "release_candidate_gate",
+        "release_doctor"
+      ],
+      "conditional_sources": [
+        "gpu_validation_perf_gate",
+        "options_gpu_promotion_gate"
+      ],
+      "invariants": [
+        "Packaged kernel path requires VECTORBT_USE_PREBUILT_PTX=1.",
+        "GPU validation performance/residency claims require the dedicated validation gate.",
+        "The shipped desktop exposes Alpaca live execution, so public release requires both execution-safety authorities."
+      ]
+    },
+    {
+      "id": "gpu-ma",
+      "label": "GPU MA-sweep",
+      "required_claims": [
+        "artifact-report-shape",
+        "broad-repo-quality",
+        "full-local-release-rehearsal",
+        "gpu-ma-performance",
+        "live-execution-safety",
+        "release-readiness"
+      ],
+      "required_sources": [
+        "execution_safety_gate",
+        "gpu_ma_perf_gate",
+        "live_safety_harness",
+        "release_candidate_gate",
+        "release_doctor"
+      ],
+      "conditional_sources": [],
+      "invariants": [
+        "Requires NVIDIA driver/runtime evidence.",
+        "Uses the cuda-only GPU MA-sweep case registry and a baseline separate from gpu-kernel.",
+        "The shipped desktop exposes Alpaca live execution, so public release requires both execution-safety authorities."
+      ]
+    },
+    {
+      "id": "live-execution-enabled",
+      "label": "Live execution enabled",
+      "required_claims": ["broad-repo-quality", "live-execution-safety"],
+      "required_sources": ["execution_safety_gate", "live_safety_harness"],
+      "conditional_sources": [],
+      "invariants": [
+        "This is a capability overlay on every current CPU/GPU desktop package, not a separately feature-gated build.",
+        "Default automated gates must not consume live credentials.",
+        "Public release still requires manual recovery and emergency-halt evidence."
+      ]
+    },
+    {
+      "id": "ml-signal-native-cpu",
+      "label": "ML Signal native CPU",
+      "required_claims": [
+        "broad-repo-quality",
+        "ml-signal-quality-native-cpu",
+        "release-readiness"
+      ],
+      "required_sources": [
+        "manifest_artifact",
+        "ml_native_smoke",
+        "ml_quality_gate"
+      ],
+      "conditional_sources": [],
+      "invariants": [
+        "Missing native DLL must be an explicit unsupported or fallback state."
+      ]
+    },
+    {
+      "id": "options-gpu-scorer",
+      "label": "Options GPU scorer",
+      "required_claims": [
+        "broad-repo-quality",
+        "options-expression-gpu-promotion"
+      ],
+      "required_sources": [
+        "options_gpu_promotion_gate",
+        "options_phase05_gate"
+      ],
+      "conditional_sources": [],
+      "invariants": [
+        "CPU evaluator remains the oracle.",
+        "Packaging PTX evidence alone cannot promote the scorer."
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "id": "cuda-graphs-timing-boundary",
+      "label": "CUDA Graphs timing boundary",
+      "status": "implemented",
+      "reason": "Opt-in runtime instrumentation and a serialized, stale-evidence-safe probe separate graph capture, instantiation, immutable-topology update non-applicability, and asynchronous replay submission in machine-readable microsecond evidence. Reuse is keyed by launch topology plus captured tile-specific device pointers. A separate constrained-VRAM graph-off/on lane proves repeated coarse-identical full tiles, exact winner parity, metric parity, and pointer-aware recapture for every replay; it remains a specialized correctness regression rather than broad performance or release authority.",
+      "implemented_by": [
+        "crates/app_core/src/bin/profile_gpu_dynamic_runner.rs",
+        "crates/app_core/src/double_ma.rs",
+        "crates/app_core/src/gpu_backtest_kernel.rs",
+        "scripts/cuda_graph_multitile_parity_contract.test.mjs",
+        "scripts/cuda_graph_timing_contract.test.mjs",
+        "scripts/run_cuda_graph_multitile_parity.ps1",
+        "scripts/run_cuda_graph_timing_probe.ps1"
+      ]
+    },
+    {
+      "id": "dedicated-gpu-ma-perf-authority",
+      "label": "Dedicated `gpu-ma` perf authority",
+      "status": "implemented",
+      "reason": "The gpu-ma release variant now selects a cuda-only MA-sweep case registry with dedicated baseline and output paths.",
+      "implemented_by": [
+        "docs/verification_benchmark_release_authority.md",
+        "scripts/check_release_gpu_authority_wiring.test.mjs",
+        "scripts/run_backend_release_gate.ps1",
+        "scripts/run_gpu_ma_perf_gate.ps1",
+        "scripts/run_gpu_perf_gate.ps1",
+        "scripts/run_release_candidate_gate.ps1"
+      ]
+    },
+    {
+      "id": "full-frontend-click-to-render-latency",
+      "label": "Full frontend click-to-render latency",
+      "status": "research_spike",
+      "reason": "The scoped warm mocked-browser lane covers two representative built-frontend interactions, but full application latency still requires native Tauri/WebView2, real backend/provider boundaries, cold paths, complete workflow coverage, and representative device evidence.",
+      "implemented_by": []
+    },
+    {
+      "id": "gpu-native-clean-machine-ci-lanes",
+      "label": "GPU/native/clean-machine CI lanes",
+      "status": "deferred",
+      "reason": "Suitable GPU or desktop runners, foreground ownership, signing infrastructure, or clean-VM orchestration are required.",
+      "implemented_by": []
+    },
+    {
+      "id": "live-safety-harness-authority",
+      "label": "Live safety harness authority",
+      "status": "implemented",
+      "reason": "The reviewed harness uses one locked, offline, explicit CPU-feature Cargo invocation, clears production credential environment variables, traps ordinary external HTTP proxy traffic, hard-pins all 107 commands_execution tests plus 21 supporting execution contracts, verifies source stability, and emits authority-eligibility separately from contract simulation. Every public CPU/GPU desktop release now requires the execution safety gate plus fresh authority-eligible harness evidence.",
+      "implemented_by": [
+        "scripts/live_execution_safety_harness_contract.test.mjs",
+        "scripts/public_live_safety_evidence_contract.mjs",
+        "scripts/public_live_safety_evidence_contract.test.mjs",
+        "scripts/run_live_execution_safety_harness.ps1",
+        "scripts/run_public_release_gate.ps1",
+        "scripts/run_release_candidate_gate.ps1",
+        "scripts/run_repo_quality_gate.ps1"
+      ]
+    },
+    {
+      "id": "machine-readable-authority-matrix",
+      "label": "Machine-readable authority matrix",
+      "status": "implemented",
+      "reason": "The canonical JSON matrix and deterministic validator are enforced by repo quality, release doctor, and required CPU CI.",
+      "implemented_by": [
+        "docs/release_authority_matrix.json",
+        "scripts/check_release_authority_matrix.mjs",
+        "scripts/check_release_authority_matrix.test.mjs"
+      ]
+    },
+    {
+      "id": "options-gpu-scorer-release-promotion-authority",
+      "label": "Options GPU scorer release-promotion authority",
+      "status": "implemented",
+      "reason": "The gpu-kernel release and public gates expose an explicit fail-closed promotion opt-in that requires a fixed workload, CPU options tests, exact GPU parity tests, promotion checks, and baseline comparison evidence.",
+      "implemented_by": [
+        "docs/verification_benchmark_release_authority.md",
+        "scripts/check_release_gpu_authority_wiring.test.mjs",
+        "scripts/run_options_expression_gpu_promotion_gate.ps1",
+        "scripts/run_public_release_gate.ps1",
+        "scripts/run_release_candidate_gate.ps1"
+      ]
+    },
+    {
+      "id": "release-candidate-output-parity-integration",
+      "label": "Release-candidate output parity integration",
+      "status": "implemented",
+      "reason": "Candidate rehearsal runs the tracked structural and semantic parity pack by default.",
+      "implemented_by": [
+        "scripts/run_output_parity_check.mjs",
+        "scripts/run_release_candidate_gate.ps1"
+      ]
+    },
+    {
+      "id": "required-cpu-ci-enforcement",
+      "label": "Required CPU CI enforcement",
+      "status": "implemented",
+      "reason": "The active workflow delegates to the repo-owned required CPU gate; branch protection activation remains an external repository setting.",
+      "implemented_by": [
+        ".github/workflows/cpu-quality.yml",
+        "scripts/run_cpu_ci_gate.ps1"
+      ]
+    }
+  ],
+  "contract_wiring": [
+    {
+      "id": "authority-matrix-clean-clone",
+      "path": ".gitignore",
+      "must_include": "!/docs/release_authority_matrix.json"
+    },
+    {
+      "id": "authority-policy-document-clean-clone",
+      "path": ".gitignore",
+      "must_include": "!/docs/verification_benchmark_release_authority.md"
+    },
+    {
+      "id": "benchmark-lock-live-lease-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "benchmark_lock_contract.test.mjs"
+    },
+    {
+      "id": "cpu-ci-delegates-repo-quality",
+      "path": "scripts/run_cpu_ci_gate.ps1",
+      "must_include": "run_repo_quality_gate.ps1"
+    },
+    {
+      "id": "cuda-graph-multitile-quality-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "cuda_graph_multitile_parity_contract.test.mjs"
+    },
+    {
+      "id": "execution-safety-credential-isolation",
+      "path": "scripts/run_execution_safety_gate.ps1",
+      "must_include": "APCA_API_SECRET_KEY"
+    },
+    {
+      "id": "execution-safety-public-routing",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "-IncludeExecutionSafetyGate"
+    },
+    {
+      "id": "frontend-interaction-latency-argument-matching",
+      "path": "web/scripts/support/mockedTauriHarness.mjs",
+      "must_include": "__mockByArgument"
+    },
+    {
+      "id": "frontend-interaction-latency-argument-matching-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "mockedTauriHarness.test.mjs"
+    },
+    {
+      "id": "frontend-interaction-latency-authority-lease-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "frontend-interaction-authority-lease.test.mjs"
+    },
+    {
+      "id": "frontend-interaction-latency-build-attestation-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "frontend-interaction-build-attestation.test.mjs"
+    },
+    {
+      "id": "frontend-interaction-latency-build-attestation-wrapper",
+      "path": "scripts/run_frontend_interaction_latency.ps1",
+      "must_include": "frontend-interaction-build-attestation.mjs"
+    },
+    {
+      "id": "frontend-interaction-latency-e2e-opt-in",
+      "path": "scripts/run_frontend_e2e_gate.ps1",
+      "must_include": "IncludeInteractionLatency"
+    },
+    {
+      "id": "frontend-interaction-latency-immutable-snapshot-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "frontend-interaction-static-snapshot.test.mjs"
+    },
+    {
+      "id": "frontend-interaction-latency-inventory",
+      "path": "scripts/run_performance_audit_baseline_pack.ps1",
+      "must_include": "IncludeFrontendInteractionLatency"
+    },
+    {
+      "id": "frontend-interaction-latency-output-lifecycle",
+      "path": "web/scripts/measure-frontend-interaction-latency.mjs",
+      "must_include": "atomicWriteJson"
+    },
+    {
+      "id": "frontend-interaction-latency-policy",
+      "path": "web/scripts/measure-frontend-interaction-latency.mjs",
+      "must_include": "frontend_interaction_latency_policy.json"
+    },
+    {
+      "id": "frontend-interaction-latency-quality-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "frontend-interaction-latency-lib.test.mjs"
+    },
+    {
+      "id": "frontend-interaction-latency-report-validator",
+      "path": "scripts/run_frontend_interaction_latency.ps1",
+      "must_include": "frontend-interaction-report-validator.mjs"
+    },
+    {
+      "id": "frontend-interaction-latency-serialization",
+      "path": "scripts/run_frontend_interaction_latency.ps1",
+      "must_include": "Enter-BenchmarkLock"
+    },
+    {
+      "id": "frontend-interaction-latency-wrapper-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "frontend-interaction-wrapper-contract.test.mjs"
+    },
+    {
+      "id": "github-cpu-workflow-delegates-cpu-ci",
+      "path": ".github/workflows/cpu-quality.yml",
+      "must_include": "scripts/run_cpu_ci_gate.ps1"
+    },
+    {
+      "id": "gpu-ma-backend-release-routing",
+      "path": "scripts/run_backend_release_gate.ps1",
+      "must_include": "run_gpu_ma_perf_gate.ps1"
+    },
+    {
+      "id": "gpu-ma-profile-selection",
+      "path": "scripts/run_gpu_ma_perf_gate.ps1",
+      "must_include": "WorkloadProfile = \"gpu-ma\""
+    },
+    {
+      "id": "gpu-ma-release-routing",
+      "path": "scripts/run_release_candidate_gate.ps1",
+      "must_include": "run_gpu_ma_perf_gate.ps1"
+    },
+    {
+      "id": "live-safety-harness-contract",
+      "path": "scripts/live_execution_safety_harness_contract.test.mjs",
+      "must_include": "run_live_execution_safety_harness.ps1"
+    },
+    {
+      "id": "live-safety-harness-public-evidence-contract",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "public_live_safety_evidence_contract.mjs"
+    },
+    {
+      "id": "live-safety-harness-public-evidence-quality-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "public_live_safety_evidence_contract.test.mjs"
+    },
+    {
+      "id": "live-safety-harness-public-routing",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "-IncludeLiveSafetyHarness"
+    },
+    {
+      "id": "live-safety-harness-quality-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "live_execution_safety_harness_contract.test.mjs"
+    },
+    {
+      "id": "live-safety-harness-release-opt-in",
+      "path": "scripts/run_release_candidate_gate.ps1",
+      "must_include": "run_live_execution_safety_harness.ps1"
+    },
+    {
+      "id": "live-safety-harness-single-cargo",
+      "path": "scripts/run_live_execution_safety_harness.ps1",
+      "must_include": "expected exactly one Cargo invocation"
+    },
+    {
+      "id": "options-promotion-correctness",
+      "path": "scripts/run_options_expression_gpu_promotion_gate.ps1",
+      "must_include": "gpu_combined_ranking_matches_cpu_topk_on_small_surface"
+    },
+    {
+      "id": "options-promotion-public-routing",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "-IncludeOptionsGpuPromotion"
+    },
+    {
+      "id": "options-promotion-release-routing",
+      "path": "scripts/run_release_candidate_gate.ps1",
+      "must_include": "-IncludeOptionsGpuPromotion"
+    },
+    {
+      "id": "release-doctor-runs-authority-contract",
+      "path": "scripts/run_release_doctor.ps1",
+      "must_include": "check_release_authority_matrix.mjs"
+    },
+    {
+      "id": "repo-quality-runs-authority-contract",
+      "path": "scripts/run_repo_quality_gate.ps1",
+      "must_include": "check_release_authority_matrix.mjs"
+    }
+  ]
+}

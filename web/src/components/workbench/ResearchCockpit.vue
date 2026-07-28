@@ -29,6 +29,7 @@ function selectStep(id: ResearchCockpitStepId): void {
         :data-state="step.state"
         :data-qa-action="step.actionId"
         :aria-current="step.state === 'active' ? 'step' : undefined"
+        :title="`${step.label}: ${step.detail}`"
         @click="selectStep(step.id)"
       >
         <span>{{ step.label }}</span>
@@ -36,13 +37,7 @@ function selectStep(id: ResearchCockpitStepId): void {
       </button>
     </div>
 
-    <div class="cockpitAction" :class="{ blocked: model.primaryAction.disabled }">
-      <span class="eyebrow">{{ model.modeLabel }}</span>
-      <strong>{{ model.primaryAction.label }}</strong>
-      <p>{{ model.primaryDetail }}</p>
-    </div>
-
-    <div class="cockpitCards" aria-label="Research status cards">
+    <div class="cockpitCards" role="region" aria-label="Research status cards" tabindex="0">
       <article
         v-for="card in visibleCards"
         :key="card.id"
@@ -65,10 +60,10 @@ function selectStep(id: ResearchCockpitStepId): void {
   background: color-mix(in oklab, var(--surface-shell) 86%, var(--panel));
   padding: 0.58rem 0.65rem;
   display: grid;
-  grid-template-columns: minmax(14rem, 0.84fr) minmax(22rem, 1.45fr) minmax(15rem, 0.78fr);
+  grid-template-columns: minmax(14rem, 0.72fr) minmax(32rem, 2fr);
   grid-template-areas:
-    "lead steps action"
-    "cards cards cards";
+    "lead steps"
+    "cards cards";
   gap: 0.5rem 0.58rem;
 }
 
@@ -82,7 +77,7 @@ function selectStep(id: ResearchCockpitStepId): void {
 
 .eyebrow,
 .cockpitCard span {
-  font-size: 0.64rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -96,11 +91,10 @@ function selectStep(id: ResearchCockpitStepId): void {
 }
 
 .cockpitLead p,
-.cockpitAction p,
 .cockpitCard p {
   margin: 0;
   color: var(--muted-strong);
-  font-size: 0.73rem;
+  font-size: var(--text-xs);
   line-height: 1.3;
 }
 
@@ -115,7 +109,7 @@ function selectStep(id: ResearchCockpitStepId): void {
   grid-area: steps;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(6.4rem, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.32rem;
 }
 
@@ -134,13 +128,13 @@ function selectStep(id: ResearchCockpitStepId): void {
 }
 
 .cockpitStep span {
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
   font-weight: 750;
 }
 
 .cockpitStep strong {
   min-width: 0;
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
   line-height: 1.15;
   color: var(--muted);
   white-space: nowrap;
@@ -161,32 +155,6 @@ function selectStep(id: ResearchCockpitStepId): void {
 
 .cockpitStep.blocked {
   opacity: 0.66;
-}
-
-.cockpitAction {
-  grid-area: action;
-  min-width: 0;
-  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 56%, var(--border));
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-working));
-  padding: 0.48rem 0.56rem;
-  display: grid;
-  align-content: center;
-  gap: 0.08rem;
-}
-
-.cockpitAction.blocked {
-  border-color: color-mix(in oklab, var(--warning) 42%, var(--border));
-  background: color-mix(in oklab, var(--surface-warning) 62%, var(--surface-working));
-}
-
-.cockpitAction strong {
-  min-width: 0;
-  font-size: 0.86rem;
-  line-height: 1.18;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .cockpitCards {
@@ -240,15 +208,7 @@ function selectStep(id: ResearchCockpitStepId): void {
 
 @media (max-width: 1180px) {
   .researchCockpit {
-    grid-template-columns: minmax(0, 1fr) minmax(14rem, 0.45fr);
-    grid-template-areas:
-      "lead action"
-      "steps steps"
-      "cards cards";
-  }
-
-  .cockpitCards {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: minmax(10rem, 0.66fr) minmax(24rem, 1.6fr);
   }
 }
 
@@ -258,25 +218,68 @@ function selectStep(id: ResearchCockpitStepId): void {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "lead"
-      "action"
       "steps"
       "cards";
   }
 
   .cockpitSteps {
     overflow-x: auto;
-    grid-template-columns: repeat(auto-fit, minmax(7.2rem, 1fr));
+    grid-template-columns: repeat(6, minmax(7.2rem, 1fr));
     scrollbar-width: thin;
   }
 
   .cockpitCards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: auto;
+    grid-template-columns: repeat(5, minmax(9rem, 70vw));
+    scrollbar-width: thin;
   }
 }
 
 @media (max-width: 460px) {
-  .cockpitCards {
+  .researchCockpit {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-height: 760px) {
+  .researchCockpit {
+    padding-block: 0.38rem;
+    gap: 0.36rem 0.48rem;
+  }
+
+  .cockpitLead p,
+  .cockpitCard p {
+    display: none;
+  }
+
+  .cockpitStep {
+    min-height: 40px;
+    padding-block: 0.28rem;
+  }
+
+  .cockpitCard {
+    padding-block: 0.34rem;
+  }
+}
+
+@media (max-height: 680px) {
+  .researchCockpit {
+    padding-block: 0.2rem;
+    gap: 0.24rem 0.42rem;
+  }
+
+  .cockpitCards {
+    display: none;
+  }
+
+  .cockpitStep {
+    min-height: 30px;
+    padding-block: 0.18rem;
+  }
+
+  .cockpitStep strong,
+  .cockpitLead .eyebrow {
+    display: none;
   }
 }
 </style>

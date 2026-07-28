@@ -13,6 +13,7 @@ use ta_app_core::{
 };
 use ta_desktop_demo_app::commands::{
     apply_cross_ticker_validation_double_ma_headless, build_report_xlsx_bytes_headless,
+    build_validation_shortlist_csv_headless,
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
@@ -93,7 +94,7 @@ enum CrossModeArg {
 
 #[derive(Parser, Debug)]
 #[command(name = "ta_headless_validate")]
-#[command(about = "Headless optimize -> validate -> XLSX pipeline for Double MA")]
+#[command(about = "Headless optimize -> validate -> JSON/CSV/XLSX pipeline for Double MA")]
 struct Cli {
     #[arg(long)]
     csv: PathBuf,
@@ -109,6 +110,9 @@ struct Cli {
 
     #[arg(long)]
     out_json: Option<PathBuf>,
+
+    #[arg(long)]
+    out_csv: Option<PathBuf>,
 
     #[arg(long)]
     out_xlsx: Option<PathBuf>,
@@ -557,6 +561,12 @@ fn main() -> Result<(), String> {
         csv_path: Some(cli.csv.to_string_lossy().to_string()),
         timeframe: None,
         label: None,
+        optimization_trials: Some(opt_res.num_combos),
+        search_distribution: opt_res
+            .search_semantics
+            .as_ref()
+            .and_then(|semantics| semantics.search_distribution.clone()),
+        data_realism: None,
     });
 
     let val_req = DoubleMaValidationRequest {
@@ -681,6 +691,18 @@ fn main() -> Result<(), String> {
         let txt = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
         atomic_output::write_str(out_json, &txt)?;
         println!("Saved JSON report: {}", out_json.to_string_lossy());
+    }
+
+    if let Some(out_csv) = cli.out_csv.as_ref() {
+        let validation_res = report
+            .pointer("/validation/res")
+            .ok_or_else(|| "missing report.validation.res".to_string())?;
+        let csv = build_validation_shortlist_csv_headless(validation_res)?;
+        atomic_output::write_str(out_csv, &csv)?;
+        println!(
+            "Saved validation shortlist CSV: {}",
+            out_csv.to_string_lossy()
+        );
     }
 
     let out_xlsx = cli

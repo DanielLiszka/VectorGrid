@@ -83,6 +83,20 @@ describe('shellCommandRegistry', () => {
     expect(browseCsv).not.toHaveBeenCalled()
   })
 
+  it('replaces disabled command descriptions with the centralized reason', () => {
+    const commands = createSharedShellCommands(runtimeContext({
+      canValidate: false,
+      disabledReasons: {
+        validate: 'Load the matching dataset before validation.',
+      },
+    }))
+
+    expect(commands.find((command) => command.id === 'validate')).toMatchObject({
+      enabled: false,
+      desc: 'Load the matching dataset before validation.',
+    })
+  })
+
   it('exposes enabled states for native menu synchronization', () => {
     const states = createSharedShellCommandEnabledStates(runtimeContext({
       canRun: false,

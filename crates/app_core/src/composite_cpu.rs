@@ -2794,7 +2794,6 @@ fn run_asr_optimization_gpu(
             }
             Err(_) => (None, None, None),
         };
-
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
@@ -4439,6 +4438,11 @@ fn run_vemr_optimization_gpu(
                     all: None,
                     all_scores: None,
                     heatmap: None,
+                    search_distribution: None,
+                    search_distribution_unavailable_reason: Some(
+                        "full-search Sharpe distribution unavailable: this GPU route materialized only retained finalists"
+                            .to_string(),
+                    ),
                     num_combos: num_combos_total,
                     num_candles: n,
                 };
@@ -7858,7 +7862,7 @@ fn run_rocb_optimization_impl(
         best_metrics: result.best_metrics,
         best_score: result.best_score,
         mode_used,
-        backend_used,
+        backend_used: backend_used.clone(),
         matrix_index,
         best_col,
         top_cols,
@@ -7873,7 +7877,11 @@ fn run_rocb_optimization_impl(
         vdps: None,
         hybrid_timing_ms: None,
         gpu_kernel_timing_ms: None,
-        backend_route: Some("GpuKernel".to_string()),
+        backend_route: if matches!(backend_used, BackendUsed::Gpu) {
+            Some("GpuKernel".to_string())
+        } else {
+            None
+        },
         backend_fallback_reason: None,
         route_diagnostics: None,
         indicator_route_plan: None,
@@ -18076,6 +18084,25 @@ mod tests {
         let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
             .expect("cdmc local stability run");
         assert_local_stability_result_has_points(&res);
+    }
+
+    #[test]
+    fn rocb_cpu_optimization_does_not_claim_gpu_route() {
+        let candles = make_trending_candles(1000);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+        req.backend = Backend::CpuOnly;
+        req.rocb = Some(RocbStrategyParams::default());
+        req.fast_range = (5, 5, 1);
+        req.slow_range = (20, 20, 1);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("rocb CPU optimization run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route, None);
+        assert_eq!(res.backend_fallback_reason, None);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

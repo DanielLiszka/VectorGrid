@@ -28,6 +28,7 @@ const {
   statusLine,
   updatedAtUnixMs,
   drillChartModel,
+  drillStatus,
   drillTradeTableModel,
   selectedTopDecisionNote,
   selectedTopProvenanceChips,
@@ -49,6 +50,13 @@ const chartViewLabel = ref('')
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 const drillContentVisible = computed(() => analysisStore.drillWrapVisible || Boolean(drillChartModel.value))
+const drillCompatibilityMessage = computed(() => {
+  if (drillContentVisible.value) return ''
+  const status = cleanText(drillStatus.value)
+  return status.startsWith('Candidate detail unavailable:') || status.startsWith('Candidate detail stale/incompatible:')
+    ? status
+    : ''
+})
 const tradeTableVisible = computed(() => Boolean(drillTradeTableModel.value?.visible))
 const tradeStatsText = computed(() => drillTradeTableModel.value?.statsText || '-')
 const tradeRows = computed(() => drillTradeTableModel.value?.rows ?? [])
@@ -82,6 +90,7 @@ const selectedCandidateTitle = computed(() => {
 })
 
 const selectedCandidateSummary = computed(() => {
+  if (drillCompatibilityMessage.value) return drillCompatibilityMessage.value
   const explicit = cleanText(selectedTopSummary.value)
   if (
     explicit &&
@@ -95,6 +104,9 @@ const selectedCandidateSummary = computed(() => {
 })
 
 const selectedCandidateDecisionNote = computed(() => {
+  if (drillCompatibilityMessage.value) {
+    return 'Historical candidate rows remain available in Top Results. Load the matching dataset before recomputing detail evidence.'
+  }
   const explicit = cleanText(selectedTopDecisionNote.value)
   if (
     explicit &&
@@ -407,7 +419,7 @@ onBeforeUnmount(() => {
 
       <section class="pane">
         <div id="drillEmptyHintVue" class="panelStatus" role="status" aria-live="polite">
-          Select a row in the Top tab to compute candidate detail curves.
+          {{ drillCompatibilityMessage || 'Select a row in the Top tab to compute candidate detail curves.' }}
         </div>
         <div class="chartAssist">
           <div id="drillKeyboardHint" class="panelMuted">Use the Top results table to select another candidate, or click chart markers if you prefer direct chart interaction.</div>
@@ -416,7 +428,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
           <div v-if="!drillContentVisible" class="panelAdvisory">
-            If the charts stay empty, confirm that a Top result is selected and that the latest optimization run finished writing analysis results.
+            {{ drillCompatibilityMessage
+              ? 'Load the matching dataset before recomputing detail evidence. The historical shortlist remains available in Top Results.'
+              : 'If the charts stay empty, confirm that a Top result is selected and that the latest optimization run finished writing analysis results.' }}
           </div>
           <div
             id="drillWrapVue"

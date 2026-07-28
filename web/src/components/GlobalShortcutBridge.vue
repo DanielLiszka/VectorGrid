@@ -8,6 +8,8 @@ import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 import { openTaskCenter, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import {
@@ -16,6 +18,7 @@ import {
   dispatchSharedShellShortcut,
   type SharedShellShortcutContext,
 } from '../utils/shellShortcutRegistry'
+import { resolveShellResultCommandReadiness } from '../utils/shellCommandReadiness'
 import { listenEvent } from '../tauri/events'
 import { invokeCommand, tauriRuntimeAvailable } from '../tauri/invoke'
 
@@ -31,18 +34,35 @@ const commandPaletteStore = useCommandPaletteStore()
 const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
 const settingsStore = useSettingsStore()
+const workflowArtifactsStore = useWorkflowArtifactsStore()
+const workflowStore = useWorkflowStore()
 const taskCenterOpen = useTaskCenterVisibility()
 
 const { canExportCsv, canExportJson } = storeToRefs(analysisStore)
 const { canOpenLatestMetaReport, canOpenLatestReport } = storeToRefs(commandActionStore)
 const { open: commandPaletteOpen } = storeToRefs(commandPaletteStore)
-const { canBrowseCsv, canPolygonOpen, polygonOpen } = storeToRefs(dataStore)
+const { baseCsvPath, canBrowseCsv, canPolygonOpen, csvPath, dataId, dataTimeframe, polygonOpen } = storeToRefs(dataStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
 const { controlsCollapsed } = storeToRefs(settingsStore)
+const { currentRun } = storeToRefs(workflowArtifactsStore)
+const { mode, workspace } = storeToRefs(workflowStore)
 const { datasetReady } = useUiReadiness()
 
-const canRun = computed(() => !runDisabled.value && datasetReady.value)
-const canValidate = computed(() => !validateDisabled.value && datasetReady.value)
+const resultCommandReadiness = computed(() =>
+  resolveShellResultCommandReadiness({
+    workspace: workspace.value,
+    mode: mode.value,
+    datasetReady: datasetReady.value,
+    activeDataId: dataId.value,
+    activeDatasetPath: baseCsvPath.value || csvPath.value,
+    activeTimeframe: dataTimeframe.value,
+    currentRun: currentRun.value,
+    runDisabled: runDisabled.value,
+    validateDisabled: validateDisabled.value,
+    canExportCsv: canExportCsv.value,
+    canExportJson: canExportJson.value,
+  }),
+)
 
 function isMultilineEditorTarget(el: Element | null): boolean {
   const tag = String((el as HTMLElement | null)?.tagName || '').toLowerCase()
@@ -80,16 +100,17 @@ function isPolygonModalOpen(): boolean {
 
 function sharedShellShortcutContext(): SharedShellShortcutContext {
   return {
-    canRun: canRun.value,
+    canRun: resultCommandReadiness.value.canRun,
     canCancel: canCancel.value,
-    canValidate: canValidate.value,
+    canValidate: resultCommandReadiness.value.canValidate,
     canBrowseCsv: canBrowseCsv.value,
     canPolygonOpen: canPolygonOpen.value,
-    canExportCsv: canExportCsv.value,
-    canExportJson: canExportJson.value,
+    canExportCsv: resultCommandReadiness.value.canExportCsv,
+    canExportJson: resultCommandReadiness.value.canExportJson,
     canOpenLatestReport: canOpenLatestReport.value,
     canOpenLatestMetaReport: canOpenLatestMetaReport.value,
     controlsPanelVisible: !controlsCollapsed.value,
+    disabledReasons: resultCommandReadiness.value.reasons,
     browseCsv: () => {
       commandActionStore.browseCsv()
     },

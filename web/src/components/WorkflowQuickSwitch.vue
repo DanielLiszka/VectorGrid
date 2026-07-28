@@ -284,6 +284,12 @@ function onStepKeydown(event: KeyboardEvent): void {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .workflowSwitch[data-state='open'] {
+    animation: none;
+  }
+}
+
 .head {
   display: flex;
   justify-content: space-between;

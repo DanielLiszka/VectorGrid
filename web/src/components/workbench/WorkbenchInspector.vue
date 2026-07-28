@@ -6,10 +6,13 @@ import type { WorkbenchInspectorMode, WorkbenchInspectorState } from '../../util
 const props = defineProps<{
   state: WorkbenchInspectorState
   collapsed: boolean
+  compact?: boolean
+  compactOpen?: boolean
 }>()
 
 const emit = defineEmits<{
   toggle: []
+  closeCompact: []
   selectMode: [mode: WorkbenchInspectorMode]
   runAction: [actionId: string]
 }>()
@@ -35,15 +38,25 @@ function onModeKeydown(event: KeyboardEvent, mode: WorkbenchInspectorMode): void
   emit('selectMode', nextMode)
   focusMode(nextMode)
 }
+
+function closeInspector(): void {
+  if (props.compact) {
+    emit('closeCompact')
+    return
+  }
+  emit('toggle')
+}
 </script>
 
 <template>
   <aside
     class="workbenchInspector"
-    :class="{ collapsed }"
+    :class="{ collapsed, compact, compactOpen }"
     aria-label="Workbench inspector"
     data-qa-panel="workbench.inspector"
     :data-collapsed="collapsed ? 'true' : 'false'"
+    :aria-hidden="compact && !compactOpen ? 'true' : undefined"
+    :inert="compact && !compactOpen"
   >
     <header class="inspectorHeader">
       <div v-if="!collapsed" class="headerCopy">
@@ -54,10 +67,10 @@ function onModeKeydown(event: KeyboardEvent, mode: WorkbenchInspectorMode): void
         type="button"
         class="toggleButton"
         data-qa-action="workbench.inspector.toggle"
-        :aria-label="collapsed ? 'Expand inspector' : 'Collapse inspector'"
-        @click="emit('toggle')"
+        :aria-label="compact ? 'Close inspector' : collapsed ? 'Expand inspector' : 'Collapse inspector'"
+        @click="closeInspector"
       >
-        <ChevronLeft v-if="!collapsed" aria-hidden="true" />
+        <ChevronLeft v-if="!collapsed || compact" aria-hidden="true" />
         <ChevronRight v-else aria-hidden="true" />
       </button>
     </header>
@@ -81,7 +94,13 @@ function onModeKeydown(event: KeyboardEvent, mode: WorkbenchInspectorMode): void
       </button>
     </div>
 
-    <section v-if="!collapsed" class="inspectorBody" aria-live="polite">
+    <section
+      v-if="!collapsed"
+      class="inspectorBody"
+      aria-label="Inspector details"
+      aria-live="polite"
+      tabindex="0"
+    >
       <article
         v-for="section in state.sections"
         :key="section.id"
@@ -155,7 +174,7 @@ function onModeKeydown(event: KeyboardEvent, mode: WorkbenchInspectorMode): void
 
 .eyebrow,
 .cardTitle {
-  font-size: 0.66rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -189,7 +208,7 @@ function onModeKeydown(event: KeyboardEvent, mode: WorkbenchInspectorMode): void
   min-width: min(6.4rem, 100%);
   padding: 0.34rem 0.42rem;
   border-radius: 8px;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   font-weight: 650;
   color: var(--muted);
   background: color-mix(in oklab, var(--surface-inline) 90%, transparent);
@@ -277,7 +296,7 @@ function onModeKeydown(event: KeyboardEvent, mode: WorkbenchInspectorMode): void
   min-height: 30px;
   border-radius: 8px;
   padding: 0.3rem 0.48rem;
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   font-weight: 650;
   color: var(--muted-strong);
   background: color-mix(in oklab, var(--surface-inline) 90%, transparent);
@@ -295,7 +314,32 @@ function onModeKeydown(event: KeyboardEvent, mode: WorkbenchInspectorMode): void
 
 @media (max-width: 1180px) {
   .workbenchInspector {
-    display: none;
+    position: fixed;
+    top: calc(var(--desktop-titlebar-h, 0px) + 0.5rem);
+    right: 0.5rem;
+    bottom: 4.2rem;
+    z-index: 1260;
+    width: min(330px, calc(100vw - 1rem));
+    border: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
+    border-radius: 10px;
+    box-shadow: 0 18px 44px rgb(var(--shadow-overflow-rgb) / 0.28);
+    transform: translateX(calc(100% + 1rem));
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform 160ms ease, visibility 0s linear 160ms;
+  }
+
+  .workbenchInspector.compactOpen {
+    transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
+    transition: transform 160ms ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbenchInspector {
+    transition: none;
   }
 }
 </style>

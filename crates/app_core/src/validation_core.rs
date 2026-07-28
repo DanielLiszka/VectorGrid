@@ -4,6 +4,7 @@ use crate::validation_pipeline::{ValidationHardGateConfig, ValidationPostCandida
 use rand::rngs::StdRng;
 use std::sync::atomic::AtomicBool;
 
+#[allow(dead_code)]
 pub fn run_validation_candidates<P, C, FProcess, FSliceStats>(
     candidates: &[P],
     seed: u64,
@@ -24,6 +25,115 @@ where
     FProcess: Fn(usize, &P, &mut StdRng) -> Result<(C, usize, usize), String> + Sync,
     FSliceStats: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
 {
+    run_validation_candidates_with_research_context(
+        candidates,
+        seed,
+        cancel,
+        progress,
+        validate_phase,
+        cscv_prep_phase,
+        hard_gates,
+        cscv_cfg,
+        spa_requested,
+        total_bars,
+        None,
+        |idx, candidate, rng| {
+            let (result, start_t, observations) = process_one(idx, candidate, rng)?;
+            Ok((result, start_t, observations, None))
+        },
+        build_slice_stats_for_candidate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_validation_candidates_with_research_context<P, C, FProcess, FSliceStats>(
+    candidates: &[P],
+    seed: u64,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    validate_phase: &'static str,
+    cscv_prep_phase: &'static str,
+    hard_gates: &ValidationHardGateConfig,
+    cscv_cfg: Option<&CscvPboConfig>,
+    spa_requested: bool,
+    total_bars: usize,
+    optimization_trials: Option<usize>,
+    process_one: FProcess,
+    build_slice_stats_for_candidate: FSliceStats,
+) -> Result<(Vec<C>, Option<CscvPboResult>), String>
+where
+    P: Sync,
+    C: Send + ValidationPostCandidate,
+    FProcess: Fn(
+            usize,
+            &P,
+            &mut StdRng,
+        ) -> Result<
+            (
+                C,
+                usize,
+                usize,
+                Option<crate::sharpe_stats::ReturnDistributionMoments>,
+            ),
+            String,
+        > + Sync,
+    FSliceStats: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
+{
+    run_validation_candidates_with_search_distribution(
+        candidates,
+        seed,
+        cancel,
+        progress,
+        validate_phase,
+        cscv_prep_phase,
+        hard_gates,
+        cscv_cfg,
+        spa_requested,
+        total_bars,
+        optimization_trials,
+        None,
+        None,
+        process_one,
+        build_slice_stats_for_candidate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_validation_candidates_with_search_distribution<P, C, FProcess, FSliceStats>(
+    candidates: &[P],
+    seed: u64,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    validate_phase: &'static str,
+    cscv_prep_phase: &'static str,
+    hard_gates: &ValidationHardGateConfig,
+    cscv_cfg: Option<&CscvPboConfig>,
+    spa_requested: bool,
+    total_bars: usize,
+    optimization_trials: Option<usize>,
+    search_distribution: Option<&ta_optimizer::SearchDistributionSummary>,
+    expected_sharpe_metric_id: Option<&str>,
+    process_one: FProcess,
+    build_slice_stats_for_candidate: FSliceStats,
+) -> Result<(Vec<C>, Option<CscvPboResult>), String>
+where
+    P: Sync,
+    C: Send + ValidationPostCandidate,
+    FProcess: Fn(
+            usize,
+            &P,
+            &mut StdRng,
+        ) -> Result<
+            (
+                C,
+                usize,
+                usize,
+                Option<crate::sharpe_stats::ReturnDistributionMoments>,
+            ),
+            String,
+        > + Sync,
+    FSliceStats: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
+{
     let tmp = match crate::validation_pipeline::select_validation_collection_mode(
         hard_gates,
         cscv_cfg,
@@ -36,7 +146,11 @@ where
                 cancel,
                 progress,
                 validate_phase,
-                |idx, candidate, rng| process_one(idx, candidate, rng),
+                |idx, candidate, rng| {
+                    let (result, start_t, observations, moments) =
+                        process_one(idx, candidate, rng)?;
+                    Ok(((result, moments), start_t, observations))
+                },
             )?
         }
         crate::validation_pipeline::ValidationCollectionMode::ParallelFullSet => {
@@ -46,33 +160,44 @@ where
                 cancel,
                 progress,
                 validate_phase,
-                process_one,
+                |idx, candidate, rng| {
+                    let (result, start_t, observations, moments) =
+                        process_one(idx, candidate, rng)?;
+                    Ok(((result, moments), start_t, observations))
+                },
             )?
         }
     };
 
     let mut out: Vec<C> = Vec::with_capacity(tmp.len());
     let mut sample_obs: Vec<usize> = Vec::with_capacity(tmp.len());
+    let mut return_moments = Vec::with_capacity(tmp.len());
     let mut common_start_t = 0usize;
-    for (cand, st, obs) in tmp {
+    for ((cand, moments), st, obs) in tmp {
         out.push(cand);
         common_start_t = common_start_t.max(st);
         sample_obs.push(obs.max(2));
+        return_moments.push(moments);
     }
 
-    let cscv_pbo = crate::validation_pipeline::finalize_with_probability_and_optional_cscv(
-        &mut out,
-        &sample_obs,
-        hard_gates,
-        cscv_cfg,
-        total_bars,
-        common_start_t,
-        seed,
-        cancel,
-        progress,
-        cscv_prep_phase,
-        build_slice_stats_for_candidate,
-    )?;
+    let cscv_pbo =
+        crate::validation_pipeline::finalize_with_probability_and_optional_cscv_with_search_distribution(
+            &mut out,
+            &sample_obs,
+            optimization_trials,
+            search_distribution,
+            expected_sharpe_metric_id,
+            Some(&return_moments),
+            hard_gates,
+            cscv_cfg,
+            total_bars,
+            common_start_t,
+            seed,
+            cancel,
+            progress,
+            cscv_prep_phase,
+            build_slice_stats_for_candidate,
+        )?;
 
     Ok((out, cscv_pbo))
 }

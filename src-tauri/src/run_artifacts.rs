@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,7 +8,7 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ta_app_core::OptionsExpressionArtifactV1;
 use tauri::Manager;
 
@@ -42,7 +42,103 @@ const DEFAULT_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST: usize = 100;
 const DEFAULT_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST: usize = 100;
 const ARTIFACT_CATALOG_DB_FILE: &str = "artifact_catalog.sqlite3";
 const ARTIFACT_CATALOG_SCHEMA_VERSION: &str = "1";
+const ARTIFACT_LIBRARY_LOCK_DB_FILE: &str = "artifact_library.lock.sqlite3";
+const ARTIFACT_LIBRARY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 static RUN_ARTIFACT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Holds a SQLite `BEGIN IMMEDIATE` transaction for the lifetime of an artifact-library
+/// operation.
+///
+/// A separate lock database keeps catalog reads/writes free to use their existing connections
+/// while still providing a crash-releasing, cross-process lock on Windows and Unix. Closing the
+/// connection rolls the empty transaction back and releases the operating-system file lock.
+/// This coordination authority assumes the normal local app-data filesystem; it must not be
+/// treated as reliable on network filesystems whose SQLite locking semantics are broken.
+pub(super) struct ArtifactLibraryProcessLock {
+    _connection: Connection,
+}
+
+fn artifact_library_lock_db_path_for_base(app_local_data_dir: &Path) -> PathBuf {
+    app_local_data_dir.join(ARTIFACT_LIBRARY_LOCK_DB_FILE)
+}
+
+pub(super) fn acquire_artifact_library_process_lock_for_base(
+    app_local_data_dir: &Path,
+    timeout: Duration,
+) -> Result<ArtifactLibraryProcessLock, String> {
+    std::fs::create_dir_all(app_local_data_dir).map_err(|error| {
+        format!(
+            "create artifact-library lock directory {}: {error}",
+            app_local_data_dir.display()
+        )
+    })?;
+    let path = artifact_library_lock_db_path_for_base(app_local_data_dir);
+    let connection = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
+    )
+    .map_err(|error| {
+        format!(
+            "open artifact-library process lock {}: {error}",
+            path.display()
+        )
+    })?;
+    connection.busy_timeout(timeout).map_err(|error| {
+        format!(
+            "configure artifact-library process lock {}: {error}",
+            path.display()
+        )
+    })?;
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS lock_identity (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
+            );
+            BEGIN IMMEDIATE;
+            "#,
+        )
+        .map_err(|error| match &error {
+            rusqlite::Error::SqliteFailure(failure, _)
+                if matches!(
+                    failure.code,
+                    ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
+                ) =>
+            {
+                format!(
+                    "artifact library is busy; could not acquire process lock {} within {} ms: \
+                     {error}",
+                    path.display(),
+                    timeout.as_millis()
+                )
+            }
+            _ => format!(
+                "initialize or acquire artifact-library process lock {}: {error}",
+                path.display()
+            ),
+        })?;
+    Ok(ArtifactLibraryProcessLock {
+        _connection: connection,
+    })
+}
+
+pub(super) fn acquire_artifact_library_process_lock(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<ArtifactLibraryProcessLock, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    acquire_artifact_library_process_lock_for_base(&base, ARTIFACT_LIBRARY_LOCK_TIMEOUT)
+}
+
+pub(super) fn acquire_artifact_library_process_lock_for_app_local_data(
+    app_local_data_dir: &Path,
+) -> Result<ArtifactLibraryProcessLock, String> {
+    acquire_artifact_library_process_lock_for_base(
+        app_local_data_dir,
+        ARTIFACT_LIBRARY_LOCK_TIMEOUT,
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArtifactFamily {
@@ -1266,7 +1362,7 @@ fn regular_file_metadata_if_exists(
     }
 }
 
-fn run_artifact_temp_path(path: &Path) -> Result<PathBuf, String> {
+fn run_artifact_auxiliary_path(path: &Path, suffix: &str) -> Result<PathBuf, String> {
     let parent = path
         .parent()
         .ok_or_else(|| "artifact path is missing a parent directory".to_string())?;
@@ -1280,31 +1376,67 @@ fn run_artifact_temp_path(path: &Path) -> Result<PathBuf, String> {
         .as_nanos();
     let sequence = RUN_ARTIFACT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     Ok(parent.join(format!(
-        ".{file_name}.{}.{}.{}.tmp",
+        ".{file_name}.{}.{}.{}.{suffix}",
         std::process::id(),
         nonce,
         sequence
     )))
 }
 
-fn write_new_run_artifact_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            if error.kind() == ErrorKind::AlreadyExists {
-                format!("artifact path already exists: {}", path.to_string_lossy())
-            } else {
-                error.to_string()
-            }
-        })?;
-    file.write_all(bytes).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())
+fn run_artifact_temp_path(path: &Path) -> Result<PathBuf, String> {
+    run_artifact_auxiliary_path(path, "tmp")
 }
 
 #[cfg(windows)]
-fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
+fn run_artifact_backup_path(path: &Path) -> Result<PathBuf, String> {
+    run_artifact_auxiliary_path(path, "bak.tmp")
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "artifact path is missing a parent directory".to_string())?;
+    let directory = OpenOptions::new()
+        .read(true)
+        .open(parent)
+        .map_err(|error| {
+            format!(
+                "open artifact parent directory {} for durability sync: {error}",
+                parent.display()
+            )
+        })?;
+    match directory.sync_all() {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::Unsupported | ErrorKind::InvalidInput
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "sync artifact parent directory {}: {error}",
+            parent.display()
+        )),
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<(), String> {
+    // Rust's standard library does not expose a portable Windows directory handle that can be
+    // flushed. The artifact itself is flushed before publication, and ReplaceFileW/rename keeps
+    // the namespace transition atomic.
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_existing_file_with_temp(
+    path: &Path,
+    temp_path: &Path,
+    backup_path: &Path,
+) -> Result<(), std::io::Error> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
@@ -1314,28 +1446,147 @@ fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), 
 
     let replaced = wide_null(path);
     let replacement = wide_null(temp_path);
+    let backup = wide_null(backup_path);
     let ok = unsafe {
         ReplaceFileW(
             replaced.as_ptr(),
             replacement.as_ptr(),
-            std::ptr::null(),
+            backup.as_ptr(),
             0,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
     };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn replace_existing_file_with_temp(path: &Path, temp_path: &Path) -> Result<(), String> {
-    std::fs::rename(temp_path, path).map_err(|e| e.to_string())
+fn replace_existing_file_with_temp(
+    path: &Path,
+    temp_path: &Path,
+    _backup_path: &Path,
+) -> Result<(), std::io::Error> {
+    std::fs::rename(temp_path, path)
 }
 
-fn replace_run_artifact_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+#[cfg(windows)]
+fn path_contains_expected_artifact_bytes(path: &Path, expected: &[u8]) -> bool {
+    regular_file_metadata_if_exists(path, "artifact replacement target")
+        .ok()
+        .flatten()
+        .is_some()
+        && std::fs::read(path)
+            .map(|actual| actual == expected)
+            .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn cleanup_replacement_auxiliary_file(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => log::warn!(
+            "could not remove artifact replacement auxiliary file {}: {error}",
+            path.display()
+        ),
+    }
+}
+
+#[cfg(windows)]
+fn reconcile_failed_windows_artifact_replacement(
+    path: &Path,
+    temp_path: &Path,
+    backup_path: &Path,
+    expected: &[u8],
+    replace_error: std::io::Error,
+) -> Result<(), String> {
+    // ReplaceFileW documents partial-failure states (notably Win32 errors 1176 and 1177) in
+    // which the destination may already have moved while the replacement still has its
+    // temporary name. Never blindly delete either auxiliary file after an error.
+    if path_contains_expected_artifact_bytes(path, expected) {
+        cleanup_replacement_auxiliary_file(temp_path);
+        cleanup_replacement_auxiliary_file(backup_path);
+        sync_parent_directory(path)?;
+        return Ok(());
+    }
+
+    if !path.exists() {
+        if regular_file_metadata_if_exists(temp_path, "artifact replacement recovery file")?
+            .is_some()
+        {
+            match std::fs::rename(temp_path, path) {
+                Ok(()) => {
+                    if path_contains_expected_artifact_bytes(path, expected) {
+                        cleanup_replacement_auxiliary_file(backup_path);
+                        sync_parent_directory(path)?;
+                        return Ok(());
+                    }
+                }
+                Err(recovery_error) => {
+                    log::warn!(
+                        "could not publish preserved artifact replacement {} as {} after \
+                         ReplaceFileW failure: {recovery_error}",
+                        temp_path.display(),
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        if !path.exists()
+            && regular_file_metadata_if_exists(backup_path, "artifact replacement backup")?
+                .is_some()
+        {
+            if let Err(restore_error) = std::fs::rename(backup_path, path) {
+                return Err(format!(
+                    "ReplaceFileW failed for {}: {replace_error}; the replacement is preserved at \
+                     {} and the original backup is preserved at {}, but restoring the original \
+                     path also failed: {restore_error}",
+                    path.display(),
+                    temp_path.display(),
+                    backup_path.display()
+                ));
+            }
+            sync_parent_directory(path)?;
+        }
+    }
+
+    let target_state = if path.exists() {
+        format!("the prior target remains at {}", path.display())
+    } else {
+        format!("the target path {} is missing", path.display())
+    };
+    let replacement_state = if temp_path.exists() {
+        format!(
+            "the complete replacement is preserved at {}",
+            temp_path.display()
+        )
+    } else {
+        "the replacement temporary path is missing".to_string()
+    };
+    let backup_state = if backup_path.exists() {
+        format!(
+            "the original backup is preserved at {}",
+            backup_path.display()
+        )
+    } else {
+        "no backup file remains".to_string()
+    };
+    Err(format!(
+        "ReplaceFileW failed for {}: {replace_error}; {target_state}; {replacement_state}; \
+         {backup_state}",
+        path.display()
+    ))
+}
+
+fn publish_artifact_file_atomically_with_mode(
+    path: &Path,
+    bytes: &[u8],
+    replace_existing: bool,
+) -> Result<(), String> {
     let temp_path = run_artifact_temp_path(path)?;
     let write_temp_result = (|| -> Result<(), String> {
         let mut file = OpenOptions::new()
@@ -1353,16 +1604,71 @@ fn replace_run_artifact_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
     let replace_result = (|| -> Result<(), String> {
         if regular_file_metadata_if_exists(path, "artifact overwrite target")?.is_some() {
-            replace_existing_file_with_temp(path, &temp_path)
+            if !replace_existing {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(format!("artifact path already exists: {}", path.display()));
+            }
+            #[cfg(windows)]
+            {
+                let backup_path = run_artifact_backup_path(path)?;
+                match replace_existing_file_with_temp(path, &temp_path, &backup_path) {
+                    Ok(()) => {
+                        cleanup_replacement_auxiliary_file(&backup_path);
+                        Ok(())
+                    }
+                    Err(error) => reconcile_failed_windows_artifact_replacement(
+                        path,
+                        &temp_path,
+                        &backup_path,
+                        bytes,
+                        error,
+                    ),
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                replace_existing_file_with_temp(path, &temp_path, Path::new(""))
+                    .map_err(|error| error.to_string())
+            }
         } else {
-            std::fs::rename(&temp_path, path).map_err(|e| e.to_string())
+            std::fs::hard_link(&temp_path, path).map_err(|error| {
+                if error.kind() == ErrorKind::AlreadyExists {
+                    format!("artifact path already exists: {}", path.to_string_lossy())
+                } else {
+                    format!(
+                        "publish new artifact {} without clobbering: {error}",
+                        path.display()
+                    )
+                }
+            })?;
+            match std::fs::remove_file(&temp_path) {
+                Ok(()) => {}
+                Err(error) => log::warn!(
+                    "published artifact {} but could not unlink staged hard-link {}: {error}",
+                    path.display(),
+                    temp_path.display()
+                ),
+            }
+            Ok(())
         }
     })();
     if let Err(error) = replace_result {
+        #[cfg(not(windows))]
         let _ = std::fs::remove_file(&temp_path);
         return Err(error);
     }
-    Ok(())
+    sync_parent_directory(path)
+}
+
+pub(super) fn publish_artifact_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    publish_artifact_file_atomically_with_mode(path, bytes, true)
+}
+
+pub(super) fn publish_new_artifact_file_atomically(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    publish_artifact_file_atomically_with_mode(path, bytes, false)
 }
 
 fn non_empty_string(v: Option<&Value>) -> Option<String> {
@@ -1791,7 +2097,7 @@ fn live_session_artifact_path<R: tauri::Runtime>(
 
 fn write_json_pretty(path: &Path, value: &Value) -> Result<(), String> {
     let raw = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(path, raw).map_err(|e| e.to_string())
+    publish_artifact_file_atomically(path, &raw)
 }
 
 fn push_unique_change(changes: &mut Vec<String>, change: impl Into<String>) {
@@ -2389,7 +2695,7 @@ fn sanitize_live_session_artifact_seed(value: &Value) -> Value {
     })
 }
 
-fn with_live_session_artifact_mutation<R: tauri::Runtime, T>(
+fn with_live_session_artifact_mutation_under_process_lock<R: tauri::Runtime, T>(
     path: String,
     app: tauri::AppHandle<R>,
     mutate: impl FnOnce(&mut Value) -> Result<T, String>,
@@ -2547,14 +2853,23 @@ fn normalize_dataset_meta(ds: &mut serde_json::Map<String, Value>, csv_path: &st
 }
 
 pub fn save_run_artifact_blocking<R: tauri::Runtime>(
-    mut artifact: Value,
+    artifact: Value,
     app: tauri::AppHandle<R>,
+    existing_path: Option<String>,
+) -> Result<SaveRunArtifactResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    save_run_artifact_under_process_lock(artifact, &app, existing_path)
+}
+
+fn save_run_artifact_under_process_lock<R: tauri::Runtime>(
+    mut artifact: Value,
+    app: &tauri::AppHandle<R>,
     existing_path: Option<String>,
 ) -> Result<SaveRunArtifactResponse, String> {
     let replace_existing = existing_path.is_some();
     let path = match existing_path.as_deref() {
-        Some(value) => existing_run_artifact_target_path(value, &app)?,
-        None => run_artifact_path(&artifact, &app)?,
+        Some(value) => existing_run_artifact_target_path(value, app)?,
+        None => run_artifact_path(&artifact, app)?,
     };
 
     if let Value::Object(root) = &mut artifact {
@@ -2584,15 +2899,16 @@ pub fn save_run_artifact_blocking<R: tauri::Runtime>(
     artifact = normalize_run_artifact_value_canonical(&path, &artifact)?.value;
 
     let bytes = serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?;
+    invalidate_artifact_catalog_under_process_lock(app)?;
     if replace_existing {
-        replace_run_artifact_file(&path, &bytes)?;
+        publish_artifact_file_atomically(&path, &bytes)?;
     } else {
-        write_new_run_artifact_file(&path, &bytes)?;
+        publish_new_artifact_file_atomically(&path, &bytes)?;
     }
 
-    prune_old_run_artifacts_blocking(
-        &app,
-        artifact_retention_policy_for_app(&app).run_keep_newest,
+    prune_old_run_artifacts_under_process_lock(
+        app,
+        artifact_retention_policy_for_app(app).run_keep_newest,
     );
     Ok(SaveRunArtifactResponse {
         path: path.to_string_lossy().to_string(),
@@ -2600,18 +2916,50 @@ pub fn save_run_artifact_blocking<R: tauri::Runtime>(
     })
 }
 
-pub(super) fn save_batch_summary_blocking(
+pub(super) fn update_run_artifact_report_path_blocking<R: tauri::Runtime>(
+    path: String,
+    report_xlsx_path: String,
+    app: tauri::AppHandle<R>,
+) -> Result<SaveRunArtifactResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    let entry = load_artifact_entry_checked(path, app.clone())?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_run_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    let mut artifact = entry.value;
+    let root = artifact
+        .as_object_mut()
+        .ok_or_else(|| "run artifact root must be an object".to_string())?;
+    root.insert(
+        "report_xlsx_path".to_string(),
+        Value::String(report_xlsx_path),
+    );
+    save_run_artifact_under_process_lock(
+        artifact,
+        &app,
+        Some(entry.path.to_string_lossy().to_string()),
+    )
+}
+
+pub(super) fn save_batch_summary_blocking<R: tauri::Runtime>(
     summary: Value,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<SaveBatchSummaryResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let ts = summary
         .get("ts")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
     let path = suggest_batch_summary_path(ts, &app)?;
     let bytes = serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    prune_old_batch_summary_artifacts_blocking(
+    invalidate_artifact_catalog_under_process_lock(&app)?;
+    publish_new_artifact_file_atomically(&path, &bytes)?;
+    prune_old_batch_summary_artifacts_under_process_lock(
         &app,
         artifact_retention_policy_for_app(&app).batch_summary_keep_newest,
     );
@@ -2621,7 +2969,7 @@ pub(super) fn save_batch_summary_blocking(
     })
 }
 
-fn prune_old_run_artifacts_blocking<R: tauri::Runtime>(
+fn prune_old_run_artifacts_under_process_lock<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     keep_newest: usize,
 ) {
@@ -2629,7 +2977,7 @@ fn prune_old_run_artifacts_blocking<R: tauri::Runtime>(
     prune_old_artifacts_by_prefixes_in_dir(&dir, keep_newest, ArtifactFamily::Run.file_prefixes());
 }
 
-pub(super) fn prune_old_meta_artifacts_blocking<R: tauri::Runtime>(
+pub(super) fn prune_old_meta_artifacts_under_process_lock<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     keep_newest: usize,
 ) {
@@ -2641,7 +2989,23 @@ pub(super) fn prune_old_meta_artifacts_blocking<R: tauri::Runtime>(
     );
 }
 
-pub(super) fn prune_old_stage5_artifacts_blocking<R: tauri::Runtime>(
+#[allow(dead_code)]
+pub(super) fn prune_old_meta_artifacts_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+) {
+    let result = (|| -> Result<(), String> {
+        let _process_lock = acquire_artifact_library_process_lock(app)?;
+        invalidate_artifact_catalog_under_process_lock(app)?;
+        prune_old_meta_artifacts_under_process_lock(app, keep_newest);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!("could not prune old meta artifacts: {error}");
+    }
+}
+
+pub(super) fn prune_old_stage5_artifacts_under_process_lock<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     keep_newest: usize,
 ) {
@@ -2653,6 +3017,21 @@ pub(super) fn prune_old_stage5_artifacts_blocking<R: tauri::Runtime>(
     );
 }
 
+pub(super) fn prune_old_stage5_artifacts_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+) {
+    let result = (|| -> Result<(), String> {
+        let _process_lock = acquire_artifact_library_process_lock(app)?;
+        invalidate_artifact_catalog_under_process_lock(app)?;
+        prune_old_stage5_artifacts_under_process_lock(app, keep_newest);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!("could not prune old stage5 artifacts: {error}");
+    }
+}
+
 #[allow(dead_code)]
 pub(super) fn prune_old_stage4_artifacts_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -2661,7 +3040,7 @@ pub(super) fn prune_old_stage4_artifacts_blocking<R: tauri::Runtime>(
     prune_old_stage5_artifacts_blocking(app, keep_newest);
 }
 
-pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
+pub(super) fn prune_old_ml_policy_eval_artifacts_under_process_lock(
     app: &tauri::AppHandle<impl tauri::Runtime>,
     keep_newest: usize,
 ) {
@@ -2673,7 +3052,23 @@ pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
     );
 }
 
-pub(super) fn prune_old_batch_summary_artifacts_blocking(
+#[allow(dead_code)]
+pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+    keep_newest: usize,
+) {
+    let result = (|| -> Result<(), String> {
+        let _process_lock = acquire_artifact_library_process_lock(app)?;
+        invalidate_artifact_catalog_under_process_lock(app)?;
+        prune_old_ml_policy_eval_artifacts_under_process_lock(app, keep_newest);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!("could not prune old ML policy-evaluation artifacts: {error}");
+    }
+}
+
+fn prune_old_batch_summary_artifacts_under_process_lock(
     app: &tauri::AppHandle<impl tauri::Runtime>,
     keep_newest: usize,
 ) {
@@ -2685,7 +3080,7 @@ pub(super) fn prune_old_batch_summary_artifacts_blocking(
     );
 }
 
-pub(super) fn prune_old_campaign_summary_artifacts_blocking(
+pub(super) fn prune_old_campaign_summary_artifacts_under_process_lock(
     app: &tauri::AppHandle<impl tauri::Runtime>,
     keep_newest: usize,
 ) {
@@ -2697,12 +3092,54 @@ pub(super) fn prune_old_campaign_summary_artifacts_blocking(
     );
 }
 
-pub(super) fn prune_old_options_expression_artifacts_in_dir(dir: &Path, keep_newest: usize) {
+#[allow(dead_code)]
+pub(super) fn prune_old_campaign_summary_artifacts_blocking(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+    keep_newest: usize,
+) {
+    let result = (|| -> Result<(), String> {
+        let _process_lock = acquire_artifact_library_process_lock(app)?;
+        invalidate_artifact_catalog_under_process_lock(app)?;
+        prune_old_campaign_summary_artifacts_under_process_lock(app, keep_newest);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!("could not prune old campaign-summary artifacts: {error}");
+    }
+}
+
+pub(super) fn prune_old_options_expression_artifacts_in_dir_under_process_lock(
+    dir: &Path,
+    keep_newest: usize,
+) {
     prune_old_artifacts_by_prefixes_in_dir(
         dir,
         keep_newest,
         ArtifactFamily::OptionsExpression.file_prefixes(),
     );
+}
+
+pub(super) fn prune_old_options_validation_artifacts_in_dir_under_process_lock(
+    dir: &Path,
+    keep_newest: usize,
+) {
+    prune_old_artifacts_by_prefixes_in_dir(dir, keep_newest, &["vectorgrid_options_validation_"]);
+}
+
+#[allow(dead_code)]
+pub(super) fn prune_old_options_expression_artifacts_in_dir(dir: &Path, keep_newest: usize) {
+    let result = (|| -> Result<(), String> {
+        let base = dir
+            .parent()
+            .ok_or_else(|| "options artifact runs directory has no parent".to_string())?;
+        let _process_lock = acquire_artifact_library_process_lock_for_app_local_data(base)?;
+        invalidate_artifact_catalog_for_base_under_process_lock(base)?;
+        prune_old_options_expression_artifacts_in_dir_under_process_lock(dir, keep_newest);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!("could not prune old options-expression artifacts: {error}");
+    }
 }
 
 fn read_json_value(path: &Path) -> Option<Value> {
@@ -2776,6 +3213,38 @@ struct ArtifactFileIdentity {
 
 fn artifact_catalog_db_path_for_base(app_local_data_dir: &Path) -> PathBuf {
     app_local_data_dir.join(ARTIFACT_CATALOG_DB_FILE)
+}
+
+pub(super) fn invalidate_artifact_catalog_for_base_under_process_lock(
+    app_local_data_dir: &Path,
+) -> Result<(), String> {
+    let catalog_path = artifact_catalog_db_path_for_base(app_local_data_dir);
+    let mut paths = vec![catalog_path.clone()];
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let mut sidecar = catalog_path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        paths.push(PathBuf::from(sidecar));
+    }
+    for path in paths {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "invalidate artifact catalog {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn invalidate_artifact_catalog_under_process_lock(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<(), String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    invalidate_artifact_catalog_for_base_under_process_lock(&base)
 }
 
 fn artifact_catalog_db_path(
@@ -5391,6 +5860,7 @@ fn build_ml_policy_eval_summary(
 pub fn list_artifact_library_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<ArtifactLibrarySnapshot, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let dir = runs_dir(&app)?;
     let identities = scan_artifact_file_identities_in_dir(&dir)?;
     let fingerprint = artifact_catalog_fingerprint(&identities);
@@ -5421,6 +5891,7 @@ where
     R: tauri::Runtime,
     T: DeserializeOwned,
 {
+    let _process_lock = acquire_artifact_library_process_lock(app)?;
     let dir = runs_dir(app)?;
     let identities = scan_artifact_file_identities_in_dir(&dir)?;
     let fingerprint = artifact_catalog_fingerprint(&identities);
@@ -5451,10 +5922,14 @@ where
 pub fn rebuild_artifact_catalog_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<ArtifactLibrarySnapshot, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let dir = runs_dir(&app)?;
+    // Capture identities before entries. If an uncoordinated producer publishes while this
+    // rebuild is scanning, the written fingerprint is stale and the next reader rejects it,
+    // instead of accepting a catalog that silently omitted the new artifact.
+    let identities = scan_artifact_file_identities_in_dir(&dir)?;
     let entries = scan_artifact_library(&app)?;
     let snapshot = build_artifact_library_snapshot_from_entries(entries);
-    let identities = scan_artifact_file_identities_in_dir(&dir)?;
     let path = artifact_catalog_db_path(&app)?;
     let fingerprint = artifact_catalog_fingerprint(&identities);
     write_artifact_catalog_snapshot(&path, &fingerprint, &snapshot)?;
@@ -5464,6 +5939,7 @@ pub fn rebuild_artifact_catalog_blocking<R: tauri::Runtime>(
 pub(super) fn load_meta_artifacts_with_paths_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Vec<(PathBuf, Value)>, String> {
+    let _process_lock = acquire_artifact_library_process_lock(app)?;
     let dir = runs_dir(app)?;
     let mut paths: Vec<(PathBuf, String)> = Vec::new();
     for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
@@ -5516,6 +5992,7 @@ pub(super) fn load_artifact_value_checked_blocking(
     path: String,
     app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<Value, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     Ok(load_artifact_entry_checked(path, app)?.value)
 }
 
@@ -5523,7 +6000,8 @@ pub(super) fn load_run_artifact_hydration_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
 ) -> Result<WorkflowArtifactsHydrationPayload, String> {
-    let entry = load_artifact_entry_checked(path, app)?;
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    let entry = load_artifact_entry_checked(path, app.clone())?;
     let kind = entry
         .value
         .get("kind")
@@ -5538,6 +6016,7 @@ pub(super) fn load_run_artifact_hydration_blocking<R: tauri::Runtime>(
 pub(super) fn load_latest_run_artifact_summary_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<Option<RunArtifactSummary>, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let Some(entry) = load_latest_run_artifact_entry_blocking(&app)? else {
         return Ok(None);
     };
@@ -5551,6 +6030,7 @@ pub(super) fn load_latest_run_artifact_summary_blocking<R: tauri::Runtime>(
 pub(super) fn load_latest_run_artifact_hydration_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<Option<LatestRunArtifactHydrationResponse>, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let Some(entry) = load_latest_run_artifact_entry_blocking(&app)? else {
         return Ok(None);
     };
@@ -5570,9 +6050,12 @@ pub(super) fn create_live_session_artifact_blocking<R: tauri::Runtime>(
     artifact: Value,
     app: tauri::AppHandle<R>,
 ) -> Result<SaveRunArtifactResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let artifact = sanitize_live_session_artifact_seed(&artifact);
     let path = live_session_artifact_path(&artifact, &app)?;
-    write_json_pretty(&path, &artifact)?;
+    invalidate_artifact_catalog_under_process_lock(&app)?;
+    let bytes = serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?;
+    publish_new_artifact_file_atomically(&path, &bytes)?;
     let bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
     Ok(SaveRunArtifactResponse {
         path: path.to_string_lossy().to_string(),
@@ -5585,7 +6068,9 @@ pub(super) fn append_live_session_event_blocking<R: tauri::Runtime>(
     event: Value,
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    with_live_session_artifact_mutation(path, app, move |artifact| {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    invalidate_artifact_catalog_under_process_lock(&app)?;
+    with_live_session_artifact_mutation_under_process_lock(path, app, move |artifact| {
         let next = sanitize_live_session_event_value(&event);
         let events = artifact
             .as_object_mut()
@@ -5609,7 +6094,9 @@ pub(super) fn append_live_session_broker_snapshot_blocking<R: tauri::Runtime>(
     snapshot: Value,
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    with_live_session_artifact_mutation(path, app, move |artifact| {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    invalidate_artifact_catalog_under_process_lock(&app)?;
+    with_live_session_artifact_mutation_under_process_lock(path, app, move |artifact| {
         let next = sanitize_live_session_broker_snapshot_value(&snapshot);
         let snapshots = artifact
             .as_object_mut()
@@ -5633,7 +6120,9 @@ pub(super) fn finalize_live_session_artifact_blocking<R: tauri::Runtime>(
     session_state: String,
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    with_live_session_artifact_mutation(path, app, move |artifact| {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    invalidate_artifact_catalog_under_process_lock(&app)?;
+    with_live_session_artifact_mutation_under_process_lock(path, app, move |artifact| {
         let root = artifact
             .as_object_mut()
             .ok_or_else(|| "live session artifact root must be an object".to_string())?;
@@ -5660,7 +6149,8 @@ pub(super) fn load_run_artifact_detail_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
 ) -> Result<RunArtifactDetailResponse, String> {
-    let entry = load_artifact_entry_checked(path, app)?;
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    let entry = load_artifact_entry_checked(path, app.clone())?;
     let kind = entry
         .value
         .get("kind")
@@ -5678,6 +6168,7 @@ pub(super) fn repair_run_artifact_blocking<R: tauri::Runtime>(
     write_target: Option<String>,
     app: tauri::AppHandle<R>,
 ) -> Result<RunArtifactRepairResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     if !dry_run
         && write_target
             .as_deref()
@@ -5717,10 +6208,13 @@ pub(super) fn repair_run_artifact_blocking<R: tauri::Runtime>(
         serde_json::to_vec_pretty(&normalized.value).map_err(|e| e.to_string())?;
     let mut wrote = false;
     if !dry_run && changed {
-        if regular_file_metadata_if_exists(&result_path, "repair artifact target")?.is_some() {
-            replace_run_artifact_file(&result_path, &normalized_bytes)?;
+        let replace_existing =
+            regular_file_metadata_if_exists(&result_path, "repair artifact target")?.is_some();
+        invalidate_artifact_catalog_under_process_lock(&app)?;
+        if replace_existing {
+            publish_artifact_file_atomically(&result_path, &normalized_bytes)?;
         } else {
-            write_new_run_artifact_file(&result_path, &normalized_bytes)?;
+            publish_new_artifact_file_atomically(&result_path, &normalized_bytes)?;
         }
         wrote = true;
     }
@@ -5744,6 +6238,7 @@ pub(super) fn load_live_session_artifact_detail_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
 ) -> Result<LiveSessionArtifactDetailResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let entry = load_artifact_entry_checked(path, app)?;
     build_live_session_artifact_detail_response(entry.path.to_string_lossy().as_ref(), &entry.value)
 }
@@ -5752,6 +6247,7 @@ pub(super) fn load_meta_artifact_replay_blocking(
     path: String,
     app: tauri::AppHandle,
 ) -> Result<MetaArtifactReplayResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let entry = load_artifact_entry_checked(path, app)?;
     let kind = entry
         .value
@@ -5779,6 +6275,7 @@ pub(super) fn load_stage5_artifact_replay_blocking(
     path: String,
     app: tauri::AppHandle,
 ) -> Result<Stage5ArtifactReplayResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let entry = load_artifact_entry_checked(path, app)?;
     let kind = entry
         .value
@@ -5804,6 +6301,7 @@ pub(super) fn load_ml_policy_eval_artifact_replay_blocking(
     path: String,
     app: tauri::AppHandle,
 ) -> Result<MlPolicyEvalArtifactReplayResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let entry = load_artifact_entry_checked(path, app)?;
     let kind = entry
         .value
@@ -5954,6 +6452,7 @@ pub(super) fn list_run_artifacts_blocking<R: tauri::Runtime>(
 pub(super) fn list_live_session_artifacts_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<Vec<LiveSessionArtifactSummary>, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let mut sessions = Vec::new();
     for entry in scan_artifact_library(&app)? {
         if !is_live_session_artifact_file_name(&entry.file_name) {
@@ -6016,7 +6515,8 @@ pub(super) fn delete_run_artifact_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let entry = load_artifact_entry_checked(path, app)?;
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    let entry = load_artifact_entry_checked(path, app.clone())?;
     let kind = entry
         .value
         .get("kind")
@@ -6025,6 +6525,7 @@ pub(super) fn delete_run_artifact_blocking<R: tauri::Runtime>(
     if !is_run_artifact_kind(kind) {
         return Err(format!("unsupported artifact kind: {kind}"));
     }
+    invalidate_artifact_catalog_under_process_lock(&app)?;
     std::fs::remove_file(&entry.path).map_err(|e| e.to_string())
 }
 
@@ -6032,7 +6533,8 @@ pub(super) fn delete_artifact_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let entry = load_artifact_entry_checked(path, app)?;
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    let entry = load_artifact_entry_checked(path, app.clone())?;
     let kind = entry
         .value
         .get("kind")
@@ -6041,6 +6543,7 @@ pub(super) fn delete_artifact_blocking<R: tauri::Runtime>(
     if !is_mutable_library_artifact_kind(kind) {
         return Err(format!("unsupported artifact kind: {kind}"));
     }
+    invalidate_artifact_catalog_under_process_lock(&app)?;
     std::fs::remove_file(&entry.path).map_err(|e| e.to_string())
 }
 
@@ -6049,6 +6552,7 @@ pub fn update_artifact_tags_blocking(
     tags: Vec<String>,
     app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<(), String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let dir = runs_dir(&app)?;
     let path = PathBuf::from(path);
     ensure_path_is_within_dir(&path, &dir)?;
@@ -6081,13 +6585,17 @@ pub fn update_artifact_tags_blocking(
     }
 
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())
+    invalidate_artifact_catalog_under_process_lock(&app)?;
+    publish_artifact_file_atomically(&path, &bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::metric_surface::build_optimization_metric_surface_artifact_value;
+    #[cfg(windows)]
+    use super::reconcile_failed_windows_artifact_replacement;
     use super::{
+        acquire_artifact_library_process_lock_for_base,
         append_live_session_broker_snapshot_blocking, append_live_session_event_blocking,
         artifact_catalog_db_path, artifact_catalog_fingerprint,
         artifact_retention_env_overrides_from_reader, artifact_retention_policy_for_base,
@@ -6100,29 +6608,39 @@ mod tests {
         extract_artifact_lineage_from_artifact, extract_route_provenance_from_artifact,
         finalize_live_session_artifact_blocking, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
-        is_run_artifact_file_name, is_run_artifact_kind, list_live_session_artifacts_blocking,
-        list_meta_artifacts_blocking, list_run_artifacts_blocking,
-        load_artifact_value_checked_blocking, load_latest_run_artifact_hydration_blocking,
-        load_latest_run_artifact_summary_blocking, load_live_session_artifact_detail_blocking,
-        load_meta_artifacts_with_paths_blocking, load_run_artifact_detail_blocking,
-        normalize_dataset_meta, normalize_run_artifact_value_canonical,
-        open_runs_dir_with_revealer, prune_old_meta_artifacts_blocking,
-        repair_run_artifact_blocking, resolve_run_artifact_csv_path,
-        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
+        is_run_artifact_file_name, is_run_artifact_kind, list_artifact_library_blocking,
+        list_live_session_artifacts_blocking, list_meta_artifacts_blocking,
+        list_run_artifacts_blocking, load_artifact_value_checked_blocking,
+        load_latest_run_artifact_hydration_blocking, load_latest_run_artifact_summary_blocking,
+        load_live_session_artifact_detail_blocking, load_meta_artifacts_with_paths_blocking,
+        load_run_artifact_detail_blocking, normalize_dataset_meta,
+        normalize_run_artifact_value_canonical, open_runs_dir_with_revealer,
+        prune_old_meta_artifacts_blocking, repair_run_artifact_blocking,
+        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
+        resolve_run_artifact_timeframe, runs_dir, save_batch_summary_blocking,
         save_run_artifact_blocking, scan_artifact_file_identities_in_dir,
         suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
-        write_artifact_catalog_snapshot, ArtifactLibrarySnapshot,
+        update_run_artifact_report_path_blocking, write_artifact_catalog_snapshot,
+        ArtifactLibrarySnapshot,
     };
     use crate::settings;
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
+    use std::collections::HashSet;
     use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tauri::Manager;
 
     fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
         let unique = unique_token("run_artifacts_app");
+        build_mock_app_with_identifier(&format!("com.test.{unique}"))
+    }
+
+    fn build_mock_app_with_identifier(identifier: &str) -> tauri::App<tauri::test::MockRuntime> {
         let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-        context.config_mut().product_name = Some(unique.clone());
-        context.config_mut().identifier = format!("com.test.{unique}");
+        context.config_mut().product_name = Some(identifier.to_string());
+        context.config_mut().identifier = identifier.to_string();
         tauri::test::mock_builder()
             .manage(AppState::default())
             .manage(BackgroundTaskState::default())
@@ -7029,6 +7547,50 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn artifact_recovery_keeps_saved_evidence_reviewable_when_linked_files_are_missing() {
+        let missing_root = make_temp_dir("run_artifact_missing_links");
+        let missing_report = missing_root.join("deleted-report.xlsx");
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": missing_report.to_string_lossy(),
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_missing_links.json"),
+            256,
+            &artifact,
+        )
+        .expect("summary");
+        let detail = build_run_artifact_detail_response(
+            "C:/runs/vectorgrid_run_missing_links.json",
+            &artifact,
+        )
+        .expect("detail");
+
+        assert_eq!(summary.replay_class, "exact_evidence_review");
+        assert_eq!(detail.replay_class, "exact_evidence_review");
+        assert_eq!(detail.csv_path, "");
+        assert_eq!(detail.report_xlsx_exists, Some(false));
+        assert!(detail
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "source_dataset_path_missing"));
+        assert!(detail
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "report_missing_on_disk"));
+        assert!(!detail
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "compatible_recompute_inputs_available"));
     }
 
     #[test]
@@ -7954,6 +8516,263 @@ mod tests {
     }
 
     #[test]
+    fn process_lock_serializes_filename_selection_and_catalog_publication() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let base = dir
+            .parent()
+            .expect("app local data directory")
+            .to_path_buf();
+        let ts = unique_token("contended_same_ts_save");
+        let base_path = dir.join(format!("vectorgrid_run_{ts}.json"));
+        let first_lock =
+            acquire_artifact_library_process_lock_for_base(&base, Duration::from_secs(1))
+                .expect("acquire first process lock");
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker_handle = handle.clone();
+        let worker_ts = ts.clone();
+        let worker = std::thread::spawn(move || {
+            let result =
+                save_run_artifact_blocking(minimal_run_artifact(&worker_ts), worker_handle, None);
+            result_tx.send(result).expect("send worker result");
+        });
+
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "save must not select or publish a path while another process owns the library lock"
+        );
+        std::fs::write(
+            &base_path,
+            serde_json::to_vec_pretty(&minimal_run_artifact(&ts))
+                .expect("serialize first artifact"),
+        )
+        .expect("publish simulated first-process artifact");
+        drop(first_lock);
+
+        let second = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("contended save should resume after lock release")
+            .expect("contended save should succeed");
+        worker.join().expect("join contended save");
+
+        assert!(
+            second
+                .path
+                .ends_with(&format!("vectorgrid_run_{ts}_2.json")),
+            "path selection must run after acquiring the process lock"
+        );
+        let snapshot =
+            list_artifact_library_blocking(handle).expect("build coherent artifact catalog");
+        let matching = snapshot
+            .runs
+            .iter()
+            .filter(|summary| summary.ts == ts)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 2);
+        assert!(matching
+            .iter()
+            .any(|summary| summary.path == base_path.to_string_lossy().to_string()));
+        assert!(matching.iter().any(|summary| summary.path == second.path));
+    }
+
+    #[test]
+    fn process_lock_times_out_fail_closed_and_recovers_after_owner_drop() {
+        let base = make_temp_dir("run_artifact_process_lock");
+        let first = acquire_artifact_library_process_lock_for_base(&base, Duration::from_secs(1))
+            .expect("acquire first process lock");
+
+        let error = match acquire_artifact_library_process_lock_for_base(
+            &base,
+            Duration::from_millis(25),
+        ) {
+            Ok(_) => panic!("second connection must not bypass the process lock"),
+            Err(error) => error,
+        };
+        assert!(error.contains("artifact library is busy"));
+        assert!(error.contains("25 ms"));
+
+        drop(first);
+        let recovered =
+            acquire_artifact_library_process_lock_for_base(&base, Duration::from_secs(1))
+                .expect("lock should be released when the owner connection closes");
+        drop(recovered);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn artifact_process_lock_worker() {
+        let Some(base) = std::env::var_os("VECTORGRID_ARTIFACT_LOCK_TEST_BASE") else {
+            return;
+        };
+        let marker = PathBuf::from(
+            std::env::var_os("VECTORGRID_ARTIFACT_LOCK_TEST_MARKER")
+                .expect("artifact lock worker marker"),
+        );
+        let role =
+            std::env::var("VECTORGRID_ARTIFACT_LOCK_TEST_ROLE").expect("artifact lock worker role");
+        let _guard = acquire_artifact_library_process_lock_for_base(
+            Path::new(&base),
+            Duration::from_secs(5),
+        )
+        .expect("artifact lock worker acquisition");
+        std::fs::write(&marker, b"acquired").expect("write artifact lock worker marker");
+        if role == "holder" {
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_lock_serializes_real_processes_and_releases_after_forced_termination() {
+        fn wait_for_path(path: &Path, timeout: Duration) {
+            let deadline = std::time::Instant::now() + timeout;
+            while !path.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {}",
+                    path.display()
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        let base = make_temp_dir("artifact_process_crash_release");
+        let holder_marker = base.join("holder-acquired.marker");
+        let waiter_marker = base.join("waiter-acquired.marker");
+        let current_exe = std::env::current_exe().expect("current test executable");
+        let mut holder = std::process::Command::new(&current_exe)
+            .arg("--exact")
+            .arg("commands::run_artifacts::tests::artifact_process_lock_worker")
+            .arg("--nocapture")
+            .env("VECTORGRID_ARTIFACT_LOCK_TEST_BASE", &base)
+            .env("VECTORGRID_ARTIFACT_LOCK_TEST_MARKER", &holder_marker)
+            .env("VECTORGRID_ARTIFACT_LOCK_TEST_ROLE", "holder")
+            .spawn()
+            .expect("spawn artifact lock holder");
+        wait_for_path(&holder_marker, Duration::from_secs(10));
+
+        let mut waiter = std::process::Command::new(&current_exe)
+            .arg("--exact")
+            .arg("commands::run_artifacts::tests::artifact_process_lock_worker")
+            .arg("--nocapture")
+            .env("VECTORGRID_ARTIFACT_LOCK_TEST_BASE", &base)
+            .env("VECTORGRID_ARTIFACT_LOCK_TEST_MARKER", &waiter_marker)
+            .env("VECTORGRID_ARTIFACT_LOCK_TEST_ROLE", "waiter")
+            .spawn()
+            .expect("spawn artifact lock waiter");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !waiter_marker.exists(),
+            "second process must not acquire while the holder is alive"
+        );
+
+        holder.kill().expect("force-terminate artifact lock holder");
+        let _ = holder.wait().expect("reap artifact lock holder");
+        wait_for_path(&waiter_marker, Duration::from_secs(5));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = waiter.try_wait().expect("poll artifact lock waiter") {
+                assert!(status.success(), "artifact lock waiter failed: {status}");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = waiter.kill();
+                panic!("artifact lock waiter did not exit after acquiring");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn live_session_cross_process_append_worker() {
+        let Some(identifier) = std::env::var_os("VECTORGRID_LIVE_ARTIFACT_TEST_IDENTIFIER") else {
+            return;
+        };
+        let path =
+            std::env::var("VECTORGRID_LIVE_ARTIFACT_TEST_PATH").expect("live artifact worker path");
+        let worker = std::env::var("VECTORGRID_LIVE_ARTIFACT_TEST_WORKER").expect("live worker id");
+        let app = build_mock_app_with_identifier(&identifier.to_string_lossy());
+        let handle = app.handle().clone();
+        for index in 0..16 {
+            append_live_session_event_blocking(
+                path.clone(),
+                json!({
+                    "provenance": "cross_process_test",
+                    "status": "appended",
+                    "order_id": format!("{worker}-{index}"),
+                    "at_unix_ms": 1_900_000_000_000_i64 + index,
+                }),
+                handle.clone(),
+            )
+            .expect("append cross-process live event");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cross_process_live_session_appends_do_not_lose_events() {
+        let identifier = format!("com.test.{}", unique_token("live_artifact_processes"));
+        let app = build_mock_app_with_identifier(&identifier);
+        let handle = app.handle().clone();
+        let base = handle
+            .path()
+            .app_local_data_dir()
+            .expect("app local data directory");
+        let saved = create_live_session_artifact_blocking(
+            json!({
+                "ts": "2026-07-28T12:00:00Z",
+                "session_id": unique_token("live-cross-process"),
+                "session_state": "active",
+                "mode": "paper",
+                "symbol": "AAPL",
+            }),
+            handle.clone(),
+        )
+        .expect("create cross-process live artifact");
+
+        let current_exe = std::env::current_exe().expect("current test executable");
+        let mut workers = ["first", "second"].map(|worker| {
+            std::process::Command::new(&current_exe)
+                .arg("--exact")
+                .arg("commands::run_artifacts::tests::live_session_cross_process_append_worker")
+                .arg("--nocapture")
+                .env("VECTORGRID_LIVE_ARTIFACT_TEST_IDENTIFIER", &identifier)
+                .env("VECTORGRID_LIVE_ARTIFACT_TEST_PATH", &saved.path)
+                .env("VECTORGRID_LIVE_ARTIFACT_TEST_WORKER", worker)
+                .spawn()
+                .expect("spawn live artifact append worker")
+        });
+        for worker in &mut workers {
+            assert!(
+                worker.wait().expect("wait live artifact worker").success(),
+                "live artifact append worker failed"
+            );
+        }
+
+        let stored =
+            load_artifact_value_checked_blocking(saved.path, handle).expect("load live artifact");
+        let events = stored
+            .get("events")
+            .and_then(Value::as_array)
+            .expect("live artifact events");
+        assert_eq!(events.len(), 32);
+        let order_ids = events
+            .iter()
+            .filter_map(|event| event.get("order_id").and_then(Value::as_str))
+            .collect::<HashSet<_>>();
+        assert_eq!(order_ids.len(), 32);
+        drop(app);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn save_run_artifact_blocking_backfills_route_provenance_and_lineage() {
         let app = build_mock_app();
         let handle = app.handle().clone();
@@ -8334,6 +9153,154 @@ mod tests {
             persisted.get("report_xlsx_path").and_then(Value::as_str),
             Some("C:/reports/updated.xlsx")
         );
+    }
+
+    #[test]
+    fn save_batch_summary_blocking_atomically_publishes_complete_json() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("atomic_batch_summary");
+        let summary = json!({
+            "kind": "vectorgrid_batch_summary",
+            "ts": ts,
+            "completed": 3,
+            "failed": 0,
+        });
+        let expected_bytes = serde_json::to_vec_pretty(&summary)
+            .expect("serialize expected batch summary")
+            .len();
+
+        let saved = save_batch_summary_blocking(summary.clone(), handle.clone())
+            .expect("save batch summary");
+
+        assert_eq!(saved.bytes, expected_bytes);
+        let saved_path = PathBuf::from(&saved.path);
+        assert!(saved_path.is_file(), "published batch summary should exist");
+        let persisted: Value = serde_json::from_slice(
+            &std::fs::read(&saved_path).expect("read published batch summary"),
+        )
+        .expect("published batch summary should be complete JSON");
+        assert_eq!(persisted, summary);
+
+        let runs = runs_dir(&handle).expect("runs dir");
+        let temp_files = std::fs::read_dir(runs)
+            .expect("read runs dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(
+            temp_files, 0,
+            "atomic publication should not leave temp files"
+        );
+    }
+
+    #[test]
+    fn new_artifact_publication_never_clobbers_an_existing_target() {
+        let dir = make_temp_dir("new_artifact_no_clobber");
+        let target = dir.join("vectorgrid_run_collision.json");
+        let original = br#"{"state":"original"}"#;
+        std::fs::write(&target, original).expect("seed existing target");
+
+        let error =
+            super::publish_new_artifact_file_atomically(&target, br#"{"state":"replacement"}"#)
+                .expect_err("new publication must fail closed on a collision");
+        assert!(error.contains("artifact path already exists"));
+        assert_eq!(std::fs::read(&target).expect("read original"), original);
+        let staged = std::fs::read_dir(&dir)
+            .expect("read fixture directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(staged, 0, "ordinary collision must not leak staging files");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_partial_failures_never_delete_the_only_intact_copy() {
+        let desired = br#"{"state":"desired"}"#;
+        let original = br#"{"state":"original"}"#;
+
+        let recovered_dir = make_temp_dir("replacefile_recover_replacement");
+        let recovered_target = recovered_dir.join("artifact.json");
+        let recovered_temp = recovered_dir.join(".artifact.json.tmp");
+        let recovered_backup = recovered_dir.join(".artifact.json.bak.tmp");
+        std::fs::write(&recovered_backup, original).expect("seed backup");
+        std::fs::write(&recovered_temp, desired).expect("seed replacement");
+        reconcile_failed_windows_artifact_replacement(
+            &recovered_target,
+            &recovered_temp,
+            &recovered_backup,
+            desired,
+            std::io::Error::from_raw_os_error(1176),
+        )
+        .expect("recover preserved replacement");
+        assert_eq!(std::fs::read(&recovered_target).expect("target"), desired);
+        assert!(!recovered_temp.exists());
+        assert!(!recovered_backup.exists());
+
+        let completed_dir = make_temp_dir("replacefile_completed_despite_error");
+        let completed_target = completed_dir.join("artifact.json");
+        let completed_temp = completed_dir.join(".artifact.json.tmp");
+        let completed_backup = completed_dir.join(".artifact.json.bak.tmp");
+        std::fs::write(&completed_target, desired).expect("seed completed target");
+        std::fs::write(&completed_temp, desired).expect("seed redundant replacement");
+        std::fs::write(&completed_backup, original).expect("seed original backup");
+        reconcile_failed_windows_artifact_replacement(
+            &completed_target,
+            &completed_temp,
+            &completed_backup,
+            desired,
+            std::io::Error::from_raw_os_error(1177),
+        )
+        .expect("recognize completed replacement");
+        assert_eq!(std::fs::read(&completed_target).expect("target"), desired);
+        assert!(!completed_temp.exists());
+        assert!(!completed_backup.exists());
+
+        let denied_dir = make_temp_dir("replacefile_access_denied");
+        let denied_target = denied_dir.join("artifact.json");
+        let denied_temp = denied_dir.join(".artifact.json.tmp");
+        let denied_backup = denied_dir.join(".artifact.json.bak.tmp");
+        std::fs::write(&denied_target, original).expect("seed original target");
+        std::fs::write(&denied_temp, desired).expect("seed complete replacement");
+        let denied_error = reconcile_failed_windows_artifact_replacement(
+            &denied_target,
+            &denied_temp,
+            &denied_backup,
+            desired,
+            std::io::Error::from_raw_os_error(5),
+        )
+        .expect_err("access-denied state must remain an explicit failure");
+        assert!(denied_error.contains("complete replacement is preserved"));
+        assert_eq!(
+            std::fs::read(&denied_target).expect("original target"),
+            original
+        );
+        assert_eq!(std::fs::read(&denied_temp).expect("replacement"), desired);
+
+        let restored_dir = make_temp_dir("replacefile_restore_original");
+        let restored_target = restored_dir.join("artifact.json");
+        let restored_temp = restored_dir.join(".artifact.json.tmp");
+        let restored_backup = restored_dir.join(".artifact.json.bak.tmp");
+        std::fs::write(&restored_backup, original).expect("seed only original backup");
+        let restored_error = reconcile_failed_windows_artifact_replacement(
+            &restored_target,
+            &restored_temp,
+            &restored_backup,
+            desired,
+            std::io::Error::from_raw_os_error(1177),
+        )
+        .expect_err("restoring the original still reports replacement failure");
+        assert!(restored_error.contains("replacement temporary path is missing"));
+        assert_eq!(
+            std::fs::read(&restored_target).expect("restored original"),
+            original
+        );
+
+        for dir in [recovered_dir, completed_dir, denied_dir, restored_dir] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
@@ -8796,6 +9763,86 @@ mod tests {
 
         assert_eq!(summary.ts, "2026-04-10T12:00:00Z");
         assert_eq!(summary.path, latest.path);
+    }
+
+    #[test]
+    fn artifact_recovery_skips_corrupt_newest_run_for_summary_hydration_and_listing() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let older = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T10:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save older run");
+        let newest = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save newest run");
+        let corrupt_bytes = b"{\"kind\":\"vectorgrid_run_artifact\",\"run\":";
+        std::fs::write(&newest.path, corrupt_bytes).expect("truncate newest artifact");
+
+        let summary = load_latest_run_artifact_summary_blocking(handle.clone())
+            .expect("latest run summary")
+            .expect("older valid summary should remain available");
+        let hydration = load_latest_run_artifact_hydration_blocking(handle.clone())
+            .expect("latest run hydration")
+            .expect("older valid hydration should remain available");
+        let listed = list_run_artifacts_blocking(handle).expect("list valid run artifacts");
+
+        assert_eq!(summary.path, older.path);
+        assert_eq!(summary.ts, "2026-04-10T10:00:00Z");
+        assert_eq!(hydration.summary.path, older.path);
+        assert_eq!(hydration.hydration.current_run.artifact_path, older.path);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, older.path);
+        assert_eq!(
+            std::fs::read(&newest.path).expect("read corrupt artifact"),
+            corrupt_bytes,
+            "read-side recovery must not mutate the corrupt evidence file"
+        );
+    }
+
+    #[test]
+    fn artifact_recovery_ignores_orphan_atomic_temp_file() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T10:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save durable run");
+        let runs = runs_dir(&handle).expect("runs dir");
+        let orphan_temp = runs.join(".vectorgrid_run_9999-12-31T23-59-59Z.json.4242.1.1.tmp");
+        std::fs::write(
+            &orphan_temp,
+            serde_json::to_vec_pretty(&minimal_run_artifact("9999-12-31T23:59:59Z"))
+                .expect("orphan temp payload"),
+        )
+        .expect("write orphan temp file");
+
+        let summary = load_latest_run_artifact_summary_blocking(handle.clone())
+            .expect("latest run summary")
+            .expect("durable summary should remain available");
+        let listed = list_run_artifacts_blocking(handle.clone()).expect("list run artifacts");
+        let identities =
+            scan_artifact_file_identities_in_dir(&runs).expect("scan catalog identities");
+
+        assert_eq!(summary.path, saved.path);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, saved.path);
+        assert_eq!(
+            identities.len(),
+            1,
+            "orphan temp files must not perturb the artifact catalog fingerprint"
+        );
+        assert!(
+            orphan_temp.is_file(),
+            "read-side recovery must ignore, not silently delete, crash evidence"
+        );
     }
 
     #[test]
@@ -9541,6 +10588,180 @@ mod tests {
     }
 
     #[test]
+    fn equal_length_same_mtime_tag_mutation_invalidates_cached_catalog() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("same_identity_tag_update");
+        let mut artifact = minimal_run_artifact(&ts);
+        artifact
+            .as_object_mut()
+            .expect("artifact object")
+            .insert("tags".to_string(), json!(["alpha"]));
+        let saved =
+            save_run_artifact_blocking(artifact, handle.clone(), None).expect("save artifact");
+        let initial = list_artifact_library_blocking(handle.clone()).expect("build catalog");
+        assert_eq!(
+            initial
+                .runs
+                .iter()
+                .find(|row| row.path == saved.path)
+                .expect("cataloged run")
+                .tags,
+            vec!["alpha".to_string()]
+        );
+        let catalog_path = artifact_catalog_db_path(&handle).expect("catalog path");
+        assert!(catalog_path.is_file(), "catalog should be materialized");
+        let artifact_path = PathBuf::from(&saved.path);
+        let original_modified = std::fs::metadata(&artifact_path)
+            .expect("artifact metadata")
+            .modified()
+            .expect("artifact modified time");
+
+        update_artifact_tags_blocking(
+            saved.path.clone(),
+            vec!["bravo".to_string()],
+            handle.clone(),
+        )
+        .expect("same-length tag update");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&artifact_path)
+            .expect("open artifact to restore mtime");
+        file.set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .expect("restore artifact mtime");
+        drop(file);
+        assert!(
+            !catalog_path.exists(),
+            "coordinated mutation must invalidate the catalog independently of file identity"
+        );
+
+        let refreshed = list_artifact_library_blocking(handle).expect("rebuild catalog");
+        assert_eq!(
+            refreshed
+                .runs
+                .iter()
+                .find(|row| row.path == saved.path)
+                .expect("refreshed run")
+                .tags,
+            vec!["bravo".to_string()]
+        );
+    }
+
+    #[test]
+    fn concurrent_tag_and_prune_never_report_a_lost_successful_tag() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+
+        for iteration in 0..16 {
+            let token = unique_token(&format!("tag_prune_{iteration}"));
+            let older = dir.join(format!("vectorgrid_meta_{token}_1.json"));
+            let newer = dir.join(format!("vectorgrid_meta_{token}_2.json"));
+            for (path, ts) in [(&older, "1"), (&newer, "2")] {
+                std::fs::write(
+                    path,
+                    serde_json::to_vec_pretty(&json!({
+                        "kind": "vectorgrid_meta_selection",
+                        "ts": format!("{token}-{ts}"),
+                        "tags": [],
+                        "req": {},
+                        "res": {},
+                    }))
+                    .expect("meta json"),
+                )
+                .expect("write meta artifact");
+            }
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let tag_barrier = barrier.clone();
+            let tag_handle = handle.clone();
+            let tag_path = older.to_string_lossy().to_string();
+            let tag_worker = std::thread::spawn(move || {
+                tag_barrier.wait();
+                update_artifact_tags_blocking(tag_path, vec!["pinned".to_string()], tag_handle)
+            });
+            let prune_barrier = barrier.clone();
+            let prune_handle = handle.clone();
+            let prune_worker = std::thread::spawn(move || {
+                prune_barrier.wait();
+                prune_old_meta_artifacts_blocking(&prune_handle, 1);
+            });
+            barrier.wait();
+            let tag_result = tag_worker.join().expect("join tag worker");
+            prune_worker.join().expect("join prune worker");
+
+            if tag_result.is_ok() {
+                let value: Value = serde_json::from_slice(
+                    &std::fs::read(&older).expect("successfully tagged artifact must remain"),
+                )
+                .expect("tagged artifact json");
+                assert_eq!(value.get("tags"), Some(&json!(["pinned"])));
+            } else {
+                assert!(
+                    !older.exists(),
+                    "tag failure is only expected when pruning linearizes first"
+                );
+            }
+            let _ = std::fs::remove_file(&older);
+            let _ = std::fs::remove_file(&newer);
+        }
+    }
+
+    #[test]
+    fn concurrent_report_link_and_tag_updates_preserve_both_changes() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        for iteration in 0..16 {
+            let token = unique_token(&format!("report_tag_{iteration}"));
+            let saved =
+                save_run_artifact_blocking(minimal_run_artifact(&token), handle.clone(), None)
+                    .expect("save run artifact");
+            let report_path = format!("C:/reports/{token}.xlsx");
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let tag_barrier = barrier.clone();
+            let tag_handle = handle.clone();
+            let tag_path = saved.path.clone();
+            let tag_worker = std::thread::spawn(move || {
+                tag_barrier.wait();
+                update_artifact_tags_blocking(tag_path, vec!["reviewed".to_string()], tag_handle)
+            });
+            let report_barrier = barrier.clone();
+            let report_handle = handle.clone();
+            let artifact_path = saved.path.clone();
+            let expected_report_path = report_path.clone();
+            let report_worker = std::thread::spawn(move || {
+                report_barrier.wait();
+                update_run_artifact_report_path_blocking(
+                    artifact_path,
+                    expected_report_path,
+                    report_handle,
+                )
+            });
+
+            barrier.wait();
+            tag_worker
+                .join()
+                .expect("join tag worker")
+                .expect("update tags");
+            report_worker
+                .join()
+                .expect("join report worker")
+                .expect("update report path");
+
+            let value = load_artifact_value_checked_blocking(saved.path.clone(), handle.clone())
+                .expect("load updated run artifact");
+            assert_eq!(value.get("tags"), Some(&json!(["reviewed"])));
+            assert_eq!(
+                value.get("report_xlsx_path").and_then(Value::as_str),
+                Some(report_path.as_str())
+            );
+            std::fs::remove_file(saved.path).expect("remove run artifact");
+        }
+    }
+
+    #[test]
     fn build_stage5_artifact_summary_preserves_stage4_stage5_alias_contract() {
         let path = Path::new("C:/runs/vectorgrid_stage5_2026-04-09T12-30-00Z.json");
         let artifact = json!({
@@ -9667,6 +10888,41 @@ mod tests {
             "untagged older artifact should be pruned"
         );
         assert!(newest.exists(), "newest artifact should be retained");
+    }
+
+    #[test]
+    fn options_expression_and_validation_retention_use_separate_quotas() {
+        let dir = make_temp_dir("options_retention_namespaces");
+        let expression_old = dir.join("vectorgrid_options_expression_2026-07-27.json");
+        let expression_new = dir.join("vectorgrid_options_expression_2026-07-28.json");
+        let validation_old = dir.join("vectorgrid_options_validation_2026-07-27.json");
+        let validation_new = dir.join("vectorgrid_options_validation_2026-07-28.json");
+
+        for path in [
+            &expression_old,
+            &expression_new,
+            &validation_old,
+            &validation_new,
+        ] {
+            std::fs::write(path, br#"{"tags":[]}"#).expect("write retention fixture");
+        }
+
+        super::prune_old_options_expression_artifacts_in_dir_under_process_lock(&dir, 1);
+        assert!(!expression_old.exists());
+        assert!(expression_new.exists());
+        assert!(
+            validation_old.exists() && validation_new.exists(),
+            "expression retention must not consume validation artifacts"
+        );
+
+        super::prune_old_options_validation_artifacts_in_dir_under_process_lock(&dir, 1);
+        assert!(!validation_old.exists());
+        assert!(validation_new.exists());
+        assert!(
+            expression_new.exists(),
+            "validation retention must not consume expression artifacts"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

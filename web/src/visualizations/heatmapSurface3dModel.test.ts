@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildHeatmapSurface3dModel } from './heatmapSurface3dModel'
+import {
+  buildHeatmapSurface3dModel,
+  resolveHeatmapSurface3dKeyboardIndex,
+} from './heatmapSurface3dModel'
 import type { HeatmapCanvasRenderModel } from './heatmapCanvasModel'
 
 function renderModel(): HeatmapCanvasRenderModel {
@@ -85,5 +88,16 @@ describe('heatmapSurface3dModel', () => {
     expect(surface.sampledBinsFast).toBe(2)
     expect(surface.sampledBinsSlow).toBe(2)
     expect(surface.samples.length).toBeGreaterThan(0)
+  })
+
+  it('moves keyboard focus across retained bins while skipping unavailable cells', () => {
+    const samples = buildHeatmapSurface3dModel(renderModel(), { maxBins: 4 }).samples
+
+    expect(resolveHeatmapSurface3dKeyboardIndex(samples, 0, 'ArrowRight')).toBe(1)
+    expect(resolveHeatmapSurface3dKeyboardIndex(samples, 1, 'ArrowLeft')).toBe(0)
+    expect(resolveHeatmapSurface3dKeyboardIndex(samples, 0, 'ArrowDown')).toBe(3)
+    expect(resolveHeatmapSurface3dKeyboardIndex(samples, 3, 'ArrowUp')).toBe(1)
+    expect(resolveHeatmapSurface3dKeyboardIndex(samples, 3, 'Home')).toBe(0)
+    expect(resolveHeatmapSurface3dKeyboardIndex(samples, 0, 'End')).toBe(5)
   })
 })

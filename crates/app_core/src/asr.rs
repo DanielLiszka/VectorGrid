@@ -11,7 +11,7 @@ use crate::iterative_sim::{IntrabarRule, IterativeSimConfig};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "cuda")]
 use std::cell::RefCell;
-use ta_strategies::double_ma::{DoubleMaCurves, Metrics, StrategyConfig, Trade};
+use ta_strategies::double_ma::{DoubleMaCurves, Metrics, StrategyConfig, Trade, TradeStats};
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
@@ -2200,6 +2200,72 @@ struct AsrSimulation {
     curves: Option<DoubleMaCurves>,
 }
 
+fn build_trade_stats(trades: &[Trade]) -> Option<TradeStats> {
+    let mut open_trades = 0usize;
+    let mut closed_trades = 0usize;
+    let mut wins = 0usize;
+    let mut losses = 0usize;
+    let mut gross_profit = 0.0_f64;
+    let mut gross_loss = 0.0_f64;
+    let mut net_profit = 0.0_f64;
+
+    for trade in trades {
+        if trade.open {
+            open_trades += 1;
+            continue;
+        }
+
+        closed_trades += 1;
+        net_profit += trade.pnl;
+        if trade.pnl > 0.0 {
+            wins += 1;
+            gross_profit += trade.pnl;
+        } else if trade.pnl < 0.0 {
+            losses += 1;
+            gross_loss += -trade.pnl;
+        }
+    }
+
+    if closed_trades == 0 && open_trades == 0 {
+        return None;
+    }
+
+    let decisive_trades = wins + losses;
+    Some(TradeStats {
+        closed_trades,
+        open_trades,
+        wins,
+        losses,
+        win_rate: if decisive_trades > 0 {
+            wins as f64 / decisive_trades as f64
+        } else {
+            0.0
+        },
+        avg_win: if wins > 0 {
+            gross_profit / wins as f64
+        } else {
+            0.0
+        },
+        avg_loss: if losses > 0 {
+            -(gross_loss / losses as f64)
+        } else {
+            0.0
+        },
+        profit_factor: if gross_loss > 0.0 {
+            gross_profit / gross_loss
+        } else if gross_profit > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        },
+        expectancy: if closed_trades > 0 {
+            net_profit / closed_trades as f64
+        } else {
+            0.0
+        },
+    })
+}
+
 fn simulate_from_desired(
     candles: &Candles,
     lr: &[f64],
@@ -2734,6 +2800,7 @@ fn simulate_from_desired(
                 dd_mm.push(f32::NAN);
             }
         }
+        let trade_stats = build_trade_stats(&trades);
         Some(DoubleMaCurves {
             equity: ta_strategies::double_ma::MinMaxBins {
                 start_t,
@@ -2748,7 +2815,7 @@ fn simulate_from_desired(
                 minmax: dd_mm,
             },
             trades,
-            trade_stats: None,
+            trade_stats,
             indicator_bars: Vec::new(),
         })
     } else {

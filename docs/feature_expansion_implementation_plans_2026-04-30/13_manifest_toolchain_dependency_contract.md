@@ -68,7 +68,13 @@ Tauri:
 - canonical Tauri config is `src-tauri/tauri.conf.json`;
 - root `tauri.conf.json` is a compatibility mirror and must stay synced;
 - Windows resource mapping is in `src-tauri/tauri.windows.conf.json` and root `tauri.windows.conf.json`;
-- config sync is checked by `scripts/check_tauri_config_sync.mjs`.
+- config sync is checked by `scripts/check_tauri_config_sync.mjs`;
+- the product binary requires `desktop-ui`, while every non-product
+  `src-tauri/src/bin/` target requires the non-default `maintainer-tools`
+  feature;
+- direct maintainer-binary commands must add `--features maintainer-tools`
+  alongside any CUDA/NVTX flags, and product packaging must use the pinned
+  Tauri CLI version that respects `required-features`.
 
 ## Feature Wiring Rules
 

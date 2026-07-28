@@ -59,6 +59,67 @@ export const workbenchSelectors = {
   cockpitCard: (id: string) => `[data-qa-state="workbench.cockpit.card.${id}"]`,
 } as const
 
+export const nativeWorkflowSelectors = {
+  conventionalMode: '[data-qa-action="shell.mode.conventional"]',
+  dataStep: '[data-qa-action="shell.workflowStep.data"]',
+  validationStep: '[data-qa-action="shell.workflowStep.validate"]',
+  optimizeStep: '[data-qa-action="shell.workflowStep.optimize"]',
+  sampleDatasetButton: '[data-qa-action="data.sample.load"]',
+  clearDatasetButton: '[data-qa-action="data.dataset.clear"]',
+  csvPath: '#vueCsvPath',
+  strategyKind: '#vueStrategyKind',
+  backend: '#vueBackend',
+  mode: '#vueMode',
+  fastStart: '#vueFastStart',
+  fastEnd: '#vueFastEnd',
+  fastStep: '#vueFastStep',
+  slowStart: '#vueSlowStart',
+  slowEnd: '#vueSlowEnd',
+  slowStep: '#vueSlowStep',
+  runOptimization: '[data-qa-action="optimize.run"]',
+  cancelOptimization: '[data-qa-action="footer.primaryAction.run"]',
+  advancedControlsTab: '#controlsTabBar [data-tab="advanced"]',
+  exportAllCsvPath: '#vueExportAllCsvPath',
+  exportAllCsvBrowse: '#vueExportAllCsvPath + button',
+  overviewResultsTab: '#resultsTabBar [data-tab="overview"]',
+  overviewRouteCard: '#results_panel_overview .bestCard',
+  topResultsTab: '[data-qa-action="shell.resultsTab.top"]',
+  topResultsPanel: '#results_panel_top',
+  firstTopResult: '.topTableVue [data-top-row="1"]',
+  validationAutoRun: '//label[contains(., "Auto-run after optimization")]//input[@type="checkbox"]',
+  validationCandidates: '#vueValCandidates',
+  validationMinPsr: '#vueValMinPsr',
+  validationMinDsr: '#vueValMinDsr',
+  validationMinCscvRank: '#vueValMinCscvRank',
+  validationMaxPbo: '#vueValMaxPbo',
+  validationRun: '[data-qa-action="validation.run"]',
+  firstValidationResult: '.validationTableVue [data-validation-row-index="0"]',
+  validationAutoExportXlsx:
+    '//label[contains(., "Auto-export report XLSX after validation")]//input[@type="checkbox"]',
+  validationAutoRevealReport:
+    '//label[contains(., "Reveal report in folder after save")]//input[@type="checkbox"]',
+  validationWalkForward:
+    '//label[contains(., "Walk-forward (recommended)")]//input[@type="checkbox"]',
+  validationPerturbations:
+    '//label[contains(., "Parameter perturbations")]//input[@type="checkbox"]',
+  validationMonteCarlo:
+    '//label[contains(., "Trade bootstrap (Monte Carlo)")]//input[@type="checkbox"]',
+  validationCscv:
+    '//label[contains(., "CSCV/PBO (recommended)")]//input[@type="checkbox"]',
+  validationSpa:
+    '//label[contains(., "Hansen SPA")]//input[@type="checkbox"]',
+  validationReoptWalkForward:
+    '//label[contains(., "Finalist re-opt walk-forward")]//input[@type="checkbox"]',
+  savedRunsRefresh: '[data-qa-action="library.savedRun.refresh"]',
+  savedRunsSearch: '#vueSavedRunsSearch',
+  savedRunList: '[aria-label="Saved run artifacts"]',
+  firstSavedRun: '[aria-label="Saved run artifacts"] [data-saved-run="1"]',
+  savedRunWithValidation:
+    '//ul[@aria-label="Saved run artifacts"]//button[@data-saved-run="1" and .//span[normalize-space()="validation"]]',
+  savedRunDetail: '.historyPanelVueRoot .detailCard',
+  savedRunLoad: '[data-qa-action="library.savedRun.load"]',
+} as const
+
 export function workspaceTabSelector(key: WorkspaceKey): string {
   return `#workspaceBar [data-workspace="${key}"]`
 }

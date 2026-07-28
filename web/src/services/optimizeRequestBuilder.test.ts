@@ -4014,17 +4014,26 @@ describe("optimizeRequestBuilder", () => {
         sampler: "Nsga2",
       },
       base_strategy: {
+        fee_bps: 1,
+        spread_bps: 2,
+        slippage_bps: 0.5,
+        commission: 0.00025,
         long_only: true,
         allow_flip: true,
         trade_on_next_bar: true,
       },
     });
     expect(req).not.toHaveProperty("strategy");
+    const params =
+      (req as { search_space?: { params?: Array<{ name?: unknown }> } })
+        .search_space?.params ?? [];
+    expect(Array.isArray(params)).toBe(true);
     expect(
-      Array.isArray(
-        (req as { search_space?: { params?: unknown[] } }).search_space?.params,
+      params.some(
+        (param) =>
+          String(param.name || "").toLowerCase() === "strategy_commission",
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("stringifies CompositeMo discrete numeric and bool categorical choices", () => {
@@ -4049,6 +4058,38 @@ describe("optimizeRequestBuilder", () => {
     });
     expect(findDomain("ott_ma_type")).toEqual({
       Categorical: { choices: ["SMA", "EMA"] },
+    });
+    expect(findDomain("strategy_commission")).toBeUndefined();
+  });
+
+  it("migrates legacy CompositeMo search spaces by keeping commission fixed", () => {
+    const req = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      moSampler: "Random",
+      moUseRangeBuilder: false,
+      moSearchSpace: JSON.stringify({
+        params: [
+          {
+            name: "strategy_commission",
+            domain: { FloatRange: { low: 0, high: 0.001, log: false } },
+          },
+          { name: "macz_use_lag", domain: "Bool" },
+        ],
+      }),
+    });
+
+    const params =
+      (req?.search_space as { params?: Array<{ name?: unknown }> })?.params ??
+      [];
+    expect(params.map((param) => param.name)).not.toContain(
+      "strategy_commission",
+    );
+    expect(params.map((param) => param.name)).toContain("macz_use_lag");
+    expect(req?.base_strategy).toMatchObject({
+      fee_bps: 1,
+      spread_bps: 2,
+      slippage_bps: 0.5,
+      commission: 0.00025,
     });
   });
 

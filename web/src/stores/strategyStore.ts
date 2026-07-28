@@ -72,6 +72,40 @@ function parseNonNegativeNumber(value: string): number {
   return parsed;
 }
 
+function costDefaultsFromPreset(presetId: string): {
+  preset: string;
+  feeBps: string;
+  spreadBps: string;
+  slippageBps: string;
+  commission: string;
+  hint: string;
+} {
+  const preset = COST_PRESETS_DEFAULT[presetId] ??
+    COST_PRESETS_DEFAULT.none ?? {
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+    };
+  const feeBps = preset.feeBps ?? "0";
+  const spreadBps = preset.spreadBps ?? "0";
+  const slippageBps = preset.slippageBps ?? "0";
+  const perSideBps =
+    parseNonNegativeNumber(feeBps) +
+    parseNonNegativeNumber(slippageBps) +
+    parseNonNegativeNumber(spreadBps) / 2;
+  return {
+    preset: presetId,
+    feeBps,
+    spreadBps,
+    slippageBps,
+    commission: String(Math.max(0, Math.min(0.999999, perSideBps / 10_000))),
+    hint: `Total: ${perSideBps.toFixed(2)} bps/side (${(perSideBps * 2).toFixed(2)} bps round-trip)`,
+  };
+}
+
+const NEW_RESEARCH_COST_DEFAULTS =
+  costDefaultsFromPreset("stocks_liquid");
+
 function syncDerivedCostFields(state: StrategyState): void {
   const feeBps = parseNonNegativeNumber(state.feeBps);
   const spreadBps = parseNonNegativeNumber(state.spreadBps);
@@ -461,14 +495,14 @@ function applyVueCheckboxFieldUpdate(
 export const useStrategyStore = defineStore("strategy", {
   state: (): StrategyState => ({
     activeControlsTab: "data",
-    costPreset: "custom",
+    costPreset: NEW_RESEARCH_COST_DEFAULTS.preset,
     costPresetOptions: [...COST_PRESET_OPTIONS_DEFAULT],
-    feeBps: "0",
-    spreadBps: "0",
-    slippageBps: "0",
-    commission: "0",
+    feeBps: NEW_RESEARCH_COST_DEFAULTS.feeBps,
+    spreadBps: NEW_RESEARCH_COST_DEFAULTS.spreadBps,
+    slippageBps: NEW_RESEARCH_COST_DEFAULTS.slippageBps,
+    commission: NEW_RESEARCH_COST_DEFAULTS.commission,
     epsRel: "0",
-    costHint: "Total: 0.00 bps/side (0.00 bps round-trip)",
+    costHint: NEW_RESEARCH_COST_DEFAULTS.hint,
     startingEquity: "10000",
     stopLossPct: "",
     takeProfitPct: "",
@@ -632,22 +666,45 @@ export const useStrategyStore = defineStore("strategy", {
           snapshot.activeControlsTab ?? this.activeControlsTab ?? "data",
         ).trim() || "data";
       this.costPreset =
-        String(snapshot.costPreset ?? this.costPreset ?? "custom").trim() ||
-        "custom";
+        String(
+          snapshot.costPreset ??
+            this.costPreset ??
+            NEW_RESEARCH_COST_DEFAULTS.preset,
+        ).trim() || NEW_RESEARCH_COST_DEFAULTS.preset;
       this.costPresetOptions = normalizedOptions(
         snapshot.costPresetOptions ?? this.costPresetOptions ?? [],
       );
-      this.feeBps = String(snapshot.feeBps ?? this.feeBps ?? "0").trim() || "0";
+      this.feeBps =
+        String(
+          snapshot.feeBps ??
+            this.feeBps ??
+            NEW_RESEARCH_COST_DEFAULTS.feeBps,
+        ).trim() || NEW_RESEARCH_COST_DEFAULTS.feeBps;
       this.spreadBps =
-        String(snapshot.spreadBps ?? this.spreadBps ?? "0").trim() || "0";
+        String(
+          snapshot.spreadBps ??
+            this.spreadBps ??
+            NEW_RESEARCH_COST_DEFAULTS.spreadBps,
+        ).trim() || NEW_RESEARCH_COST_DEFAULTS.spreadBps;
       this.slippageBps =
-        String(snapshot.slippageBps ?? this.slippageBps ?? "0").trim() || "0";
+        String(
+          snapshot.slippageBps ??
+            this.slippageBps ??
+            NEW_RESEARCH_COST_DEFAULTS.slippageBps,
+        ).trim() || NEW_RESEARCH_COST_DEFAULTS.slippageBps;
       this.commission =
-        String(snapshot.commission ?? this.commission ?? "0").trim() || "0";
+        String(
+          snapshot.commission ??
+            this.commission ??
+            NEW_RESEARCH_COST_DEFAULTS.commission,
+        ).trim() || NEW_RESEARCH_COST_DEFAULTS.commission;
       this.epsRel = String(snapshot.epsRel ?? this.epsRel ?? "0").trim() || "0";
       this.costHint =
-        String(snapshot.costHint ?? this.costHint ?? "Total: —").trim() ||
-        "Total: —";
+        String(
+          snapshot.costHint ??
+            this.costHint ??
+            NEW_RESEARCH_COST_DEFAULTS.hint,
+        ).trim() || NEW_RESEARCH_COST_DEFAULTS.hint;
       this.startingEquity =
         String(
           snapshot.startingEquity ?? this.startingEquity ?? "10000",

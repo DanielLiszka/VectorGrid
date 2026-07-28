@@ -54,6 +54,7 @@ if ($BuildProfile -eq "release") {
 }
 $cmd += @(
   "-p", "ta_desktop_demo_app",
+  "--features", "maintainer-tools",
   "--bin", "ta_workflow_regression",
   "--",
   "--out", $OutPath,

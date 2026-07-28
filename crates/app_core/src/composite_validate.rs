@@ -106,6 +106,7 @@ use crate::rocb::{
 use crate::rocb_gpu_kernel::{
     eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
 };
+use crate::validation_core::run_validation_candidates_with_search_distribution;
 use crate::validation_pipeline::{
     build_general_validation_evidence_policy_summary, build_run_verdict,
     build_validation_evidence_pack, build_validation_semantics_provenance, sanitize_hard_gates,
@@ -3655,6 +3656,7 @@ fn compute_rocb_gpu_cscv_slice_stats_for_candidates(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(dead_code)]
 fn compute_vcet_gpu_cscv_slice_stats_for_candidates(
     req: &CompositeValidationRequest,
     signals: &VcetGpuDeviceSignalMatrices<'_>,
@@ -3929,37 +3931,64 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
     if metrics.len() != req.candidates.len() {
         return Err("VCET GPU validation output length mismatch".to_string());
     }
+    // VCET carries position and max-trade-duration state across slice
+    // boundaries. Re-running the windowed GPU kernel from a flat state for
+    // each slice changes the CSCV/SPA return path, so reduce those auxiliary
+    // statistics from one exact continuous-path simulation per candidate.
+    let needs_exact_slice_stats = req.cscv_pbo.is_some() || req.spa.is_some();
+    let exact_lr = needs_exact_slice_stats.then(|| compute_log_returns_f64(close));
+    let exact_series = if let Some(lr) = exact_lr.as_ref() {
+        let ott_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+        Some(
+            req.candidates
+                .iter()
+                .map(|candidate| {
+                    build_vcet_candidate_series(
+                        candles,
+                        lr,
+                        ott_prices,
+                        &req.ma_source,
+                        candidate,
+                        candidate
+                            .vcet
+                            .as_ref()
+                            .expect("VCET candidates were validated above"),
+                        Some(&prepared_cuda_inputs),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
+    let candidate_keys: Vec<Vec<u8>> = req
+        .candidates
+        .iter()
+        .map(serialize_composite_candidate_key)
+        .collect::<Result<_, _>>()?;
     let cscv_slices = if let Some(cscv_cfg) = req.cscv_pbo.as_ref() {
-        compute_vcet_gpu_cscv_slice_stats_for_candidates(
-            req,
-            &signals,
-            &vidya_row_index,
-            &ce_row_index,
-            &combo_start_t,
-            &start_ts,
-            first_vcet,
-            device_id,
+        exact_slice_stats_for_candidate_series(
+            &candidate_keys,
+            exact_series
+                .as_deref()
+                .expect("CSCV requested exact VCET series"),
             cscv_cfg,
-        )?
+        )
     } else {
         None
     };
     let spa_slice_sums = if let Some(spa_cfg) = req.spa.as_ref() {
-        let slice_stats = compute_vcet_gpu_cscv_slice_stats_for_candidates(
-            req,
-            &signals,
-            &vidya_row_index,
-            &ce_row_index,
-            &combo_start_t,
-            &start_ts,
-            first_vcet,
-            device_id,
+        let slice_stats = exact_slice_stats_for_candidate_series(
+            &candidate_keys,
+            exact_series
+                .as_deref()
+                .expect("SPA requested exact VCET series"),
             &CscvPboConfig {
                 slices: spa_cfg.slices.max(4),
                 max_combinations: usize::MAX,
                 threshold: 0.0,
             },
-        )?;
+        );
         slice_stats.as_ref().map(spa_slice_sums_from_slice_stats)
     } else {
         None
@@ -9785,7 +9814,12 @@ pub fn refresh_composite_validation_evidence_pack(
             requested_candidate_count: req.candidates.len(),
             evaluated_candidate_count: res.run_verdict.candidates_tested,
             retained_candidate_count: res.candidates.len(),
-            optimization_trials: None,
+            optimization_trials: crate::sharpe_stats::normalize_optimization_trial_count(
+                req.validation_context
+                    .as_ref()
+                    .and_then(|context| context.optimization_trials),
+                req.candidates.len(),
+            ),
             admission_policy: None,
             hard_gates: &hard_gates,
             run_verdict: &res.run_verdict,
@@ -12391,7 +12425,13 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let _gpu_fixed_eval = None::<()>;
 
-    let (mut out, cscv_pbo) = crate::validation_core::run_validation_candidates(
+    let optimization_trials = crate::sharpe_stats::normalize_optimization_trial_count(
+        req.validation_context
+            .as_ref()
+            .and_then(|context| context.optimization_trials),
+        req.candidates.len(),
+    );
+    let (mut out, cscv_pbo) = run_validation_candidates_with_search_distribution(
         &req.candidates,
         seed,
         cancel,
@@ -12402,6 +12442,11 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
         cscv_cfg.as_ref(),
         req.spa.is_some(),
         candles.close.len(),
+        optimization_trials,
+        req.validation_context
+            .as_ref()
+            .and_then(|context| context.search_distribution.as_ref()),
+        Some(crate::composite_mo::COMPOSITE_SHARPE_METRIC_ID),
         |_, p, rng| {
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
             if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
@@ -12519,6 +12564,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                     },
                     start_t0,
                     candles.close.len().saturating_sub(start_t0),
+                    None,
                 ));
             }
 
@@ -12628,7 +12674,6 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                 robust_base,
                 walk_forward.as_ref(),
             );
-
             Ok((
                 CompositeValidationCandidateResult {
                     params: p.clone(),
@@ -12654,6 +12699,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                 },
                 start_t0,
                 n_total.saturating_sub(start_t0),
+                None,
             ))
         },
         |cand, cscv_start_t, slice_bars, slices| {
@@ -13762,20 +13808,20 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     struct TestEnvGuard {
         _env: std::sync::MutexGuard<'static, ()>,
-        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-        _gpu: crate::gpu_backtest_kernel::GpuTestLockGuard,
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn lock_env() -> TestEnvGuard {
         let env = crate::test_support::lock_test_env();
-        let gpu = crate::gpu_backtest_kernel::lock_gpu_test();
-        crate::gpu_backtest_kernel::reset_test_runtime();
-        crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
-        TestEnvGuard {
-            _env: env,
-            _gpu: gpu,
+        {
+            // Advanced validation dispatches GPU work to worker threads. Keep the
+            // global GPU guard only while resetting thread-local test state so the
+            // workers can acquire the normal per-operation guard without deadlock.
+            let _gpu = crate::gpu_backtest_kernel::lock_gpu_test();
+            crate::gpu_backtest_kernel::reset_test_runtime();
+            crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
         }
+        TestEnvGuard { _env: env }
     }
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {

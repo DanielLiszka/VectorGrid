@@ -4,6 +4,7 @@
     "targets": ["nsis"],
     "resources": {
       "resources/native/catboostmodel.dll": "native/catboostmodel.dll",
+      "resources/licenses/CatBoost-LICENSE.txt": "licenses/CatBoost-LICENSE.txt",
       "resources/sample-data/vectorgrid_synthetic_ohlcv.csv": "sample-data/vectorgrid_synthetic_ohlcv.csv"
     },
     "windows": {

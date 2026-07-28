@@ -1,6 +1,6 @@
 use crate::{
     heatmap_axis_bins_for_period_span, normalize_rank_score, ObjectiveKind, OptimizationHeatmap,
-    OptimizationResult, HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR,
+    OptimizationResult, SearchDistributionAccumulator, HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR,
 };
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -190,6 +190,8 @@ pub struct StreamAggregator {
     heap: BinaryHeap<Reverse<ScoredCombo>>,
     all: Option<Vec<(DoubleMaParams, Metrics)>>,
     heatmap: Option<HeatmapAgg>,
+    search_distribution: Option<SearchDistributionAccumulator>,
+    search_distribution_unavailable_reason: Option<String>,
 }
 
 impl StreamAggregator {
@@ -210,7 +212,28 @@ impl StreamAggregator {
             heap: BinaryHeap::new(),
             all: if include_all { Some(Vec::new()) } else { None },
             heatmap: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
         }
+    }
+
+    pub fn with_full_search_distribution(
+        mut self,
+        metric_surface_kind: impl Into<String>,
+        sharpe_metric_id: impl Into<String>,
+    ) -> Self {
+        self.search_distribution = Some(SearchDistributionAccumulator::new(
+            metric_surface_kind,
+            sharpe_metric_id,
+        ));
+        self.search_distribution_unavailable_reason = None;
+        self
+    }
+
+    pub fn with_search_distribution_unavailable(mut self, reason: impl Into<String>) -> Self {
+        self.search_distribution = None;
+        self.search_distribution_unavailable_reason = Some(reason.into());
+        self
     }
 
     pub fn with_score_fn(mut self, score_fn: fn(&Metrics) -> f64) -> Self {
@@ -258,6 +281,9 @@ impl StreamAggregator {
     pub fn push(&mut self, params: DoubleMaParams, metrics: Metrics) {
         let tie_index = self.num_combos;
         self.num_combos = self.num_combos.saturating_add(1);
+        if let Some(distribution) = self.search_distribution.as_mut() {
+            distribution.record_unique_evaluation(&metrics, true);
+        }
         let s = self.score_value(&params, &metrics);
 
         if let Some(h) = self.heatmap.as_mut() {
@@ -308,6 +334,22 @@ impl StreamAggregator {
         }
     }
 
+    /// Records a distinct candidate that was evaluated but failed constraints.
+    ///
+    /// It does not affect `num_combos`, ranking, heatmaps, or retained rows.
+    pub fn record_rejected_unique_evaluation(&mut self) {
+        if let Some(distribution) = self.search_distribution.as_mut() {
+            distribution.record_unique_evaluation(&Metrics::default(), false);
+        }
+    }
+
+    /// Records a repeated proposal that was not evaluated again.
+    pub fn record_duplicate_attempt(&mut self) {
+        if let Some(distribution) = self.search_distribution.as_mut() {
+            distribution.record_duplicate_attempt();
+        }
+    }
+
     pub fn num_combos(&self) -> usize {
         self.num_combos
     }
@@ -334,6 +376,18 @@ impl StreamAggregator {
 
         let self_had_combos = self.num_combos;
         let other_had_combos = other.num_combos;
+        let self_had_search_observations = self
+            .search_distribution
+            .as_ref()
+            .is_some_and(|stats| stats.clone().finalize().attempted_count > 0);
+        let other_had_search_observations = other
+            .search_distribution
+            .as_ref()
+            .is_some_and(|stats| stats.clone().finalize().attempted_count > 0);
+        let self_had_untracked_search = self.search_distribution.is_none()
+            && (self_had_combos > 0 || self.search_distribution_unavailable_reason.is_some());
+        let other_had_untracked_search = other.search_distribution.is_none()
+            && (other_had_combos > 0 || other.search_distribution_unavailable_reason.is_some());
         self.num_combos = self.num_combos.saturating_add(other.num_combos);
 
         let all_truthful = match (self.all.as_mut(), other.all) {
@@ -386,10 +440,8 @@ impl StreamAggregator {
                     if self_had_combos == 0 {
                         self.heatmap = Some(b);
                         true
-                    } else if other_had_combos == 0 {
-                        true
                     } else {
-                        false
+                        other_had_combos == 0
                     }
                 } else {
                     for (dst, src) in a.values.iter_mut().zip(b.values.into_iter()) {
@@ -418,6 +470,31 @@ impl StreamAggregator {
         if !heatmap_truthful {
             self.heatmap = None;
         }
+
+        let distribution_truthful =
+            match (self.search_distribution.as_mut(), other.search_distribution) {
+                (Some(left), Some(right)) => left.try_merge(right).is_ok(),
+                (None, Some(right)) => {
+                    if !self_had_search_observations && !self_had_untracked_search {
+                        self.search_distribution = Some(right);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                (Some(_), None) => !other_had_search_observations && !other_had_untracked_search,
+                (None, None) => true,
+            };
+        if !distribution_truthful {
+            self.search_distribution = None;
+            self.search_distribution_unavailable_reason = Some(
+                "full-search statistics could not be merged because shards used incompatible or incomplete metric surfaces"
+                    .to_string(),
+            );
+        } else if self.search_distribution_unavailable_reason.is_none() {
+            self.search_distribution_unavailable_reason =
+                other.search_distribution_unavailable_reason;
+        }
     }
 
     pub fn finalize(self) -> Option<OptimizationResult> {
@@ -437,6 +514,8 @@ impl StreamAggregator {
             all: self.all,
             all_scores: None,
             heatmap: self.heatmap.map(|h| h.finalize()),
+            search_distribution: self.search_distribution.map(|stats| stats.finalize()),
+            search_distribution_unavailable_reason: self.search_distribution_unavailable_reason,
             num_combos: self.num_combos,
             num_candles: self.num_candles,
         })
@@ -761,5 +840,48 @@ mod tests {
             .expect("empty receiver can adopt truthful heatmap");
         assert_eq!(heatmap.values[2], Some(3.0));
         assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[2], 1);
+    }
+
+    #[test]
+    fn full_search_distribution_counts_rejected_and_duplicate_attempts_without_ranking_them() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100)
+            .with_full_search_distribution("core17", crate::DOUBLE_MA_SHARPE_METRIC_ID);
+        agg.push(params(5, 20), metrics_with_sharpe(1.0));
+        agg.record_rejected_unique_evaluation();
+        agg.push(params(8, 30), metrics_with_sharpe(3.0));
+        agg.record_duplicate_attempt();
+
+        let result = agg.finalize().expect("result");
+        let distribution = result.search_distribution.expect("distribution");
+        assert_eq!(result.num_combos, 2);
+        assert_eq!(distribution.attempted_count, 4);
+        assert_eq!(distribution.unique_count, 3);
+        assert_eq!(distribution.feasible_count, 2);
+        assert_eq!(distribution.finite_sharpe_count, 2);
+        assert_eq!(distribution.finite_sharpe_mean, Some(2.0));
+    }
+
+    #[test]
+    fn shard_merge_preserves_full_search_distribution() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100)
+            .with_full_search_distribution("core17", crate::DOUBLE_MA_SHARPE_METRIC_ID);
+        left.push(params(5, 20), metrics_with_sharpe(1.0));
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100)
+            .with_full_search_distribution("core17", crate::DOUBLE_MA_SHARPE_METRIC_ID);
+        right.push(params(8, 30), metrics_with_sharpe(3.0));
+        right.record_rejected_unique_evaluation();
+
+        left.merge(right);
+        let distribution = left
+            .finalize()
+            .expect("result")
+            .search_distribution
+            .expect("merged distribution");
+        assert_eq!(distribution.attempted_count, 3);
+        assert_eq!(distribution.unique_count, 3);
+        assert_eq!(distribution.feasible_count, 2);
+        assert_eq!(distribution.finite_sharpe_count, 2);
+        assert_eq!(distribution.finite_sharpe_mean, Some(2.0));
     }
 }

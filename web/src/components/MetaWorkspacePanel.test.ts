@@ -913,6 +913,15 @@ describe("MetaWorkspacePanel", () => {
     expect(text).toContain("Stage 3 meta_score uses backend MetaScoreWeights.");
     expect(text).toContain("Evidence flags remain warnings, not hard gates.");
     expect(text).toContain(
+      "Statistical validation approval is not deployability or deployment approval.",
+    );
+    expect(text).toContain(
+      "Promotion stays blocked unless the validation evidence pack reports complete dataset realism and eligible_for_review",
+    );
+    expect(text).toContain(
+      "fee/slippage stress alone is not liquidity/capacity or market-impact evidence.",
+    );
+    expect(text).toContain(
       "Heavy mode emits nested validation config (walk-forward, perturbation, bootstrap, iterative engine).",
     );
     expect(text).toContain(

@@ -130,6 +130,20 @@ describe('workbenchNavigationModel', () => {
     expect(state.resultsItems).toEqual([])
   })
 
+  it('keeps the ML dataset-export surface mounted during Data Setup', () => {
+    const state = buildWorkbenchNavigationState({
+      workspace: 'workflow',
+      mode: 'ml-signal',
+      workflowStep: 'data',
+      controlsTab: 'data',
+      resultsTab: 'overview',
+    })
+
+    expect(state.activeControlsTab).toBe('opt')
+    expect(state.controlsItems.map((item) => item.id)).toEqual(['opt'])
+    expect(state.resultsItems).toEqual([])
+  })
+
   it('routes Options mode to the options research result panel', () => {
     const state = buildWorkbenchNavigationState({
       workspace: 'workflow',

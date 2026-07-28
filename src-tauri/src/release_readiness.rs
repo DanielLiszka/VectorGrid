@@ -1,7 +1,10 @@
 use crate::{polygon, settings};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::env;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -9,6 +12,17 @@ const SCHEMA_VERSION: u32 = 1;
 const POLYGON_SETTINGS_FILE: &str = "polygon_settings.json";
 const ALPACA_KEYRING_API_KEY_USERNAME: &str = "alpaca_execution_api_key";
 const ALPACA_KEYRING_API_SECRET_USERNAME: &str = "alpaca_execution_api_secret";
+const GPU_KERNEL_SHIPPING_PTX_ISA_VERSION: &str = "9.2";
+const GPU_KERNEL_SHIPPING_PTX_TARGET: &str = "sm_89";
+const GPU_KERNEL_MINIMUM_COMPUTE_CAPABILITY_MAJOR: u32 = 8;
+const GPU_KERNEL_MINIMUM_COMPUTE_CAPABILITY_MINOR: u32 = 9;
+const CATBOOST_REVIEWED_VERSION: &str = "1.2.10";
+const CATBOOST_REVIEWED_TAG_COMMIT: &str = "b1bd2a6d77219e82a1acfcedfccb8e6f6c1ee084";
+const CATBOOST_REVIEWED_SIZE_BYTES: u64 = 16_438_272;
+const CATBOOST_REVIEWED_SHA256: &str =
+    "668d8867940a0832accaad6004e249f11ecc48eb63eb1d65551cfdd37c1939ad";
+const CATBOOST_REVIEWED_LICENSE_SHA256: &str =
+    "a2574dd20dd0af8e0bd25b34b38c1bb11912ff319ee4f41436395df0b1d19309";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -64,6 +78,16 @@ pub struct ReleaseReadinessReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseGpuKernelPtxContract {
+    pub shipping_ptx_isa_version: String,
+    pub shipping_ptx_target: String,
+    pub minimum_compute_capability_major: u32,
+    pub minimum_compute_capability_minor: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_device_meets_minimum: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseGpuReadiness {
     pub built_with_cuda: bool,
     pub built_with_cuda_backtest_kernel: bool,
@@ -74,7 +98,21 @@ pub struct ReleaseGpuReadiness {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_device_memory_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_device_compute_capability_major: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_device_compute_capability_minor: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_device_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_kernel_ptx_contract: Option<ReleaseGpuKernelPtxContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub double_crossover_module_jit_loaded: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub double_crossover_module_jit_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_expression_module_jit_loaded: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_expression_module_jit_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +125,17 @@ pub struct ReleaseResourceReadiness {
     pub polygon_cache_dir: String,
     pub polygon_settings_fallback_file_exists: bool,
     pub catboost_bundle_resource_exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catboost_bundle_resource_sha256: Option<String>,
+    pub catboost_bundle_resource_matches_reviewed_release: bool,
+    pub catboost_provenance_baseline_exists: bool,
+    pub catboost_provenance_baseline_matches_reviewed_release: bool,
+    pub catboost_license_resource_exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catboost_license_resource_sha256: Option<String>,
+    pub catboost_license_resource_matches_reviewed_release: bool,
     pub windows_bundle_catboost_resource_configured: bool,
+    pub windows_bundle_catboost_license_configured: bool,
     pub windows_bundle_nsis_target_configured: bool,
     pub windows_bundle_webview_install_mode: String,
     pub windows_bundle_installer_icon_exists: bool,
@@ -110,6 +158,30 @@ pub struct ReleaseToolingReadiness {
     pub cargo_tauri_available: bool,
     pub tauri_driver_available: bool,
     pub edge_driver_available: bool,
+    #[serde(default)]
+    pub edge_driver_override_configured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_driver_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_driver_major: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webview2_runtime_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webview2_runtime_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webview2_runtime_major: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_browser_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_browser_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_browser_major: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_compatibility_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_driver_major_compatible: Option<bool>,
+    #[serde(default)]
+    pub archive_tool_available: bool,
     pub signtool_available: bool,
     pub custom_signing_hook_configured: bool,
     pub windows_certificate_thumbprint_configured: bool,
@@ -123,6 +195,10 @@ pub struct ReleaseToolingReadiness {
     pub tauri_driver_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_driver_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_tool_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_tool_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signtool_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -206,9 +282,36 @@ pub fn collect_release_readiness(
                 .to_string(),
         );
     }
+    if !resources.catboost_bundle_resource_matches_reviewed_release {
+        errors.push(format!(
+            "CatBoost native bundle resource must exactly match the reviewed upstream v{CATBOOST_REVIEWED_VERSION} release asset."
+        ));
+    }
+    if !resources.catboost_provenance_baseline_exists
+        || !resources.catboost_provenance_baseline_matches_reviewed_release
+    {
+        errors.push(
+            "CatBoost provenance baseline is missing or no longer matches the release-readiness contract."
+                .to_string(),
+        );
+    }
+    if !resources.catboost_license_resource_exists
+        || !resources.catboost_license_resource_matches_reviewed_release
+    {
+        errors.push(
+            "CatBoost Apache-2.0 license notice is missing or does not match the reviewed upstream tag."
+                .to_string(),
+        );
+    }
     if !resources.windows_bundle_catboost_resource_configured {
         errors.push(
             "Windows Tauri bundle config must include CatBoost native DLL as native/catboostmodel.dll."
+                .to_string(),
+        );
+    }
+    if !resources.windows_bundle_catboost_license_configured {
+        errors.push(
+            "Windows Tauri bundle config must include the CatBoost license as licenses/CatBoost-LICENSE.txt."
                 .to_string(),
         );
     }
@@ -290,10 +393,49 @@ pub fn collect_release_readiness(
     if options.require_packaged_smoke && !tooling.tauri_driver_available {
         errors.push("tauri-driver is unavailable; packaged smoke cannot run.".to_string());
     }
-    if options.require_packaged_smoke && !tooling.edge_driver_available {
+    if options.require_packaged_smoke && !tooling.archive_tool_available {
         errors.push(
-            "msedgedriver is unavailable; packaged smoke cannot run on this machine.".to_string(),
+            "7z/7za is unavailable; exact packaged smoke cannot extract and inspect the staged NSIS payload."
+                .to_string(),
         );
+    }
+    if options.require_packaged_smoke && !tooling.edge_driver_available {
+        errors.push(if tooling.edge_driver_override_configured {
+            "VECTORGRID_DESKTOP_SMOKE_EDGE_DRIVER does not resolve to an existing msedgedriver executable; packaged smoke will not fall back silently."
+                .to_string()
+        } else {
+            "msedgedriver is unavailable; packaged smoke cannot run on this machine.".to_string()
+        });
+    } else if options.require_packaged_smoke && tooling.edge_driver_version.is_none() {
+        errors.push(
+            "The resolved msedgedriver version could not be parsed; packaged smoke cannot prove driver/runtime compatibility."
+                .to_string(),
+        );
+    } else if options.require_packaged_smoke && tooling.edge_compatibility_target.is_none() {
+        errors.push(
+            "No installed WebView2 runtime or Microsoft Edge version could be resolved; packaged smoke cannot prove EdgeDriver compatibility."
+                .to_string(),
+        );
+    } else if options.require_packaged_smoke && tooling.edge_driver_major_compatible != Some(true) {
+        errors.push(format!(
+            "EdgeDriver major-version compatibility failed: driver {} versus {} {}. Set VECTORGRID_DESKTOP_SMOKE_EDGE_DRIVER to a matching driver.",
+            tooling.edge_driver_version.as_deref().unwrap_or("unknown"),
+            tooling
+                .edge_compatibility_target
+                .as_deref()
+                .unwrap_or("runtime"),
+            selected_edge_runtime_version(&tooling).unwrap_or("unknown"),
+        ));
+    } else if tooling.edge_driver_major_compatible == Some(false) {
+        warnings.push(format!(
+            "The available EdgeDriver {} does not match the installed {} {} major version; packaged desktop smoke will fail until a compatible driver is selected.",
+            tooling.edge_driver_version.as_deref().unwrap_or("unknown"),
+            tooling
+                .edge_compatibility_target
+                .as_deref()
+                .unwrap_or("runtime"),
+            selected_edge_runtime_version(&tooling).unwrap_or("unknown"),
+        ));
     }
 
     if !updater.configured {
@@ -338,6 +480,9 @@ pub fn collect_release_readiness(
             "GPU diagnostics reported an auto-device issue that does not block CPU releases: {}",
             gpu.auto_device_error.as_deref().unwrap_or("unknown error")
         ));
+    }
+    if variant.requires_kernel() {
+        errors.extend(gpu_kernel_readiness_errors(&gpu));
     }
 
     if !provider.alpaca.remember_available {
@@ -394,12 +539,39 @@ pub fn collect_release_readiness(
 }
 
 fn gpu_readiness() -> ReleaseGpuReadiness {
-    let (auto_device_name, auto_device_memory_bytes, auto_device_error) =
-        match ta_app_core::preferred_cuda_device() {
-            Ok(Some(device)) => (Some(device.name), Some(device.total_memory_bytes), None),
-            Ok(None) => (None, None, None),
-            Err(error) => (None, None, Some(error)),
-        };
+    let (
+        auto_device_id,
+        auto_device_name,
+        auto_device_memory_bytes,
+        auto_device_compute_capability_major,
+        auto_device_compute_capability_minor,
+        auto_device_error,
+    ) = match ta_app_core::preferred_cuda_device() {
+        Ok(Some(device)) => (
+            Some(device.device_id),
+            Some(device.name),
+            Some(device.total_memory_bytes),
+            Some(device.compute_capability_major),
+            Some(device.compute_capability_minor),
+            None,
+        ),
+        Ok(None) => (None, None, None, None, None, None),
+        Err(error) => (None, None, None, None, None, Some(error)),
+    };
+    let auto_device_compute_capability =
+        auto_device_compute_capability_major.zip(auto_device_compute_capability_minor);
+    let gpu_kernel_ptx_contract = gpu_kernel_ptx_contract_for_build(auto_device_compute_capability);
+    let (
+        double_crossover_module_jit_loaded,
+        double_crossover_module_jit_error,
+        options_expression_module_jit_loaded,
+        options_expression_module_jit_error,
+    ) = gpu_kernel_runtime_prewarm_readiness(
+        auto_device_id,
+        gpu_kernel_ptx_contract
+            .as_ref()
+            .and_then(|contract| contract.preferred_device_meets_minimum),
+    );
 
     ReleaseGpuReadiness {
         built_with_cuda: cfg!(feature = "cuda"),
@@ -408,8 +580,149 @@ fn gpu_readiness() -> ReleaseGpuReadiness {
         nvidia_smi_available: find_command_path("nvidia-smi", None).is_some(),
         auto_device_name,
         auto_device_memory_bytes,
+        auto_device_compute_capability_major,
+        auto_device_compute_capability_minor,
         auto_device_error,
+        gpu_kernel_ptx_contract,
+        double_crossover_module_jit_loaded,
+        double_crossover_module_jit_error,
+        options_expression_module_jit_loaded,
+        options_expression_module_jit_error,
     }
+}
+
+fn compute_capability_meets_gpu_kernel_contract(major: u32, minor: u32) -> bool {
+    (major, minor)
+        >= (
+            GPU_KERNEL_MINIMUM_COMPUTE_CAPABILITY_MAJOR,
+            GPU_KERNEL_MINIMUM_COMPUTE_CAPABILITY_MINOR,
+        )
+}
+
+#[cfg(any(test, all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn shipping_gpu_kernel_ptx_contract(
+    preferred_device_compute_capability: Option<(u32, u32)>,
+) -> ReleaseGpuKernelPtxContract {
+    ReleaseGpuKernelPtxContract {
+        shipping_ptx_isa_version: GPU_KERNEL_SHIPPING_PTX_ISA_VERSION.to_string(),
+        shipping_ptx_target: GPU_KERNEL_SHIPPING_PTX_TARGET.to_string(),
+        minimum_compute_capability_major: GPU_KERNEL_MINIMUM_COMPUTE_CAPABILITY_MAJOR,
+        minimum_compute_capability_minor: GPU_KERNEL_MINIMUM_COMPUTE_CAPABILITY_MINOR,
+        preferred_device_meets_minimum: preferred_device_compute_capability
+            .map(|(major, minor)| compute_capability_meets_gpu_kernel_contract(major, minor)),
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn gpu_kernel_ptx_contract_for_build(
+    preferred_device_compute_capability: Option<(u32, u32)>,
+) -> Option<ReleaseGpuKernelPtxContract> {
+    Some(shipping_gpu_kernel_ptx_contract(
+        preferred_device_compute_capability,
+    ))
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn gpu_kernel_ptx_contract_for_build(
+    _preferred_device_compute_capability: Option<(u32, u32)>,
+) -> Option<ReleaseGpuKernelPtxContract> {
+    None
+}
+
+fn gpu_kernel_readiness_errors(gpu: &ReleaseGpuReadiness) -> Vec<String> {
+    let mut errors = Vec::new();
+    if !gpu.built_with_cuda_backtest_kernel {
+        return errors;
+    }
+
+    if gpu.gpu_kernel_ptx_contract.is_none() {
+        errors.push(
+            "GPU-kernel shipping PTX contract evidence was not recorded by this build.".to_string(),
+        );
+        return errors;
+    }
+
+    let device_compute_capability = gpu
+        .auto_device_compute_capability_major
+        .zip(gpu.auto_device_compute_capability_minor);
+    let Some((major, minor)) = device_compute_capability else {
+        if gpu.auto_device_name.is_some() {
+            errors.push(format!(
+                "Preferred CUDA device compute capability could not be resolved; the gpu-kernel \
+                 release requires at least {GPU_KERNEL_SHIPPING_PTX_TARGET} for shipping PTX ISA \
+                 {GPU_KERNEL_SHIPPING_PTX_ISA_VERSION}."
+            ));
+        }
+        return errors;
+    };
+
+    if !compute_capability_meets_gpu_kernel_contract(major, minor) {
+        errors.push(format!(
+            "Preferred CUDA device compute capability sm_{major}{minor} is below the gpu-kernel \
+             shipping PTX target {GPU_KERNEL_SHIPPING_PTX_TARGET} (PTX ISA \
+             {GPU_KERNEL_SHIPPING_PTX_ISA_VERSION})."
+        ));
+        return errors;
+    }
+
+    if gpu.double_crossover_module_jit_loaded != Some(true) {
+        errors.push(format!(
+            "Embedded double-crossover GPU runtime prewarm failed (module load, required-symbol \
+             resolution, context, or stream initialization): {}",
+            gpu.double_crossover_module_jit_error
+                .as_deref()
+                .unwrap_or("probe did not run")
+        ));
+    }
+    if gpu.options_expression_module_jit_loaded != Some(true) {
+        errors.push(format!(
+            "Embedded options-expression GPU runtime prewarm failed (module load, required-symbol \
+             resolution, context, or stream initialization): {}",
+            gpu.options_expression_module_jit_error
+                .as_deref()
+                .unwrap_or("probe did not run")
+        ));
+    }
+    errors
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn gpu_kernel_runtime_prewarm_readiness(
+    device_id: Option<u32>,
+    device_meets_minimum: Option<bool>,
+) -> (Option<bool>, Option<String>, Option<bool>, Option<String>) {
+    let Some(device_id) = device_id else {
+        return (
+            Some(false),
+            Some("no preferred CUDA device was resolved".to_string()),
+            Some(false),
+            Some("no preferred CUDA device was resolved".to_string()),
+        );
+    };
+    if device_meets_minimum != Some(true) {
+        let reason = format!(
+            "runtime prewarm skipped because the preferred CUDA device does not satisfy the \
+             shipping PTX target {GPU_KERNEL_SHIPPING_PTX_TARGET}"
+        );
+        return (Some(false), Some(reason.clone()), Some(false), Some(reason));
+    }
+
+    let double_crossover = ta_app_core::prepare_cuda_kernel_runtime_for_probe(device_id);
+    let options_expression = ta_app_core::prewarm_options_expression_gpu_runtime(device_id);
+    (
+        Some(double_crossover.is_ok()),
+        double_crossover.err(),
+        Some(options_expression.is_ok()),
+        options_expression.err(),
+    )
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn gpu_kernel_runtime_prewarm_readiness(
+    _device_id: Option<u32>,
+    _device_meets_minimum: Option<bool>,
+) -> (Option<bool>, Option<String>, Option<bool>, Option<String>) {
+    (None, None, None, None)
 }
 
 #[cfg(feature = "cuda")]
@@ -430,6 +743,51 @@ fn resource_readiness(
     let src_tauri = repo_root.join("src-tauri");
     let windows_bundle = windows_bundle_readiness(&src_tauri);
     let release_paths = resolve_release_build_paths(repo_root);
+    let catboost_path = src_tauri
+        .join("resources")
+        .join("native")
+        .join("catboostmodel.dll");
+    let catboost_sha256 = sha256_file_hex(&catboost_path);
+    let catboost_size_bytes = std::fs::metadata(&catboost_path)
+        .ok()
+        .map(|metadata| metadata.len());
+    let catboost_matches_reviewed_release = catboost_sha256
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(CATBOOST_REVIEWED_SHA256))
+        && catboost_size_bytes == Some(CATBOOST_REVIEWED_SIZE_BYTES);
+    let catboost_license_path = src_tauri
+        .join("resources")
+        .join("licenses")
+        .join("CatBoost-LICENSE.txt");
+    let catboost_license_sha256 = sha256_file_hex(&catboost_license_path);
+    let catboost_license_matches_reviewed_release = catboost_license_sha256
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(CATBOOST_REVIEWED_LICENSE_SHA256));
+    let catboost_provenance_path = repo_root
+        .join("scripts")
+        .join("baselines")
+        .join("catboost-native-v1.2.10.json");
+    let catboost_provenance = std::fs::read_to_string(&catboost_provenance_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let catboost_provenance_matches_reviewed_release =
+        catboost_provenance.as_ref().is_some_and(|baseline| {
+            baseline.get("version").and_then(Value::as_str) == Some(CATBOOST_REVIEWED_VERSION)
+                && baseline.get("tag_commit").and_then(Value::as_str)
+                    == Some(CATBOOST_REVIEWED_TAG_COMMIT)
+                && baseline.get("asset_size_bytes").and_then(Value::as_u64)
+                    == Some(CATBOOST_REVIEWED_SIZE_BYTES)
+                && baseline
+                    .get("asset_sha256")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(CATBOOST_REVIEWED_SHA256))
+                && baseline
+                    .get("license_sha256")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| {
+                        value.eq_ignore_ascii_case(CATBOOST_REVIEWED_LICENSE_SHA256)
+                    })
+        });
     ReleaseResourceReadiness {
         src_tauri_config_exists: src_tauri.join("tauri.conf.json").is_file(),
         root_tauri_config_exists: repo_root.join("tauri.conf.json").is_file(),
@@ -440,12 +798,19 @@ fn resource_readiness(
         polygon_settings_fallback_file_exists: polygon_cache_dir
             .join(POLYGON_SETTINGS_FILE)
             .is_file(),
-        catboost_bundle_resource_exists: src_tauri
-            .join("resources")
-            .join("native")
-            .join("catboostmodel.dll")
-            .is_file(),
+        catboost_bundle_resource_exists: catboost_path.is_file(),
+        catboost_bundle_resource_sha256: catboost_sha256,
+        catboost_bundle_resource_matches_reviewed_release: catboost_matches_reviewed_release,
+        catboost_provenance_baseline_exists: catboost_provenance_path.is_file(),
+        catboost_provenance_baseline_matches_reviewed_release:
+            catboost_provenance_matches_reviewed_release,
+        catboost_license_resource_exists: catboost_license_path.is_file(),
+        catboost_license_resource_sha256: catboost_license_sha256,
+        catboost_license_resource_matches_reviewed_release:
+            catboost_license_matches_reviewed_release,
         windows_bundle_catboost_resource_configured: windows_bundle.catboost_resource_configured,
+        windows_bundle_catboost_license_configured: windows_bundle
+            .catboost_license_resource_configured,
         windows_bundle_nsis_target_configured: windows_bundle.nsis_target_configured,
         windows_bundle_webview_install_mode: windows_bundle.webview_install_mode,
         windows_bundle_installer_icon_exists: windows_bundle.installer_icon_exists,
@@ -478,6 +843,7 @@ fn resource_readiness(
 #[derive(Debug, Clone, Default)]
 struct WindowsBundleReadiness {
     catboost_resource_configured: bool,
+    catboost_license_resource_configured: bool,
     nsis_target_configured: bool,
     webview_install_mode: String,
     installer_icon_exists: bool,
@@ -499,8 +865,21 @@ fn windows_bundle_readiness(src_tauri: &Path) -> WindowsBundleReadiness {
         .join("resources")
         .join("native")
         .join("catboostmodel.dll");
-    let catboost_resource_configured = resources
-        .is_some_and(|value| bundle_resources_include_catboost(src_tauri, value, &catboost_path));
+    let catboost_resource_configured = resources.is_some_and(|value| {
+        bundle_resources_include_file(src_tauri, value, &catboost_path, "native/catboostmodel.dll")
+    });
+    let catboost_license_path = src_tauri
+        .join("resources")
+        .join("licenses")
+        .join("CatBoost-LICENSE.txt");
+    let catboost_license_resource_configured = resources.is_some_and(|value| {
+        bundle_resources_include_file(
+            src_tauri,
+            value,
+            &catboost_license_path,
+            "licenses/CatBoost-LICENSE.txt",
+        )
+    });
     let nsis_target_configured = bundle.get("targets").is_some_and(|targets| {
         targets
             .as_array()
@@ -523,32 +902,49 @@ fn windows_bundle_readiness(src_tauri: &Path) -> WindowsBundleReadiness {
 
     WindowsBundleReadiness {
         catboost_resource_configured,
+        catboost_license_resource_configured,
         nsis_target_configured,
         webview_install_mode,
         installer_icon_exists,
     }
 }
 
-fn bundle_resources_include_catboost(
+fn bundle_resources_include_file(
     src_tauri: &Path,
     resources: &Value,
-    catboost_path: &Path,
+    expected_source_path: &Path,
+    expected_target: &str,
 ) -> bool {
     if let Some(map) = resources.as_object() {
         return map.iter().any(|(source, target)| {
-            resolve_config_relative(src_tauri, source) == catboost_path
-                && target.as_str().is_some_and(|value| {
-                    normalize_resource_path(value) == "native/catboostmodel.dll"
-                })
+            resolve_config_relative(src_tauri, source) == expected_source_path
+                && target
+                    .as_str()
+                    .is_some_and(|value| normalize_resource_path(value) == expected_target)
         });
     }
     if let Some(items) = resources.as_array() {
         return items.iter().any(|item| {
-            item.as_str()
-                .is_some_and(|source| resolve_config_relative(src_tauri, source) == catboost_path)
+            item.as_str().is_some_and(|source| {
+                resolve_config_relative(src_tauri, source) == expected_source_path
+            })
         });
     }
     false
+}
+
+fn sha256_file_hex(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).ok()?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Some(format!("{:x}", hasher.finalize()))
 }
 
 fn resolve_config_relative(config_dir: &Path, value: &str) -> PathBuf {
@@ -573,17 +969,21 @@ struct ReleaseBuildPaths {
 
 fn resolve_release_build_paths(repo_root: &Path) -> ReleaseBuildPaths {
     let release_roots = [
-        repo_root.join("src-tauri").join("target").join("release"),
         repo_root.join("target").join("release"),
+        repo_root.join("src-tauri").join("target").join("release"),
     ];
-    let release_binary_path = release_roots
+    let selected_release_root = release_roots
         .iter()
+        .find(|root| root.join("ta_desktop_demo_app.exe").is_file() || root.join("bundle").is_dir())
+        .cloned();
+    let release_binary_path = selected_release_root
+        .as_ref()
         .map(|root| root.join("ta_desktop_demo_app.exe"))
-        .find(|path| path.is_file());
-    let release_bundle_dir_path = release_roots
-        .iter()
+        .filter(|path| path.is_file());
+    let release_bundle_dir_path = selected_release_root
+        .as_ref()
         .map(|root| root.join("bundle"))
-        .find(|path| path.is_dir());
+        .filter(|path| path.is_dir());
     let release_bundle_artifact_count = release_bundle_dir_path
         .as_ref()
         .map(|bundle_root| count_release_bundle_artifacts(bundle_root))
@@ -617,6 +1017,184 @@ fn count_release_bundle_artifacts(bundle_root: &Path) -> usize {
         .sum()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProductVersion {
+    value: String,
+    components: Vec<u32>,
+}
+
+impl ProductVersion {
+    fn major(&self) -> u32 {
+        self.components[0]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstalledEdgeRuntime {
+    kind: &'static str,
+    path: PathBuf,
+    version: ProductVersion,
+}
+
+fn parse_product_version(raw: &str) -> Option<ProductVersion> {
+    raw.split(|character: char| !(character.is_ascii_digit() || character == '.'))
+        .filter(|candidate| !candidate.is_empty())
+        .find_map(|candidate| {
+            let components = candidate
+                .split('.')
+                .map(str::parse::<u32>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if components.len() < 3 {
+                return None;
+            }
+            Some(ProductVersion {
+                value: components
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join("."),
+                components,
+            })
+        })
+}
+
+fn command_version(path: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new(path).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = [stdout.as_ref(), stderr.as_ref()]
+        .into_iter()
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    (!combined.is_empty()).then_some(combined)
+}
+
+fn installed_edge_runtime_candidates() -> Vec<InstalledEdgeRuntime> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let program_files_x86 = env::var_os("ProgramFiles(x86)").map(PathBuf::from);
+    let program_files = env::var_os("ProgramFiles").map(PathBuf::from);
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let mut roots = Vec::new();
+    for base in [program_files_x86, program_files, local_app_data]
+        .into_iter()
+        .flatten()
+    {
+        roots.push((
+            "webview2",
+            base.join("Microsoft")
+                .join("EdgeWebView")
+                .join("Application"),
+            "msedgewebview2.exe",
+        ));
+        roots.push((
+            "edge",
+            base.join("Microsoft").join("Edge").join("Application"),
+            "msedge.exe",
+        ));
+    }
+    roots
+        .into_iter()
+        .flat_map(|(kind, root, executable)| {
+            std::fs::read_dir(root)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+                .filter_map(move |entry| {
+                    let version = parse_product_version(&entry.file_name().to_string_lossy())?;
+                    let path = entry.path().join(executable);
+                    path.is_file().then_some(InstalledEdgeRuntime {
+                        kind,
+                        path,
+                        version,
+                    })
+                })
+        })
+        .collect()
+}
+
+fn newest_edge_runtime(
+    candidates: &[InstalledEdgeRuntime],
+    kind: &'static str,
+) -> Option<InstalledEdgeRuntime> {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.kind == kind)
+        .max_by(|left, right| left.version.components.cmp(&right.version.components))
+        .cloned()
+}
+
+fn edge_driver_matches_runtime_major(
+    driver: Option<&ProductVersion>,
+    runtime: Option<&InstalledEdgeRuntime>,
+) -> Option<bool> {
+    driver
+        .zip(runtime)
+        .map(|(driver, runtime)| driver.major() == runtime.version.major())
+}
+
+fn edge_driver_path(repo_root: &Path) -> (Option<PathBuf>, bool) {
+    let override_path = env::var("VECTORGRID_DESKTOP_SMOKE_EDGE_DRIVER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    edge_driver_path_with_override(repo_root, override_path)
+}
+
+fn edge_driver_path_with_override(
+    repo_root: &Path,
+    override_path: Option<PathBuf>,
+) -> (Option<PathBuf>, bool) {
+    if let Some(override_path) = override_path {
+        return (override_path.is_file().then_some(override_path), true);
+    }
+    (
+        find_command_path(
+            "msedgedriver",
+            Some(&[
+                repo_root.join("msedgedriver.exe"),
+                repo_root.join("web").join("msedgedriver.exe"),
+            ]),
+        ),
+        false,
+    )
+}
+
+fn archive_tool_path() -> Option<PathBuf> {
+    let mut fallbacks = Vec::new();
+    if let Some(program_files) = env::var_os("ProgramFiles") {
+        fallbacks.push(PathBuf::from(program_files).join("7-Zip").join("7z.exe"));
+    }
+    if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
+        fallbacks.push(
+            PathBuf::from(program_files_x86)
+                .join("7-Zip")
+                .join("7z.exe"),
+        );
+    }
+    find_command_path("7z", Some(&fallbacks)).or_else(|| find_command_path("7za", None))
+}
+
+fn selected_edge_runtime_version(tooling: &ReleaseToolingReadiness) -> Option<&str> {
+    match tooling.edge_compatibility_target.as_deref() {
+        Some("webview2") => tooling.webview2_runtime_version.as_deref(),
+        Some("edge") => tooling.edge_browser_version.as_deref(),
+        _ => None,
+    }
+}
+
 fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
     let cargo_path = find_command_path("cargo", None);
     let npm_path = find_command_path("npm", None);
@@ -624,13 +1202,21 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
     let signtool_path = find_command_path("signtool", None);
     let makensis_path = find_command_path("makensis", None);
     let signing_config = windows_signing_config(repo_root);
-    let edge_driver_path = find_command_path(
-        "msedgedriver",
-        Some(&[
-            repo_root.join("msedgedriver.exe"),
-            repo_root.join("web").join("msedgedriver.exe"),
-        ]),
-    );
+    let (edge_driver_path, edge_driver_override_configured) = edge_driver_path(repo_root);
+    let edge_driver_version = edge_driver_path
+        .as_deref()
+        .and_then(|path| command_version(path, &["--version"]))
+        .and_then(|raw| parse_product_version(&raw));
+    let runtime_candidates = installed_edge_runtime_candidates();
+    let webview2_runtime = newest_edge_runtime(&runtime_candidates, "webview2");
+    let edge_browser = newest_edge_runtime(&runtime_candidates, "edge");
+    let compatibility_runtime = webview2_runtime.as_ref().or(edge_browser.as_ref());
+    let edge_driver_major_compatible =
+        edge_driver_matches_runtime_major(edge_driver_version.as_ref(), compatibility_runtime);
+    let archive_tool_path = archive_tool_path();
+    let archive_tool_version = archive_tool_path
+        .as_deref()
+        .and_then(|path| command_version(path, &[]));
 
     ReleaseToolingReadiness {
         cargo_available: cargo_path.is_some(),
@@ -638,6 +1224,30 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
         cargo_tauri_available: cargo_tauri_available(),
         tauri_driver_available: tauri_driver_path.is_some(),
         edge_driver_available: edge_driver_path.is_some(),
+        edge_driver_override_configured,
+        edge_driver_version: edge_driver_version
+            .as_ref()
+            .map(|version| version.value.clone()),
+        edge_driver_major: edge_driver_version.as_ref().map(ProductVersion::major),
+        webview2_runtime_path: webview2_runtime
+            .as_ref()
+            .map(|runtime| runtime.path.to_string_lossy().to_string()),
+        webview2_runtime_version: webview2_runtime
+            .as_ref()
+            .map(|runtime| runtime.version.value.clone()),
+        webview2_runtime_major: webview2_runtime
+            .as_ref()
+            .map(|runtime| runtime.version.major()),
+        edge_browser_path: edge_browser
+            .as_ref()
+            .map(|runtime| runtime.path.to_string_lossy().to_string()),
+        edge_browser_version: edge_browser
+            .as_ref()
+            .map(|runtime| runtime.version.value.clone()),
+        edge_browser_major: edge_browser.as_ref().map(|runtime| runtime.version.major()),
+        edge_compatibility_target: compatibility_runtime.map(|runtime| runtime.kind.to_string()),
+        edge_driver_major_compatible,
+        archive_tool_available: archive_tool_path.is_some() && archive_tool_version.is_some(),
         signtool_available: signtool_path.is_some(),
         custom_signing_hook_configured: signing_config.sign_command_configured,
         windows_certificate_thumbprint_configured: signing_config.certificate_thumbprint_configured,
@@ -647,6 +1257,8 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
         npm_path: npm_path.map(|path| path.to_string_lossy().to_string()),
         tauri_driver_path: tauri_driver_path.map(|path| path.to_string_lossy().to_string()),
         edge_driver_path: edge_driver_path.map(|path| path.to_string_lossy().to_string()),
+        archive_tool_path: archive_tool_path.map(|path| path.to_string_lossy().to_string()),
+        archive_tool_version,
         signtool_path: signtool_path.map(|path| path.to_string_lossy().to_string()),
         makensis_path: makensis_path.map(|path| path.to_string_lossy().to_string()),
     }
@@ -874,9 +1486,13 @@ fn find_command_path(command: &str, fallback_paths: Option<&[PathBuf]>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_release_readiness, resolve_release_build_paths, updater_readiness,
-        windows_signing_config, ReleaseReadinessOptions, ReleaseVariant,
+        collect_release_readiness, edge_driver_matches_runtime_major,
+        edge_driver_path_with_override, gpu_kernel_readiness_errors, newest_edge_runtime,
+        parse_product_version, resolve_release_build_paths, shipping_gpu_kernel_ptx_contract,
+        updater_readiness, windows_signing_config, InstalledEdgeRuntime, ReleaseGpuReadiness,
+        ReleaseReadinessOptions, ReleaseVariant,
     };
+    use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
 
     fn repo_root() -> PathBuf {
@@ -886,11 +1502,239 @@ mod tests {
             .to_path_buf()
     }
 
+    fn gpu_kernel_readiness_fixture(
+        compute_capability: Option<(u32, u32)>,
+        double_crossover_runtime_ready: bool,
+        options_expression_runtime_ready: bool,
+    ) -> ReleaseGpuReadiness {
+        ReleaseGpuReadiness {
+            built_with_cuda: true,
+            built_with_cuda_backtest_kernel: true,
+            cuda_available: true,
+            nvidia_smi_available: true,
+            auto_device_name: Some("Fixture CUDA device".to_string()),
+            auto_device_memory_bytes: Some(16 * 1024 * 1024 * 1024),
+            auto_device_compute_capability_major: compute_capability.map(|value| value.0),
+            auto_device_compute_capability_minor: compute_capability.map(|value| value.1),
+            auto_device_error: None,
+            gpu_kernel_ptx_contract: Some(shipping_gpu_kernel_ptx_contract(compute_capability)),
+            double_crossover_module_jit_loaded: Some(double_crossover_runtime_ready),
+            double_crossover_module_jit_error: (!double_crossover_runtime_ready)
+                .then(|| "fixture double-crossover prewarm failure".to_string()),
+            options_expression_module_jit_loaded: Some(options_expression_runtime_ready),
+            options_expression_module_jit_error: (!options_expression_runtime_ready)
+                .then(|| "fixture options-expression prewarm failure".to_string()),
+        }
+    }
+
     #[test]
     fn release_variant_strings_match_expected_contract() {
         assert_eq!(ReleaseVariant::Cpu.as_str(), "cpu");
         assert_eq!(ReleaseVariant::GpuMa.as_str(), "gpu-ma");
         assert_eq!(ReleaseVariant::GpuKernel.as_str(), "gpu-kernel");
+    }
+
+    #[test]
+    fn product_version_parser_extracts_edge_versions_and_rejects_incomplete_values() {
+        let parsed =
+            parse_product_version("Microsoft Edge WebDriver 150.0.4078.99 (fixture revision 123)")
+                .expect("parse EdgeDriver product version");
+        assert_eq!(parsed.value, "150.0.4078.99");
+        assert_eq!(parsed.components, vec![150, 0, 4078, 99]);
+        assert_eq!(parsed.major(), 150);
+        assert!(parse_product_version("Microsoft Edge WebDriver unavailable").is_none());
+        assert!(parse_product_version("build 150").is_none());
+    }
+
+    #[test]
+    fn newest_edge_runtime_uses_numeric_version_ordering() {
+        let candidates = vec![
+            InstalledEdgeRuntime {
+                kind: "webview2",
+                path: PathBuf::from("webview-150.0.4078.83"),
+                version: parse_product_version("150.0.4078.83").expect("older version"),
+            },
+            InstalledEdgeRuntime {
+                kind: "edge",
+                path: PathBuf::from("edge-151.0.1.0"),
+                version: parse_product_version("151.0.1.0").expect("Edge version"),
+            },
+            InstalledEdgeRuntime {
+                kind: "webview2",
+                path: PathBuf::from("webview-150.0.4078.105"),
+                version: parse_product_version("150.0.4078.105").expect("newer version"),
+            },
+        ];
+
+        let selected =
+            newest_edge_runtime(&candidates, "webview2").expect("select newest WebView2");
+        assert_eq!(selected.version.value, "150.0.4078.105");
+        assert_eq!(selected.path, PathBuf::from("webview-150.0.4078.105"));
+    }
+
+    #[test]
+    fn edge_driver_compatibility_is_major_version_scoped_and_unknown_fails_unproven() {
+        let matching_driver =
+            parse_product_version("Microsoft Edge WebDriver 150.0.1.2").expect("matching driver");
+        let stale_driver =
+            parse_product_version("Microsoft Edge WebDriver 148.0.9.9").expect("stale driver");
+        let runtime = InstalledEdgeRuntime {
+            kind: "webview2",
+            path: PathBuf::from("msedgewebview2.exe"),
+            version: parse_product_version("150.9.9999.1").expect("runtime"),
+        };
+
+        assert_eq!(
+            edge_driver_matches_runtime_major(Some(&matching_driver), Some(&runtime)),
+            Some(true)
+        );
+        assert_eq!(
+            edge_driver_matches_runtime_major(Some(&stale_driver), Some(&runtime)),
+            Some(false)
+        );
+        assert_eq!(
+            edge_driver_matches_runtime_major(Some(&matching_driver), None),
+            None
+        );
+        assert_eq!(
+            edge_driver_matches_runtime_major(None, Some(&runtime)),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_edge_driver_override_never_falls_back_to_repo_or_path_discovery() {
+        let unique = format!(
+            "vectorgrid-release-readiness-edge-override-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temporary readiness root");
+        std::fs::write(root.join("msedgedriver.exe"), b"repo fallback")
+            .expect("write fallback driver fixture");
+
+        let missing_override = root.join("explicit-driver-does-not-exist.exe");
+        let (resolved, configured) = edge_driver_path_with_override(&root, Some(missing_override));
+        assert!(configured);
+        assert!(
+            resolved.is_none(),
+            "an invalid explicit override must not fall back to the repo or PATH"
+        );
+
+        let (fallback, configured) = edge_driver_path_with_override(&root, None);
+        assert!(!configured);
+        assert_eq!(fallback, Some(root.join("msedgedriver.exe")));
+        std::fs::remove_dir_all(root).expect("remove temporary readiness root");
+    }
+
+    #[test]
+    fn gpu_kernel_gate_rejects_device_below_shipping_ptx_target() {
+        let gpu = gpu_kernel_readiness_fixture(Some((8, 6)), false, false);
+        let errors = gpu_kernel_readiness_errors(&gpu);
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("sm_86"));
+        assert!(errors[0].contains("sm_89"));
+        assert!(errors[0].contains("PTX ISA 9.2"));
+        assert_eq!(
+            gpu.gpu_kernel_ptx_contract
+                .as_ref()
+                .and_then(|contract| contract.preferred_device_meets_minimum),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn gpu_kernel_gate_accepts_minimum_and_newer_compute_capabilities() {
+        assert!(gpu_kernel_readiness_errors(&gpu_kernel_readiness_fixture(
+            Some((8, 9)),
+            true,
+            true,
+        ))
+        .is_empty());
+        assert!(gpu_kernel_readiness_errors(&gpu_kernel_readiness_fixture(
+            Some((9, 0)),
+            true,
+            true,
+        ))
+        .is_empty());
+    }
+
+    #[test]
+    fn gpu_kernel_gate_reports_runtime_prewarm_without_mislabeling_it_as_jit_only() {
+        let errors =
+            gpu_kernel_readiness_errors(&gpu_kernel_readiness_fixture(Some((8, 9)), false, true));
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("GPU runtime prewarm failed"));
+        assert!(errors[0].contains("required-symbol resolution"));
+        assert!(!errors[0].contains("driver-JIT"));
+    }
+
+    #[test]
+    fn gpu_readiness_serialization_records_contract_and_accepts_legacy_shape() {
+        let gpu = gpu_kernel_readiness_fixture(Some((8, 9)), true, true);
+        let value = serde_json::to_value(&gpu).expect("serialize GPU readiness");
+        assert_eq!(value["auto_device_compute_capability_major"], 8);
+        assert_eq!(value["auto_device_compute_capability_minor"], 9);
+        assert_eq!(
+            value["gpu_kernel_ptx_contract"]["shipping_ptx_isa_version"],
+            "9.2"
+        );
+        assert_eq!(
+            value["gpu_kernel_ptx_contract"]["shipping_ptx_target"],
+            "sm_89"
+        );
+        assert_eq!(
+            value["gpu_kernel_ptx_contract"]["preferred_device_meets_minimum"],
+            true
+        );
+        assert_eq!(value["double_crossover_module_jit_loaded"], true);
+
+        let legacy = serde_json::json!({
+            "built_with_cuda": false,
+            "built_with_cuda_backtest_kernel": false,
+            "cuda_available": false,
+            "nvidia_smi_available": false
+        });
+        let decoded: ReleaseGpuReadiness =
+            serde_json::from_value(legacy).expect("deserialize legacy GPU readiness");
+        assert_eq!(decoded.auto_device_compute_capability_major, None);
+        assert_eq!(decoded.auto_device_compute_capability_minor, None);
+        assert!(decoded.gpu_kernel_ptx_contract.is_none());
+        assert_eq!(decoded.double_crossover_module_jit_loaded, None);
+    }
+
+    #[test]
+    fn gpu_kernel_structured_contract_matches_shipping_ptx_headers() {
+        for relative_path in [
+            "crates/app_core/src/kernels/double_crossover.prebuilt.ptx",
+            "crates/app_core/src/kernels/options_expression.prebuilt.ptx",
+        ] {
+            let path = repo_root().join(relative_path);
+            let file = std::fs::File::open(&path)
+                .unwrap_or_else(|error| panic!("open shipping PTX '{}': {error}", path.display()));
+            let header = BufReader::new(file)
+                .lines()
+                .take(16)
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_else(|error| panic!("read shipping PTX '{}': {error}", path.display()))
+                .join("\n");
+            assert!(
+                header.contains(".version 9.2"),
+                "shipping PTX '{}' no longer matches the recorded PTX ISA contract",
+                path.display()
+            );
+            assert!(
+                header.contains(".target sm_89"),
+                "shipping PTX '{}' no longer matches the recorded PTX target contract",
+                path.display()
+            );
+        }
     }
 
     #[test]
@@ -909,7 +1753,25 @@ mod tests {
         assert!(report.resources.src_tauri_config_exists);
         assert!(report.resources.root_tauri_config_exists);
         assert!(report.resources.catboost_bundle_resource_exists);
+        assert!(
+            report
+                .resources
+                .catboost_bundle_resource_matches_reviewed_release
+        );
+        assert!(report.resources.catboost_provenance_baseline_exists);
+        assert!(
+            report
+                .resources
+                .catboost_provenance_baseline_matches_reviewed_release
+        );
+        assert!(report.resources.catboost_license_resource_exists);
+        assert!(
+            report
+                .resources
+                .catboost_license_resource_matches_reviewed_release
+        );
         assert!(report.resources.windows_bundle_catboost_resource_configured);
+        assert!(report.resources.windows_bundle_catboost_license_configured);
         assert!(report.resources.windows_bundle_nsis_target_configured);
         assert_eq!(
             report.resources.windows_bundle_webview_install_mode,
@@ -1021,6 +1883,41 @@ mod tests {
             Some(workspace_release.join("bundle"))
         );
         assert_eq!(resolved.release_bundle_artifact_count, 1);
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn resolve_release_build_paths_never_mixes_target_roots() {
+        let temp_root = std::env::temp_dir()
+            .join("vectorgrid_release_readiness_single_target_root")
+            .join(format!("{}", std::process::id()));
+        let workspace_release = temp_root.join("target").join("release");
+        let legacy_release = temp_root.join("src-tauri").join("target").join("release");
+        std::fs::create_dir_all(&workspace_release).expect("workspace release dir");
+        std::fs::create_dir_all(legacy_release.join("bundle").join("nsis"))
+            .expect("legacy bundle dir");
+        std::fs::write(
+            workspace_release.join("ta_desktop_demo_app.exe"),
+            b"workspace-binary",
+        )
+        .expect("workspace release binary");
+        std::fs::write(
+            legacy_release
+                .join("bundle")
+                .join("nsis")
+                .join("stale-legacy.exe"),
+            b"legacy-bundle",
+        )
+        .expect("legacy bundle artifact");
+
+        let resolved = resolve_release_build_paths(&temp_root);
+        assert_eq!(
+            resolved.release_binary_path,
+            Some(workspace_release.join("ta_desktop_demo_app.exe"))
+        );
+        assert_eq!(resolved.release_bundle_dir_path, None);
+        assert_eq!(resolved.release_bundle_artifact_count, 0);
 
         let _ = std::fs::remove_dir_all(temp_root);
     }

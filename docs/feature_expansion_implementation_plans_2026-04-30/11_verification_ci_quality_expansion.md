@@ -33,8 +33,11 @@ Frontend QA:
 
 CI:
 
-- `.github/workflows.disabled/ci.yml.disabled`
-- `.github/workflows.disabled/desktop-smoke.yml.disabled`
+- `.github/workflows/cpu-quality.yml`
+- `scripts/run_cpu_ci_gate.ps1`
+- `docs/CI.md`
+- `.github/workflows.disabled/ci.yml.disabled` (archived reference)
+- `.github/workflows.disabled/desktop-smoke.yml.disabled` (archived reference)
 
 ## Research Basis
 
@@ -150,7 +153,22 @@ Add:
 
 ### Problem
 
-CI workflows are disabled. Reactivation should not occur until local gates are stable and scoped.
+The legacy workflows remain disabled archives. A reviewed CPU-only workflow is
+prepared in the working tree at `.github/workflows/cpu-quality.yml`; GPU, native
+desktop, credentialed-provider, signing, and clean-machine evidence still
+require separate lanes.
+
+### Current implementation status (2026-07-24)
+
+- `Required CPU quality` is configured for pull requests, pushes, merge queues,
+  and manual dispatches once the workflow is committed and enabled remotely.
+- `scripts/run_cpu_ci_gate.ps1` fail-fast delegates to the current repo quality,
+  serialized Rust/frontend tests, full headless Chromium QA, and output parity.
+- QA evidence has a seven-day retention window and remains diagnostic rather
+  than release authority.
+- After the first clean GitHub run, repository branch protection must require
+  `Required CPU quality`.
+- See `docs/CI.md` for the exact contract and exclusions.
 
 ### Implementation
 

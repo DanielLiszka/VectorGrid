@@ -60,6 +60,8 @@ pub mod rocb;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod rocb_gpu_kernel;
 pub mod sharpe_stats;
+#[cfg(any(test, all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+pub(crate) mod staged_output;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub(crate) mod standalone_gpu_runtime;
 pub mod stats_common;
@@ -74,6 +76,7 @@ pub(crate) mod test_support;
 pub mod timeframe;
 pub(crate) mod validation_core;
 pub mod validation_pipeline;
+pub mod validation_realism;
 pub mod validation_shared;
 pub mod validation_stats;
 pub mod vcc;
@@ -162,9 +165,11 @@ pub use validation_shared::{
     ValidationEvidenceAvailability, ValidationEvidenceCandidateUniverseV1,
     ValidationEvidenceDatasetV1, ValidationEvidenceMetricV1, ValidationEvidenceModuleV1,
     ValidationEvidencePackStatus, ValidationEvidencePackV1, ValidationEvidenceRouteV1,
-    ValidationEvidenceVerdictV1, ValidationSemanticsProvenance, WalkForwardConfig,
-    WalkForwardConfigOptional, WalkForwardStats, VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION,
-    VALIDATION_EVIDENCE_PACK_VERSION,
+    ValidationEvidenceVerdictV1, ValidationPriceAdjustmentState,
+    ValidationPromotionEligibilityState, ValidationPromotionEligibilityV1,
+    ValidationRealismContext, ValidationRealismEvidenceStatus, ValidationRealismEvidenceV1,
+    ValidationSemanticsProvenance, WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
+    VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION, VALIDATION_EVIDENCE_PACK_VERSION,
 };
 
 pub use iterative_sim::{
@@ -317,6 +322,6 @@ pub use dynamic_indicator_adapter::take_prepared_cuda_dispatch_stats;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub use gpu_backtest_kernel::{
     eval_double_ma_dynamic_program_precomputed_gpu_kernel,
-    eval_uploaded_double_ma_dynamic_program_gpu_kernel, upload_double_ma_dynamic_program_batch,
-    UploadedDoubleMaDynamicProgramBatch,
+    eval_uploaded_double_ma_dynamic_program_gpu_kernel, prepare_cuda_kernel_runtime_for_probe,
+    upload_double_ma_dynamic_program_batch, UploadedDoubleMaDynamicProgramBatch,
 };

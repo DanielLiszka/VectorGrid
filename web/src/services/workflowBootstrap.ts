@@ -11,6 +11,7 @@ import {
 import { normalizeShellMode } from "../utils/core/workflowModel";
 import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { useDataStore } from "../stores/dataStore";
+import { useRuntimeStore } from "../stores/runtimeStore";
 import { readStorageString } from "../utils/storage";
 import { useWorkflowStore } from "../stores/workflowStore";
 import {
@@ -58,6 +59,7 @@ const RESULTS_TAB_KEYS = new Set([
   "debug",
 ]);
 const AGGREGATE_TAB_KEYS = new Set(["meta", "batch", "saved", "compare"]);
+let latestWorkflowArtifactHydrationPromise: Promise<boolean> | null = null;
 
 export interface WorkflowBootstrapState {
   mode: string;
@@ -129,6 +131,41 @@ export function readWorkflowBootstrapState(): WorkflowBootstrapState {
   };
 }
 
+export function retryLatestWorkflowArtifactHydration(): Promise<boolean> {
+  if (latestWorkflowArtifactHydrationPromise) {
+    return latestWorkflowArtifactHydrationPromise;
+  }
+
+  const pinia = resolveRuntimePinia();
+  const runtimeStore = pinia ? useRuntimeStore(pinia) : null;
+  runtimeStore?.markLatestArtifactHydrationStarted();
+
+  const hydration = measureArtifactHistoryPerf(
+    "workflowBootstrap.latestRunSyncMs",
+    () => syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime"),
+    {
+      meta: { source: "legacy-runtime" },
+      onSuccessMeta: (synced) => ({ synced }),
+    },
+  )
+    .then((synced) => {
+      runtimeStore?.markLatestArtifactHydrationReady();
+      return synced;
+    })
+    .catch((error) => {
+      runtimeStore?.markLatestArtifactHydrationError(error);
+      throw error;
+    });
+
+  const trackedHydration = hydration.finally(() => {
+    if (latestWorkflowArtifactHydrationPromise === trackedHydration) {
+      latestWorkflowArtifactHydrationPromise = null;
+    }
+  });
+  latestWorkflowArtifactHydrationPromise = trackedHydration;
+  return trackedHydration;
+}
+
 export function applyWorkflowBootstrapFromStorage(
   options: WorkflowBootstrapOptions = {},
 ): Promise<void> {
@@ -149,16 +186,7 @@ export function applyWorkflowBootstrapFromStorage(
     },
   );
   void startupDataPromise
-    .then(() =>
-      measureArtifactHistoryPerf(
-        "workflowBootstrap.latestRunSyncMs",
-        () => syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime"),
-        {
-          meta: { source: "legacy-runtime" },
-          onSuccessMeta: (synced) => ({ synced }),
-        },
-      ),
-    )
+    .then(() => retryLatestWorkflowArtifactHydration())
     .catch(() => undefined);
 
   const restoredState = !!(

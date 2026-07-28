@@ -21,9 +21,11 @@ use ta_optimizer::mo::{
     EvalOutcome, Nsga2Config, ParamDomain, ParamValue, QmcMoConfig, RandomMoConfig, SearchSpace,
     TpeMoConfig,
 };
-use ta_optimizer::{ObjectiveKind, OptimizationMode};
+use ta_optimizer::{ObjectiveKind, OptimizationMode, SearchDistributionAccumulator};
 use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
+
+pub(crate) const COMPOSITE_SHARPE_METRIC_ID: &str = "composite_log_return_sharpe_v1";
 
 fn emit_progress(
     progress: Option<&dyn ProgressSink>,
@@ -2872,6 +2874,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     base_ranker,
                     rerank_operator,
                     heatmap_semantics,
+                    search_distribution: None,
+                    search_distribution_unavailable_reason: None,
                 },
                 Some(ExactGridPlan::ExplicitCandidates { .. }) => OptimizationSearchSemanticsSummary {
                     approx_mode: "exact_declared_repaired_domain".to_string(),
@@ -2881,6 +2885,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     base_ranker,
                     rerank_operator,
                     heatmap_semantics,
+                    search_distribution: None,
+                    search_distribution_unavailable_reason: None,
                 },
                 None => {
                     let workload_family = match &req.sampler {
@@ -2897,6 +2903,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         base_ranker,
                         rerank_operator,
                         heatmap_semantics,
+                        search_distribution: None,
+                        search_distribution_unavailable_reason: None,
                     }
                 }
             }
@@ -3027,6 +3035,10 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         }
     };
 
+    let search_distribution = Mutex::new((
+        HashMap::<u64, Vec<Vec<ParamValue>>>::new(),
+        SearchDistributionAccumulator::new("core17", COMPOSITE_SHARPE_METRIC_ID),
+    ));
     let done_counter = AtomicUsize::new(0);
     let last_emit_ms = AtomicU64::new(0);
     emit_progress(progress, 0, progress_total, progress_phase);
@@ -3034,6 +3046,25 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let eval_with_progress =
         |values: &[ParamValue]| -> EvalOutcome<(Metrics, CompositeMoParams, f64, f64)> {
             let out = eval_one(values);
+            if need_sharpe {
+                let feasible = out
+                    .constraints
+                    .iter()
+                    .all(|value| value.is_finite() && *value <= 0.0);
+                if let Ok(mut guard) = search_distribution.lock() {
+                    let key = ta_optimizer::mo::param_values_hash(values);
+                    let already_seen = guard
+                        .0
+                        .get(&key)
+                        .is_some_and(|entries| entries.iter().any(|entry| entry == values));
+                    if already_seen {
+                        guard.1.record_duplicate_attempt();
+                    } else {
+                        guard.0.entry(key).or_default().push(values.to_vec());
+                        guard.1.record_unique_evaluation(&out.payload.0, feasible);
+                    }
+                }
+            }
             let done = done_counter
                 .fetch_add(1, Ordering::Relaxed)
                 .saturating_add(1);
@@ -3150,7 +3181,37 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
     let runtime_ms = start.elapsed().as_millis() as u64;
     let actual_evaluations = done_counter.load(Ordering::Relaxed);
-    let search_semantics = Some(build_search_semantics(exact_grid_plan.as_ref()));
+    let mut search_semantics = build_search_semantics(exact_grid_plan.as_ref());
+    let search_distribution = if need_sharpe {
+        match search_distribution.into_inner() {
+            Ok((_, mut distribution)) => {
+                distribution.record_duplicate_attempts(search_stats.duplicate_evaluations_avoided);
+                Some(distribution.finalize())
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    search_semantics.search_distribution = search_distribution.clone();
+    search_semantics.search_distribution_unavailable_reason =
+        search_distribution.is_none().then(|| {
+            if need_sharpe {
+                "full-search Sharpe distribution unavailable: the CompositeMo statistics accumulator was poisoned"
+                    .to_string()
+            } else {
+                "full-search Sharpe distribution unavailable: neither CompositeMo objective required Sharpe, so the reduced evaluator did not compute it for every unique candidate"
+                    .to_string()
+            }
+        });
+    let search_semantics = Some(search_semantics);
+    let explicit_unique_evaluations = search_distribution
+        .as_ref()
+        .map_or(search_stats.unique_evaluations, |stats| stats.unique_count);
+    let explicit_feasible_points = search_distribution.as_ref().map_or_else(
+        || feasible_points.load(Ordering::Relaxed),
+        |stats| stats.feasible_count,
+    );
     let telemetry = CompositeMoTelemetry {
         prescan: prescan_telemetry.clone(),
         search: CompositeMoSearchTelemetry {
@@ -3161,9 +3222,9 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 search_stats.requested_evaluations
             },
             actual_evaluations,
-            unique_evaluations: search_stats.unique_evaluations,
+            unique_evaluations: explicit_unique_evaluations,
             duplicate_evaluations_avoided: search_stats.duplicate_evaluations_avoided,
-            feasible_points: feasible_points.load(Ordering::Relaxed),
+            feasible_points: explicit_feasible_points,
             rejected_decode_or_order: rejected_decode_or_order.load(Ordering::Relaxed),
             rejected_prescan_pair: rejected_prescan_pair.load(Ordering::Relaxed),
             rejected_other_constraints: rejected_other_constraints.load(Ordering::Relaxed),
@@ -3412,6 +3473,23 @@ mod tests {
             search_semantics.heatmap_semantics.as_deref(),
             Some("sampled_bin_summary_only")
         );
+        let distribution = search_semantics
+            .search_distribution
+            .as_ref()
+            .expect("full-search Sharpe distribution");
+        assert_eq!(distribution.metric_surface_kind, "core17");
+        assert_eq!(distribution.sharpe_metric_id, COMPOSITE_SHARPE_METRIC_ID);
+        assert_eq!(distribution.attempted_count, 9);
+        assert_eq!(distribution.unique_count, 9);
+        assert_eq!(
+            distribution.feasible_count,
+            res.telemetry.search.feasible_points
+        );
+        assert!(distribution.finite_sharpe_count <= distribution.feasible_count);
+        assert!(distribution.finite_sharpe_mean.is_some());
+        assert!(search_semantics
+            .search_distribution_unavailable_reason
+            .is_none());
         assert!(res
             .pareto
             .iter()

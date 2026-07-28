@@ -23,6 +23,7 @@ import {
   exportTopCsv,
 } from "./analysisService";
 import { useAnalysisStore } from "../stores/analysisStore";
+import { useDataStore } from "../stores/dataStore";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { heatmapTooltipText } from "../visualizations/heatmapCanvasModel";
@@ -129,6 +130,71 @@ function mountDrillDom(): void {
     <div id="stabilityTableWrapVue" style="display:none;"></div>
     <table><tbody id="stabilityTableBodyVue"></tbody></table>
   `;
+}
+
+function seedRerenderCandidateRun(dataId = "dataset-rerender"): void {
+  seedWorkflowRun({
+    req: {
+      strategy_kind: "DoubleMa",
+      data_id: dataId,
+      ma_source: "close",
+      objective: "Sharpe",
+      strategy: {},
+    },
+    res: {
+      top: [
+        [
+          {
+            fast_ma_type: "ema",
+            fast_len: 7,
+            slow_ma_type: "ema",
+            slow_len: 30,
+          },
+          {
+            pnl: 0.2,
+            sharpe: 1.2,
+            max_dd: 0.1,
+            trades: 20,
+            exposure: 0.5,
+          },
+        ],
+      ],
+    },
+  });
+  refreshTopTableFromWorkflowRun();
+  mountDrillDom();
+}
+
+function installRerenderDrillCommandResults(): void {
+  invokeCommandMock.mockImplementation(async (command: unknown) => {
+    if (command === "compute_double_ma_drilldown") {
+      return {
+        equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+        drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+        trades: [],
+        trade_stats: null,
+        indicator_bars: [],
+      } as never;
+    }
+    if (command === "compute_double_ma_local_stability") {
+      return {
+        base: {
+          fast_len: 7,
+          slow_len: 30,
+          fast_ma_type: "ema",
+          slow_ma_type: "ema",
+        },
+        objective: "Sharpe",
+        radius: 1,
+        step: 1,
+        start_t: 1,
+        points: [],
+        summary: { base: 0, min: 0, median: 0, max: 0 },
+      } as never;
+    }
+    if (command === "get_price_bars") return [] as never;
+    return null as never;
+  });
 }
 
 function appendDrillDom(): void {
@@ -2566,19 +2632,59 @@ describe("analysis service", () => {
     expect(Array.isArray(store.topTableRows)).toBe(true);
   });
 
-  it("rerenders drill by selecting current or first Vue top row", async () => {
-    const store = useAnalysisStore(pinia);
-    store.topTableRows = [
-      { selected: false, cells: [{ text: "A", className: "", title: "" }] },
-      { selected: true, cells: [{ text: "B", className: "", title: "" }] },
-      { selected: false, cells: [{ text: "C", className: "", title: "" }] },
-    ];
+  it("passively rerenders Candidate Detail when the saved and loaded data_id match", async () => {
+    seedRerenderCandidateRun("dataset-rerender");
+    useDataStore(pinia).dataId = "dataset-rerender";
+    installRerenderDrillCommandResults();
 
     await rerenderDrill();
 
-    expect(store.topTableRows[0]?.selected).toBe(false);
-    expect(store.topTableRows[1]?.selected).toBe(true);
-    expect(store.topTableRows[2]?.selected).toBe(false);
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_double_ma_drilldown",
+      expect.any(Object),
+    );
+    expect(useAnalysisStore(pinia).topTableRows).toHaveLength(1);
+  });
+
+  it("keeps historical Candidate Detail rows passive when no dataset is loaded", async () => {
+    seedRerenderCandidateRun("dataset-rerender");
+    const store = useAnalysisStore(pinia);
+    useDataStore(pinia).dataId = "—";
+    installRerenderDrillCommandResults();
+
+    await rerenderDrill();
+
+    expect(invokeCommandMock).not.toHaveBeenCalled();
+    expect(store.topTableRows).toHaveLength(1);
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(store.drillStatus).toContain(
+      "saved result data_id dataset-rerender is not currently loaded",
+    );
+    expect(store.drillStatus).toContain(
+      "Historical candidate rows remain available in Top Results",
+    );
+  });
+
+  it("marks passive Candidate Detail stale when the loaded dataset does not match", async () => {
+    seedRerenderCandidateRun("dataset-rerender");
+    const store = useAnalysisStore(pinia);
+    useDataStore(pinia).dataId = "dataset-other";
+    installRerenderDrillCommandResults();
+
+    await rerenderDrill();
+
+    expect(invokeCommandMock).not.toHaveBeenCalled();
+    expect(store.topTableRows).toHaveLength(1);
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(store.drillMeta).toContain(
+      "saved data_id=dataset-rerender | loaded data_id=dataset-other",
+    );
+    expect(store.drillStatus).toContain("Candidate detail stale/incompatible");
+    expect(store.drillStatus).toContain(
+      "Historical candidate rows remain available in Top Results",
+    );
   });
 
   it("keeps drill navigation non-throwing when DOM surface is unavailable", async () => {

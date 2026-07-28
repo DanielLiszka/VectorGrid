@@ -4,6 +4,7 @@
     "targets": ["nsis"],
     "resources": {
       "src-tauri/resources/native/catboostmodel.dll": "native/catboostmodel.dll",
+      "src-tauri/resources/licenses/CatBoost-LICENSE.txt": "licenses/CatBoost-LICENSE.txt",
       "src-tauri/resources/sample-data/vectorgrid_synthetic_ohlcv.csv": "sample-data/vectorgrid_synthetic_ohlcv.csv"
     },
     "windows": {

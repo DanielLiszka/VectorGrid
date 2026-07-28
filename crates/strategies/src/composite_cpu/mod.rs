@@ -21,6 +21,9 @@ pub enum CompositeSignalMode {
 }
 
 #[inline(always)]
+// This scalar call shape is shared by the metrics and curve hot paths; grouping the
+// values would add API churn without making the per-bar calculation clearer.
+#[allow(clippy::too_many_arguments)]
 pub fn composite_desired_position(
     fast: f64,
     slow: f64,
@@ -81,17 +84,23 @@ pub fn composite_desired_position(
             let pos = current_pos.clamp(-1, 1);
 
             if pos > 0 && core_sign > 0 {
-                if !macz_hist.is_finite() || !ott_price.is_finite() || !ott_line.is_finite() {
-                    0
-                } else if macz_hist < 0.0 || ott_price < ott_line {
+                if !macz_hist.is_finite()
+                    || !ott_price.is_finite()
+                    || !ott_line.is_finite()
+                    || macz_hist < 0.0
+                    || ott_price < ott_line
+                {
                     0
                 } else {
                     1
                 }
             } else if pos < 0 && core_sign < 0 {
-                if !macz_hist.is_finite() || !ott_price.is_finite() || !ott_line.is_finite() {
-                    0
-                } else if macz_hist > 0.0 || ott_price > ott_line {
+                if !macz_hist.is_finite()
+                    || !ott_price.is_finite()
+                    || !ott_line.is_finite()
+                    || macz_hist > 0.0
+                    || ott_price > ott_line
+                {
                     0
                 } else {
                     -1
@@ -272,6 +281,9 @@ fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionO
     }
 }
 
+// These slice-oriented entry points are a cross-crate API. Replacing their
+// parameters with a bundle would be a breaking refactor rather than a lint fix.
+#[allow(clippy::too_many_arguments)]
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
     lr: &[f64],
     ott_prices: &[f64],
@@ -297,6 +309,7 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
     lr: &[f64],
     ott_prices: &[f64],
@@ -323,6 +336,7 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64_fast(
     lr: &[f64],
     ott_prices: &[f64],
@@ -348,6 +362,7 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64_fast(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
     lr: &[f64],
     ott_prices: &[f64],
@@ -374,6 +389,9 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
     )
 }
 
+// All input slices share the same validated index. Keeping the indexed loop
+// makes that alignment explicit and preserves the established hot-loop shape.
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
     lr: &[f64],
     ott_prices: &[f64],
@@ -716,6 +734,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn eval_composite_curves_from_log_returns_and_mas_f64(
     lr: &[f64],
     ott_prices: &[f64],
@@ -743,6 +762,9 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
     )
 }
 
+// See the metrics implementation above: these slices are index-aligned, and the
+// API shape is already consumed across crate boundaries.
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
     lr: &[f64],
     ott_prices: &[f64],

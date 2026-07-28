@@ -1,0 +1,400 @@
+{
+  "generated_at": "2026-05-07T23:31:32.217Z",
+  "app_cold_start_ms": 80,
+  "time_to_interactive_ms": 637,
+  "js_heap_used_bytes_at_idle": 10000000,
+  "startup_capture_mode": "shell_bootstrap",
+  "chart_live_feed_responsiveness": {
+    "events": 200,
+    "total_ms": 0.3,
+    "avg_ms_per_event": 0.0015,
+    "status": ""
+  },
+  "frontend_perf": {
+    "artifact_history_entries": [
+      {
+        "name": "workflowBootstrap.latestRunSyncMs",
+        "durationMs": 13.599999964237213,
+        "atUnixMs": 1778196684517,
+        "meta": {
+          "source": "legacy-runtime",
+          "synced": false,
+          "outcome": "ok"
+        }
+      },
+      {
+        "name": "workflowArtifactsSync.latestRunFastPathMs",
+        "durationMs": 13.400000035762787,
+        "atUnixMs": 1778196684517,
+        "meta": {
+          "source": "legacy-runtime",
+          "hasCurrentIdentity": false,
+          "synced": false,
+          "outcome": "ok"
+        }
+      },
+      {
+        "name": "main.bootToReadyMs",
+        "durationMs": 185.5,
+        "atUnixMs": 1778196684513,
+        "meta": {
+          "includeDeferredData": false,
+          "outcome": "ok"
+        }
+      },
+      {
+        "name": "main.desktopInitializationMs",
+        "durationMs": 2,
+        "atUnixMs": 1778196684505,
+        "meta": {
+          "outcome": "ok"
+        }
+      },
+      {
+        "name": "workflowBootstrap.startupDataHydrationMs",
+        "durationMs": 0.699999988079071,
+        "atUnixMs": 1778196684504,
+        "meta": {
+          "includeDeferredData": false,
+          "outcome": "ok"
+        }
+      },
+      {
+        "name": "workflowBootstrap.restoreShellStateMs",
+        "durationMs": 0,
+        "atUnixMs": 1778196684503,
+        "meta": {
+          "restoredState": false
+        }
+      },
+      {
+        "name": "main.firstPaintWaitMs",
+        "durationMs": 175.20000004768372,
+        "atUnixMs": 1778196684503,
+        "meta": {
+          "outcome": "ok"
+        }
+      }
+    ],
+    "validation_report_entries": [],
+    "mock_tauri_invoke_log": [
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "double_ma_progress",
+          "target": {
+            "kind": "Any"
+          },
+          "handler": 1
+        },
+        "startedAtMs": 29.5,
+        "endedAtMs": 29.5,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "set_shell_menu_command_states",
+        "args": {
+          "states": [
+            {
+              "commandId": "run",
+              "enabled": true
+            },
+            {
+              "commandId": "cancel_run",
+              "enabled": false
+            },
+            {
+              "commandId": "validate",
+              "enabled": true
+            },
+            {
+              "commandId": "browse_csv",
+              "enabled": true
+            },
+            {
+              "commandId": "open_polygon",
+              "enabled": true
+            },
+            {
+              "commandId": "export_csv",
+              "enabled": true
+            },
+            {
+              "commandId": "export_json",
+              "enabled": true
+            },
+            {
+              "commandId": "open_latest_report",
+              "enabled": false
+            },
+            {
+              "commandId": "open_latest_meta_report",
+              "enabled": false
+            },
+            {
+              "commandId": "open_task_center",
+              "enabled": true
+            },
+            {
+              "commandId": "toggle_controls",
+              "enabled": true,
+              "checked": true
+            }
+          ]
+        },
+        "startedAtMs": 65.2,
+        "endedAtMs": 65.5,
+        "durationMs": 0.3,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:window|is_maximized",
+        "args": {
+          "label": "main"
+        },
+        "startedAtMs": 67.4,
+        "endedAtMs": 67.5,
+        "durationMs": 0.1,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "shell-command",
+          "target": {
+            "kind": "Any"
+          },
+          "handler": 2
+        },
+        "startedAtMs": 67.5,
+        "endedAtMs": 67.5,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:window|is_focused",
+        "args": {
+          "label": "main"
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "research_campaign_progress",
+          "target": {
+            "kind": "Any"
+          },
+          "handler": 3
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "tauri://resize",
+          "target": {
+            "kind": "Window",
+            "label": "main"
+          },
+          "handler": 4
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "tauri://focus",
+          "target": {
+            "kind": "Window",
+            "label": "main"
+          },
+          "handler": 5
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "live_execution_runner_event",
+          "target": {
+            "kind": "Any"
+          },
+          "handler": 6
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "tauri://blur",
+          "target": {
+            "kind": "Window",
+            "label": "main"
+          },
+          "handler": 7
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "polygon_live_status",
+          "target": {
+            "kind": "Any"
+          },
+          "handler": 8
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "tauri://close-requested",
+          "target": {
+            "kind": "Window",
+            "label": "main"
+          },
+          "handler": 9
+        },
+        "startedAtMs": 77.9,
+        "endedAtMs": 77.9,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "polygon_live_bar",
+          "target": {
+            "kind": "Any"
+          },
+          "handler": 10
+        },
+        "startedAtMs": 78,
+        "endedAtMs": 78,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "get_market_data_dir_info",
+        "args": {},
+        "startedAtMs": 135.6,
+        "endedAtMs": 135.7,
+        "durationMs": 0.1,
+        "delayedMs": 0
+      },
+      {
+        "command": "list_sample_csvs",
+        "args": {},
+        "startedAtMs": 139.4,
+        "endedAtMs": 139.4,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:window-state|filename",
+        "args": {},
+        "startedAtMs": 243.4,
+        "endedAtMs": 243.5,
+        "durationMs": 0.1,
+        "delayedMs": 0
+      },
+      {
+        "command": "load_latest_run_artifact_hydration",
+        "args": {},
+        "startedAtMs": 244.1,
+        "endedAtMs": 257.4,
+        "durationMs": 13.3,
+        "delayedMs": 12
+      },
+      {
+        "command": "plugin:event|listen",
+        "args": {
+          "event": "log://log",
+          "target": {
+            "kind": "Any"
+          },
+          "handler": 11
+        },
+        "startedAtMs": 244.8,
+        "endedAtMs": 244.8,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "plugin:log|log",
+        "args": {
+          "level": 3,
+          "message": "Desktop productization bridges ready.",
+          "location": "s3@http://127.0.0.1:4179/assets/index-C7UCPY2T.js:6:316469"
+        },
+        "startedAtMs": 245.3,
+        "endedAtMs": 245.3,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "get_artifact_retention_info",
+        "args": {},
+        "startedAtMs": 1829.2,
+        "endedAtMs": 1829.7,
+        "durationMs": 0.5,
+        "delayedMs": 0
+      },
+      {
+        "command": "get_gpu_status",
+        "args": {},
+        "startedAtMs": 2760.6,
+        "endedAtMs": 2760.6,
+        "durationMs": 0,
+        "delayedMs": 0
+      },
+      {
+        "command": "get_artifact_retention_info",
+        "args": {},
+        "startedAtMs": 7738.7,
+        "endedAtMs": 7738.8,
+        "durationMs": 0.1,
+        "delayedMs": 0
+      }
+    ],
+    "observations": {
+      "main_boot_to_ready_ms": 185.5,
+      "main_desktop_initialization_ms": 2,
+      "workflow_startup_data_hydration_ms": 0.7,
+      "workflow_latest_run_sync_ms": 13.6,
+      "latest_run_fast_path_ms": 13.4,
+      "mock_tauri_invoke_count": 22,
+      "mock_tauri_invoke_total_ms": 14.5,
+      "mock_tauri_invoke_max_ms": 13.3,
+      "mock_tauri_invoke_delay_total_ms": 12,
+      "artifact_history_entry_count": 7,
+      "validation_report_entry_count": 0
+    }
+  },
+  "capture_runtime_ms": 8396,
+  "note": "Synthetic live-bar event throughput captured via mocked Tauri event emitter."
+}

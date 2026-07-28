@@ -5,7 +5,7 @@ use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
 use crate::iterative_sim::{simulate_iterative_from_signals, IterativeSimConfig, OhlcSlice};
 use crate::validation_pipeline::{
     apply_candidate_hard_gates, build_ml_signal_evidence_policy_summary, build_run_verdict,
-    compute_probability_metrics_with_effective_counts, mark_robust_pareto,
+    compute_probability_metrics_with_research_context, mark_robust_pareto,
     robust_score_from_metrics, sanitize_hard_gates, ValidationCandidateVerdict,
     ValidationPostCandidate, ValidationRecommendation, ValidationRunVerdict,
 };
@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
@@ -89,12 +89,27 @@ fn default_ml_signal_score_contract_version() -> u32 {
     ML_SIGNAL_SCORE_CONTRACT_VERSION
 }
 
+fn default_ml_signal_publication_state() -> MlSignalPublicationState {
+    MlSignalPublicationState::Complete
+}
+
 fn default_ml_signal_inference_backend_preference() -> MlSignalInferenceBackendPreference {
     MlSignalInferenceBackendPreference::NativeCpu
 }
 
 fn default_ml_signal_library_discovery_policy() -> MlSignalNativeLibraryDiscoveryPolicy {
     MlSignalNativeLibraryDiscoveryPolicy::Production
+}
+
+/// Publication state for an ML multi-file artifact.
+///
+/// A payload paired with a `staged` manifest is intentionally non-consumable. The manifest is
+/// replaced with `complete` only after every sidecar and the payload have been published.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlSignalPublicationState {
+    Staged,
+    Complete,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -380,6 +395,12 @@ pub struct MlSignalDatasetExportManifest {
     pub sample_weight_policy: Option<MlSignalSampleWeightPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_unix_ms: Option<i64>,
+    #[serde(default = "default_ml_signal_publication_state")]
+    pub publication_state: MlSignalPublicationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -819,6 +840,8 @@ pub struct MlSignalScoreCacheManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_score_observations: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walkforward_test_overlap_metadata: Option<MlSignalOverlapMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature_schema_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_bundle_id: Option<String>,
@@ -879,6 +902,12 @@ pub struct MlSignalScoreCacheManifest {
     pub native_prediction_batch_size: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_fallback_reason: Option<String>,
+    #[serde(default = "default_ml_signal_publication_state")]
+    pub publication_state: MlSignalPublicationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1754,6 +1783,15 @@ fn score_manifest_path_for_cache(output_path: &str) -> String {
     format!("{}.manifest.json", base_path_without_extension(output_path))
 }
 
+fn portable_file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
 fn ensure_parent_dir(path: &str) -> Result<(), String> {
     if let Some(parent) = Path::new(path).parent() {
         if !parent.as_os_str().is_empty() {
@@ -1871,6 +1909,115 @@ fn replace_file_from_staged(
     result
 }
 
+struct MlSignalStagedArtifact {
+    final_path: PathBuf,
+    staged_path: PathBuf,
+    context: &'static str,
+    published: bool,
+}
+
+impl MlSignalStagedArtifact {
+    fn from_prepared(
+        final_path: impl Into<PathBuf>,
+        staged_path: PathBuf,
+        context: &'static str,
+    ) -> Self {
+        Self {
+            final_path: final_path.into(),
+            staged_path,
+            context,
+            published: false,
+        }
+    }
+
+    fn stage_json<T: Serialize>(
+        final_path: &str,
+        value: &T,
+        context: &'static str,
+    ) -> Result<Self, String> {
+        let staged_path = staged_sibling_path(final_path, context)?;
+        let result = (|| -> Result<(), String> {
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&staged_path)
+                .map_err(|error| format!("create {context}: {error}"))?;
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, value)
+                .map_err(|error| format!("write {context}: {error}"))?;
+            writer
+                .flush()
+                .map_err(|error| format!("flush {context}: {error}"))?;
+            writer
+                .get_ref()
+                .sync_all()
+                .map_err(|error| format!("sync {context}: {error}"))?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&staged_path);
+            return Err(error);
+        }
+        Ok(Self::from_prepared(
+            PathBuf::from(final_path),
+            staged_path,
+            context,
+        ))
+    }
+
+    fn publish(&mut self) -> Result<(), String> {
+        replace_file_from_staged(&self.staged_path, &self.final_path, self.context)?;
+        self.published = true;
+        Ok(())
+    }
+}
+
+impl Drop for MlSignalStagedArtifact {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.staged_path);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MlSignalPublicationFailurePoint {
+    BeforePayloadPublish,
+    AfterPayloadPublish,
+}
+
+#[derive(Serialize)]
+struct MlSignalStagedPublicationMarker<'a> {
+    version: u32,
+    kind: &'a str,
+    publication_state: MlSignalPublicationState,
+    publication_id: &'a str,
+    payload_path: &'a str,
+    created_at_unix_ms: i64,
+}
+
+fn new_ml_signal_publication_id(kind: &str) -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let seq = ML_SIGNAL_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{kind}-{}-{nonce}-{seq}", std::process::id())
+}
+
+fn fail_ml_signal_publication_at(
+    configured: Option<MlSignalPublicationFailurePoint>,
+    current: MlSignalPublicationFailurePoint,
+) -> Result<(), String> {
+    if configured == Some(current) {
+        Err(format!(
+            "simulated ML signal publication failure at {current:?}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn stable_hash_mod(text: &str, modulus: usize) -> Option<usize> {
     if modulus == 0 {
         return None;
@@ -1942,31 +2089,13 @@ pub fn build_ml_signal_split_windows(
     Ok(windows)
 }
 
-fn write_json_file<T: Serialize>(path: &str, value: &T, context: &str) -> Result<(), String> {
-    let staged_path = staged_sibling_path(path, context)?;
-    let result = (|| -> Result<(), String> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged_path)
-            .map_err(|e| format!("create {context}: {e}"))?;
-        let mut writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(&mut writer, value)
-            .map_err(|e| format!("write {context}: {e}"))?;
-        writer
-            .flush()
-            .map_err(|e| format!("flush {context}: {e}"))?;
-        writer
-            .get_ref()
-            .sync_all()
-            .map_err(|e| format!("sync {context}: {e}"))?;
-        drop(writer);
-        replace_file_from_staged(&staged_path, Path::new(path), context)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&staged_path);
-    }
-    result
+fn write_json_file<T: Serialize>(
+    path: &str,
+    value: &T,
+    context: &'static str,
+) -> Result<(), String> {
+    let mut staged = MlSignalStagedArtifact::stage_json(path, value, context)?;
+    staged.publish()
 }
 
 fn current_unix_ms() -> i64 {
@@ -2375,6 +2504,18 @@ fn build_catboost_library_candidates(
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
 
+    // An explicit native-library selection is an authority boundary, not merely
+    // a search hint. Falling through to an environment, bundle, executable, or
+    // PATH-relative candidate after the selected file fails to load can silently
+    // execute a different binary than the caller requested and audited.
+    if let Some(path) = explicit_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, path);
+        return candidates;
+    }
+
     match policy {
         MlSignalNativeLibraryDiscoveryPolicy::Production => {
             append_manifest_declared_catboost_candidate(
@@ -2383,9 +2524,6 @@ fn build_catboost_library_candidates(
                 bundle_manifest_path,
                 manifest_native_library_path,
             );
-            if let Some(path) = explicit_path {
-                append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, path);
-            }
             append_bundle_default_catboost_candidates(
                 &mut candidates,
                 &mut seen,
@@ -2393,9 +2531,6 @@ fn build_catboost_library_candidates(
             );
         }
         MlSignalNativeLibraryDiscoveryPolicy::DeveloperDebug => {
-            if let Some(path) = explicit_path {
-                append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, path);
-            }
             if let Ok(path) = std::env::var("CATBOOST_MODEL_INTERFACE_LIB") {
                 append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, &path);
             }
@@ -2414,9 +2549,6 @@ fn build_catboost_library_candidates(
             }
         }
         MlSignalNativeLibraryDiscoveryPolicy::LegacyReplay => {
-            if let Some(path) = explicit_path {
-                append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, path);
-            }
             append_manifest_declared_catboost_candidate(
                 &mut candidates,
                 &mut seen,
@@ -3061,11 +3193,23 @@ pub fn export_ml_signal_dataset_with_candles(
     candles: &Candles,
     cancel: &AtomicBool,
 ) -> Result<MlSignalDatasetExportResult, String> {
+    export_ml_signal_dataset_with_publication_failure(req, candles, cancel, None)
+}
+
+fn export_ml_signal_dataset_with_publication_failure(
+    req: MlSignalDatasetExportRequest,
+    candles: &Candles,
+    cancel: &AtomicBool,
+    publication_failure: Option<MlSignalPublicationFailurePoint>,
+) -> Result<MlSignalDatasetExportResult, String> {
     if req.data_id.trim().is_empty() {
         return Err("data_id is required".to_string());
     }
     if req.output_path.trim().is_empty() {
         return Err("output_path is required".to_string());
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
     }
     let n = validate_ml_signal_candles(candles, "ML dataset export")?;
     if n < 64 {
@@ -3241,28 +3385,26 @@ pub fn export_ml_signal_dataset_with_candles(
             return Err(err);
         }
     };
-    replace_file_from_staged(
-        &staged_output_path,
-        Path::new(&req.output_path),
+    let mut payload_artifact = MlSignalStagedArtifact::from_prepared(
+        PathBuf::from(&req.output_path),
+        staged_output_path,
         "dataset csv",
-    )?;
-    write_json_file(&schema_path, &feature_schema, "feature schema")?;
-    if let (Some(path), Some(manifest)) = (split_manifest_path.as_ref(), split_manifest.as_ref()) {
-        write_json_file(path, manifest, "split manifest")?;
-    }
-
+    );
     let export_first_timestamp = candles.timestamp.get(frame.first_valid_bar).copied();
     let export_last_timestamp = candles.timestamp.get(last_label_bar).copied();
+    let payload_sha256 = sha256_file_hex(&payload_artifact.staged_path)?
+        .ok_or_else(|| "staged dataset csv is missing before publication".to_string())?;
+    let publication_id = new_ml_signal_publication_id("ml-dataset");
 
     let export_manifest = MlSignalDatasetExportManifest {
         version: ML_SIGNAL_EXPORT_MANIFEST_VERSION,
         strategy_kind: "MlSignal".to_string(),
         data_id: req.data_id.clone(),
-        output_path: req.output_path.clone(),
+        output_path: portable_file_name(&req.output_path),
         row_count,
-        feature_schema_path: schema_path.clone(),
+        feature_schema_path: portable_file_name(&schema_path),
         feature_schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
-        split_manifest_path: split_manifest_path.clone(),
+        split_manifest_path: split_manifest_path.as_deref().map(portable_file_name),
         split_count: split_windows.len(),
         horizon_bars: h,
         first_valid_bar: frame.first_valid_bar,
@@ -3278,9 +3420,58 @@ pub fn export_ml_signal_dataset_with_candles(
         label_policy: Some(build_ml_signal_label_policy(req.round_trip_cost_bps, h)),
         sample_weight_policy: Some(build_ml_signal_sample_weight_policy()),
         created_at_unix_ms: Some(current_unix_ms()),
+        publication_state: MlSignalPublicationState::Complete,
+        publication_id: Some(publication_id.clone()),
+        payload_sha256: Some(payload_sha256),
     };
     let export_manifest_path = export_manifest_path_for_export(&req.output_path);
-    write_json_file(&export_manifest_path, &export_manifest, "export manifest")?;
+    let mut schema_artifact =
+        MlSignalStagedArtifact::stage_json(&schema_path, &feature_schema, "feature schema")?;
+    let mut split_artifact = match (split_manifest_path.as_ref(), split_manifest.as_ref()) {
+        (Some(path), Some(manifest)) => Some(MlSignalStagedArtifact::stage_json(
+            path,
+            manifest,
+            "split manifest",
+        )?),
+        _ => None,
+    };
+    let mut complete_manifest_artifact = MlSignalStagedArtifact::stage_json(
+        &export_manifest_path,
+        &export_manifest,
+        "export manifest",
+    )?;
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    let staged_marker = MlSignalStagedPublicationMarker {
+        version: ML_SIGNAL_EXPORT_MANIFEST_VERSION,
+        kind: "vectorgrid_ml_signal_dataset_export",
+        publication_state: MlSignalPublicationState::Staged,
+        publication_id: &publication_id,
+        payload_path: &req.output_path,
+        created_at_unix_ms: current_unix_ms(),
+    };
+    write_json_file(
+        &export_manifest_path,
+        &staged_marker,
+        "dataset publication marker",
+    )?;
+    schema_artifact.publish()?;
+    if let Some(split_artifact) = split_artifact.as_mut() {
+        split_artifact.publish()?;
+    }
+    fail_ml_signal_publication_at(
+        publication_failure,
+        MlSignalPublicationFailurePoint::BeforePayloadPublish,
+    )?;
+    payload_artifact.publish()?;
+    fail_ml_signal_publication_at(
+        publication_failure,
+        MlSignalPublicationFailurePoint::AfterPayloadPublish,
+    )?;
+    complete_manifest_artifact.publish()?;
 
     Ok(MlSignalDatasetExportResult {
         data_id: req.data_id,
@@ -3661,6 +3852,7 @@ fn build_ml_signal_native_score_cache(
         strict_manifest,
     )?;
     let export_manifest_sha256 = if export_manifest_path.exists() {
+        ensure_ml_signal_export_manifest_complete(&export_manifest_path.to_string_lossy())?;
         validate_or_compute_sha256(
             "export_manifest",
             &export_manifest_path,
@@ -3743,6 +3935,8 @@ struct MlSignalScoreCacheFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     effective_score_observations: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    walkforward_test_overlap_metadata: Option<MlSignalOverlapMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     model_bundle_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     feature_schema_hash: Option<String>,
@@ -3801,6 +3995,8 @@ struct MlSignalScoreCacheFile {
     native_prediction_batch_size: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication_id: Option<String>,
     scores: Vec<MlSignalScoreCacheRow>,
 }
 
@@ -3816,10 +4012,10 @@ struct LoadedScoreCache {
     rows_missing_short_probability: usize,
 }
 
-#[derive(Clone, Debug, Default)]
-struct MlSignalOverlapMetadata {
-    label_horizon_bars: Option<usize>,
-    split_windows: Vec<MlSignalSplitWindow>,
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MlSignalOverlapMetadata {
+    pub label_horizon_bars: Option<usize>,
+    pub split_windows: Vec<MlSignalSplitWindow>,
 }
 
 fn find_header_index(headers: &StringRecord, names: &[&str]) -> Option<usize> {
@@ -4168,6 +4364,7 @@ fn read_score_rows_csv(input_path: &str) -> Result<ParsedScoreCsv, String> {
 fn write_ml_signal_score_cache(
     req: MlSignalScoreCacheBuildRequest,
     candles: &Candles,
+    cancel: &AtomicBool,
     score_space: MlSignalScoreSpace,
     requested_scope: Option<MlSignalScoreScope>,
     rows: Vec<MlSignalScoreCacheRow>,
@@ -4191,6 +4388,7 @@ fn write_ml_signal_score_cache(
     producer_kind: Option<String>,
     score_contract_version: Option<u32>,
     native_metadata: Option<MlSignalNativeBuildMetadata>,
+    publication_failure: Option<MlSignalPublicationFailurePoint>,
 ) -> Result<MlSignalScoreCacheBuildResult, String> {
     let timestamp_to_index: HashMap<i64, usize> = candles
         .timestamp
@@ -4247,6 +4445,26 @@ fn write_ml_signal_score_cache(
         .as_ref()
         .and_then(|meta| meta.fallback_reason.clone());
     let data_content_fingerprint = candles_content_fingerprint(candles);
+    let publication_id = new_ml_signal_publication_id("ml-score-cache");
+    let result_feature_schema_path = feature_schema_path.clone();
+    let result_export_manifest_path = export_manifest_path.clone();
+    let result_source_bundle_manifest_path = source_bundle_manifest_path.clone();
+    let result_native_library_path = native_library_path.clone();
+    let persisted_feature_schema_path =
+        portable_metadata_path_for_owner(&req.output_path, feature_schema_path.as_deref());
+    let persisted_export_manifest_path =
+        portable_metadata_path_for_owner(&req.output_path, export_manifest_path.as_deref());
+    let persisted_source_bundle_manifest_path =
+        portable_metadata_path_for_owner(&req.output_path, source_bundle_manifest_path.as_deref());
+    let persisted_native_library_path = native_library_path.as_deref().map(portable_file_name);
+    let overlap_metadata = load_ml_signal_overlap_metadata(
+        &req.output_path,
+        export_manifest_path.as_deref(),
+        export_manifest_sha256.as_deref(),
+    );
+    let overlap_metadata = (overlap_metadata.label_horizon_bars.is_some()
+        || !overlap_metadata.split_windows.is_empty())
+    .then_some(overlap_metadata);
 
     let cache = MlSignalScoreCacheFile {
         version: ML_SIGNAL_SCORE_CACHE_VERSION,
@@ -4261,10 +4479,11 @@ fn write_ml_signal_score_cache(
         score_scope_policy,
         raw_score_observations,
         effective_score_observations,
+        walkforward_test_overlap_metadata: overlap_metadata.clone(),
         model_bundle_id: req.model_bundle_id.clone(),
         feature_schema_hash: feature_schema_hash.clone(),
-        export_manifest_path: export_manifest_path.clone(),
-        source_bundle_manifest_path: source_bundle_manifest_path.clone(),
+        export_manifest_path: persisted_export_manifest_path.clone(),
+        source_bundle_manifest_path: persisted_source_bundle_manifest_path.clone(),
         source_bundle_manifest_hash: source_bundle_manifest_hash.clone(),
         export_manifest_hash: export_manifest_hash.clone(),
         bundle_manifest_sha256: bundle_manifest_sha256.clone(),
@@ -4286,15 +4505,19 @@ fn write_ml_signal_score_cache(
         last_timestamp: scores.last().map(|row| row.timestamp),
         native_backend_requested,
         native_backend_used,
-        native_library_path: native_library_path.clone(),
+        native_library_path: persisted_native_library_path.clone(),
         native_library_sha256: native_library_sha256.clone(),
         native_library_discovery_policy,
         native_gpu_device_id,
         native_prediction_batch_size,
         native_fallback_reason: native_fallback_reason.clone(),
+        publication_id: Some(publication_id.clone()),
         scores,
     };
-    write_json_file(&req.output_path, &cache, "score cache")?;
+    let mut cache_artifact =
+        MlSignalStagedArtifact::stage_json(&req.output_path, &cache, "score cache")?;
+    let payload_sha256 = sha256_file_hex(&cache_artifact.staged_path)?
+        .ok_or_else(|| "staged score cache is missing before publication".to_string())?;
 
     let manifest = MlSignalScoreCacheManifest {
         version: cache.version,
@@ -4309,7 +4532,8 @@ fn write_ml_signal_score_cache(
         score_scope_policy: cache.score_scope_policy,
         raw_score_observations: cache.raw_score_observations,
         effective_score_observations: cache.effective_score_observations,
-        feature_schema_path: feature_schema_path.clone(),
+        walkforward_test_overlap_metadata: cache.walkforward_test_overlap_metadata.clone(),
+        feature_schema_path: persisted_feature_schema_path.clone(),
         model_bundle_id: cache.model_bundle_id.clone(),
         feature_schema_hash: cache.feature_schema_hash.clone(),
         export_manifest_path: cache.export_manifest_path.clone(),
@@ -4335,15 +4559,47 @@ fn write_ml_signal_score_cache(
         last_timestamp: cache.last_timestamp,
         native_backend_requested,
         native_backend_used,
-        native_library_path: native_library_path.clone(),
+        native_library_path: persisted_native_library_path.clone(),
         native_library_sha256: native_library_sha256.clone(),
         native_library_discovery_policy,
         native_gpu_device_id,
         native_prediction_batch_size,
         native_fallback_reason: native_fallback_reason.clone(),
+        publication_state: MlSignalPublicationState::Complete,
+        publication_id: Some(publication_id.clone()),
+        payload_sha256: Some(payload_sha256),
     };
     let manifest_path = score_manifest_path_for_cache(&req.output_path);
-    write_json_file(&manifest_path, &manifest, "score cache manifest")?;
+    let mut complete_manifest_artifact =
+        MlSignalStagedArtifact::stage_json(&manifest_path, &manifest, "score cache manifest")?;
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    let staged_marker = MlSignalStagedPublicationMarker {
+        version: ML_SIGNAL_SCORE_CACHE_VERSION,
+        kind: "vectorgrid_ml_signal_score_cache",
+        publication_state: MlSignalPublicationState::Staged,
+        publication_id: &publication_id,
+        payload_path: &req.output_path,
+        created_at_unix_ms: current_unix_ms(),
+    };
+    write_json_file(
+        &manifest_path,
+        &staged_marker,
+        "score cache publication marker",
+    )?;
+    fail_ml_signal_publication_at(
+        publication_failure,
+        MlSignalPublicationFailurePoint::BeforePayloadPublish,
+    )?;
+    cache_artifact.publish()?;
+    fail_ml_signal_publication_at(
+        publication_failure,
+        MlSignalPublicationFailurePoint::AfterPayloadPublish,
+    )?;
+    complete_manifest_artifact.publish()?;
 
     Ok(MlSignalScoreCacheBuildResult {
         data_id: req.data_id,
@@ -4351,9 +4607,9 @@ fn write_ml_signal_score_cache(
         output_path: req.output_path,
         manifest_path,
         data_content_fingerprint: cache.data_content_fingerprint.clone(),
-        feature_schema_path,
-        export_manifest_path: cache.export_manifest_path.clone(),
-        source_bundle_manifest_path: cache.source_bundle_manifest_path.clone(),
+        feature_schema_path: result_feature_schema_path,
+        export_manifest_path: result_export_manifest_path,
+        source_bundle_manifest_path: result_source_bundle_manifest_path,
         matched_rows: cache.matched_rows,
         skipped_rows: cache.skipped_rows,
         bars_scored: cache.bars_scored,
@@ -4383,7 +4639,7 @@ fn write_ml_signal_score_cache(
         training_config_hash: cache.training_config_hash,
         native_backend_requested,
         native_backend_used,
-        native_library_path,
+        native_library_path: result_native_library_path,
         native_library_sha256,
         native_library_discovery_policy,
         native_gpu_device_id,
@@ -4397,6 +4653,15 @@ pub fn build_ml_signal_score_cache_from_csv(
     candles: &Candles,
     cancel: &AtomicBool,
 ) -> Result<MlSignalScoreCacheBuildResult, String> {
+    build_ml_signal_score_cache_with_publication_failure(req, candles, cancel, None)
+}
+
+fn build_ml_signal_score_cache_with_publication_failure(
+    req: MlSignalScoreCacheBuildRequest,
+    candles: &Candles,
+    cancel: &AtomicBool,
+    publication_failure: Option<MlSignalPublicationFailurePoint>,
+) -> Result<MlSignalScoreCacheBuildResult, String> {
     if req.data_id.trim().is_empty() {
         return Err("data_id is required".to_string());
     }
@@ -4408,6 +4673,9 @@ pub fn build_ml_signal_score_cache_from_csv(
     if req.output_path.trim().is_empty() {
         return Err("output_path is required".to_string());
     }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
     validate_ml_signal_candles(candles, "ML score-cache generation")?;
 
     if req.input_path.trim().is_empty() {
@@ -4415,6 +4683,7 @@ pub fn build_ml_signal_score_cache_from_csv(
         return write_ml_signal_score_cache(
             req,
             candles,
+            cancel,
             MlSignalScoreSpace::Probability,
             Some(native.score_scope),
             native.rows,
@@ -4438,6 +4707,7 @@ pub fn build_ml_signal_score_cache_from_csv(
             native.producer_kind,
             native.score_contract_version,
             Some(native.native),
+            publication_failure,
         );
     }
 
@@ -4474,6 +4744,7 @@ pub fn build_ml_signal_score_cache_from_csv(
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     {
+        ensure_ml_signal_export_manifest_complete(path)?;
         json_file_fingerprint(path)?
     } else {
         None
@@ -4504,6 +4775,7 @@ pub fn build_ml_signal_score_cache_from_csv(
     write_ml_signal_score_cache(
         req,
         candles,
+        cancel,
         parsed.score_space,
         requested_score_scope,
         rows,
@@ -4527,7 +4799,99 @@ pub fn build_ml_signal_score_cache_from_csv(
         producer_kind,
         score_contract_version,
         None,
+        publication_failure,
     )
+}
+
+fn ensure_ml_signal_export_manifest_complete(path: &str) -> Result<(), String> {
+    let file = File::open(path).map_err(|error| format!("open export manifest: {error}"))?;
+    let value: JsonValue = serde_json::from_reader(BufReader::new(file))
+        .map_err(|error| format!("parse export manifest: {error}"))?;
+    let publication_id = value
+        .get("publication_id")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if publication_id.is_none() {
+        return Ok(());
+    }
+    let publication_state = value
+        .get("publication_state")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown");
+    if publication_state != "complete" {
+        return Err(format!(
+            "ML dataset export publication is incomplete (state '{publication_state}')"
+        ));
+    }
+    if value
+        .get("payload_sha256")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err("completed ML dataset export manifest is missing payload_sha256".to_string());
+    }
+    Ok(())
+}
+
+fn ensure_ml_signal_score_cache_publication_complete(
+    score_cache_path: &str,
+    cache: &MlSignalScoreCacheFile,
+) -> Result<(), String> {
+    let Some(publication_id) = cache
+        .publication_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let manifest_path = score_manifest_path_for_cache(score_cache_path);
+    let file = File::open(&manifest_path).map_err(|error| {
+        format!(
+            "ML score-cache publication is incomplete: open completion manifest '{}': {error}",
+            manifest_path
+        )
+    })?;
+    let value: JsonValue = serde_json::from_reader(BufReader::new(file)).map_err(|error| {
+        format!(
+            "ML score-cache publication is incomplete: parse completion manifest '{}': {error}",
+            manifest_path
+        )
+    })?;
+    let publication_state = value
+        .get("publication_state")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown");
+    if publication_state != "complete" {
+        return Err(format!(
+            "ML score-cache publication is incomplete (state '{publication_state}')"
+        ));
+    }
+    let manifest: MlSignalScoreCacheManifest = serde_json::from_value(value).map_err(|error| {
+        format!(
+            "ML score-cache completion manifest '{}' is invalid: {error}",
+            manifest_path
+        )
+    })?;
+    if manifest.publication_id.as_deref() != Some(publication_id) {
+        return Err(
+            "ML score-cache publication is incomplete: payload and manifest publication_id differ"
+                .to_string(),
+        );
+    }
+    if manifest
+        .payload_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err("completed ML score-cache manifest is missing payload_sha256".to_string());
+    }
+    Ok(())
 }
 
 fn load_score_cache(
@@ -4538,6 +4902,7 @@ fn load_score_cache(
     let file = File::open(score_cache_path).map_err(|e| format!("open score cache: {e}"))?;
     let cache: MlSignalScoreCacheFile = serde_json::from_reader(BufReader::new(file))
         .map_err(|e| format!("parse score cache json: {e}"))?;
+    ensure_ml_signal_score_cache_publication_complete(score_cache_path, &cache)?;
 
     if cache.version != ML_SIGNAL_SCORE_CACHE_VERSION {
         return Err(format!(
@@ -4581,8 +4946,19 @@ fn load_score_cache(
             );
         }
     }
-    let overlap_metadata =
-        load_ml_signal_overlap_metadata(score_cache_path, cache.export_manifest_path.as_deref());
+    let overlap_metadata = cache
+        .walkforward_test_overlap_metadata
+        .clone()
+        .filter(|metadata| {
+            metadata.label_horizon_bars.is_some() || !metadata.split_windows.is_empty()
+        })
+        .unwrap_or_else(|| {
+            load_ml_signal_overlap_metadata(
+                score_cache_path,
+                cache.export_manifest_path.as_deref(),
+                cache.export_manifest_sha256.as_deref(),
+            )
+        });
 
     let mut out = vec![None; candles.close.len()];
     let mut has_probability_long = false;
@@ -4696,6 +5072,45 @@ fn load_score_cache(
     })
 }
 
+fn safe_relative_metadata_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
+
+fn canonical_existing_file(path: &Path) -> Option<PathBuf> {
+    let canonical = fs::canonicalize(path).ok()?;
+    canonical.is_file().then_some(canonical)
+}
+
+fn canonical_anchor_parent(anchor: &Path) -> Option<PathBuf> {
+    let absolute_anchor = if anchor.is_absolute() {
+        anchor.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(anchor)
+    };
+    let parent = absolute_anchor.parent().unwrap_or_else(|| Path::new("."));
+    fs::canonicalize(parent).ok()
+}
+
+fn canonical_file_contained_by(path: &Path, root: &Path) -> Option<PathBuf> {
+    let canonical_root = fs::canonicalize(root).ok()?;
+    let canonical_path = canonical_existing_file(path)?;
+    canonical_path
+        .strip_prefix(&canonical_root)
+        .ok()
+        .map(|_| ())?;
+    Some(canonical_path)
+}
+
+/// Resolve a persisted metadata reference with an explicit compatibility order.
+///
+/// New artifacts use an owner-relative path with no parent traversal. Legacy
+/// repo-relative paths are accepted only when both the owning artifact and the
+/// referenced file resolve below the current working directory. Legacy absolute
+/// paths remain readable, but nested paths inside that manifest are separately
+/// constrained to the manifest directory.
 fn resolve_relative_metadata_path(anchor: &Path, raw: Option<&str>) -> Option<PathBuf> {
     let trimmed = raw?.trim();
     if trimmed.is_empty() {
@@ -4703,16 +5118,64 @@ fn resolve_relative_metadata_path(anchor: &Path, raw: Option<&str>) -> Option<Pa
     }
     let candidate = Path::new(trimmed);
     if candidate.is_absolute() {
-        Some(candidate.to_path_buf())
-    } else {
-        let base_dir = anchor.parent().unwrap_or_else(|| Path::new("."));
-        Some(base_dir.join(candidate))
+        return canonical_existing_file(candidate);
     }
+    if !safe_relative_metadata_path(candidate) {
+        return None;
+    }
+
+    let owner_root = canonical_anchor_parent(anchor)?;
+    if let Some(resolved) = canonical_file_contained_by(&owner_root.join(candidate), &owner_root) {
+        return Some(resolved);
+    }
+
+    let cwd = fs::canonicalize(std::env::current_dir().ok()?).ok()?;
+    if owner_root.strip_prefix(&cwd).is_err() {
+        return None;
+    }
+    canonical_file_contained_by(&cwd.join(candidate), &cwd)
+}
+
+fn resolve_nested_metadata_path(anchor: &Path, raw: Option<&str>) -> Option<PathBuf> {
+    let resolved = resolve_relative_metadata_path(anchor, raw)?;
+    let owner_root = canonical_anchor_parent(anchor)?;
+    resolved.strip_prefix(&owner_root).ok().map(|_| ())?;
+    Some(resolved)
+}
+
+fn portable_metadata_path_for_owner(
+    owner_path: &str,
+    metadata_path: Option<&str>,
+) -> Option<String> {
+    let metadata_path = metadata_path?.trim();
+    if metadata_path.is_empty() {
+        return None;
+    }
+    let owner = Path::new(owner_path);
+    let resolved = resolve_relative_metadata_path(owner, Some(metadata_path))?;
+    let owner_root = canonical_anchor_parent(owner)?;
+    let relative = resolved.strip_prefix(owner_root).ok()?;
+    if !safe_relative_metadata_path(relative) {
+        return None;
+    }
+    Some(
+        relative
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(value) => value.to_str(),
+                Component::CurDir => None,
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+    .filter(|value| !value.is_empty())
 }
 
 fn load_ml_signal_overlap_metadata(
     score_cache_path: &str,
     export_manifest_path: Option<&str>,
+    expected_export_manifest_sha256: Option<&str>,
 ) -> MlSignalOverlapMetadata {
     let score_cache_path = Path::new(score_cache_path);
     let Some(export_manifest_path) =
@@ -4720,6 +5183,19 @@ fn load_ml_signal_overlap_metadata(
     else {
         return MlSignalOverlapMetadata::default();
     };
+
+    if let Some(expected) = expected_export_manifest_sha256
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let observed = match sha256_file_hex(&export_manifest_path) {
+            Ok(Some(value)) => value,
+            _ => return MlSignalOverlapMetadata::default(),
+        };
+        if !observed.eq_ignore_ascii_case(expected) {
+            return MlSignalOverlapMetadata::default();
+        }
+    }
 
     let export_manifest_file = match File::open(&export_manifest_path) {
         Ok(file) => file,
@@ -4731,7 +5207,7 @@ fn load_ml_signal_overlap_metadata(
             Err(_) => return MlSignalOverlapMetadata::default(),
         };
 
-    let label_horizon_bars = resolve_relative_metadata_path(
+    let label_horizon_bars = resolve_nested_metadata_path(
         &export_manifest_path,
         Some(export_manifest.feature_schema_path.as_str()),
     )
@@ -4739,7 +5215,7 @@ fn load_ml_signal_overlap_metadata(
     .map(|schema| schema.label_horizon_bars.max(schema.horizon_bars).max(1))
     .or_else(|| (export_manifest.horizon_bars > 0).then_some(export_manifest.horizon_bars.max(1)));
 
-    let split_windows = resolve_relative_metadata_path(
+    let split_windows = resolve_nested_metadata_path(
         &export_manifest_path,
         export_manifest.split_manifest_path.as_deref(),
     )
@@ -4933,6 +5409,12 @@ fn build_ml_signal_deployability(
     let mut gates_passed = Vec::new();
     let mut gates_failed = Vec::new();
     let mut warnings = Vec::new();
+    let realism = crate::validation_realism::build_validation_realism_evidence(validation_context);
+    let realism_promotion = crate::validation_realism::build_validation_promotion_eligibility(
+        run_verdict.passed,
+        run_verdict.approved,
+        &realism,
+    );
 
     push_deployability_gate(
         validation_context.is_some(),
@@ -4958,6 +5440,23 @@ fn build_ml_signal_deployability(
         &mut gates_passed,
         &mut gates_failed,
     );
+    for gate in realism_promotion
+        .gates_passed
+        .iter()
+        .filter(|gate| gate.starts_with("realism_"))
+    {
+        gates_passed.push(gate.clone());
+    }
+    for gate in realism_promotion
+        .gates_failed
+        .iter()
+        .filter(|gate| gate.starts_with("realism_"))
+    {
+        gates_failed.push(gate.clone());
+    }
+    for field in &realism.missing_or_unknown {
+        warnings.push(format!("data_realism_unknown:{field}"));
+    }
 
     match score_summary.score_scope {
         MlSignalScoreScope::WalkforwardTest => {
@@ -5007,7 +5506,8 @@ fn build_ml_signal_deployability(
             MlSignalScoreScope::CalibrationSlice | MlSignalScoreScope::CustomPartial
         )
         || !has_feature_schema_hash
-        || !has_bundle_manifest_hash;
+        || !has_bundle_manifest_hash
+        || !realism.complete;
     let needs_review =
         !warnings.is_empty() || score_summary.score_scope == MlSignalScoreScope::FullDataset;
 
@@ -5370,10 +5870,16 @@ fn validate_ml_signal_candidates(
             .max(2);
         out.len()
     ];
-    compute_probability_metrics_with_effective_counts(
+    let optimization_trials = crate::sharpe_stats::normalize_optimization_trial_count(
+        validation_context.and_then(|context| context.optimization_trials),
+        out.len(),
+    );
+    compute_probability_metrics_with_research_context(
         &mut out,
         &sample_obs,
         Some(&effective_sample_obs),
+        None,
+        optimization_trials,
         None,
     );
     mark_robust_pareto(&mut out);
@@ -6168,6 +6674,9 @@ pub fn list_ml_signal_model_bundle_summaries(
 mod tests {
     use super::*;
     use crate::test_support::lock_test_env;
+    use crate::validation_shared::{
+        ValidationPriceAdjustmentState, ValidationRealismContext, ValidationRealismEvidenceStatus,
+    };
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
     use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
@@ -6192,6 +6701,136 @@ mod tests {
             .join(format!("ta_ml_signal_{name}_{nonce}"))
             .to_string_lossy()
             .to_string()
+    }
+
+    fn repo_local_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let path = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join(format!("ta_ml_signal_{name}_{nonce}"));
+        fs::create_dir_all(&path).expect("create repo-local test directory");
+        path
+    }
+
+    #[test]
+    fn legacy_repo_relative_overlap_path_does_not_duplicate_cache_prefix() {
+        let _guard = lock_test_env();
+        let root = repo_local_temp_dir("legacy_repo_relative_overlap");
+        let run_dir = root.join("run");
+        let bundle_dir = run_dir.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create bundle directory");
+        let output_path = bundle_dir.join("dataset.csv");
+        let candles = sample_candles(180);
+        let cancel = AtomicBool::new(false);
+        let export = export_ml_signal_dataset_with_candles(
+            MlSignalDatasetExportRequest {
+                data_id: "legacy-path-data".to_string(),
+                output_path: output_path.to_string_lossy().to_string(),
+                ma_source: "close".to_string(),
+                horizon_bars: 10,
+                round_trip_cost_bps: 12.5,
+                split_plan: Some(MlSignalSplitPlan {
+                    version: 1,
+                    train_bars: 60,
+                    calibration_bars: 20,
+                    test_bars: 20,
+                    gap_bars: 2,
+                    step_bars: 20,
+                    windows: Vec::new(),
+                }),
+                ticker_holdout: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("export overlap fixture");
+        let cwd = fs::canonicalize(std::env::current_dir().expect("current dir"))
+            .expect("canonical current dir");
+        let export_manifest =
+            fs::canonicalize(&export.export_manifest_path).expect("canonical export manifest");
+        let legacy_repo_relative = export_manifest
+            .strip_prefix(&cwd)
+            .expect("fixture below repo")
+            .to_string_lossy()
+            .to_string();
+        let cache_path = run_dir.join("score-cache.json");
+        let expected_sha = sha256_file_hex(&export_manifest)
+            .expect("hash export manifest")
+            .expect("export manifest hash");
+
+        let overlap = load_ml_signal_overlap_metadata(
+            &cache_path.to_string_lossy(),
+            Some(&legacy_repo_relative),
+            Some(&expected_sha),
+        );
+        assert_eq!(overlap.label_horizon_bars, Some(10));
+        assert!(!overlap.split_windows.is_empty());
+        assert_eq!(
+            portable_metadata_path_for_owner(
+                &cache_path.to_string_lossy(),
+                Some(&legacy_repo_relative),
+            )
+            .as_deref(),
+            Some("bundle/dataset.export_manifest.json")
+        );
+
+        fs::remove_dir_all(&root).expect("remove repo-local test directory");
+    }
+
+    #[test]
+    fn metadata_resolver_rejects_parent_traversal_and_nested_escape() {
+        let _guard = lock_test_env();
+        let root = repo_local_temp_dir("metadata_path_escape");
+        let run_dir = root.join("run");
+        let bundle_dir = run_dir.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create bundle directory");
+        let cache_path = run_dir.join("score-cache.json");
+        let export_manifest_path = bundle_dir.join("export_manifest.json");
+        let escaped_path = run_dir.join("escaped.json");
+        fs::write(&export_manifest_path, b"{}").expect("write export manifest");
+        fs::write(&escaped_path, b"{}").expect("write escaped file");
+
+        assert!(resolve_relative_metadata_path(&cache_path, Some("../escaped.json")).is_none());
+        assert!(
+            resolve_nested_metadata_path(&export_manifest_path, escaped_path.to_str(),).is_none()
+        );
+
+        fs::remove_dir_all(&root).expect("remove repo-local test directory");
+    }
+
+    #[test]
+    fn owner_relative_metadata_reference_survives_directory_move() {
+        let _guard = lock_test_env();
+        let root = repo_local_temp_dir("metadata_path_portability");
+        let original = root.join("original");
+        let moved = root.join("moved");
+        let bundle_dir = original.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create bundle directory");
+        let export_manifest_path = bundle_dir.join("export_manifest.json");
+        fs::write(&export_manifest_path, b"{}").expect("write export manifest");
+        let cache_path = original.join("score-cache.json");
+        let portable = portable_metadata_path_for_owner(
+            &cache_path.to_string_lossy(),
+            export_manifest_path.to_str(),
+        )
+        .expect("portable owner-relative path");
+        assert_eq!(portable, "bundle/export_manifest.json");
+
+        fs::rename(&original, &moved).expect("move complete QA directory");
+        let resolved =
+            resolve_relative_metadata_path(&moved.join("score-cache.json"), Some(&portable))
+                .expect("resolve after move");
+        assert_eq!(
+            resolved,
+            fs::canonicalize(moved.join("bundle/export_manifest.json"))
+                .expect("canonical moved export manifest")
+        );
+
+        fs::remove_dir_all(&root).expect("remove repo-local test directory");
     }
 
     fn score_cache_build_request(
@@ -6261,6 +6900,76 @@ mod tests {
             native_prediction_batch_size: None,
             native_fallback_reason: None,
         }
+    }
+
+    fn approved_run_verdict() -> ValidationRunVerdict {
+        ValidationRunVerdict {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: ValidationRecommendation::SingleCandidateSupported,
+            warning_flags: Vec::new(),
+            fail_reasons: Vec::new(),
+            first_approved_rank: Some(1),
+            top_candidate_track_record_bars: Some(512),
+            top_candidate_min_track_record_length_bars: Some(256),
+            top_candidate_psr: Some(0.95),
+            top_candidate_dsr: Some(0.80),
+            pbo: None,
+            max_pbo: None,
+        }
+    }
+
+    #[test]
+    fn ml_deployability_fails_closed_until_realism_evidence_is_declared() {
+        let score_summary = minimal_score_summary(MlSignalScoreScope::WalkforwardTest);
+        let run_verdict = approved_run_verdict();
+        let mut context = ValidationArtifactContext {
+            strategy_kind: "MlSignal".to_string(),
+            csv_path: Some("C:/data/test.csv".to_string()),
+            timeframe: Some("1h".to_string()),
+            label: Some("test".to_string()),
+            optimization_trials: Some(100),
+            search_distribution: None,
+            data_realism: None,
+        };
+
+        let unknown =
+            build_ml_signal_deployability(Some(&context), &score_summary, None, &run_verdict);
+        assert_eq!(unknown.state, MlSignalDeployabilityState::ResearchOnly);
+        assert!(unknown
+            .gates_failed
+            .iter()
+            .any(|gate| gate == "realism_market_impact_declared"));
+        assert!(unknown
+            .warnings
+            .iter()
+            .any(|warning| warning == "data_realism_unknown:borrow_availability"));
+
+        context.data_realism = Some(ValidationRealismContext {
+            price_adjustment: ValidationPriceAdjustmentState::Adjusted,
+            corporate_actions: ValidationRealismEvidenceStatus::Documented,
+            survivorship_bias: ValidationRealismEvidenceStatus::Documented,
+            liquidity_capacity: ValidationRealismEvidenceStatus::Documented,
+            market_impact: ValidationRealismEvidenceStatus::Documented,
+            borrow_availability: ValidationRealismEvidenceStatus::NotApplicable,
+        });
+        let declared =
+            build_ml_signal_deployability(Some(&context), &score_summary, None, &run_verdict);
+        assert_eq!(
+            declared.state,
+            MlSignalDeployabilityState::DeployableCandidate
+        );
+        assert!(declared
+            .gates_passed
+            .iter()
+            .any(|gate| gate == "realism_market_impact_declared"));
+        assert!(!declared
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("data_realism_unknown:")));
     }
 
     fn minimal_bundle_manifest() -> MlSignalModelBundleManifest {
@@ -6394,6 +7103,169 @@ mod tests {
         assert!(err.contains("ML score-cache generation"));
         assert!(err.contains("timestamp has 23 rows but close has 24"));
         assert!(!Path::new(&output_path).exists());
+    }
+
+    #[test]
+    fn dataset_export_pre_cancel_preserves_existing_payload_and_sidecars() {
+        let candles = sample_candles(160);
+        let output_path = temp_file_path("ml_dataset_pre_cancel", "csv");
+        let schema_path = feature_schema_path_for_export(&output_path);
+        let manifest_path = export_manifest_path_for_export(&output_path);
+        fs::write(&output_path, b"old dataset\n").expect("seed dataset");
+        fs::write(&schema_path, b"old schema\n").expect("seed schema");
+        fs::write(&manifest_path, b"old manifest\n").expect("seed manifest");
+        let cancel = AtomicBool::new(true);
+
+        let err = export_ml_signal_dataset_with_candles(
+            MlSignalDatasetExportRequest {
+                data_id: "data-ml".to_string(),
+                output_path: output_path.clone(),
+                ma_source: "close".to_string(),
+                horizon_bars: 10,
+                round_trip_cost_bps: 12.5,
+                split_plan: None,
+                ticker_holdout: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("pre-cancelled export should stop before staging");
+
+        assert_eq!(err, "cancelled");
+        assert_eq!(fs::read(&output_path).expect("dataset"), b"old dataset\n");
+        assert_eq!(fs::read(&schema_path).expect("schema"), b"old schema\n");
+        assert_eq!(
+            fs::read(&manifest_path).expect("manifest"),
+            b"old manifest\n"
+        );
+
+        let _ = fs::remove_file(&output_path);
+        let _ = fs::remove_file(&schema_path);
+        let _ = fs::remove_file(&manifest_path);
+    }
+
+    #[test]
+    fn dataset_export_failure_after_payload_leaves_staged_completion_marker() {
+        let candles = sample_candles(160);
+        let output_path = temp_file_path("ml_dataset_after_payload_failure", "csv");
+        let schema_path = feature_schema_path_for_export(&output_path);
+        let manifest_path = export_manifest_path_for_export(&output_path);
+        let cancel = AtomicBool::new(false);
+
+        let err = export_ml_signal_dataset_with_publication_failure(
+            MlSignalDatasetExportRequest {
+                data_id: "data-ml".to_string(),
+                output_path: output_path.clone(),
+                ma_source: "close".to_string(),
+                horizon_bars: 10,
+                round_trip_cost_bps: 12.5,
+                split_plan: None,
+                ticker_holdout: None,
+            },
+            &candles,
+            &cancel,
+            Some(MlSignalPublicationFailurePoint::AfterPayloadPublish),
+        )
+        .expect_err("injected post-payload failure should keep the bundle incomplete");
+
+        assert!(err.contains("AfterPayloadPublish"));
+        assert!(Path::new(&output_path).is_file());
+        assert!(Path::new(&schema_path).is_file());
+        let marker: JsonValue = serde_json::from_reader(BufReader::new(
+            File::open(&manifest_path).expect("open staged marker"),
+        ))
+        .expect("parse staged marker");
+        assert_eq!(
+            marker.get("publication_state").and_then(JsonValue::as_str),
+            Some("staged")
+        );
+        let completion_err = ensure_ml_signal_export_manifest_complete(&manifest_path)
+            .expect_err("staged dataset must not be accepted as complete");
+        assert!(completion_err.contains("incomplete"));
+
+        let _ = fs::remove_file(&output_path);
+        let _ = fs::remove_file(&schema_path);
+        let _ = fs::remove_file(&manifest_path);
+    }
+
+    #[test]
+    fn score_cache_pre_cancel_preserves_existing_payload_and_manifest() {
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("ml_scores_pre_cancel_input", "csv");
+        let output_path = temp_file_path("ml_scores_pre_cancel_cache", "json");
+        let manifest_path = score_manifest_path_for_cache(&output_path);
+        fs::write(&output_path, b"old score cache\n").expect("seed cache");
+        fs::write(&manifest_path, b"old score manifest\n").expect("seed manifest");
+        let cancel = AtomicBool::new(true);
+
+        let err = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &output_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect_err("pre-cancelled score-cache build should stop before input IO");
+
+        assert_eq!(err, "cancelled");
+        assert_eq!(fs::read(&output_path).expect("cache"), b"old score cache\n");
+        assert_eq!(
+            fs::read(&manifest_path).expect("manifest"),
+            b"old score manifest\n"
+        );
+
+        let _ = fs::remove_file(&output_path);
+        let _ = fs::remove_file(&manifest_path);
+    }
+
+    #[test]
+    fn score_cache_failure_after_payload_is_rejected_as_incomplete() {
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("ml_scores_after_payload_input", "csv");
+        let output_path = temp_file_path("ml_scores_after_payload_cache", "json");
+        let manifest_path = score_manifest_path_for_cache(&output_path);
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short"])
+            .expect("write header");
+        for timestamp in &candles.timestamp {
+            writer
+                .write_record([
+                    timestamp.to_string(),
+                    "0.80".to_string(),
+                    "0.20".to_string(),
+                ])
+                .expect("write score row");
+        }
+        writer.flush().expect("flush score csv");
+        let cancel = AtomicBool::new(false);
+
+        let err = build_ml_signal_score_cache_with_publication_failure(
+            score_cache_build_request("data-1", &input_path, &output_path, None),
+            &candles,
+            &cancel,
+            Some(MlSignalPublicationFailurePoint::AfterPayloadPublish),
+        )
+        .expect_err("injected post-payload failure should keep the cache incomplete");
+
+        assert!(err.contains("AfterPayloadPublish"));
+        assert!(Path::new(&output_path).is_file());
+        let marker: JsonValue = serde_json::from_reader(BufReader::new(
+            File::open(&manifest_path).expect("open staged marker"),
+        ))
+        .expect("parse staged marker");
+        assert_eq!(
+            marker.get("publication_state").and_then(JsonValue::as_str),
+            Some("staged")
+        );
+        let load_err = load_score_cache(&output_path, "data-1", &candles)
+            .expect_err("payload must not load before completion manifest");
+        assert!(load_err.contains("publication is incomplete"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&output_path);
+        let _ = fs::remove_file(&manifest_path);
     }
 
     #[test]
@@ -6581,6 +7453,9 @@ mod tests {
             label_policy: None,
             sample_weight_policy: None,
             created_at_unix_ms: None,
+            publication_state: MlSignalPublicationState::Complete,
+            publication_id: None,
+            payload_sha256: None,
         };
         fs::write(
             &export_manifest_path,
@@ -7145,6 +8020,15 @@ mod tests {
         assert_eq!(manifest.duplicate_timestamps, 1);
         assert!((manifest.coverage_ratio - 0.10).abs() < 1.0e-9);
         assert_eq!(
+            manifest.publication_state,
+            MlSignalPublicationState::Complete
+        );
+        assert!(manifest.publication_id.is_some());
+        assert_eq!(
+            manifest.payload_sha256,
+            sha256_file_hex(Path::new(&cache_path)).expect("cache sha256")
+        );
+        assert_eq!(
             manifest.data_content_fingerprint,
             build.data_content_fingerprint
         );
@@ -7604,9 +8488,34 @@ mod tests {
             .saturating_sub(export.horizon_bars.saturating_add(2));
         assert_eq!(manifest.feature_schema_hash, export.feature_schema_hash);
         assert_eq!(manifest.exporter_version, ML_SIGNAL_EXPORTER_VERSION);
+        assert_eq!(
+            manifest.output_path,
+            Path::new(&output_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .expect("dataset file name")
+        );
+        assert_eq!(
+            manifest.feature_schema_path,
+            Path::new(&export.feature_schema_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .expect("feature schema file name")
+        );
+        assert!(!Path::new(&manifest.output_path).is_absolute());
+        assert!(!Path::new(&manifest.feature_schema_path).is_absolute());
         assert!(manifest.label_policy.is_some());
         assert!(manifest.sample_weight_policy.is_some());
         assert!(manifest.created_at_unix_ms.is_some());
+        assert_eq!(
+            manifest.publication_state,
+            MlSignalPublicationState::Complete
+        );
+        assert!(manifest.publication_id.is_some());
+        assert_eq!(
+            manifest.payload_sha256,
+            sha256_file_hex(Path::new(&output_path)).expect("dataset sha256")
+        );
         assert_eq!(
             manifest.first_timestamp,
             candles.timestamp.get(export.first_valid_bar).copied()
@@ -8766,7 +9675,7 @@ mod tests {
     }
 
     #[test]
-    fn catboost_library_candidates_include_bundle_and_explicit_directory_paths() {
+    fn catboost_explicit_library_candidate_is_authoritative() {
         let _guard = lock_test_env();
         let root_dir = Path::new(&temp_dir_path("mlsig_catboost_candidates")).to_path_buf();
         let explicit_dir = root_dir.join("explicit");
@@ -8799,18 +9708,16 @@ mod tests {
         let explicit_key = normalize_catboost_candidate_key(&explicit_candidate.to_string_lossy());
         let bundle_key = normalize_catboost_candidate_key(&bundle_candidate.to_string_lossy());
         let manifest_key = normalize_catboost_candidate_key(&manifest_candidate.to_string_lossy());
-        assert!(candidates
-            .iter()
-            .any(|value| normalize_catboost_candidate_key(value) == explicit_key));
-        assert!(candidates
-            .iter()
-            .any(|value| normalize_catboost_candidate_key(value) == bundle_key));
-        assert!(candidates
-            .iter()
-            .any(|value| normalize_catboost_candidate_key(value) == manifest_key));
-        assert!(candidates
-            .iter()
-            .any(|value| value == DEFAULT_CATBOOST_LIBRARY_CANDIDATES[0]));
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            normalize_catboost_candidate_key(&candidates[0]),
+            explicit_key
+        );
+        assert_ne!(normalize_catboost_candidate_key(&candidates[0]), bundle_key);
+        assert_ne!(
+            normalize_catboost_candidate_key(&candidates[0]),
+            manifest_key
+        );
 
         let _ = fs::remove_file(&explicit_candidate);
         let _ = fs::remove_file(&bundle_candidate);
@@ -8843,7 +9750,7 @@ mod tests {
             MlSignalNativeLibraryDiscoveryPolicy::Production,
         );
 
-        assert!(candidates.iter().any(|value| value == &explicit_str));
+        assert_eq!(candidates, vec![explicit_str]);
         assert!(!candidates
             .iter()
             .any(|value| value == DEFAULT_CATBOOST_LIBRARY_CANDIDATES[0]));

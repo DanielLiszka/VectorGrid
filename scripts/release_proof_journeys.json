@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "desktop_suite": "release-proof",
+  "journeys": [
+    {
+      "id": "clean-start",
+      "spec": "web/e2e/desktop/specs/desktop-isolated-clean-start.spec.ts",
+      "evidence_file": "clean-start-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-clean-start-v1"
+    },
+    {
+      "id": "titlebar-native-controls",
+      "spec": "web/e2e/desktop/specs/desktop-titlebar-native-controls.spec.ts",
+      "evidence_file": "titlebar-native-controls-proof.json",
+      "evidence_contract": "vectorgrid-titlebar-native-controls-v1"
+    },
+    {
+      "id": "window-geometry",
+      "spec": "web/e2e/desktop/specs/desktop-window-geometry.spec.ts",
+      "evidence_file": "window-geometry-proof.json",
+      "evidence_contract": "vectorgrid-window-geometry-v1"
+    },
+    {
+      "id": "window-launch-bounds",
+      "spec": "web/e2e/desktop/specs/desktop-window-launch-bounds.spec.ts",
+      "evidence_file": "window-launch-bounds-proof.json",
+      "evidence_contract": "vectorgrid-window-launch-bounds-v1"
+    },
+    {
+      "id": "native-data-flow",
+      "spec": "web/e2e/desktop/specs/desktop-native-data-flow.spec.ts",
+      "evidence_file": "native-data-flow-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-native-data-flow-v1"
+    },
+    {
+      "id": "local-paper-cold-restart",
+      "spec": "web/e2e/desktop/specs/desktop-exact-package-local-paper.spec.ts",
+      "evidence_file": "local-paper-cold-restart-proof.json",
+      "evidence_contract": "vectorgrid-local-paper-cold-restart-v1"
+    },
+    {
+      "id": "options-lifecycle",
+      "spec": "web/e2e/desktop/specs/desktop-exact-package-options.spec.ts",
+      "evidence_file": "options-lifecycle-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-options-lifecycle-v1"
+    },
+    {
+      "id": "ml-native-catalog",
+      "spec": "web/e2e/desktop/specs/desktop-exact-package-ml-native.spec.ts",
+      "evidence_file": "ml-native-catalog-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-ml-native-v1"
+    },
+    {
+      "id": "campaign-lifecycle",
+      "spec": "web/e2e/desktop/specs/desktop-exact-package-campaign.spec.ts",
+      "evidence_file": "campaign-lifecycle-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-campaign-lifecycle-v1"
+    },
+    {
+      "id": "cross-ticker",
+      "spec": "web/e2e/desktop/specs/desktop-exact-package-cross-ticker.spec.ts",
+      "evidence_file": "cross-ticker-proof.json",
+      "evidence_contract": "vectorgrid-cross-ticker-validation-v1"
+    },
+    {
+      "id": "route-matrix",
+      "spec": "web/e2e/desktop/specs/desktop-native-route-matrix.spec.ts",
+      "evidence_file": "route-matrix-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-route-matrix-v1"
+    },
+    {
+      "id": "export",
+      "spec": "web/e2e/desktop/specs/desktop-exact-package-export.spec.ts",
+      "evidence_file": "export-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-export-v1"
+    },
+    {
+      "id": "recovery",
+      "spec": "web/e2e/desktop/specs/desktop-exact-package-recovery.spec.ts",
+      "evidence_file": "recovery-proof.json",
+      "evidence_contract": "vectorgrid-exact-package-recovery-v1"
+    }
+  ]
+}

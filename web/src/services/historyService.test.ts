@@ -373,8 +373,32 @@ describe("historyService", () => {
       },
       currentValidation: {
         ts: "2026-02-25T00:00:00Z",
-        req: { strategy_kind: "DoubleMa" },
-        res: { candidates: [{ score: 1.0 }] },
+        req: {
+          strategy_kind: "DoubleMa",
+          min_psr: 0,
+          min_dsr: 0,
+        },
+        res: {
+          candidates: [
+            {
+              params: {
+                fast_len: 5,
+                slow_len: 20,
+                fast_ma_type: "sma",
+                slow_ma_type: "sma",
+              },
+              in_sample: {
+                pnl: 0.1,
+                sharpe: 1.2,
+                max_dd: -0.05,
+                trades: 12,
+              },
+              robust_score: 1,
+              psr: 0.9,
+              dsr: 0.8,
+            },
+          ],
+        },
       },
     });
 
@@ -403,6 +427,11 @@ describe("historyService", () => {
     });
     expect(artifacts.currentRun?.tags).toEqual(["holdout", "1m"]);
     expect(artifacts.currentValidation?.ts).toBe("2026-02-25T00:00:00Z");
+    const validation = useValidationStore(pinia);
+    expect(validation.validationRows).toHaveLength(1);
+    expect(validation.tableVisible).toBe(true);
+    expect(validation.canExportValidationJson).toBe(true);
+    expect(validation.statusLine).toBe("Loaded saved validation artifact.");
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalled();
     expect(readArtifactHistoryPerfEntries()).toEqual(
       expect.arrayContaining([
@@ -1146,6 +1175,49 @@ describe("historyService", () => {
     });
   });
 
+  it("fails closed before rerun when the saved artifact has no linked dataset path", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      timeframe: "5m",
+      csvPath: "",
+      runReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "stale-id",
+      },
+    });
+
+    await expect(rerunSavedRun("C:/runs/missing_dataset.json")).rejects.toThrow(
+      "Saved run is missing data.csv_path. Load a dataset first, then rerun.",
+    );
+
+    expect(loadDataCsvMock).not.toHaveBeenCalled();
+    expect(applyDataTimeframeMock).not.toHaveBeenCalled();
+    expect(runOptimizationMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves the prior workflow when a linked dataset disappeared from disk", async () => {
+    useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      timeframe: "5m",
+      csvPath: "C:/data/deleted.csv",
+      runReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "stale-id",
+      },
+    });
+    loadDataCsvMock.mockRejectedValueOnce(
+      new Error("CSV file does not exist: C:/data/deleted.csv"),
+    );
+
+    await expect(rerunSavedRun("C:/runs/missing_dataset.json")).rejects.toThrow(
+      "CSV file does not exist: C:/data/deleted.csv",
+    );
+
+    expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/deleted.csv");
+    expect(applyDataTimeframeMock).not.toHaveBeenCalled();
+    expect(runOptimizationMock).not.toHaveBeenCalled();
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+  });
+
   it("reruns MlSignal saved validation artifact through score-cache build then validation", async () => {
     useWorkflowStore(pinia).selectMode("conventional", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
@@ -1184,6 +1256,48 @@ describe("historyService", () => {
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
     expect(optimize.mlSignalModelBundleId).toBe("bundle-a");
+  });
+
+  it("stops an MlSignal rerun when a linked score resource is missing", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "stale-id",
+        input_path: "C:/scores/deleted_scores.csv",
+        output_path: "C:/runs/ml_score_cache.json",
+        model_bundle_id: "bundle-a",
+      },
+      mlSignalStage: "validation",
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.6,
+            t_short: 0.55,
+            delta: 0.1,
+            max_hold_bars: 10,
+          },
+        ],
+      },
+    });
+    generateMlSignalScoreCacheMock.mockRejectedValueOnce(
+      new Error(
+        "ML score input file does not exist: C:/scores/deleted_scores.csv",
+      ),
+    );
+
+    await expect(
+      rerunSavedRun("C:/runs/missing_score_resource.json"),
+    ).rejects.toThrow(
+      "ML score input file does not exist: C:/scores/deleted_scores.csv",
+    );
+
+    expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/spy.csv");
+    expect(generateMlSignalScoreCacheMock).toHaveBeenCalledTimes(1);
+    expect(runMlSignalValidationMock).not.toHaveBeenCalled();
+    expect(runMlSignalPolicySweepMock).not.toHaveBeenCalled();
+    expect(runOptimizationMock).not.toHaveBeenCalled();
   });
 
   it("reruns native MlSignal saved validation artifact through score-cache build then validation", async () => {

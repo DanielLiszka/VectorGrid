@@ -9,6 +9,7 @@ import { useOptimizeStore } from "../stores/optimizeStore";
 import { bindRuntimePinia } from "../stores/runtimePinia";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 import { invokeCommand, tauriRuntimeAvailable } from "../tauri/invoke";
 
 vi.mock("../tauri/invoke", () => ({
@@ -203,6 +204,24 @@ describe("MlSignalWorkspacePanel", () => {
     expect(wrapper.text()).toContain("sharpe 1.2300");
     expect(wrapper.text()).toContain("psr 0.7200");
   });
+
+  it("shows only the selected ML stage while keeping other stage state mounted", async () => {
+    const workflow = useWorkflowStore()
+    workflow.selectMode('ml-signal', { persist: false })
+    workflow.selectWorkflowStep('optimize', { persist: false })
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    })
+
+    expect(wrapper.get('[data-ml-stage="optimize"]').isVisible()).toBe(true)
+    expect(wrapper.get('[data-ml-stage="data"]').isVisible()).toBe(false)
+    expect(wrapper.get('[data-ml-stage="finalize"]').isVisible()).toBe(false)
+
+    workflow.selectWorkflowStep('finalize', { persist: false })
+    await nextTick()
+    expect(wrapper.get('[data-ml-stage="optimize"]').isVisible()).toBe(false)
+    expect(wrapper.get('[data-ml-stage="finalize"]').isVisible()).toBe(true)
+  })
 
   it("shows a score-contract mismatch note when the artifact scope disagrees with the declared lanes", () => {
     const workflowArtifacts = useWorkflowArtifactsStore();

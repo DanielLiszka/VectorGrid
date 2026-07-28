@@ -379,7 +379,7 @@ pub async fn export_ml_signal_dataset(
     let _run_guard = state.try_begin_run()?;
     req.output_path = validate_ml_signal_dataset_output_path(&req.output_path, &state)?;
     let cancel = state.cancel_token();
-    let candles = state.get_candles(&req.data_id)?;
+    let candles = state.get_candles_for_run(&req.data_id)?;
 
     tauri::async_runtime::spawn_blocking(move || {
         export_ml_signal_dataset_with_candles(req, &candles, cancel.as_ref())
@@ -398,7 +398,7 @@ pub async fn generate_ml_signal_score_cache(
     reject_renderer_supplied_score_cache_paths(&req)?;
     req.output_path = validate_ml_signal_score_cache_output_path(&req.output_path, &state)?;
     let cancel = state.cancel_token();
-    let candles = state.get_candles(&req.data_id)?;
+    let candles = state.get_candles_for_run(&req.data_id)?;
     if req
         .source_bundle_manifest_path
         .as_deref()
@@ -482,7 +482,7 @@ pub async fn run_ml_signal_validation(
     let cancel = state.cancel_token();
     let loaded = state.get_loaded_data_context(&req.data_id)?;
     validate_ml_signal_context(req.validation_context.as_ref(), &loaded)?;
-    let candles = state.get_candles(&req.data_id)?;
+    let candles = state.get_candles_for_run(&req.data_id)?;
 
     tauri::async_runtime::spawn_blocking(move || {
         run_ml_signal_validation_blocking_with_candles(req, &candles, cancel.as_ref())
@@ -500,7 +500,7 @@ pub async fn run_ml_signal_policy_sweep(
     let cancel = state.cancel_token();
     let loaded = state.get_loaded_data_context(&req.data_id)?;
     validate_ml_signal_context(req.validation_context.as_ref(), &loaded)?;
-    let candles = state.get_candles(&req.data_id)?;
+    let candles = state.get_candles_for_run(&req.data_id)?;
 
     tauri::async_runtime::spawn_blocking(move || {
         run_ml_signal_policy_sweep_blocking_with_candles(req, &candles, cancel.as_ref())
@@ -625,6 +625,9 @@ mod tests {
             csv_path: Some("C:/data/expected.csv".to_string()),
             timeframe: Some("4h".to_string()),
             label: Some("expected dataset".to_string()),
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
 
         let err = validate_ml_signal_context(Some(&ctx), &loaded).expect_err("mismatch");
@@ -636,6 +639,9 @@ mod tests {
             csv_path: Some("C:/data/loaded.csv".to_string()),
             timeframe: Some("4h".to_string()),
             label: None,
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
         let err = validate_ml_signal_context(Some(&ctx), &loaded).expect_err("timeframe mismatch");
         assert!(err.contains("timeframe"));
@@ -656,6 +662,9 @@ mod tests {
             csv_path: Some("C:/data/loaded.csv".to_string()),
             timeframe: Some("4h".to_string()),
             label: None,
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
         };
 
         validate_ml_signal_context(Some(&ctx), &loaded).expect("unknown timeframe should bypass");

@@ -1,4 +1,3 @@
-
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { computed, nextTick, ref } from "vue";
@@ -77,6 +76,8 @@ describe("HistoryWorkspacePanel", () => {
     history.savedRunDetailTitle = "2026-03-20T10:00:00Z";
     history.savedRunDetailMeta = "artifact: ml_signal.json";
     history.savedRunDetailStrategy = "MlSignal";
+    history.savedRunDetailConfigFingerprint =
+      "0123456789abcdef0123456789abcdef0123456789abcdef";
     history.savedRunDetailDataset = "spy.csv";
     history.savedRunDetailTimeframe = "1d";
     history.savedRunDetailValidation = "Available";
@@ -141,6 +142,178 @@ describe("HistoryWorkspacePanel", () => {
     expect(bodyText).toContain(
       "best_sweep | robust=1.44 | psr=0.72 | dsr=0.68",
     );
+    const configFingerprint = document.querySelector(
+      '.compactEvidenceText[aria-label^="Config fingerprint:"]',
+    );
+    expect(configFingerprint?.textContent).toBe("0123456789…abcdef");
+    expect(configFingerprint?.getAttribute("title")).toBe(
+      "0123456789abcdef0123456789abcdef0123456789abcdef",
+    );
+    expect(configFingerprint?.getAttribute("aria-label")).toBe(
+      "Config fingerprint: 0123456789abcdef0123456789abcdef0123456789abcdef",
+    );
+  });
+
+  it("keeps legacy saved validation evidence research-only and promotion-blocked without inferring realism", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    const artifactPath = "C:/runs/legacy-validation.json";
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+    history.savedSelectedValue = artifactPath;
+    history.savedRunDetailTitle = "Legacy validation run";
+    history.savedRunDetailMeta = "artifact: legacy-validation.json";
+    history.savedRunDetailStrategy = "DoubleMa";
+    history.savedRunDetailDataset = "spy.csv";
+    history.savedRunDetailTimeframe = "1d";
+    history.savedRunDetailValidation = "Available";
+    history.savedRunDetailReport = "Not exported";
+    history.savedRunDetailSize = "8 KiB";
+    history.savedRunDetailTags = "legacy";
+    history.savedRunDetailParams = "strategy: DoubleMa";
+    history.savedRunDetailCache = {
+      [artifactPath]: {
+        strategyKind: "DoubleMa",
+        timeframe: "1d",
+        csvPath: "C:/data/spy.csv",
+        reportPath: "",
+        hasValidation: true,
+        validationReq: {},
+        validationRes: {
+          friction_stress: {
+            pass_count: 4,
+            scenario_count: 4,
+          },
+        },
+        tags: ["legacy"],
+        paramsText: "strategy: DoubleMa",
+      },
+    };
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const panel = document.querySelector<HTMLElement>(
+      '[data-qa-panel="history.validationRealism"]',
+    );
+    expect(panel).not.toBeNull();
+    expect(panel?.dataset.qaPromotionState).toBe("blocked");
+    expect(panel?.dataset.qaRealismState).toBe("incomplete");
+    expect(panel?.textContent || "").toContain("Research only");
+    expect(panel?.textContent || "").toContain("Promotion blocked");
+    expect(panel?.textContent || "").toContain(
+      "Missing and legacy fields remain unknown and block promotion review.",
+    );
+
+    const unknownFields = panel?.querySelectorAll(
+      '.historyRealismEvidenceItem[data-qa-state="unknown"]',
+    );
+    expect(unknownFields).toHaveLength(6);
+    const capacity = panel?.querySelector(
+      '[data-qa-field="history.validationRealism.liquidity_capacity"]',
+    );
+    const marketImpact = panel?.querySelector(
+      '[data-qa-field="history.validationRealism.market_impact"]',
+    );
+    expect(capacity?.textContent || "").toContain("unknown");
+    expect(marketImpact?.textContent || "").toContain("unknown");
+    expect(panel?.textContent || "").toContain(
+      "Fee or slippage stress does not establish liquidity/capacity or market-impact evidence.",
+    );
+  });
+
+  it("shows promotion-review eligibility only when the saved evidence pack explicitly passes every realism field", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    const artifactPath = "C:/runs/eligible-validation.json";
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+    history.savedSelectedValue = artifactPath;
+    history.savedRunDetailTitle = "Eligible validation run";
+    history.savedRunDetailMeta = "artifact: eligible-validation.json";
+    history.savedRunDetailStrategy = "DoubleMa";
+    history.savedRunDetailDataset = "spy.csv";
+    history.savedRunDetailTimeframe = "1d";
+    history.savedRunDetailValidation = "Available";
+    history.savedRunDetailReport = "Available";
+    history.savedRunDetailSize = "12 KiB";
+    history.savedRunDetailTags = "review";
+    history.savedRunDetailParams = "strategy: DoubleMa";
+    history.savedRunDetailCache = {
+      [artifactPath]: {
+        strategyKind: "DoubleMa",
+        timeframe: "1d",
+        csvPath: "C:/data/spy.csv",
+        reportPath: "C:/runs/eligible-validation.xlsx",
+        hasValidation: true,
+        validationReq: {},
+        validationRes: {
+          validation_evidence_pack: {
+            schema_version: "1-0-0",
+            version: 1,
+            status: "available",
+            dataset: {
+              data_realism: {
+                price_adjustment: "adjusted",
+                corporate_actions: "documented",
+                survivorship_bias: "documented",
+                liquidity_capacity: "documented",
+                market_impact: "documented",
+                borrow_availability: "not_applicable",
+                complete: true,
+                missing_or_unknown: [],
+              },
+            },
+            promotion_eligibility: {
+              eligible: true,
+              state: "eligible_for_review",
+              gates_passed: ["statistical_validation", "data_realism"],
+              gates_failed: [],
+              reason: "all research promotion gates passed",
+            },
+          },
+        },
+        tags: ["review"],
+        paramsText: "strategy: DoubleMa",
+      },
+    };
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const panel = document.querySelector<HTMLElement>(
+      '[data-qa-panel="history.validationRealism"]',
+    );
+    expect(panel).not.toBeNull();
+    expect(panel?.dataset.qaPromotionState).toBe("eligible_for_review");
+    expect(panel?.dataset.qaRealismState).toBe("complete");
+    expect(panel?.textContent || "").toContain("Review candidate");
+    expect(panel?.textContent || "").toContain("Eligible for promotion review");
+    expect(panel?.textContent || "").not.toContain("Research only");
+    expect(
+      panel?.querySelectorAll(
+        '.historyRealismEvidenceItem[data-qa-state="unknown"]',
+      ),
+    ).toHaveLength(0);
+    expect(
+      panel?.querySelector(
+        '[data-qa-field="history.validationRealism.price_adjustment"]',
+      )?.textContent || "",
+    ).toContain("adjusted");
   });
 
   it("shows MlSignal score contract pills in the saved-run list with caveat tooltips", async () => {

@@ -1972,6 +1972,19 @@ html.ui-transitions .tabPanel.active {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .progressFill.indeterminate {
+    animation: none !important;
+  }
+
+  .progressFill.indeterminate {
+    transform: none;
+  }
+
+  .progressFill {
+    transition: none !important;
+  }
+
   html.ui-transitions .tabBtn {
     transition: none !important;
   }

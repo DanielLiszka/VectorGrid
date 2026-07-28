@@ -80,7 +80,7 @@ describe('ActionStatusBar', () => {
     artifacts.applyVueRuntimePayload({
       currentRun: {
         ts: '2026-03-09T15:00:00Z',
-        req: {},
+        req: { data_id: 'AAPL_1D', strategy_kind: 'DoubleMa' },
         res: { top: [] },
       },
     })
@@ -99,6 +99,45 @@ describe('ActionStatusBar', () => {
     primary?.click()
     expect(validateSpy).toHaveBeenCalledTimes(1)
     expect(document.body.textContent || '').toContain('Execution readiness')
+
+    wrapper.unmount()
+  })
+
+  it('blocks validation and retained candidate copy after loading a different dataset path', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const artifacts = useWorkflowArtifactsStore(pinia)
+    workflow.selectWorkflowStep('validate', { persist: false })
+    dataStore.dataId = 'data-1'
+    dataStore.datasetLabel = 'vectorgrid_synthetic_ohlcv.csv'
+    dataStore.baseCsvPath = 'C:/samples/vectorgrid_synthetic_ohlcv.csv'
+    analysisStore.topRows = 20
+    analysisStore.selectedTopTitle = 'Retained AAPL winner'
+    optimize.validateDisabled = false
+    artifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-07-18T12:00:00Z',
+        req: { data_id: 'data-1', strategy_kind: 'DoubleMa' },
+        dataset_meta: { csv_path: 'C:/market/AAPL.csv' },
+        res: { top: [{}] },
+      },
+    })
+
+    const wrapper = mount(ActionStatusBar, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const primary = findButton('Run validation')
+    expect(primary?.disabled).toBe(true)
+    const text = document.body.textContent || ''
+    expect(text).toContain('Ready to configure and run optimization.')
+    expect(text).not.toContain('Retained AAPL winner')
 
     wrapper.unmount()
   })
@@ -342,6 +381,7 @@ describe('ActionStatusBar', () => {
     workflow.selectWorkflowStep('analyze', { persist: false })
     workflow.selectResultsTab('top', { persist: false })
     data.dataId = 'data-1'
+    analysisStore.topRows = 4
     analysisStore.selectedTopTitle = 'Rank #2 · SMA 12 / EMA 48'
     analysisStore.selectedTopSummary = 'Selected candidate 2 of 4: Sharpe 1.7.'
 

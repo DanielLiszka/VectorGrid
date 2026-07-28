@@ -24,8 +24,11 @@ export function useShellMount(targetSelector: string, options: UseShellMountOpti
   }
 
   onMounted(async () => {
-    await nextTick()
     resolveMount()
+    if (!mountReady.value) {
+      await nextTick()
+      resolveMount()
+    }
   })
 
   onBeforeUnmount(() => {

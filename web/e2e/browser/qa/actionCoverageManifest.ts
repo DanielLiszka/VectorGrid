@@ -29,7 +29,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Visible only while an optimization or validation task is cancellable.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -42,7 +42,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Requires populated analysis results before execution can be meaningful.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -55,7 +55,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Requires populated analysis results before execution can be meaningful.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -151,7 +151,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires a saved optimization/validation report artifact.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -198,7 +198,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires recent CSV history in local storage.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -235,7 +235,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Native window controls are covered by WDIO desktop smoke, not mocked browser QA.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -248,7 +248,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Native window controls are covered by WDIO desktop smoke, not mocked browser QA.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -261,7 +261,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Native window controls are covered by WDIO desktop smoke, not mocked browser QA.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -675,6 +675,19 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     coveredBy: ["shell.workflow.navigation"],
   },
   {
+    actionId: "evidence.copy",
+    surface: "sharedEvidence",
+    required: false,
+    priority: "extended",
+    coveredBy: [],
+    waiver: {
+      reason:
+        "Clipboard success, failure, and exact full-value payloads are exercised by the CompactEvidenceValue component tests.",
+      owner: "frontend-qa",
+      expires: "2026-10-31",
+    },
+  },
+  {
     actionId: "portfolio.refreshSources",
     surface: "portfolio",
     required: true,
@@ -703,6 +716,19 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     coveredBy: ["shell.workspace.tabs"],
   },
   {
+    actionId: "portfolio.saved.reveal",
+    surface: "portfolio",
+    required: false,
+    priority: "extended",
+    coveredBy: [],
+    waiver: {
+      reason:
+        "The isolated Portfolio row test verifies exact path routing and checkbox isolation; the history service test covers the native reveal command.",
+      owner: "frontend-qa",
+      expires: "2026-10-31",
+    },
+  },
+  {
     actionId: "portfolio.exportJson",
     surface: "portfolio",
     required: false,
@@ -712,7 +738,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Visible after a successful feasibility analysis; covered by model tests until a populated portfolio fixture is added.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -725,7 +751,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Visible after a successful feasibility analysis; covered by model tests until a populated portfolio fixture is added.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -738,7 +764,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Keyboard and drag split-resize behavior needs dedicated geometry assertions.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -747,6 +773,13 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     required: true,
     priority: "important",
     coveredBy: ["workbench.shell.firstSlice"],
+  },
+  {
+    actionId: "workbench.inspector.compactOpen",
+    surface: "workbench",
+    required: true,
+    priority: "important",
+    coveredBy: ["layout.compact.inspectorDrawer"],
   },
   {
     actionId: "workbench.inspector.mode.selection",
@@ -807,7 +840,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Disabled until a selected candidate exists; browser QA verifies the disabled state.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -827,7 +860,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Requires session history selection before execution is meaningful.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -846,7 +879,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires saved-run artifact fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -858,7 +891,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires saved-run artifact fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -871,7 +904,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Requires session history before execution is meaningful; browser QA verifies the surfaced disabled action.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -883,7 +916,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Native folder open is covered by desktop smoke.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1001,7 +1034,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Covered when Polygon panel is opened and populated in a follow-up fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1013,7 +1046,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Covered when Polygon panel is opened in a follow-up fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1110,7 +1143,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Parity execution belongs in a GPU-capable environment; browser QA asserts the control is present.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1192,7 +1225,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Visible only after a successful live provider download; provider-download behavior is covered by store/service tests and manual desktop QA.",
       owner: "frontend-qa",
-      expires: "2026-06-15",
+      expires: "2026-10-15",
     },
   },
   {
@@ -1430,7 +1463,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Native folder open is better covered by desktop smoke.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1450,7 +1483,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Secondary empty action is conditional on current workflow state.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1469,7 +1502,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires top results.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1481,7 +1514,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires best candidate results.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1493,7 +1526,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires top results.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1505,7 +1538,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires top results.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1517,7 +1550,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires a ready overview with candidate comparison data.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1529,7 +1562,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires a ready overview with candidate comparison data.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1562,7 +1595,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires selected top result.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1574,7 +1607,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires pinned top results.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1635,7 +1668,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires selected candidate detail with trade evidence.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1647,7 +1680,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires selected candidate detail with trade evidence.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1659,7 +1692,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires selected candidate detail with trade evidence.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1699,7 +1732,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires a saved run with report metadata.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1712,7 +1745,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Native reveal is covered by desktop smoke after artifact fixture expansion.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1738,7 +1771,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Destructive saved-run flow needs isolated artifact fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1750,7 +1783,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Native folder open is covered by desktop smoke.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1781,6 +1814,27 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     ],
   },
   {
+    actionId: "executionChart.panLeft",
+    surface: "live",
+    required: false,
+    priority: "extended",
+    coveredBy: ["live.empty"],
+  },
+  {
+    actionId: "executionChart.fitContent",
+    surface: "live",
+    required: false,
+    priority: "extended",
+    coveredBy: ["live.empty"],
+  },
+  {
+    actionId: "executionChart.panRight",
+    surface: "live",
+    required: false,
+    priority: "extended",
+    coveredBy: ["live.empty"],
+  },
+  {
     actionId: "live.account.test",
     surface: "live",
     required: false,
@@ -1790,7 +1844,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Broker connectivity execution is mocked only in dedicated live fixtures.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1810,7 +1864,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
       reason:
         "Destructive local-paper reset requires confirmation-flow fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1822,7 +1876,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires broker/execution readiness fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1848,7 +1902,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires broker/execution readiness fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {
@@ -1860,7 +1914,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     waiver: {
       reason: "Requires active runner fixture.",
       owner: "frontend-qa",
-      expires: "2026-06-01",
+      expires: "2026-10-01",
     },
   },
   {

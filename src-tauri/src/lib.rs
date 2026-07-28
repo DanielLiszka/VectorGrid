@@ -10,6 +10,8 @@ pub mod execution_quantity;
 pub mod local_path_policy;
 pub mod ma_registry;
 pub mod polygon;
+#[cfg(any(feature = "desktop-ui", test))]
+mod qa_profile;
 pub mod redaction;
 pub mod release_readiness;
 pub mod settings;
@@ -85,10 +87,32 @@ fn spawn_options_expression_gpu_prewarm() {
 
 #[cfg(feature = "desktop-ui")]
 pub fn run_tauri() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let qa_override = qa_profile::QaProfileOverride::from_environment()
+        .unwrap_or_else(|error| panic!("refusing unsafe QA app-data override: {error}"));
+    let mut context = tauri::generate_context!();
+    let qa_original_identifier = qa_override
+        .as_ref()
+        .map(|profile| profile.apply_to_context(&mut context))
+        .transpose()
+        .unwrap_or_else(|error| panic!("refusing unsafe QA app-data override: {error}"));
+
+    let mut builder = tauri::Builder::default();
+    if qa_override.is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_existing_main_window(app);
-        }))
+        }));
+    }
+
+    let log_file_target =
+        qa_override
+            .as_ref()
+            .map_or(TargetKind::LogDir { file_name: None }, |profile| {
+                TargetKind::Folder {
+                    path: profile.log_dir(),
+                    file_name: None,
+                }
+            });
+    builder = builder
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level_for(
@@ -101,7 +125,7 @@ pub fn run_tauri() {
                 )
                 .targets([
                     Target::new(TargetKind::Stdout),
-                    Target::new(TargetKind::LogDir { file_name: None }),
+                    Target::new(log_file_target),
                     Target::new(TargetKind::Webview),
                 ])
                 .build(),
@@ -111,7 +135,10 @@ pub fn run_tauri() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+
+    let qa_setup_override = qa_override.clone();
+    builder
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .skip_initial_state(MAIN_WINDOW_LABEL)
@@ -120,12 +147,29 @@ pub fn run_tauri() {
         .manage(AppState::default())
         .manage(BackgroundTaskState::default())
         .manage(desktop_menu::DesktopMenuState::default())
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(profile) = qa_setup_override.as_ref() {
+                let original_identifier = qa_original_identifier.as_deref().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "QA app-data override is missing its original identifier",
+                    )
+                })?;
+                profile
+                    .verify_and_attest(app, original_identifier)
+                    .map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::PermissionDenied, error)
+                    })?;
+            }
+
             let window_cfg = app.config().app.windows.get(0).cloned().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "missing window config")
             })?;
 
-            let data_dir = std::env::temp_dir().join("vectorgrid").join("webview2");
+            let data_dir = qa_setup_override.as_ref().map_or_else(
+                || std::env::temp_dir().join("vectorgrid").join("webview2"),
+                qa_profile::QaProfileOverride::webview_data_dir,
+            );
 
             let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &window_cfg)?
                 .data_directory(data_dir)
@@ -287,7 +331,7 @@ pub fn run_tauri() {
             format_dynamic_strategy_ir_json,
             encode_dynamic_strategy_constant_bits
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
 

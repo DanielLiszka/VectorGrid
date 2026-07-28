@@ -209,8 +209,7 @@ function buildSavedRunSearchRecords(
       csvBasename,
       artifactBasename,
       ...tags,
-    ]
-      .filter((part) => part.length > 0);
+    ].filter((part) => part.length > 0);
     const searchText = [shortFields.join(" "), csvPath, artifactPath]
       .filter((part) => part.length > 0)
       .join(" ");
@@ -256,7 +255,8 @@ function filterSavedRunsEntries(
   const { records, fuse } = getSavedRunSearchIndex(entries);
 
   const shortQueryMatches = (): HistorySavedRunEntry[] => {
-    const scored: Array<{ record: SavedRunSearchRecord; totalScore: number }> = [];
+    const scored: Array<{ record: SavedRunSearchRecord; totalScore: number }> =
+      [];
     for (const record of records) {
       let totalScore = 0;
       let matched = true;
@@ -264,7 +264,8 @@ function filterSavedRunsEntries(
         let tokenScore = -1;
         for (const field of record.shortFields) {
           if (field === token) tokenScore = Math.max(tokenScore, 9);
-          else if (field.startsWith(token)) tokenScore = Math.max(tokenScore, 7);
+          else if (field.startsWith(token))
+            tokenScore = Math.max(tokenScore, 7);
           else if (field.includes(token)) tokenScore = Math.max(tokenScore, 4);
         }
         if (tokenScore < 0) {
@@ -1378,7 +1379,12 @@ export const useHistoryStore = defineStore("history", {
             timeframe: normalizeText(detail?.timeframe),
             csvPath: normalizePath(detail?.csvPath || ""),
             reportPath: normalizePath(detail?.reportPath || ""),
+            reportPathExists: normalizeOptionalBoolean(
+              detail?.reportPathExists,
+            ),
             hasValidation: !!detail?.hasValidation,
+            replayClass: normalizeText(detail?.replayClass),
+            replayReasons: normalizeTags(detail?.replayReasons),
             datasetMeta:
               detail?.datasetMeta && typeof detail.datasetMeta === "object"
                 ? detail.datasetMeta
@@ -1397,6 +1403,14 @@ export const useHistoryStore = defineStore("history", {
             runRes:
               detail?.runRes && typeof detail.runRes === "object"
                 ? detail.runRes
+                : null,
+            validationReq:
+              detail?.validationReq && typeof detail.validationReq === "object"
+                ? detail.validationReq
+                : null,
+            validationRes:
+              detail?.validationRes && typeof detail.validationRes === "object"
+                ? detail.validationRes
                 : null,
             metricSurfaceSummary: normalizeText(
               detail?.metricSurfaceSummary || "",
@@ -1513,8 +1527,7 @@ export const useHistoryStore = defineStore("history", {
           this.updatedAtUnixMs = Date.now();
         })
         .catch((error: unknown) => {
-          this.statusLine =
-            storeErrorText(error) || "Failed to export preset.";
+          this.statusLine = storeErrorText(error) || "Failed to export preset.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1529,8 +1542,7 @@ export const useHistoryStore = defineStore("history", {
           this.updatedAtUnixMs = Date.now();
         })
         .catch((error: unknown) => {
-          this.statusLine =
-            storeErrorText(error) || "Failed to import preset.";
+          this.statusLine = storeErrorText(error) || "Failed to import preset.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1547,8 +1559,7 @@ export const useHistoryStore = defineStore("history", {
           this.updatedAtUnixMs = Date.now();
         })
         .catch((error: unknown) => {
-          this.statusLine =
-            storeErrorText(error) || "Failed to clear history.";
+          this.statusLine = storeErrorText(error) || "Failed to clear history.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1580,8 +1591,7 @@ export const useHistoryStore = defineStore("history", {
           this.updatedAtUnixMs = Date.now();
         })
         .catch((error: unknown) => {
-          this.statusLine =
-            storeErrorText(error) || "Failed to save tags.";
+          this.statusLine = storeErrorText(error) || "Failed to save tags.";
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });
@@ -1725,8 +1735,7 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           const message =
-            storeErrorText(error) ||
-            "Failed to repair saved run artifact.";
+            storeErrorText(error) || "Failed to repair saved run artifact.";
           this.savedRunRepairSummary = message;
           this.statusLine = message;
           this.source = "vue";

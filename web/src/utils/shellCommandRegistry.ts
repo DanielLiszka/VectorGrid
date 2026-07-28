@@ -23,6 +23,7 @@ export interface ShellCommandRuntimeContext {
   canOpenLatestReport: boolean
   canOpenLatestMetaReport: boolean
   controlsPanelVisible: boolean
+  disabledReasons?: Partial<Record<SharedShellCommandId, string>>
   browseCsv: () => void
   openPolygon: () => void
   toggleControls: () => void
@@ -230,16 +231,20 @@ export const SETTINGS_SHORTCUT_SUMMARY_ROWS: readonly ShellShortcutSummaryRow[] 
 ]
 
 export function createSharedShellCommands(ctx: ShellCommandRuntimeContext): ShellCommand[] {
-  return SHARED_SHELL_COMMAND_DEFS.map((definition) => ({
-    id: definition.id,
-    group: definition.group,
-    name: definition.name,
-    desc: definition.desc,
-    keys: [...definition.keys],
-    keywords: [...definition.keywords],
-    enabled: definition.enabled(ctx),
-    run: () => definition.run(ctx),
-  }))
+  return SHARED_SHELL_COMMAND_DEFS.map((definition) => {
+    const enabled = definition.enabled(ctx)
+    const disabledReason = String(ctx.disabledReasons?.[definition.id] || '').trim()
+    return {
+      id: definition.id,
+      group: definition.group,
+      name: definition.name,
+      desc: !enabled && disabledReason ? disabledReason : definition.desc,
+      keys: [...definition.keys],
+      keywords: [...definition.keywords],
+      enabled,
+      run: () => definition.run(ctx),
+    }
+  })
 }
 
 export function createSharedShellCommandEnabledStates(

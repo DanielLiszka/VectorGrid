@@ -1485,10 +1485,6 @@ function defaultCompositeMoSearchSpace(): Record<string, unknown> {
         },
       },
       {
-        name: "strategy_commission",
-        domain: { FloatRange: { low: 0.0, high: 0.001, log: false } },
-      },
-      {
         name: "strategy_eps_rel",
         domain: { FloatRange: { low: 0.0, high: 0.005, log: false } },
       },
@@ -1519,11 +1515,12 @@ const COMPOSITE_MO_ALLOWED_PARAMS = new Set([
   "ott_period",
   "ott_percent",
   "ott_ma_type",
-  "strategy_commission",
   "strategy_eps_rel",
   "strategy_long_only",
   "strategy_allow_flip",
 ]);
+
+const COMPOSITE_MO_LEGACY_FIXED_PARAMS = new Set(["strategy_commission"]);
 
 interface CompositeMoDiscreteSearchEstimate {
   fullyDiscrete: boolean;
@@ -1577,6 +1574,12 @@ function normalizeCompositeMoSearchSpace(
     const name = normalizeText(row.name);
     if (!name) throw new Error("Composite MO search space params require names.");
     const key = name.toLowerCase();
+    if (COMPOSITE_MO_LEGACY_FIXED_PARAMS.has(key)) {
+      // Older persisted search spaces exposed execution cost as an optimizer
+      // axis. Migrate that legacy shape while keeping costs fixed in
+      // base_strategy.
+      continue;
+    }
     if (!COMPOSITE_MO_ALLOWED_PARAMS.has(key)) {
       throw new Error(`Unsupported Composite MO search-space param "${name}".`);
     }
@@ -1963,10 +1966,6 @@ function buildCompositeMoSearchSpaceFromInputs(
       {
         name: "ott_ma_type",
         domain: parseMoOttMaTypeDomain(inputs.moOttMaTypes),
-      },
-      {
-        name: "strategy_commission",
-        domain: { FloatRange: { low: 0.0, high: 0.001, log: false } },
       },
       {
         name: "strategy_eps_rel",

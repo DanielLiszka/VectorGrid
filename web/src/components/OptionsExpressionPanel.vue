@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import AppVisualIcon from "./AppVisualIcon.vue";
+import CompactEvidenceValue from "./CompactEvidenceValue.vue";
+import OptionsExpressionArtifactMetaAnalysisPanel from "./OptionsExpressionArtifactMetaAnalysisPanel.vue";
+import OptionsExpressionFeasibilityPanel from "./OptionsExpressionFeasibilityPanel.vue";
+import OptionsExpressionSelectedTupleSummaryPanel from "./OptionsExpressionSelectedTupleSummaryPanel.vue";
+import OptionsExpressionValidationResultPanel from "./OptionsExpressionValidationResultPanel.vue";
+import AppButton from "./ui/AppButton.vue";
 import type {
   OptionsExpressionCoverageAdequacyVerdict,
   OptionsExpressionArtifactSummary,
@@ -39,10 +45,8 @@ import {
   optionsProviderDownloadIcon,
   optionsTupleDetailIcon,
 } from "../utils/appSvgAssets";
-import {
-  buildOptionsFinalistDashboard,
-  formatOptionsFinalistNumber,
-} from "../utils/optionsFinalistDashboardModel";
+import { buildOptionsFinalistDashboard } from "../utils/optionsFinalistDashboardModel";
+import { resolveRovingRowIndex } from "../utils/rovingRowFocus";
 
 const props = withDefaults(
   defineProps<{
@@ -55,6 +59,13 @@ const props = withDefaults(
     parentCompatible: true,
   },
 );
+
+interface OptionsDetailRow {
+  key: string;
+  label: string;
+  value: string;
+  evidenceKind?: "path" | "hash";
+}
 
 const store = useOptionsExpressionStore();
 const {
@@ -239,37 +250,6 @@ function formatValidationPlanMode(value: string | null | undefined): string {
     default:
       return "Original splits";
   }
-}
-
-function formatValidationPlanDetail(
-  plan:
-    | {
-        mode?: string;
-        startTimestampMs?: number | null;
-        endTimestampMs?: number | null;
-        trainSessionCount?: number | null;
-        validationSessionCount?: number | null;
-        stepSessionCount?: number | null;
-      }
-    | null
-    | undefined,
-): string {
-  if (!plan) return "";
-  const mode = normalizeText(plan.mode);
-  if (mode === "date_range_holdout") {
-    return `${formatTimestamp(plan.startTimestampMs)} to ${formatTimestamp(
-      plan.endTimestampMs,
-    )}`;
-  }
-  if (
-    mode === "anchored_walk_forward" ||
-    mode === "rolling_session_walk_forward"
-  ) {
-    return `train ${plan.trainSessionCount ?? "—"} · validate ${
-      plan.validationSessionCount ?? "—"
-    } · step ${plan.stepSessionCount ?? "—"}`;
-  }
-  return "";
 }
 
 function formatRealismLaneLabel(value: string | null | undefined): string {
@@ -1477,7 +1457,7 @@ const datasetProvenanceSummary = computed(() => {
   return segments.join(" | ");
 });
 
-const selectedDatasetDetailRows = computed(() => {
+const selectedDatasetDetailRows = computed<OptionsDetailRow[]>(() => {
   const selected = selectedDataset.value;
   if (!selected) return [];
   return [
@@ -1525,6 +1505,7 @@ const selectedDatasetDetailRows = computed(() => {
       key: "dataset-path",
       label: "Dataset path",
       value: normalizeText(selected.datasetPath) || "—",
+      evidenceKind: "path",
     },
     ...(selected.normalizedRowsSha256
       ? [
@@ -1532,6 +1513,7 @@ const selectedDatasetDetailRows = computed(() => {
             key: "rows-sha256",
             label: "Rows SHA-256",
             value: selected.normalizedRowsSha256,
+            evidenceKind: "hash" as const,
           },
         ]
       : []),
@@ -1541,13 +1523,14 @@ const selectedDatasetDetailRows = computed(() => {
             key: "manifest-sha256",
             label: "Manifest SHA-256",
             value: selected.manifestSemanticSha256,
+            evidenceKind: "hash" as const,
           },
         ]
       : []),
   ];
 });
 
-const latestDownloadAuditRows = computed(() => {
+const latestDownloadAuditRows = computed<OptionsDetailRow[]>(() => {
   const latestDownload = latestDatasetDownload.value;
   if (!latestDownload) return [];
   return [
@@ -1565,6 +1548,7 @@ const latestDownloadAuditRows = computed(() => {
       key: "underlier-csv",
       label: "Underlying CSV",
       value: normalizeText(latestDownload.underlyingCsvPath) || "—",
+      evidenceKind: "path",
     },
     {
       key: "underlier-cache",
@@ -3680,7 +3664,7 @@ const feasibilityAxisCoverageSections = computed(() => {
   ].filter((section) => section.rows.length > 0);
 });
 
-const requestSummaryRows = computed(() => {
+const requestSummaryRows = computed<OptionsDetailRow[]>(() => {
   const request = activeRequest.value;
   if (!request) return [];
   const filters = request.filters;
@@ -3701,6 +3685,7 @@ const requestSummaryRows = computed(() => {
       key: "dataset-hash",
       label: "Dataset hash",
       value: normalizeText(activeOptionsDatasetHash.value) || "—",
+      evidenceKind: "hash",
     },
     {
       key: "delays-dte-holds",
@@ -3780,12 +3765,35 @@ function selectTuple(index: number): void {
 }
 
 function onTupleRowKeydown(event: KeyboardEvent, index: number): void {
-  if (event.key !== "Enter" && event.key !== " ") return;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    selectTuple(index);
+    return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
-  selectTuple(index);
+  const rows = displayedRowsWithIndex.value;
+  if (!rows.length) return;
+  const position = Math.max(
+    0,
+    rows.findIndex((entry) => entry.originalIndex === index),
+  );
+  const nextPosition = resolveRovingRowIndex(position, rows.length, event.key);
+  if (nextPosition == null) return;
+  const nextIndex = rows[nextPosition]?.originalIndex;
+  if (nextIndex == null) return;
+  selectTuple(nextIndex);
+  void nextTick(() => {
+    document
+      .querySelector<HTMLElement>(`[data-options-tuple-index="${nextIndex}"]`)
+      ?.focus();
+  });
 }
 
-function tupleRowLabel(row: OptionsExpressionTupleSummary, index: number): string {
+function tupleRowLabel(
+  row: OptionsExpressionTupleSummary,
+  index: number,
+): string {
   return `Select tuple #${index + 1}: ${row.dteDays} DTE, ${row.moneynessBucket}, ${row.holdMinutes} minute hold`;
 }
 
@@ -3806,9 +3814,31 @@ function selectInspectionRow(eventId: string): void {
 }
 
 function onInspectionRowKeydown(event: KeyboardEvent, eventId: string): void {
-  if (event.key !== "Enter" && event.key !== " ") return;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    selectInspectionRow(eventId);
+    return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
-  selectInspectionRow(eventId);
+  const rows = displayedInspectionRows.value;
+  if (!rows.length) return;
+  const position = Math.max(
+    0,
+    rows.findIndex((entry) => entry.eventId === eventId),
+  );
+  const nextPosition = resolveRovingRowIndex(position, rows.length, event.key);
+  if (nextPosition == null) return;
+  const nextId = normalizeText(rows[nextPosition]?.eventId);
+  if (!nextId) return;
+  selectInspectionRow(nextId);
+  void nextTick(() => {
+    Array.from(
+      document.querySelectorAll<HTMLElement>("[data-options-inspection-event]"),
+    )
+      .find((element) => element.dataset.optionsInspectionEvent === nextId)
+      ?.focus();
+  });
 }
 
 function inspectionRowLabel(row: OptionsExpressionEventInspectionRow): string {
@@ -4009,7 +4039,7 @@ function focusTupleIndex(index: number): void {
     class="optionsPanel surfaceFocus"
     aria-label="Options expression follow-up"
   >
-    <div class="panelSectionHeader">
+    <div class="panelSectionHeader" data-options-stage="data">
       <div class="panelHeaderVisual">
         <AppVisualIcon
           :icon="optionsFollowupWorkflowIcon"
@@ -4074,7 +4104,7 @@ function focusTupleIndex(index: number): void {
         >
       </div>
 
-      <div class="optionsGrid">
+      <div class="optionsGrid" data-options-stage="optimize">
         <div class="controlBlock">
           <label for="optionsRealismLane">Realism lane</label>
           <div class="row inlineControls">
@@ -4111,8 +4141,15 @@ function focusTupleIndex(index: number): void {
                   }}</span>
                 </div>
               </div>
-              <div v-if="realismLaneHistoryRows.length > 0" class="tableWrap">
-                <table class="resultTable">
+              <div
+                v-if="realismLaneHistoryRows.length > 0"
+                class="tableWrap"
+                tabindex="0"
+              >
+                <table
+                  class="resultTable"
+                  aria-label="Realism lane artifact history"
+                >
                   <thead>
                     <tr>
                       <th>Artifact</th>
@@ -4174,14 +4211,14 @@ function focusTupleIndex(index: number): void {
                 {{ entry.priceSemantics }}
               </option>
             </select>
-            <button
+            <AppButton
               type="button"
               data-qa-action="options.datasets.refresh"
               :disabled="datasetsBusy"
               @click="store.refreshDatasets()"
             >
               Refresh
-            </button>
+            </AppButton>
           </div>
           <div class="panelMuted">
             {{
@@ -4240,19 +4277,20 @@ function focusTupleIndex(index: number): void {
             </label>
           </div>
           <div class="row inlineControls">
-            <button
+            <AppButton
               type="button"
               data-qa-action="options.datasets.importCsv"
               :disabled="importBusy"
               @click="store.importDatasetFromPicker()"
-              class="buttonWithIcon"
             >
-              <AppVisualIcon
-                :icon="optionsDatasetImportIcon"
-                class="optionsActionIcon"
-              />
-              <span>Import Polygon.io CSV</span>
-            </button>
+              <span class="buttonWithIcon">
+                <AppVisualIcon
+                  :icon="optionsDatasetImportIcon"
+                  class="optionsActionIcon"
+                />
+                <span>Import Polygon.io CSV</span>
+              </span>
+            </AppButton>
           </div>
           <div class="panelMuted">
             Uses the existing native CSV picker and stores a normalized
@@ -4349,19 +4387,20 @@ function focusTupleIndex(index: number): void {
             </label>
           </div>
           <div class="row inlineControls">
-            <button
+            <AppButton
               type="button"
               data-qa-action="options.datasets.downloadPolygon"
               :disabled="downloadBusy || realismLane !== 'aggregate'"
               @click="store.downloadDatasetFromPolygon()"
-              class="buttonWithIcon"
             >
-              <AppVisualIcon
-                :icon="optionsProviderDownloadIcon"
-                class="optionsActionIcon"
-              />
-              <span>Download Polygon.io 1m data</span>
-            </button>
+              <span class="buttonWithIcon">
+                <AppVisualIcon
+                  :icon="optionsProviderDownloadIcon"
+                  class="optionsActionIcon"
+                />
+                <span>Download Polygon.io 1m data</span>
+              </span>
+            </AppButton>
           </div>
           <div class="panelMuted">
             This download is options-only and stays separate from the normal
@@ -4389,17 +4428,25 @@ function focusTupleIndex(index: number): void {
               class="metricCard"
             >
               <div class="panelMetricKey">{{ row.label }}</div>
-              <div class="metricValue mono">{{ row.value }}</div>
+              <CompactEvidenceValue
+                v-if="row.evidenceKind"
+                :label="row.label"
+                :value="row.value"
+                :kind="row.evidenceKind"
+              >
+                <template v-if="row.key === 'dataset-path'" #actions>
+                  <AppButton
+                    size="sm"
+                    type="button"
+                    data-qa-action="options.datasets.revealSelected"
+                    @click="store.revealSelectedDatasetPath()"
+                  >
+                    Reveal dataset path
+                  </AppButton>
+                </template>
+              </CompactEvidenceValue>
+              <div v-else class="metricValue mono">{{ row.value }}</div>
             </div>
-          </div>
-          <div class="actions">
-            <button
-              type="button"
-              data-qa-action="options.datasets.revealSelected"
-              @click="store.revealSelectedDatasetPath()"
-            >
-              Reveal dataset path
-            </button>
           </div>
         </div>
       </details>
@@ -4414,22 +4461,30 @@ function focusTupleIndex(index: number): void {
               class="metricCard"
             >
               <div class="panelMetricKey">{{ row.label }}</div>
-              <div class="metricValue mono">{{ row.value }}</div>
+              <CompactEvidenceValue
+                v-if="row.evidenceKind"
+                :label="row.label"
+                :value="row.value"
+                :kind="row.evidenceKind"
+              >
+                <template v-if="row.key === 'underlier-csv'" #actions>
+                  <AppButton
+                    size="sm"
+                    type="button"
+                    data-qa-action="options.datasets.revealLatestDownload"
+                    @click="store.revealLatestDownloadUnderlyingPath()"
+                  >
+                    Reveal underlying CSV
+                  </AppButton>
+                </template>
+              </CompactEvidenceValue>
+              <div v-else class="metricValue mono">{{ row.value }}</div>
             </div>
-          </div>
-          <div class="actions">
-            <button
-              type="button"
-              data-qa-action="options.datasets.revealLatestDownload"
-              @click="store.revealLatestDownloadUnderlyingPath()"
-            >
-              Reveal underlying CSV
-            </button>
           </div>
         </div>
       </details>
 
-      <details class="panelDetails" open>
+      <details class="panelDetails" data-options-stage="validate" open>
         <summary>Search grid and execution settings</summary>
         <div class="panelDetailsBody optionsFields">
           <label>
@@ -4663,66 +4718,68 @@ function focusTupleIndex(index: number): void {
       </details>
 
       <div class="actions">
-        <button
+        <AppButton
           type="button"
           data-qa-action="options.feasibility.preview"
           :disabled="feasibilityBusy || !selectedDatasetId"
           @click="store.previewCurrentFeasibility()"
-          class="buttonWithIcon"
         >
-          <AppVisualIcon
-            :icon="optionsFeasibilityPreviewIcon"
-            class="optionsActionIcon"
-          />
-          <span>{{
-            feasibilityBusy ? "Previewing…" : "Preview feasibility"
-          }}</span>
-        </button>
-        <button
+          <span class="buttonWithIcon">
+            <AppVisualIcon
+              :icon="optionsFeasibilityPreviewIcon"
+              class="optionsActionIcon"
+            />
+            <span>{{
+              feasibilityBusy ? "Previewing…" : "Preview feasibility"
+            }}</span>
+          </span>
+        </AppButton>
+        <AppButton
           type="button"
           data-qa-action="options.expression.run"
           :disabled="runBusy || !selectedDatasetId"
           @click="store.runCurrentExpression()"
-          class="buttonWithIcon"
         >
-          <AppVisualIcon
-            :icon="optionsFollowupWorkflowIcon"
-            class="optionsActionIcon"
-          />
-          <span>{{ runBusy ? "Running…" : "Optimize expression" }}</span>
-        </button>
-        <button
+          <span class="buttonWithIcon">
+            <AppVisualIcon
+              :icon="optionsFollowupWorkflowIcon"
+              class="optionsActionIcon"
+            />
+            <span>{{ runBusy ? "Running…" : "Optimize expression" }}</span>
+          </span>
+        </AppButton>
+        <AppButton
           type="button"
           :disabled="artifactsBusy"
           data-qa-action="options.artifacts.refresh"
           @click="store.refreshArtifacts()"
         >
           Refresh artifacts
-        </button>
-        <button
+        </AppButton>
+        <AppButton
           type="button"
           :disabled="loadBusy || !selectedArtifactPath"
           data-qa-action="options.artifacts.load"
           @click="store.loadArtifact()"
         >
           Load selected artifact
-        </button>
-        <button
+        </AppButton>
+        <AppButton
           type="button"
           :disabled="!activeArtifactPath"
           data-qa-action="options.artifacts.revealActive"
           @click="store.revealActiveArtifact()"
         >
           Reveal artifact
-        </button>
-        <button
+        </AppButton>
+        <AppButton
           type="button"
           data-qa-action="options.expression.exportCsv"
           :disabled="activeRankedResults.length === 0"
           @click="store.exportActiveCsv()"
         >
           Export CSV
-        </button>
+        </AppButton>
       </div>
 
       <div class="controlBlock">
@@ -4930,8 +4987,12 @@ function focusTupleIndex(index: number): void {
             <div
               class="tableWrap"
               v-if="selectedArtifactValidationFrontierRows.length > 0"
+              tabindex="0"
             >
-              <table class="resultTable">
+              <table
+                class="resultTable"
+                aria-label="Reopened artifact validation frontier"
+              >
                 <thead>
                   <tr>
                     <th>Lane</th>
@@ -4973,7 +5034,10 @@ function focusTupleIndex(index: number): void {
         <summary>Saved artifact comparison</summary>
         <div class="panelDetailsBody">
           <div class="matrixTableWrap">
-            <table class="matrixTable compactTable">
+            <table
+              class="matrixTable compactTable"
+              aria-label="Saved options artifact comparison"
+            >
               <thead>
                 <tr>
                   <th>Artifact</th>
@@ -5144,12 +5208,13 @@ function focusTupleIndex(index: number): void {
                     }}
                   </td>
                   <td>
-                    <button
+                    <AppButton
+                      size="sm"
                       type="button"
                       @click="loadArtifactFromComparison(entry.path)"
                     >
                       Load
-                    </button>
+                    </AppButton>
                   </td>
                 </tr>
               </tbody>
@@ -5158,141 +5223,19 @@ function focusTupleIndex(index: number): void {
         </div>
       </details>
 
-      <details
-        v-if="artifactFrontierLeaderRows.length > 0"
-        class="panelDetails"
+      <OptionsExpressionArtifactMetaAnalysisPanel
+        :frontier-leader-rows="artifactFrontierLeaderRows"
+        :show-meta-analysis="artifactMetaEntries.length > 0"
+        :meta-overview-rows="artifactMetaOverviewRows"
+        :meta-sections="artifactMetaSections"
+        :lane-disagreement-rows="artifactLaneDisagreementRows"
+      />
+
+      <section
+        class="resultCard"
+        data-qa-surface="options-validation"
+        data-options-stage="analyze"
       >
-        <summary>Artifact frontier leaders</summary>
-        <div class="panelDetailsBody tableWrap">
-          <table class="resultTable">
-            <thead>
-              <tr>
-                <th>Stage</th>
-                <th>Artifact</th>
-                <th>Metric</th>
-                <th>Validation</th>
-                <th>Val Δ</th>
-                <th>Stress Δ</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in artifactFrontierLeaderRows" :key="row.key">
-                <td class="mono">{{ row.label }}</td>
-                <td class="mono">{{ row.artifactLabel }}</td>
-                <td class="mono">
-                  {{ row.metricLabel }} ·
-                  {{ formatOptionalDecimal(row.value, 3) }}
-                </td>
-                <td class="mono">{{ row.validation }}</td>
-                <td class="mono">{{ formatOptionalDecimal(row.drift, 3) }}</td>
-                <td class="mono">
-                  {{ formatOptionalDecimal(row.stressDrop, 3) }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </details>
-
-      <details v-if="artifactMetaEntries.length > 0" class="panelDetails">
-        <summary>Options artifact meta-analysis</summary>
-        <div class="panelDetailsBody">
-          <div class="panelMuted">
-            Cross-artifact summary across all saved options-expression artifacts
-            currently indexed in the app data store.
-          </div>
-          <div class="detailGrid detailGridTight">
-            <div v-for="row in artifactMetaOverviewRows" :key="row.key">
-              <span class="panelMetricKey">{{ row.label }}</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                row.value
-              }}</span>
-            </div>
-          </div>
-          <div
-            v-for="section in artifactMetaSections"
-            :key="section.key"
-            class="coverageSection"
-          >
-            <div class="panelMuted">{{ section.label }}</div>
-            <div class="tableWrap">
-              <table class="resultTable">
-                <thead>
-                  <tr>
-                    <th>Group</th>
-                    <th>Artifacts</th>
-                    <th>Validated</th>
-                    <th>Fragile</th>
-                    <th>Avg robust</th>
-                    <th>Avg sel EV</th>
-                    <th>Avg validated EV</th>
-                    <th>Avg stress drop</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in section.rows" :key="row.key">
-                    <td class="mono">{{ row.label }}</td>
-                    <td class="mono">{{ row.artifactCount }}</td>
-                    <td class="mono">{{ row.validatedCount }}</td>
-                    <td class="mono">{{ row.fragileCount }}</td>
-                    <td class="mono">
-                      {{ formatOptionalDecimal(row.avgRobust, 3) }}
-                    </td>
-                    <td class="mono">
-                      {{ formatOptionalDecimal(row.avgSelectionEv, 3) }}
-                    </td>
-                    <td class="mono">
-                      {{ formatOptionalDecimal(row.avgValidationEv, 3) }}
-                    </td>
-                    <td class="mono">
-                      {{ formatOptionalDecimal(row.avgStressDrop, 3) }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div
-            v-if="artifactLaneDisagreementRows.length > 0"
-            class="coverageSection"
-          >
-            <div class="panelMuted">Realism lane disagreement</div>
-            <div class="tableWrap">
-              <table class="resultTable">
-                <thead>
-                  <tr>
-                    <th>Group</th>
-                    <th>Lanes</th>
-                    <th>Selection winner</th>
-                    <th>Validation winner</th>
-                    <th>Drift</th>
-                    <th>Validation spread</th>
-                    <th>Lane summary</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="row in artifactLaneDisagreementRows"
-                    :key="row.key"
-                  >
-                    <td class="mono">{{ row.label }}</td>
-                    <td class="mono">{{ row.laneCount }}</td>
-                    <td class="mono">{{ row.selectionWinnerLane }}</td>
-                    <td class="mono">{{ row.validationWinnerLane }}</td>
-                    <td class="mono">{{ row.driftLabel }}</td>
-                    <td class="mono">
-                      {{ formatOptionalDecimal(row.validationSpread, 3) }}
-                    </td>
-                    <td class="mono">{{ row.laneSummary }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </details>
-
-      <section class="resultCard" data-qa-surface="options-validation">
         <div class="panelSectionHeader">
           <div class="panelHeaderVisual">
             <AppVisualIcon
@@ -5448,7 +5391,7 @@ function focusTupleIndex(index: number): void {
         </div>
 
         <div class="actions">
-          <button
+          <AppButton
             type="button"
             data-qa-action="options.validation.preview"
             :disabled="
@@ -5463,8 +5406,8 @@ function focusTupleIndex(index: number): void {
                 ? "Previewing validation…"
                 : "Preview validation"
             }}
-          </button>
-          <button
+          </AppButton>
+          <AppButton
             type="button"
             data-qa-action="options.validation.run"
             :disabled="
@@ -5473,584 +5416,48 @@ function focusTupleIndex(index: number): void {
             @click="store.validateActiveArtifact()"
           >
             {{ validationBusy ? "Validating…" : "Validate artifact" }}
-          </button>
-          <button
+          </AppButton>
+          <AppButton
             type="button"
             data-qa-action="options.validation.reveal"
             :disabled="!latestValidation?.artifactPath"
             @click="store.revealLatestValidationArtifact()"
           >
             Reveal validation
-          </button>
+          </AppButton>
         </div>
 
-        <div v-if="latestValidationFeasibility" class="panelMuted mono">
-          {{ latestValidationFeasibility.selectedTupleCount }} selected tuple{{
-            latestValidationFeasibility.selectedTupleCount === 1 ? "" : "s"
-          }}
-          · {{ latestValidationFeasibility.datasetPolicy }} ·
-          {{ latestValidationFeasibility.optionsDatasetId }} ·
-          {{ latestValidationFeasibility.priceSemantics }} ·
-          {{
-            formatValidationPlanMode(
-              latestValidationFeasibility.validationPlan.mode,
-            )
-          }}
-          <template
-            v-if="
-              formatValidationPlanDetail(
-                latestValidationFeasibility.validationPlan,
-              )
-            "
-          >
-            ·
-            {{
-              formatValidationPlanDetail(
-                latestValidationFeasibility.validationPlan,
-              )
-            }}
-          </template>
-        </div>
-        <div
-          v-if="latestValidationFeasibility?.notes.length"
-          class="panelMuted"
-        >
-          {{ latestValidationFeasibility.notes.join(" ") }}
-        </div>
-
-        <div v-if="validationAcceptance" class="gateBadgeRow">
-          <span
-            class="gateBadge"
-            :class="{
-              isPass: validationAcceptance.verdict === 'accepted',
-              isPending: validationAcceptance.verdict === 'support_deficient',
-              isMixed:
-                validationAcceptance.verdict === 'warning' ||
-                validationAcceptance.verdict === 'rejected',
-            }"
-          >
-            Subsequent validation ·
-            {{ validationAcceptance.verdict.replace(/_/g, " ") }}
-          </span>
-          <span v-if="latestValidation" class="gateBadge isPending">
-            {{
-              formatValidationPlanMode(
-                latestValidation.result.validationPlan.mode,
-              )
-            }}
-            <template
-              v-if="
-                formatValidationPlanDetail(
-                  latestValidation.result.validationPlan,
-                )
-              "
-            >
-              ·
-              {{
-                formatValidationPlanDetail(
-                  latestValidation.result.validationPlan,
-                )
-              }}
-            </template>
-          </span>
-        </div>
-        <div v-if="validationAcceptance" class="detailGrid detailGridTight">
-          <div>
-            <span class="panelMetricKey">Accepted</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{ validationAcceptance.acceptedTupleCount }} /
-              {{ validationAcceptance.validatedTupleCount }}
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Support deficient</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{ validationAcceptance.supportDeficientTupleCount }}
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Stress fragile</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{ validationAcceptance.stressFragileTupleCount }}
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Best validation EV</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{
-                formatOptionalDecimal(
-                  validationAcceptance.bestValidatedExpectancyPerPremium,
-                  3,
-                )
-              }}
-            </span>
-          </div>
-        </div>
-        <div v-if="validationAcceptance?.notes.length" class="panelMuted">
-          {{ validationAcceptance.notes.join(" ") }}
-        </div>
-        <div
-          v-if="latestValidation?.result.datasetProvenance?.quoteQuality"
-          class="detailGrid detailGridTight"
-        >
-          <div>
-            <span class="panelMetricKey">Quote rows</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{
-                latestValidation.result.datasetProvenance.quoteQuality
-                  .anyQuoteRowCount
-              }}
-              /
-              {{
-                latestValidation.result.datasetProvenance.quoteQuality.rowCount
-              }}
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Bid/ask coverage</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{
-                formatPercent(
-                  latestValidation.result.datasetProvenance.quoteQuality
-                    .bidAskCoverageRate,
-                  1,
-                )
-              }}
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Median spread</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{
-                formatOptionalDecimal(
-                  latestValidation.result.datasetProvenance.quoteQuality
-                    .medianSpreadBps,
-                  1,
-                )
-              }}
-              bps
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Stale quotes</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{
-                formatPercent(
-                  latestValidation.result.datasetProvenance.quoteQuality
-                    .staleQuoteRate,
-                  1,
-                )
-              }}
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Quote warnings</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{
-                latestValidation.result.datasetProvenance.quoteQuality.warnings
-                  .length
-              }}
-            </span>
-          </div>
-          <div>
-            <span class="panelMetricKey">Invalid bid/ask</span>
-            <span class="panelMetricValue mono panelNumeric">
-              {{
-                latestValidation.result.datasetProvenance.quoteQuality
-                  .invalidBidAskRowCount
-              }}
-            </span>
-          </div>
-        </div>
-        <div
-          v-if="
-            latestValidation?.result.datasetProvenance?.quoteQuality?.warnings
-              .length
-          "
-          class="panelMuted"
-        >
-          {{
-            latestValidation.result.datasetProvenance.quoteQuality.warnings.join(
-              " ",
-            )
-          }}
-        </div>
-
-        <div
-          v-if="latestValidation?.result.laneSummaries.length"
-          class="tableWrap"
-        >
-          <table class="resultTable">
-            <thead>
-              <tr>
-                <th>Lane</th>
-                <th>Supported</th>
-                <th>Best EV</th>
-                <th>Worst EV</th>
-                <th>Median EV</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="row in latestValidation.result.laneSummaries"
-                :key="row.lane"
-              >
-                <td class="mono">{{ row.lane }}</td>
-                <td class="mono">
-                  {{ row.supportedTupleCount }} / {{ row.tupleCount }}
-                </td>
-                <td class="mono">
-                  {{ formatOptionalDecimal(row.bestExpectancyPerPremium, 3) }}
-                </td>
-                <td class="mono">
-                  {{ formatOptionalDecimal(row.worstExpectancyPerPremium, 3) }}
-                </td>
-                <td class="mono">
-                  {{ formatOptionalDecimal(row.medianExpectancyPerPremium, 3) }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div
-          v-if="optionsFinalistDashboard"
-          class="optionsFinalistDashboard"
-          data-qa-panel="options.finalistDashboard"
-        >
-          <div class="panelSectionHeader">
-            <div>
-              <div class="panelEyebrow">Finalist acceptance</div>
-              <div class="panelSectionLead">
-                {{ optionsFinalistDashboard.acceptedTupleCount }} /
-                {{ optionsFinalistDashboard.validatedTupleCount }} accepted ·
-                {{ optionsFinalistDashboard.verdict }}
-              </div>
-            </div>
-          </div>
-          <div class="gateBadgeRow finalistGateGrid">
-            <span
-              v-for="gate in optionsFinalistDashboard.gates"
-              :key="gate.key"
-              class="gateBadge finalistGate"
-              :class="{
-                isPass: gate.tone === 'pass',
-                isPending: gate.tone === 'pending',
-                isMixed: gate.tone === 'mixed',
-              }"
-              :title="gate.detail"
-            >
-              {{ gate.label }} · {{ gate.status }}
-            </span>
-          </div>
-          <div v-if="optionsFinalistDashboard.rows.length" class="tableWrap">
-            <table class="resultTable">
-              <thead>
-                <tr>
-                  <th>Tuple</th>
-                  <th>Verdict</th>
-                  <th>Support</th>
-                  <th>Robust</th>
-                  <th>Search EV</th>
-                  <th>Holdout EV</th>
-                  <th>Stress EV</th>
-                  <th>Harsher EV</th>
-                  <th>Extreme EV</th>
-                  <th>Strongest stress</th>
-                  <th>Trades</th>
-                  <th>Drift</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in optionsFinalistDashboard.rows" :key="row.key">
-                  <td class="mono">{{ row.tupleLabel }}</td>
-                  <td>
-                    <span
-                      class="gateBadge miniBadge"
-                      :class="{
-                        isPass: row.tone === 'pass',
-                        isPending: row.tone === 'pending',
-                        isMixed: row.tone === 'mixed',
-                      }"
-                    >
-                      {{ row.verdict }}
-                    </span>
-                  </td>
-                  <td class="mono">{{ row.support }}</td>
-                  <td class="mono">
-                    {{ formatOptionsFinalistNumber(row.validatedRobustScore) }}
-                  </td>
-                  <td class="mono">
-                    {{ formatOptionsFinalistNumber(row.searchEv) }}
-                  </td>
-                  <td class="mono">
-                    {{ formatOptionsFinalistNumber(row.holdoutEv) }}
-                  </td>
-                  <td class="mono">
-                    {{ formatOptionsFinalistNumber(row.stressEv) }}
-                  </td>
-                  <td class="mono">
-                    {{ formatOptionsFinalistNumber(row.harsherStressEv) }}
-                  </td>
-                  <td class="mono">
-                    {{ formatOptionsFinalistNumber(row.extremeStressEv) }}
-                  </td>
-                  <td class="mono">
-                    {{ row.strongestStressLabel }} ·
-                    {{ formatOptionsFinalistNumber(row.strongestStressEv) }}
-                  </td>
-                  <td class="mono">
-                    {{ formatOptionsFinalistNumber(row.validTrades, 0) }}
-                  </td>
-                  <td class="mono">{{ row.drift || "—" }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-else class="panelMuted">
-            No tuple-level validation rows were included in this artifact.
-          </div>
-        </div>
+        <OptionsExpressionValidationResultPanel
+          :feasibility="latestValidationFeasibility"
+          :acceptance="validationAcceptance"
+          :validation="latestValidation"
+          :finalist-dashboard="optionsFinalistDashboard"
+        />
       </section>
 
-      <section v-if="latestFeasibility" class="resultCard">
-        <div class="panelSectionHeader">
-          <div class="panelHeaderVisual">
-            <AppVisualIcon
-              :icon="optionsFeasibilityPreviewIcon"
-              class="sectionGlyph"
-            />
-            <div>
-              <div class="panelEyebrow">Phase 0.5 preview</div>
-              <div class="panelSectionLead">
-                Review candidate density, event coverage, and replay/compile
-                timing before committing to a full optimization run or GPU work.
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="gateBadgeRow">
-          <span
-            class="gateBadge"
-            :class="{
-              isPass: feasibilityOverallStatus === 'pass',
-              isPending: feasibilityOverallStatus === 'pending',
-              isMixed: feasibilityOverallStatus === 'mixed',
-            }"
-          >
-            GPU viability
-            {{
-              feasibilityOverallStatus === "pass"
-                ? "pass"
-                : feasibilityOverallStatus === "pending"
-                  ? "pending"
-                  : "mixed"
-            }}
-          </span>
-          <span
-            v-for="row in feasibilityGateRows"
-            :key="row.key"
-            class="gateBadge"
-            :class="{
-              isPass: row.passed,
-              isPending: row.pending && !row.passed,
-              isMixed: !row.passed && !row.pending,
-            }"
-          >
-            {{ row.label }} · {{ row.value }}
-          </span>
-        </div>
-        <div v-if="feasibilityCoverageAdequacy" class="gateBadgeRow">
-          <span
-            class="gateBadge"
-            :class="{
-              isPass: feasibilityCoverageAdequacy.tone === 'pass',
-              isPending: feasibilityCoverageAdequacy.tone === 'pending',
-              isMixed: feasibilityCoverageAdequacy.tone === 'mixed',
-            }"
-          >
-            Coverage {{ feasibilityCoverageAdequacy.label }}
-          </span>
-        </div>
-        <div v-if="feasibilityCoverageAdequacy" class="panelMuted">
-          {{ feasibilityCoverageAdequacy.detail }}
-        </div>
-        <div class="detailGrid detailGridTight">
-          <div v-for="row in feasibilitySummaryRows" :key="row.key">
-            <span class="panelMetricKey">{{ row.label }}</span>
-            <span class="panelMetricValue mono panelNumeric">{{
-              row.value
-            }}</span>
-          </div>
-        </div>
-        <details v-if="feasibilityOverlapRows.length > 0" class="panelDetails">
-          <summary>Overlap adequacy</summary>
-          <div class="panelDetailsBody">
-            <div class="detailGrid detailGridTight">
-              <div v-for="row in feasibilityOverlapRows" :key="row.key">
-                <span class="panelMetricKey">{{ row.label }}</span>
-                <span class="panelMetricValue mono panelNumeric">{{
-                  row.value
-                }}</span>
-              </div>
-            </div>
-          </div>
-        </details>
-        <details
-          v-if="feasibilitySplitInvalidSections.length > 0"
-          class="panelDetails"
-        >
-          <summary>Split invalid reasons</summary>
-          <div class="panelDetailsBody">
-            <div
-              v-for="section in feasibilitySplitInvalidSections"
-              :key="section.key"
-              class="coverageSection"
-            >
-              <div class="panelMuted">{{ section.label }}</div>
-              <div class="tableWrap">
-                <table class="resultTable">
-                  <thead>
-                    <tr>
-                      <th>Reason</th>
-                      <th>Count</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="row in section.rows"
-                      :key="`${section.key}-${row.reason}`"
-                    >
-                      <td class="mono">{{ row.reason }}</td>
-                      <td class="mono">{{ row.count }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </details>
-        <details class="panelDetails">
-          <summary>Lane diagnostics</summary>
-          <div class="panelDetailsBody">
-            <div class="detailGrid detailGridTight">
-              <div>
-                <span class="panelMetricKey">Structural cache</span>
-                <span class="panelMetricValue mono panelNumeric">
-                  {{
-                    formatBytes(latestFeasibility.structuralCacheBytesEstimate)
-                  }}
-                </span>
-              </div>
-            </div>
-            <div class="tableWrap">
-              <table class="resultTable">
-                <thead>
-                  <tr>
-                    <th>Lane</th>
-                    <th>Compiled / Total summaries</th>
-                    <th>Density</th>
-                    <th>Compile time</th>
-                    <th>Bytes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in feasibilityLaneRows" :key="row.key">
-                    <td class="mono">{{ row.label }}</td>
-                    <td class="mono">{{ row.summaries }}</td>
-                    <td class="mono">{{ row.density }}</td>
-                    <td class="mono">{{ row.compileMs }}</td>
-                    <td class="mono">{{ row.bytes }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </details>
-        <details
-          v-if="feasibilityInvalidReasonRows.length > 0"
-          class="panelDetails"
-        >
-          <summary>Invalid reasons</summary>
-          <div class="panelDetailsBody tableWrap">
-            <table class="resultTable">
-              <thead>
-                <tr>
-                  <th>Reason</th>
-                  <th>Count</th>
-                  <th>Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="row in feasibilityInvalidReasonRows"
-                  :key="row.reason"
-                >
-                  <td class="mono">{{ row.reason }}</td>
-                  <td class="mono">{{ row.count }}</td>
-                  <td class="mono">{{ formatPercent(row.share) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </details>
-        <details
-          v-if="feasibilityAxisCoverageSections.length > 0"
-          class="panelDetails"
-        >
-          <summary>Bucket coverage</summary>
-          <div class="panelDetailsBody">
-            <div
-              v-for="section in feasibilityAxisCoverageSections"
-              :key="section.key"
-              class="coverageSection"
-            >
-              <div class="panelMuted">{{ section.label }}</div>
-              <div class="tableWrap">
-                <table class="resultTable">
-                  <thead>
-                    <tr>
-                      <th>{{ section.bucketLabel }}</th>
-                      <th>Valid / Total slots</th>
-                      <th>Valid rate</th>
-                      <th>Top invalid reasons</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in section.rows" :key="row.key">
-                      <td class="mono">{{ row.bucket }}</td>
-                      <td class="mono">{{ row.validSlots }}</td>
-                      <td class="mono">{{ row.validRate }}</td>
-                      <td class="mono">{{ row.invalidReasons }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </details>
-        <div v-if="feasibilityInvalidReasons" class="panelMuted mono">
-          Invalid reasons: {{ feasibilityInvalidReasons }}
-        </div>
-        <details
-          v-if="feasibilityRecommendations.length > 0"
-          class="panelDetails"
-        >
-          <summary>Recommendations</summary>
-          <div class="panelDetailsBody">
-            <ul class="recommendationList">
-              <li
-                v-for="recommendation in feasibilityRecommendations"
-                :key="recommendation"
-              >
-                {{ recommendation }}
-              </li>
-            </ul>
-          </div>
-        </details>
-      </section>
+      <OptionsExpressionFeasibilityPanel
+        v-if="latestFeasibility"
+        :overall-status="feasibilityOverallStatus"
+        :gate-rows="feasibilityGateRows"
+        :coverage-adequacy="feasibilityCoverageAdequacy"
+        :summary-rows="feasibilitySummaryRows"
+        :overlap-rows="feasibilityOverlapRows"
+        :split-invalid-sections="feasibilitySplitInvalidSections"
+        :structural-cache-bytes="
+          formatBytes(latestFeasibility.structuralCacheBytesEstimate)
+        "
+        :lane-rows="feasibilityLaneRows"
+        :invalid-reason-rows="feasibilityInvalidReasonRows"
+        :axis-coverage-sections="feasibilityAxisCoverageSections"
+        :invalid-reasons="feasibilityInvalidReasons"
+        :recommendations="feasibilityRecommendations"
+      />
 
-      <section v-if="activeDiagnostics" class="resultCard">
+      <section
+        v-if="activeDiagnostics"
+        class="resultCard"
+        data-options-stage="finalize"
+      >
         <div class="panelSectionHeader">
           <div class="panelHeaderVisual">
             <AppVisualIcon
@@ -6173,8 +5580,8 @@ function focusTupleIndex(index: number): void {
           open
         >
           <summary>Winner disagreement</summary>
-          <div class="panelDetailsBody tableWrap">
-            <table class="resultTable">
+          <div class="panelDetailsBody tableWrap" tabindex="0">
+            <table class="resultTable" aria-label="Options winner disagreement">
               <thead>
                 <tr>
                   <th>Stage</th>
@@ -6208,8 +5615,8 @@ function focusTupleIndex(index: number): void {
           open
         >
           <summary>Validation winners</summary>
-          <div class="panelDetailsBody tableWrap">
-            <table class="resultTable">
+          <div class="panelDetailsBody tableWrap" tabindex="0">
+            <table class="resultTable" aria-label="Options validation winners">
               <thead>
                 <tr>
                   <th>Stage</th>
@@ -6243,12 +5650,13 @@ function focusTupleIndex(index: number): void {
                     }}
                   </td>
                   <td>
-                    <button
+                    <AppButton
+                      size="sm"
                       type="button"
                       @click="focusTupleIndex(row.tupleIndex)"
                     >
                       Focus
-                    </button>
+                    </AppButton>
                   </td>
                 </tr>
               </tbody>
@@ -6262,7 +5670,13 @@ function focusTupleIndex(index: number): void {
             <div class="detailGrid detailGridTight">
               <div v-for="row in requestSummaryRows" :key="row.key">
                 <span class="panelMetricKey">{{ row.label }}</span>
-                <span class="panelMetricValue mono panelNumeric">{{
+                <CompactEvidenceValue
+                  v-if="row.evidenceKind"
+                  :label="row.label"
+                  :value="row.value"
+                  :kind="row.evidenceKind"
+                />
+                <span v-else class="panelMetricValue mono panelNumeric">{{
                   row.value
                 }}</span>
               </div>
@@ -6393,8 +5807,12 @@ function focusTupleIndex(index: number): void {
         <div
           v-if="activeRows.length > 0 && displayedRowsWithIndex.length > 0"
           class="tableWrap"
+          tabindex="0"
         >
-          <table class="resultTable">
+          <table
+            class="resultTable"
+            aria-label="Ranked options expression tuples"
+          >
             <thead>
               <tr>
                 <th>DTE</th>
@@ -6431,7 +5849,8 @@ function focusTupleIndex(index: number): void {
                 v-for="{ row, originalIndex } in displayedRowsWithIndex"
                 :key="`${originalIndex}-${row.dteDays}-${row.moneynessBucket}-${row.delayMinutes}-${row.holdMinutes}-${row.targetReturn}-${row.stopReturn}`"
                 :class="{ isSelected: originalIndex === selectedTupleIndex }"
-                tabindex="0"
+                :tabindex="originalIndex === selectedTupleIndex ? 0 : -1"
+                :data-options-tuple-index="originalIndex"
                 :aria-selected="
                   originalIndex === selectedTupleIndex ? 'true' : 'false'
                 "
@@ -6561,375 +5980,35 @@ function focusTupleIndex(index: number): void {
             </div>
           </div>
           <div class="actions">
-            <button
+            <AppButton
               type="button"
               data-qa-action="options.tupleInspection.load"
               :disabled="inspectionBusy || !activeArtifactPath"
               @click="loadSelectedTupleInspection()"
-              class="buttonWithIcon"
             >
-              <AppVisualIcon
-                :icon="optionsTupleDetailIcon"
-                class="optionsActionIcon"
-              />
-              <span>{{
-                inspectionBusy ? "Loading events…" : "Load event detail"
-              }}</span>
-            </button>
+              <span class="buttonWithIcon">
+                <AppVisualIcon
+                  :icon="optionsTupleDetailIcon"
+                  class="optionsActionIcon"
+                />
+                <span>{{
+                  inspectionBusy ? "Loading events…" : "Load event detail"
+                }}</span>
+              </span>
+            </AppButton>
           </div>
-          <div class="detailGrid detailGridTight">
-            <div>
-              <span class="panelMetricKey">Validation</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTupleValidation?.label ?? "Search only"
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Delay / DTE / Hold</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.delayMinutes }} / {{ selectedTuple.dteDays }} /
-                {{ selectedTuple.holdMinutes }}
-              </span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Moneyness</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.moneynessBucket
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Structure</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.structureFamily || "long_single"
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Target / Stop</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.targetReturn == null
-                    ? "—"
-                    : selectedTuple.targetReturn
-                }}
-                /
-                {{
-                  selectedTuple.stopReturn == null
-                    ? "—"
-                    : selectedTuple.stopReturn
-                }}
-              </span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Exit template</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.exitTemplate
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Fill model</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.fillModel
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Robust score</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.robustScore.toFixed(3)
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Pre-sealed rank</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.preSealedRank ?? "—"
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Sealed final rank</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.sealedFinalRank ?? "—"
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Sealed finalist</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                selectedTuple.sealedFinalist ? "yes" : "no"
-              }}</span>
-            </div>
-            <div class="detailGridSpan2">
-              <span class="panelMetricKey">Validation note</span>
-              <span class="panelMetricValue">{{
-                selectedTupleValidation?.detail ??
-                "No supported holdout or sealed trades are present yet."
-              }}</span>
-            </div>
-            <div v-for="row in selectedTupleSupportRows" :key="row.key">
-              <span class="panelMetricKey">{{ row.label }}</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                row.value
-              }}</span>
-            </div>
-            <div>
-              <span class="panelMetricKey">EV / Trade</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.selectionMetrics.expectancyPerTrade.toFixed(4)
-                }}
-              </span>
-            </div>
-            <div>
-              <span class="panelMetricKey">EV / Premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.selectionMetrics.expectancyPerPremium.toFixed(4)
-                }}
-              </span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Median return / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.selectionMetrics.medianReturnOnPremium.toFixed(
-                    4,
-                  )
-                }}
-              </span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Win rate</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.selectionMetrics.winRate.toFixed(3) }}
-              </span>
-            </div>
-            <div>
-              <span class="panelMetricKey">Valid / Invalid</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.selectionMetrics.validTrades }} /
-                {{ selectedTuple.selectionMetrics.invalidEvents }}
-              </span>
-            </div>
-            <div>
-              <span class="panelMetricKey">PnL / contract</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.selectionMetrics.totalPnlPerContract.toFixed(4)
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.holdoutMetrics">
-              <span class="panelMetricKey">Holdout EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.holdoutMetrics.expectancyPerPremium.toFixed(4)
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.sealedEvaluationMetrics">
-              <span class="panelMetricKey">Sealed EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.sealedEvaluationMetrics.expectancyPerPremium.toFixed(
-                    4,
-                  )
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.stressMetrics">
-              <span class="panelMetricKey">Stress EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.stressMetrics.expectancyPerPremium.toFixed(4)
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.sealedStressMetrics">
-              <span class="panelMetricKey">Sealed stress EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.sealedStressMetrics.expectancyPerPremium.toFixed(
-                    4,
-                  )
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.harsherStressMetrics">
-              <span class="panelMetricKey">Harsher EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.harsherStressMetrics.expectancyPerPremium.toFixed(
-                    4,
-                  )
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.sealedHarsherStressMetrics">
-              <span class="panelMetricKey">Sealed harsher EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.sealedHarsherStressMetrics.expectancyPerPremium.toFixed(
-                    4,
-                  )
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.extremeStressMetrics">
-              <span class="panelMetricKey">Extreme EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.extremeStressMetrics.expectancyPerPremium.toFixed(
-                    4,
-                  )
-                }}
-              </span>
-            </div>
-            <div v-if="selectedTuple.sealedExtremeStressMetrics">
-              <span class="panelMetricKey">Sealed extreme EV / premium</span>
-              <span class="panelMetricValue mono panelNumeric">
-                {{
-                  selectedTuple.sealedExtremeStressMetrics.expectancyPerPremium.toFixed(
-                    4,
-                  )
-                }}
-              </span>
-            </div>
-          </div>
-          <details
-            v-if="selectedTupleValidationFrontierRows.length > 0"
-            class="panelDetails"
-            open
-          >
-            <summary>Validation frontier</summary>
-            <div class="panelDetailsBody tableWrap">
-              <table class="resultTable">
-                <thead>
-                  <tr>
-                    <th>Stage</th>
-                    <th>Status</th>
-                    <th>Support</th>
-                    <th>EV / Premium</th>
-                    <th>Delta vs selection</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="row in selectedTupleValidationFrontierRows"
-                    :key="row.key"
-                  >
-                    <td class="mono">{{ row.label }}</td>
-                    <td class="mono">{{ row.status }}</td>
-                    <td class="mono">{{ row.support }}</td>
-                    <td class="mono">{{ row.expectancy.toFixed(4) }}</td>
-                    <td class="mono">{{ row.delta.toFixed(4) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </details>
-          <details
-            v-if="
-              selectedTupleValidationScopeRows.length > 0 ||
-              selectedTupleValidationDriftRows.length > 0 ||
-              selectedTupleValidationMonotonicityRows.length > 0 ||
-              selectedTupleValidationRegretRows.length > 0
+          <OptionsExpressionSelectedTupleSummaryPanel
+            :tuple="selectedTuple"
+            :validation="selectedTupleValidation"
+            :support-rows="selectedTupleSupportRows"
+            :validation-frontier-rows="selectedTupleValidationFrontierRows"
+            :validation-scope-rows="selectedTupleValidationScopeRows"
+            :validation-drift-rows="selectedTupleValidationDriftRows"
+            :validation-monotonicity-rows="
+              selectedTupleValidationMonotonicityRows
             "
-            class="panelDetails"
-            open
-          >
-            <summary>Validation interpretation</summary>
-            <div class="panelDetailsBody">
-              <div
-                v-if="selectedTupleValidationScopeRows.length > 0"
-                class="detailGrid detailGridTight"
-              >
-                <div
-                  v-for="row in selectedTupleValidationScopeRows"
-                  :key="row.key"
-                >
-                  <span class="panelMetricKey">{{ row.label }}</span>
-                  <span class="panelMetricValue mono">{{ row.value }}</span>
-                </div>
-              </div>
-              <div class="panelMuted">
-                Support rows above reflect valid trades over total events for
-                this retained tuple. They describe retained evidence depth, not
-                a confidence interval. Regret rows below compare only within the
-                stated scope.
-              </div>
-              <div
-                v-if="selectedTupleValidationDriftRows.length > 0"
-                class="tableWrap"
-              >
-                <table class="resultTable">
-                  <thead>
-                    <tr>
-                      <th>Transition</th>
-                      <th>Delta EV / Premium</th>
-                      <th>Scope</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="row in selectedTupleValidationDriftRows"
-                      :key="row.key"
-                    >
-                      <td class="mono">{{ row.label }}</td>
-                      <td class="mono">{{ row.value }}</td>
-                      <td>{{ row.scopeLabel }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div
-                v-if="selectedTupleValidationMonotonicityRows.length > 0"
-                class="tableWrap"
-              >
-                <table class="resultTable">
-                  <thead>
-                    <tr>
-                      <th>Family</th>
-                      <th>Status</th>
-                      <th>Scope</th>
-                      <th>Detail</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="row in selectedTupleValidationMonotonicityRows"
-                      :key="row.key"
-                    >
-                      <td class="mono">{{ row.label }}</td>
-                      <td class="mono">{{ row.statusLabel }}</td>
-                      <td>{{ row.scopeLabel }}</td>
-                      <td>{{ row.detail }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div
-                v-if="selectedTupleValidationRegretRows.length > 0"
-                class="tableWrap"
-              >
-                <table class="resultTable">
-                  <thead>
-                    <tr>
-                      <th>Lane</th>
-                      <th>Regret</th>
-                      <th>Scope</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="row in selectedTupleValidationRegretRows"
-                      :key="row.key"
-                    >
-                      <td class="mono">{{ row.label }}</td>
-                      <td class="mono">{{ row.value }}</td>
-                      <td>{{ row.scopeLabel }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </details>
+            :validation-regret-rows="selectedTupleValidationRegretRows"
+          />
           <details v-if="selectedInspection" class="panelDetails" open>
             <summary>Tuple event detail</summary>
             <div class="panelDetailsBody">
@@ -6973,8 +6052,11 @@ function focusTupleIndex(index: number): void {
                     </div>
                   </div>
                 </div>
-                <div class="tableWrap">
-                  <table class="resultTable">
+                <div class="tableWrap" tabindex="0">
+                  <table
+                    class="resultTable"
+                    aria-label="Tuple inspection split status"
+                  >
                     <thead>
                       <tr>
                         <th>Split</th>
@@ -7017,8 +6099,11 @@ function focusTupleIndex(index: number): void {
                     </div>
                   </div>
                 </div>
-                <div class="tableWrap">
-                  <table class="resultTable">
+                <div class="tableWrap" tabindex="0">
+                  <table
+                    class="resultTable"
+                    aria-label="Tuple inspection invalid reasons"
+                  >
                     <thead>
                       <tr>
                         <th>Split</th>
@@ -7053,20 +6138,20 @@ function focusTupleIndex(index: number): void {
                     <option value="sealed_test">sealed_test</option>
                   </select>
                 </label>
-                <button
+                <AppButton
                   type="button"
                   data-qa-action="options.tupleInspection.exportCsv"
                   @click="store.exportActiveInspectionCsv()"
                 >
                   Export inspection CSV
-                </button>
-                <button
+                </AppButton>
+                <AppButton
                   v-if="inspectionRows.length > 50 && !showAllInspectionRows"
                   type="button"
                   @click="showAllInspectionRows = true"
                 >
                   Show all {{ inspectionRows.length }}
-                </button>
+                </AppButton>
               </div>
 
               <div class="panelMuted">
@@ -7076,8 +6161,11 @@ function focusTupleIndex(index: number): void {
                 }}.
               </div>
 
-              <div class="tableWrap">
-                <table class="resultTable inspectionTable">
+              <div class="tableWrap" tabindex="0">
+                <table
+                  class="resultTable inspectionTable"
+                  aria-label="Options event inspection rows"
+                >
                   <thead>
                     <tr>
                       <th>Event</th>
@@ -7103,7 +6191,10 @@ function focusTupleIndex(index: number): void {
                         isSelected:
                           selectedInspectionRow?.eventId === row.eventId,
                       }"
-                      tabindex="0"
+                      :tabindex="
+                        selectedInspectionRow?.eventId === row.eventId ? 0 : -1
+                      "
+                      :data-options-inspection-event="row.eventId"
                       :aria-selected="
                         selectedInspectionRow?.eventId === row.eventId
                           ? 'true'
@@ -7211,22 +6302,23 @@ function focusTupleIndex(index: number): void {
                   </div>
                 </div>
                 <div class="actions">
-                  <button
+                  <AppButton
                     v-if="selectedInspectionRow.status === 'executed'"
                     type="button"
                     data-qa-action="options.eventPath.load"
                     :disabled="eventPathBusy"
                     @click="loadSelectedEventPath()"
-                    class="buttonWithIcon"
                   >
-                    <AppVisualIcon
-                      :icon="optionsEventPathReplayIcon"
-                      class="optionsActionIcon"
-                    />
-                    <span>{{
-                      eventPathBusy ? "Loading path…" : "Reload path replay"
-                    }}</span>
-                  </button>
+                    <span class="buttonWithIcon">
+                      <AppVisualIcon
+                        :icon="optionsEventPathReplayIcon"
+                        class="optionsActionIcon"
+                      />
+                      <span>{{
+                        eventPathBusy ? "Loading path…" : "Reload path replay"
+                      }}</span>
+                    </span>
+                  </AppButton>
                 </div>
                 <div class="detailGrid detailGridTight">
                   <div>
@@ -7476,13 +6568,13 @@ function focusTupleIndex(index: number): void {
                       </div>
                     </div>
                     <div class="actions">
-                      <button
+                      <AppButton
                         type="button"
                         data-qa-action="options.eventPath.exportCsv"
                         @click="store.exportActiveEventPathCsv()"
                       >
                         Export path CSV
-                      </button>
+                      </AppButton>
                     </div>
                   </div>
                   <div class="detailGrid detailGridTight">
@@ -7504,8 +6596,11 @@ function focusTupleIndex(index: number): void {
                       }}</span>
                     </div>
                   </div>
-                  <div class="tableWrap">
-                    <table class="resultTable">
+                  <div class="tableWrap" tabindex="0">
+                    <table
+                      class="resultTable"
+                      aria-label="Options event path replay"
+                    >
                       <thead>
                         <tr>
                           <th>Timestamp</th>
@@ -7571,6 +6666,10 @@ function focusTupleIndex(index: number): void {
   border-radius: 14px;
   background: var(--panel-footer);
   padding: 0.9rem;
+}
+
+[data-options-stage] {
+  scroll-margin-top: 3rem;
 }
 
 .panelHeaderVisual {
@@ -7729,31 +6828,6 @@ function focusTupleIndex(index: number): void {
   color: color-mix(in srgb, var(--warning, #f0b429) 85%, white);
 }
 
-.optionsFinalistDashboard {
-  display: grid;
-  gap: 0.65rem;
-  border-top: 1px solid var(--border);
-  padding-top: 0.75rem;
-}
-
-.finalistGateGrid {
-  align-items: flex-start;
-}
-
-.finalistGate {
-  max-width: 100%;
-}
-
-.miniBadge {
-  padding: 0.18rem 0.4rem;
-  font-size: 0.7rem;
-}
-
-.coverageSection {
-  display: grid;
-  gap: 0.55rem;
-}
-
 .warningText {
   color: var(--warning, #f0b429);
   font-size: 0.78rem;
@@ -7774,10 +6848,6 @@ function focusTupleIndex(index: number): void {
 
 .detailGridTight {
   gap: 0.55rem;
-}
-
-.detailGridSpan2 {
-  grid-column: span 2;
 }
 
 .metricValue {
@@ -7839,13 +6909,6 @@ function focusTupleIndex(index: number): void {
   gap: 0.7rem;
   border-top: 1px solid var(--border);
   padding-top: 0.75rem;
-}
-
-.recommendationList {
-  display: grid;
-  gap: 0.45rem;
-  margin: 0;
-  padding-left: 1.1rem;
 }
 
 .inspectionDetailCard {

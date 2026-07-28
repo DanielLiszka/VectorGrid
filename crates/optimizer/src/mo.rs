@@ -179,10 +179,9 @@ impl SearchSpace {
         param_idx: usize,
         rng: &mut R,
     ) -> Option<ParamValue> {
-        match self.params.get(param_idx) {
-            Some(p) => Some(sample_one(&p.domain, rng)),
-            None => None,
-        }
+        self.params
+            .get(param_idx)
+            .map(|p| sample_one(&p.domain, rng))
     }
 
     pub fn grid_iter(
@@ -355,7 +354,7 @@ fn domain_grid_values(
                     choices.len()
                 ));
             }
-            Ok((0..choices.len()).map(|i| ParamValue::Cat(i)).collect())
+            Ok((0..choices.len()).map(ParamValue::Cat).collect())
         }
         ParamDomain::Bool => Ok(vec![ParamValue::Bool(false), ParamValue::Bool(true)]),
     }
@@ -507,6 +506,10 @@ impl SearchSpaceGridIter {
 
     pub fn len(&self) -> usize {
         self.remaining
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.remaining == 0
     }
 
     fn advance(&mut self) {
@@ -1110,9 +1113,7 @@ where
         let mut offspring_values: Vec<Vec<ParamValue>> = Vec::with_capacity(cfg.population_size);
         while offspring_values.len() < cfg.population_size {
             let p0 = select_parent(&population, &mut rng);
-            let p1 = if rng.gen_bool(cfg.crossover_prob.clamp(0.0, 1.0) as f64)
-                && population.len() > 1
-            {
+            let p1 = if rng.gen_bool(cfg.crossover_prob.clamp(0.0, 1.0)) && population.len() > 1 {
                 let mut idx = select_parent(&population, &mut rng);
                 if idx == p0 {
                     idx = (idx + 1) % population.len();
@@ -1126,15 +1127,15 @@ where
             if p1 != p0 {
                 let other = &population[p1].values;
                 for i in 0..num_params.min(other.len()) {
-                    if rng.gen_bool(cfg.swapping_prob.clamp(0.0, 1.0) as f64) {
+                    if rng.gen_bool(cfg.swapping_prob.clamp(0.0, 1.0)) {
                         child[i] = other[i].clone();
                     }
                 }
             }
 
-            for i in 0..num_params {
+            for (i, value) in child.iter_mut().enumerate().take(num_params) {
                 if rng.gen_bool(mut_prob) {
-                    child[i] = space
+                    *value = space
                         .sample_param_validated(i, &mut rng)
                         .ok_or_else(|| format!("param index {i} is out of range"))?;
                 }
@@ -2237,7 +2238,7 @@ where
     repair(&mut best_values);
     let mut best_score = f64::NEG_INFINITY;
 
-    let candidates = cfg.n_ei_candidates.max(1).min(512);
+    let candidates = cfg.n_ei_candidates.clamp(1, 512);
     for _ in 0..candidates {
         let mut values: Vec<ParamValue> = Vec::with_capacity(dim);
         for m in models {
@@ -2804,7 +2805,7 @@ mod tests {
         };
         let repair = |_v: &mut [ParamValue]| {};
         let eval = |v: &[ParamValue]| {
-            let x = match v.get(0) {
+            let x = match v.first() {
                 Some(ParamValue::Float(x)) => *x,
                 _ => 0.0,
             };
@@ -2918,7 +2919,7 @@ mod tests {
         };
         let repair = |_v: &mut [ParamValue]| {};
         let eval = |v: &[ParamValue]| {
-            let x = match v.get(0) {
+            let x = match v.first() {
                 Some(ParamValue::Float(x)) => *x,
                 _ => 0.0,
             };
@@ -2966,7 +2967,7 @@ mod tests {
         };
         let repair = |_v: &mut [ParamValue]| {};
         let eval = |v: &[ParamValue]| {
-            let x = match v.get(0) {
+            let x = match v.first() {
                 Some(ParamValue::Float(x)) => *x,
                 _ => 0.0,
             };
@@ -3098,7 +3099,13 @@ mod tests {
             ],
         };
 
-        let pts: Vec<Vec<ParamValue>> = space.grid_iter(16, 128).unwrap().collect();
+        let mut iter = space.grid_iter(16, 128).unwrap();
+        assert_eq!(iter.len(), 3 * 2 * 2);
+        assert!(!iter.is_empty());
+
+        let pts: Vec<Vec<ParamValue>> = iter.by_ref().collect();
+        assert_eq!(iter.len(), 0);
+        assert!(iter.is_empty());
         assert_eq!(pts.len(), 3 * 2 * 2);
 
         assert_eq!(

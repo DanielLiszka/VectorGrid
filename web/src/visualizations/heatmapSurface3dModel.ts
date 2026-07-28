@@ -51,6 +51,43 @@ export interface HeatmapSurface3dBuildOptions {
   slice?: Heatmap3dSlice | null
 }
 
+export function resolveHeatmapSurface3dKeyboardIndex(
+  samples: readonly HeatmapSurface3dSample[],
+  currentIndex: number,
+  key: string,
+): number | null {
+  if (!samples.length) return null
+  if (key === 'Home') return 0
+  if (key === 'End') return samples.length - 1
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) return null
+
+  const index = Math.min(samples.length - 1, Math.max(0, currentIndex))
+  const current = samples[index]
+  if (!current) return null
+  const horizontal = key === 'ArrowLeft' || key === 'ArrowRight'
+  const forward = key === 'ArrowRight' || key === 'ArrowDown'
+  let bestIndex = index
+  let bestScore = Infinity
+
+  for (let candidateIndex = 0; candidateIndex < samples.length; candidateIndex += 1) {
+    const candidate = samples[candidateIndex]
+    if (!candidate || candidateIndex === index) continue
+    const primaryDelta = horizontal
+      ? candidate.colStart - current.colStart
+      : candidate.logicalRowStart - current.logicalRowStart
+    if ((forward && primaryDelta <= 0) || (!forward && primaryDelta >= 0)) continue
+    const secondaryDelta = horizontal
+      ? Math.abs(candidate.logicalRowStart - current.logicalRowStart)
+      : Math.abs(candidate.colStart - current.colStart)
+    const score = Math.abs(primaryDelta) + secondaryDelta * 10_000
+    if (score < bestScore) {
+      bestScore = score
+      bestIndex = candidateIndex
+    }
+  }
+  return bestIndex
+}
+
 function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -103,7 +140,7 @@ export function buildHeatmapSurface3dModel(
       let representativeCol = colStart
       let representativeLogicalRow = logicalRowStart
       let representativeIdx = -1
-      let representativeDistance = Number.POSITIVE_INFINITY
+      let representativeDistance = Infinity
       for (let logicalRow = logicalRowStart; logicalRow < logicalRowEnd; logicalRow += 1) {
         for (let col = colStart; col < colEnd; col += 1) {
           const idx = heatmapIndex(model, logicalRow, col)

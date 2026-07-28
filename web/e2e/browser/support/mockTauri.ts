@@ -9,6 +9,14 @@ export interface MockTauriOptions {
   commandEvents?: Record<string, MockTauriScheduledEvent[]>
 }
 
+export interface MockTauriSequence {
+  __mockSequence: unknown[]
+}
+
+export function mockTauriSequence(...responses: unknown[]): MockTauriSequence {
+  return { __mockSequence: responses }
+}
+
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
 const DEFAULT_COMMAND_RESULTS: Record<string, unknown> = {
   load_latest_run_artifact_hydration: null,
@@ -29,7 +37,30 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
     const callbacks: Record<number, unknown> = {}
     const invokeLog: string[] = []
     const invokeLogEntries: Array<{ command: string; args: Record<string, unknown> }> = []
+    const invokeCountsStorageKey = '__VTA_TEST_INVOKE_COUNTS_V1'
+    const invokeCounts = (() => {
+      try {
+        const parsed = JSON.parse(sessionStorage.getItem(invokeCountsStorageKey) || '{}') as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, number>
+        }
+      } catch {
+        // Fall back to an empty counter map when storage is unavailable or malformed.
+      }
+      return {} as Record<string, number>
+    })()
     let nextCallbackId = 1
+
+    const recordInvokeCount = (command: string): number => {
+      const nextCount = Math.max(0, Number(invokeCounts[command] || 0)) + 1
+      invokeCounts[command] = nextCount
+      try {
+        sessionStorage.setItem(invokeCountsStorageKey, JSON.stringify(invokeCounts))
+      } catch {
+        // The in-memory counters still cover the current page.
+      }
+      return nextCount
+    }
 
     const addListener = (event: string, callbackId: number) => {
       if (!handlers[event]) handlers[event] = []
@@ -77,6 +108,7 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
       const key = String(command ?? '')
       invokeLog.push(key)
+      const invokeCount = recordInvokeCount(key)
       try {
         invokeLogEntries.push({
           command: key,
@@ -99,7 +131,16 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
       if (Object.prototype.hasOwnProperty.call(results, key)) {
         scheduleCommandEvents(key)
         await waitForCommandDelay(key)
-        const result = (results as Record<string, unknown>)[key]
+        const configuredResult = (results as Record<string, unknown>)[key]
+        const sequence =
+          configuredResult
+          && typeof configuredResult === 'object'
+          && Array.isArray((configuredResult as { __mockSequence?: unknown }).__mockSequence)
+            ? (configuredResult as { __mockSequence: unknown[] }).__mockSequence
+            : null
+        const result = sequence
+          ? sequence[Math.min(invokeCount - 1, Math.max(0, sequence.length - 1))]
+          : configuredResult
         if (
           result
           && typeof result === 'object'
@@ -183,6 +224,11 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
       emitEvent(event, payload)
     }
     ;(window as typeof window & { __VTA_TEST_INVOKES?: string[] }).__VTA_TEST_INVOKES = invokeLog
+    ;(
+      window as typeof window & {
+        __VTA_TEST_INVOKE_COUNTS?: Record<string, number>
+      }
+    ).__VTA_TEST_INVOKE_COUNTS = invokeCounts
     ;(
       window as typeof window & {
         __VTA_TEST_INVOKE_LOG?: Array<{ command: string; args: Record<string, unknown> }>

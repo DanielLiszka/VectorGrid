@@ -143,7 +143,11 @@ defineWorkflow({
     await expect(action('optimize.run')).toBeDisabled()
     await expect(action('shell.primaryAction.run')).toBeDisabled()
     await expect(action('footer.primaryAction.run')).toBeDisabled()
-    await expect(page.getByText(/Load a dataset before running optimization/i).first()).toBeVisible()
+    await expect(
+      page.locator('.actionStatusBar .blockedReason').filter({
+        hasText: /Load a dataset before running optimization/i,
+      }),
+    ).toBeVisible()
 
     await expect(page.getByText(/Load data first, then configure/i).first()).toHaveCount(0)
 
@@ -230,6 +234,9 @@ defineWorkflow({
     await expect(action('live.safety.cancelOpenOrders')).toBeDisabled()
     await expect(action('live.safety.flattenPosition')).toBeDisabled()
     await expect(action('live.safety.emergencyHalt')).toBeDisabled()
+    await expect(action('executionChart.panLeft')).toBeDisabled()
+    await expect(action('executionChart.fitContent')).toBeDisabled()
+    await expect(action('executionChart.panRight')).toBeDisabled()
     await expectNoHorizontalDocumentOverflow(page)
   },
 })

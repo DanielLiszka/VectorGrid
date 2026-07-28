@@ -1,0 +1,327 @@
+{
+  "schema_version": 1,
+  "timing_boundary": "support-performance-authority",
+  "timing_boundary_note": "Lightweight non-credential support-surface timing; not a replacement for CPU/GPU identity gates.",
+  "build_profile": "release",
+  "cases_requested": [],
+  "cases": [
+    {
+      "id": "data.market_data_ingest_cache",
+      "timing_boundary": "cold_data_path",
+      "status": "passed",
+      "wall_ms": 28.9938,
+      "steps": [
+        {
+          "id": "load_csv_or_cache_cold",
+          "wall_ms": 14.6605,
+          "metrics": {
+            "cache_hit": false,
+            "load_source": "CsvParsedAndCached",
+            "rows": 20000
+          }
+        },
+        {
+          "id": "load_binary_cache_warm",
+          "wall_ms": 5.056500000000001,
+          "metrics": {
+            "cache_hit": true,
+            "load_source": "BinaryCache",
+            "rows": 20000
+          }
+        },
+        {
+          "id": "resample_5m",
+          "wall_ms": 0.1561,
+          "metrics": {
+            "load_source": "DerivedFreshResample",
+            "rows": 4001
+          }
+        },
+        {
+          "id": "list_sample_csvs",
+          "wall_ms": 0.2127,
+          "metrics": {
+            "count": 1
+          }
+        },
+        {
+          "id": "list_repo_data_csvs",
+          "wall_ms": 1.4666,
+          "metrics": {
+            "count": 8,
+            "truncated": false
+          }
+        }
+      ],
+      "metrics": {
+        "cache_dir": "C:\\Rust Projects\\ta_desktop_demo\\_write_test\\perf_authority_support\\app_local_data\\data_cache",
+        "csv_path": "C:\\Rust Projects\\ta_desktop_demo\\_write_test\\perf_authority_support\\data/synthetic_ohlcv.csv",
+        "rows": 20000
+      }
+    },
+    {
+      "id": "options_data.dataset_ingest_manifest",
+      "timing_boundary": "cold_data_path",
+      "status": "passed",
+      "wall_ms": 11.662600000000001,
+      "steps": [
+        {
+          "id": "import_options_dataset",
+          "wall_ms": 6.1592,
+          "metrics": {
+            "contracts": 6,
+            "dataset_id": "support_perf_options_5536",
+            "rows": 480
+          }
+        },
+        {
+          "id": "scan_options_manifests",
+          "wall_ms": 4.3775,
+          "metrics": {
+            "count": 4
+          }
+        },
+        {
+          "id": "read_options_manifest",
+          "wall_ms": 0.0679,
+          "metrics": {
+            "dataset_id": "support_perf_options_5536",
+            "manifest_path": "C:\\Rust Projects\\ta_desktop_demo\\_write_test\\perf_authority_support\\options_app_local_data\\options_research\\datasets\\support_perf_options_5536\\manifest.json"
+          }
+        }
+      ],
+      "metrics": {
+        "app_local_data_dir": "C:\\Rust Projects\\ta_desktop_demo\\_write_test\\perf_authority_support\\options_app_local_data",
+        "csv_path": "C:\\Rust Projects\\ta_desktop_demo\\_write_test\\perf_authority_support\\options/options_dataset.csv",
+        "rows": 480
+      }
+    },
+    {
+      "id": "data.polygon_live_status",
+      "timing_boundary": "tauri_command_path",
+      "status": "passed",
+      "wall_ms": 0.0115,
+      "steps": [
+        {
+          "id": "polygon_live_candle_stream_status_idle",
+          "wall_ms": 0.0061,
+          "metrics": {
+            "active": false,
+            "stream_present": false
+          }
+        },
+        {
+          "id": "polygon_stop_live_candle_stream_idle",
+          "wall_ms": 0.0046,
+          "metrics": {
+            "prior_present": false,
+            "stopped": false
+          }
+        }
+      ],
+      "metrics": {
+        "fixture": "no_credential_idle_status",
+        "initial_active": false,
+        "network_stream_started": false,
+        "stop_observed_prior": false
+      }
+    },
+    {
+      "id": "reports.export_generation_and_persistence",
+      "timing_boundary": "tauri_command_path",
+      "status": "passed",
+      "wall_ms": 132.8364,
+      "steps": [
+        {
+          "id": "build_validation_shortlist_csv",
+          "wall_ms": 2.9664,
+          "metrics": {
+            "bytes": 61557,
+            "lines": 257
+          }
+        },
+        {
+          "id": "build_report_xlsx_bytes",
+          "wall_ms": 54.5741,
+          "metrics": {
+            "bytes": 388380
+          }
+        },
+        {
+          "id": "save_report_xlsx_from_artifact",
+          "wall_ms": 67.9445,
+          "metrics": {
+            "artifact_updated": true,
+            "bytes": 392146,
+            "path": "C:\\Users\\dlisz\\AppData\\Local\\com.vectorgrid.perfauthority.vectorgridperfauthority55361778164646552051500\\reports\\vectorgrid_report_2026-05-07T00-00-00Z.xlsx"
+          }
+        }
+      ],
+      "metrics": {
+        "candidate_count": 256
+      }
+    },
+    {
+      "id": "artifacts.library_hydration_replay_repair",
+      "timing_boundary": "tauri_command_path",
+      "status": "passed",
+      "wall_ms": 44.0479,
+      "steps": [
+        {
+          "id": "save_run_artifacts",
+          "wall_ms": 14.794699999999999,
+          "metrics": {
+            "saved": 24
+          }
+        },
+        {
+          "id": "rebuild_artifact_catalog",
+          "wall_ms": 27.982799999999997,
+          "metrics": {
+            "run_count": 25
+          }
+        },
+        {
+          "id": "load_run_artifact_hydration",
+          "wall_ms": 0.5394,
+          "metrics": {
+            "has_validation": true,
+            "run_ts": "2026-05-07T00:00:00Z"
+          }
+        },
+        {
+          "id": "update_artifact_tags",
+          "wall_ms": 0.6583,
+          "metrics": {
+            "updated": true
+          }
+        }
+      ],
+      "metrics": {
+        "artifact_count": 24
+      }
+    },
+    {
+      "id": "portfolio.feasibility_analysis",
+      "timing_boundary": "engine_call",
+      "status": "passed",
+      "wall_ms": 3.8641,
+      "steps": [
+        {
+          "id": "portfolio_feasibility_from_artifacts",
+          "wall_ms": 3.7837,
+          "metrics": {
+            "eligible": 100,
+            "rejected": 0,
+            "status": "InsufficientCovarianceEvidence"
+          }
+        }
+      ],
+      "metrics": {
+        "source_artifacts": 120
+      }
+    },
+    {
+      "id": "system.dynamic_ir_gpu_status",
+      "timing_boundary": "tauri_command_path",
+      "status": "passed",
+      "wall_ms": 0.2868,
+      "steps": [
+        {
+          "id": "preview_dynamic_strategy_ir",
+          "wall_ms": 0.21680000000000002,
+          "metrics": {
+            "issue_count": 0,
+            "schema_compatibility": "Compatible"
+          }
+        },
+        {
+          "id": "format_dynamic_strategy_ir",
+          "wall_ms": 0.0066,
+          "metrics": {
+            "bytes": 4705
+          }
+        },
+        {
+          "id": "encode_constant_bits",
+          "wall_ms": 0.0006,
+          "metrics": {
+            "bits": "9223372036854775808"
+          }
+        },
+        {
+          "id": "get_gpu_status",
+          "wall_ms": 0.030000000000000002,
+          "metrics": {
+            "built_with_cuda": false,
+            "cuda_available": false,
+            "device_name": null
+          }
+        }
+      ],
+      "metrics": {}
+    },
+    {
+      "id": "execution.paper_live_policy_broker_surfaces",
+      "timing_boundary": "tauri_command_path",
+      "status": "passed",
+      "wall_ms": 4.5228,
+      "steps": [
+        {
+          "id": "live_execution_runner_status_idle",
+          "wall_ms": 0.0054,
+          "metrics": {
+            "active": false,
+            "error_count": 0,
+            "inflight": false,
+            "run_count": 0
+          }
+        },
+        {
+          "id": "get_execution_strategy_support_matrix",
+          "wall_ms": 0.0006,
+          "metrics": {
+            "rows": 2,
+            "supported": 2
+          }
+        },
+        {
+          "id": "alpaca_get_credential_status",
+          "wall_ms": 0.0094,
+          "metrics": {
+            "has_credentials": false,
+            "remember_available": true,
+            "state": "Missing"
+          }
+        },
+        {
+          "id": "reset_local_paper_broker",
+          "wall_ms": 4.3879,
+          "metrics": {
+            "has_position": false,
+            "orders": 0,
+            "symbol": ""
+          }
+        },
+        {
+          "id": "get_local_paper_execution_snapshot",
+          "wall_ms": 0.1158,
+          "metrics": {
+            "has_position": false,
+            "orders": 0,
+            "symbol": "SPY"
+          }
+        }
+      ],
+      "metrics": {
+        "broker_network_calls": false,
+        "credential_state": "Missing",
+        "fixture": "no_credential_local_paper_and_idle_runner",
+        "reset_orders": 0,
+        "runner_active": false,
+        "snapshot_orders": 0,
+        "support_matrix_rows": 2
+      }
+    }
+  ]
+}

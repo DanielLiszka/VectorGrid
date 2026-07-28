@@ -500,6 +500,47 @@ pub fn compute_probability_metrics_with_effective_counts<C: ValidationPostCandid
     effective_obs: Option<&[usize]>,
     effective_trials: Option<usize>,
 ) {
+    compute_probability_metrics_with_research_context(
+        out,
+        sample_obs,
+        effective_obs,
+        effective_trials,
+        None,
+        None,
+    );
+}
+
+pub fn compute_probability_metrics_with_research_context<C: ValidationPostCandidate>(
+    out: &mut Vec<C>,
+    sample_obs: &[usize],
+    effective_obs: Option<&[usize]>,
+    effective_trials: Option<usize>,
+    optimization_trials: Option<usize>,
+    return_moments: Option<&[Option<crate::sharpe_stats::ReturnDistributionMoments>]>,
+) {
+    compute_probability_metrics_with_search_distribution(
+        out,
+        sample_obs,
+        effective_obs,
+        effective_trials,
+        optimization_trials,
+        None,
+        None,
+        return_moments,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_probability_metrics_with_search_distribution<C: ValidationPostCandidate>(
+    out: &mut Vec<C>,
+    sample_obs: &[usize],
+    effective_obs: Option<&[usize]>,
+    effective_trials: Option<usize>,
+    optimization_trials: Option<usize>,
+    search_distribution: Option<&ta_optimizer::SearchDistributionSummary>,
+    expected_sharpe_metric_id: Option<&str>,
+    return_moments: Option<&[Option<crate::sharpe_stats::ReturnDistributionMoments>]>,
+) {
     let sharpe_peers: Vec<f64> = out
         .iter()
         .map(|c| {
@@ -509,8 +550,29 @@ pub fn compute_probability_metrics_with_effective_counts<C: ValidationPostCandid
         })
         .collect();
 
-    let (peer_mean, peer_std) = crate::sharpe_stats::mean_std(&sharpe_peers);
-    let raw_trials = sharpe_peers.iter().filter(|x| x.is_finite()).count().max(1);
+    let retained_trials = sharpe_peers.iter().filter(|x| x.is_finite()).count().max(1);
+    let comparable_distribution = expected_sharpe_metric_id.and_then(|expected_id| {
+        search_distribution.filter(|summary| summary.is_comparable_with(expected_id))
+    });
+    let (peer_mean, peer_std, raw_trials) = if let Some(summary) = comparable_distribution {
+        (
+            summary
+                .finite_sharpe_mean
+                .expect("comparable distribution has a finite mean"),
+            summary
+                .finite_sharpe_sample_std
+                .expect("comparable distribution has a finite sample deviation"),
+            summary.finite_sharpe_count.max(1),
+        )
+    } else {
+        let (peer_mean, peer_std) = crate::sharpe_stats::mean_std(&sharpe_peers);
+        let raw_trials = crate::sharpe_stats::normalize_optimization_trial_count(
+            optimization_trials,
+            retained_trials,
+        )
+        .unwrap_or(retained_trials);
+        (peer_mean, peer_std, raw_trials)
+    };
 
     for (i, cand) in out.iter_mut().enumerate() {
         let m = cand
@@ -521,7 +583,15 @@ pub fn compute_probability_metrics_with_effective_counts<C: ValidationPostCandid
             .and_then(|counts| counts.get(i).copied())
             .or(Some(raw_obs.max(2)));
         let effective_obs_i = crate::sharpe_stats::effective_sample_count(raw_obs, effective_obs_i);
-        let (psr, dsr) = crate::validation_stats::compute_psr_dsr_with_effective_counts(
+        let moments = return_moments
+            .and_then(|all_moments| all_moments.get(i).copied())
+            .flatten()
+            .unwrap_or(crate::sharpe_stats::ReturnDistributionMoments {
+                observations: raw_obs.max(2),
+                skewness: 0.0,
+                kurtosis: 3.0,
+            });
+        let (psr, dsr) = crate::validation_stats::compute_psr_dsr_with_effective_counts_and_moments(
             m.sharpe,
             raw_obs,
             Some(effective_obs_i),
@@ -529,9 +599,15 @@ pub fn compute_probability_metrics_with_effective_counts<C: ValidationPostCandid
             effective_trials,
             peer_mean,
             peer_std,
+            moments.skewness,
+            moments.kurtosis,
         );
         let mintrl = crate::sharpe_stats::minimum_track_record_length(
-            m.sharpe, 0.0, 0.0, 3.0, 0.95,
+            m.sharpe,
+            0.0,
+            moments.skewness,
+            moments.kurtosis,
+            0.95,
         )
         .map(|required_eff_obs| {
             crate::sharpe_stats::inflate_effective_requirement_to_raw_bars(
@@ -969,14 +1045,28 @@ fn spa_availability(
     }
 }
 
-fn evidence_status_reason(missing_requested_modules: &[&str]) -> String {
-    if missing_requested_modules.is_empty() {
-        "all requested validation evidence modules produced review metadata".to_string()
-    } else {
-        format!(
+fn evidence_status_reason(
+    missing_requested_modules: &[&str],
+    missing_realism_evidence: &[String],
+) -> String {
+    let mut reasons = Vec::new();
+    if !missing_requested_modules.is_empty() {
+        reasons.push(format!(
             "requested validation evidence incomplete: {}",
             missing_requested_modules.join(", ")
-        )
+        ));
+    }
+    if !missing_realism_evidence.is_empty() {
+        reasons.push(format!(
+            "deployment-realism evidence unknown: {}",
+            missing_realism_evidence.join(", ")
+        ));
+    }
+    if reasons.is_empty() {
+        "all requested validation modules and deployment-realism declarations produced review metadata"
+            .to_string()
+    } else {
+        reasons.join("; ")
     }
 }
 
@@ -1003,26 +1093,51 @@ pub fn build_validation_evidence_pack(
         missing_requested_modules.push("spa");
     }
 
-    let status = if missing_requested_modules.is_empty() {
+    let data_realism =
+        crate::validation_realism::build_validation_realism_evidence(input.validation_context);
+    let promotion_eligibility = crate::validation_realism::build_validation_promotion_eligibility(
+        input.run_verdict.passed,
+        input.run_verdict.approved,
+        &data_realism,
+    );
+    let status = if missing_requested_modules.is_empty() && data_realism.complete {
         ValidationEvidencePackStatus::Complete
     } else {
         ValidationEvidencePackStatus::Incomplete
     };
-    let status_reason = evidence_status_reason(&missing_requested_modules);
+    let status_reason =
+        evidence_status_reason(&missing_requested_modules, &data_realism.missing_or_unknown);
+    let context = input.validation_context;
+    let expected_sharpe_metric_id = match input.workflow {
+        "double_ma_validation" => Some(ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID),
+        "composite_validation" => Some(crate::composite_mo::COMPOSITE_SHARPE_METRIC_ID),
+        _ => None,
+    };
+    let comparable_search_distribution = expected_sharpe_metric_id.and_then(|expected_id| {
+        context
+            .and_then(|entry| entry.search_distribution.as_ref())
+            .filter(|summary| summary.is_comparable_with(expected_id))
+    });
     let probability_source = input
         .validation_provenance
         .map(|entry| entry.probability_metric_source.as_str())
         .filter(|entry| !entry.trim().is_empty())
         .unwrap_or("raw_bar_probability_metrics");
-    let probability_basis = format!(
-        "{probability_source}; probability metrics are comparable only within the same validation workflow and sample-unit contract"
-    );
+    let probability_basis = if let Some(summary) = comparable_search_distribution {
+        format!(
+            "{probability_source}; DSR peer moments and trial count use the comparable full-search '{}' distribution (metric '{}'); probability metrics are comparable only within the same validation workflow and sample-unit contract",
+            summary.metric_surface_kind, summary.sharpe_metric_id
+        )
+    } else {
+        format!(
+            "{probability_source}; probability metrics are comparable only within the same validation workflow and sample-unit contract"
+        )
+    };
     let cscv_basis =
         "candidate_set_slices; set-level CSCV/PBO evidence, not candidate-specific proof";
     let spa_basis = "candidate_set_slices; SPA compares the retained search set against the configured benchmark";
     let track_record_basis = "raw_bars; recommendation support, not a statistical approval proof";
 
-    let context = input.validation_context;
     let cscv_pbo_value = input.cscv_pbo.and_then(|result| {
         if cscv_availability == ValidationEvidenceAvailability::Available {
             finite_f64(Some(result.pbo))
@@ -1058,6 +1173,15 @@ pub fn build_validation_evidence_pack(
     if let Some(reason) = input.spa.and_then(|result| result.skipped_reason.clone()) {
         warnings.push(format!("spa_skipped:{reason}"));
     }
+    if !data_realism.complete {
+        warnings.push("promotion_blocked_missing_realism_evidence".to_string());
+        warnings.extend(
+            data_realism
+                .missing_or_unknown
+                .iter()
+                .map(|field| format!("data_realism_unknown:{field}")),
+        );
+    }
     warnings.sort();
     warnings.dedup();
 
@@ -1076,6 +1200,7 @@ pub fn build_validation_evidence_pack(
             csv_path: context.and_then(|entry| entry.csv_path.clone()),
             timeframe: context.and_then(|entry| entry.timeframe.clone()),
             label: context.and_then(|entry| entry.label.clone()),
+            data_realism,
         },
         route: ValidationEvidenceRouteV1 {
             requested_backend: input.requested_backend.to_string(),
@@ -1093,6 +1218,7 @@ pub fn build_validation_evidence_pack(
             survived_hard_gates: input.run_verdict.candidates_survived_hard_gates,
             approved_candidates: input.run_verdict.approved_candidate_count,
             optimization_trials: input.optimization_trials,
+            search_distribution: comparable_search_distribution.cloned(),
             admission_policy: input.admission_policy.map(ToOwned::to_owned),
             selection_scope: "retained_validation_candidates".to_string(),
         },
@@ -1105,6 +1231,7 @@ pub fn build_validation_evidence_pack(
             warning_flags: input.run_verdict.warning_flags.clone(),
             fail_reasons: input.run_verdict.fail_reasons.clone(),
         },
+        promotion_eligibility,
         metrics: vec![
             metric_entry(
                 input.evidence_policy_summary,
@@ -1282,10 +1409,21 @@ pub fn build_validation_evidence_pack(
         ],
         policy_summary: input.evidence_policy_summary.cloned(),
         warnings,
-        caveats: input
+        caveats: {
+            let mut caveats = input
             .evidence_policy_summary
             .map(|summary| summary.caveats.clone())
-            .unwrap_or_default(),
+            .unwrap_or_default();
+            caveats.push(
+                "validation approval is statistical research evidence, not deployment authorization"
+                    .to_string(),
+            );
+            caveats.push(
+                "fee and slippage stress does not by itself establish liquidity, capacity, market-impact, or borrow availability"
+                    .to_string(),
+            );
+            caveats
+        },
     }
 }
 
@@ -2588,13 +2726,100 @@ pub fn finalize_with_probability_and_optional_cscv<C, F>(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
     cscv_prep_phase: &'static str,
+    build_slice_stats_for_candidate: F,
+) -> Result<Option<CscvPboResult>, String>
+where
+    C: ValidationPostCandidate,
+    F: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
+{
+    finalize_with_probability_and_optional_cscv_with_research_context(
+        out,
+        sample_obs,
+        None,
+        None,
+        hard_gates,
+        cscv_cfg,
+        total_bars,
+        common_start_t,
+        seed,
+        cancel,
+        progress,
+        cscv_prep_phase,
+        build_slice_stats_for_candidate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_with_probability_and_optional_cscv_with_research_context<C, F>(
+    out: &mut Vec<C>,
+    sample_obs: &[usize],
+    optimization_trials: Option<usize>,
+    return_moments: Option<&[Option<crate::sharpe_stats::ReturnDistributionMoments>]>,
+    hard_gates: &ValidationHardGateConfig,
+    cscv_cfg: Option<&CscvPboConfig>,
+    total_bars: usize,
+    common_start_t: usize,
+    seed: u64,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    cscv_prep_phase: &'static str,
+    build_slice_stats_for_candidate: F,
+) -> Result<Option<CscvPboResult>, String>
+where
+    C: ValidationPostCandidate,
+    F: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
+{
+    finalize_with_probability_and_optional_cscv_with_search_distribution(
+        out,
+        sample_obs,
+        optimization_trials,
+        None,
+        None,
+        return_moments,
+        hard_gates,
+        cscv_cfg,
+        total_bars,
+        common_start_t,
+        seed,
+        cancel,
+        progress,
+        cscv_prep_phase,
+        build_slice_stats_for_candidate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_with_probability_and_optional_cscv_with_search_distribution<C, F>(
+    out: &mut Vec<C>,
+    sample_obs: &[usize],
+    optimization_trials: Option<usize>,
+    search_distribution: Option<&ta_optimizer::SearchDistributionSummary>,
+    expected_sharpe_metric_id: Option<&str>,
+    return_moments: Option<&[Option<crate::sharpe_stats::ReturnDistributionMoments>]>,
+    hard_gates: &ValidationHardGateConfig,
+    cscv_cfg: Option<&CscvPboConfig>,
+    total_bars: usize,
+    common_start_t: usize,
+    seed: u64,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    cscv_prep_phase: &'static str,
     mut build_slice_stats_for_candidate: F,
 ) -> Result<Option<CscvPboResult>, String>
 where
     C: ValidationPostCandidate,
     F: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
 {
-    compute_probability_metrics(out, sample_obs);
+    compute_probability_metrics_with_search_distribution(
+        out,
+        sample_obs,
+        None,
+        None,
+        optimization_trials,
+        search_distribution,
+        expected_sharpe_metric_id,
+        return_moments,
+    );
     mark_robust_pareto(out);
 
     let mut cscv_pbo: Option<CscvPboResult> = None;
@@ -2854,6 +3079,9 @@ pub fn compute_spa_validation_stats(
 mod tests {
     use super::*;
     use crate::validation_pipeline::ValidationRecommendation;
+    use crate::validation_shared::{
+        ValidationPriceAdjustmentState, ValidationRealismContext, ValidationRealismEvidenceStatus,
+    };
     use rand::Rng;
     use std::sync::atomic::AtomicBool;
     use ta_strategies::double_ma::Metrics;
@@ -3289,6 +3517,222 @@ mod tests {
                 > baseline[0]
                     .min_track_record_length_bars
                     .expect("baseline mintrl")
+        );
+    }
+
+    #[test]
+    fn probability_metrics_use_full_optimization_trial_count_when_available() {
+        let mut retained_only = vec![
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.20,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 1.2,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 0.60,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 0.6,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 0.20,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 0.2,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+        ];
+        let mut full_search = retained_only.clone();
+
+        compute_probability_metrics(&mut retained_only, &[128, 128, 128]);
+        compute_probability_metrics_with_research_context(
+            &mut full_search,
+            &[128, 128, 128],
+            None,
+            None,
+            Some(500),
+            None,
+        );
+
+        assert_eq!(retained_only[0].psr, full_search[0].psr);
+        assert!(
+            full_search[0].dsr.expect("full-search dsr")
+                < retained_only[0].dsr.expect("retained-only dsr")
+        );
+    }
+
+    #[test]
+    fn probability_metrics_use_comparable_full_search_sharpe_moments_and_finite_count() {
+        let mut candidates = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.20,
+                ..Metrics::default()
+            },
+            psr: None,
+            dsr: None,
+            track_record_bars: 0,
+            min_track_record_length_bars: None,
+            robust_score: 1.2,
+            robust_pareto: false,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        let summary = ta_optimizer::SearchDistributionSummary {
+            metric_surface_kind: "core17".to_string(),
+            sharpe_metric_id: ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID.to_string(),
+            attempted_count: 600,
+            unique_count: 550,
+            feasible_count: 510,
+            finite_sharpe_count: 500,
+            finite_sharpe_mean: Some(0.10),
+            finite_sharpe_sample_std: Some(0.80),
+        };
+
+        compute_probability_metrics_with_search_distribution(
+            &mut candidates,
+            &[128],
+            None,
+            None,
+            Some(999),
+            Some(&summary),
+            Some(ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID),
+            None,
+        );
+
+        let expected = crate::validation_stats::compute_psr_dsr_with_effective_counts_and_moments(
+            1.20,
+            128,
+            Some(128),
+            500,
+            None,
+            0.10,
+            0.80,
+            0.0,
+            3.0,
+        );
+        assert_eq!(candidates[0].psr, expected.0);
+        assert_eq!(candidates[0].dsr, expected.1);
+    }
+
+    #[test]
+    fn probability_metrics_ignore_incompatible_full_search_distribution() {
+        let candidate = DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.20,
+                ..Metrics::default()
+            },
+            psr: None,
+            dsr: None,
+            track_record_bars: 0,
+            min_track_record_length_bars: None,
+            robust_score: 1.2,
+            robust_pareto: false,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        };
+        let mut baseline = vec![candidate.clone()];
+        let mut incompatible = vec![candidate];
+        let summary = ta_optimizer::SearchDistributionSummary {
+            metric_surface_kind: "core17".to_string(),
+            sharpe_metric_id: "different_sharpe_semantics".to_string(),
+            attempted_count: 600,
+            unique_count: 550,
+            feasible_count: 510,
+            finite_sharpe_count: 500,
+            finite_sharpe_mean: Some(-10.0),
+            finite_sharpe_sample_std: Some(12.0),
+        };
+
+        compute_probability_metrics_with_research_context(
+            &mut baseline,
+            &[128],
+            None,
+            None,
+            Some(17),
+            None,
+        );
+        compute_probability_metrics_with_search_distribution(
+            &mut incompatible,
+            &[128],
+            None,
+            None,
+            Some(17),
+            Some(&summary),
+            Some(ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID),
+            None,
+        );
+
+        assert_eq!(incompatible[0].psr, baseline[0].psr);
+        assert_eq!(incompatible[0].dsr, baseline[0].dsr);
+    }
+
+    #[test]
+    fn probability_metrics_use_observed_return_moments_when_available() {
+        let mut normal_fallback = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.20,
+                ..Metrics::default()
+            },
+            psr: None,
+            dsr: None,
+            track_record_bars: 0,
+            min_track_record_length_bars: None,
+            robust_score: 1.2,
+            robust_pareto: false,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        let mut observed = normal_fallback.clone();
+        let moments = [Some(crate::sharpe_stats::ReturnDistributionMoments {
+            observations: 128,
+            skewness: -1.0,
+            kurtosis: 9.0,
+        })];
+
+        compute_probability_metrics(&mut normal_fallback, &[128]);
+        compute_probability_metrics_with_research_context(
+            &mut observed,
+            &[128],
+            None,
+            None,
+            None,
+            Some(&moments),
+        );
+
+        assert!(
+            observed[0].psr.expect("observed psr") < normal_fallback[0].psr.expect("normal psr")
+        );
+        assert!(
+            observed[0]
+                .min_track_record_length_bars
+                .expect("observed mintrl")
+                > normal_fallback[0]
+                    .min_track_record_length_bars
+                    .expect("normal mintrl")
         );
     }
 
@@ -4226,10 +4670,31 @@ mod tests {
         };
         let verdict = build_run_verdict(&out, 3, &gates, Some(&cscv), None);
         let policy = build_general_validation_evidence_policy_summary(&gates, true, Some(&cscv));
+        let validation_context = ValidationArtifactContext {
+            search_distribution: Some(ta_optimizer::SearchDistributionSummary {
+                metric_surface_kind: "core17".to_string(),
+                sharpe_metric_id: ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID.to_string(),
+                attempted_count: 58_300,
+                unique_count: 58_300,
+                feasible_count: 58_000,
+                finite_sharpe_count: 57_900,
+                finite_sharpe_mean: Some(0.15),
+                finite_sharpe_sample_std: Some(0.35),
+            }),
+            data_realism: Some(ValidationRealismContext {
+                price_adjustment: ValidationPriceAdjustmentState::Adjusted,
+                corporate_actions: ValidationRealismEvidenceStatus::Documented,
+                survivorship_bias: ValidationRealismEvidenceStatus::Documented,
+                liquidity_capacity: ValidationRealismEvidenceStatus::Documented,
+                market_impact: ValidationRealismEvidenceStatus::Documented,
+                borrow_availability: ValidationRealismEvidenceStatus::Documented,
+            }),
+            ..ValidationArtifactContext::default()
+        };
         let pack = build_validation_evidence_pack(ValidationEvidencePackBuildInput {
             workflow: "double_ma_validation",
             data_id: "dataset-a",
-            validation_context: None,
+            validation_context: Some(&validation_context),
             requested_backend: "GpuKernel",
             realized_backend: "Gpu",
             backend_route: Some("GpuKernel"),
@@ -4255,8 +4720,27 @@ mod tests {
         assert_eq!(pack.version, VALIDATION_EVIDENCE_PACK_VERSION);
         assert_eq!(pack.schema_version, VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION);
         assert_eq!(pack.status, ValidationEvidencePackStatus::Complete);
+        assert!(pack.dataset.data_realism.complete);
+        assert!(pack.promotion_eligibility.eligible);
+        assert_eq!(
+            pack.promotion_eligibility.state,
+            crate::validation_shared::ValidationPromotionEligibilityState::EligibleForReview
+        );
         assert_eq!(pack.route.route_label.as_deref(), Some("GpuKernel"));
         assert_eq!(pack.candidate_universe.optimization_trials, Some(58_300));
+        assert_eq!(
+            pack.candidate_universe
+                .search_distribution
+                .as_ref()
+                .map(|summary| summary.finite_sharpe_count),
+            Some(57_900)
+        );
+        let dsr = pack
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "dsr")
+            .expect("dsr metric");
+        assert!(dsr.comparability_basis.contains("full-search 'core17'"));
         let pbo = pack
             .metrics
             .iter()
@@ -4337,6 +4821,8 @@ mod tests {
         assert_eq!(pack.status, ValidationEvidencePackStatus::Incomplete);
         assert!(pack.status_reason.contains("cscv_pbo"));
         assert!(pack.status_reason.contains("spa"));
+        assert!(pack.status_reason.contains("deployment-realism"));
+        assert!(!pack.promotion_eligibility.eligible);
         let cscv_module = pack
             .modules
             .iter()

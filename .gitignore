@@ -40,8 +40,8 @@ data/*.csv
 /nvlog.config
 
 # Local-only documentation and AI/research working notes.
-# The docs tree is intentionally ignored with no exceptions for the
-# backend-only public release surface.
+# The docs tree is ignored by default; explicit CI/release-policy exceptions
+# below are clean-clone contracts used by active gates.
 /docs/
 /GPT5.5-review/
 *.md
@@ -49,6 +49,12 @@ data/*.csv
 !/README.md
 !/docs/
 /docs/**
+!/docs/CI.md
+!/docs/PUBLIC_RELEASE.md
+!/docs/RELEASE.md
+!/docs/REPO_MAP.md
+!/docs/release_authority_matrix.json
+!/docs/verification_benchmark_release_authority.md
 !/docs/feature_expansion_implementation_plans_2026-04-30/
 !/docs/feature_expansion_implementation_plans_2026-04-30/**
 /.github/workflows.disabled/
@@ -72,9 +78,20 @@ data/*.csv
 /scripts/refresh_output_parity_baseline.mjs
 /scripts/run_output_parity_check.mjs
 /scripts/run_packaged_smoke.ps1
+!/scripts/run_packaged_smoke.ps1
 /scripts/capture_optimization_memory.ps1
 /scripts/post_release_telemetry_review.mjs
 /scripts/baselines/
+!/scripts/check_output_parity.mjs
+!/scripts/check_output_semantic_parity.mjs
+!/scripts/headless_output_parity_pack.json
+!/scripts/output_parity_pairs.json
+!/scripts/output_parity_semantic_pairs.json
+!/scripts/run_output_parity_check.mjs
+!/scripts/baselines/
+!/scripts/baselines/samples/
+!/scripts/baselines/samples/report.json
+!/scripts/baselines/samples/report.xlsx
 /src-tauri/gen/schemas/
 /src-tauri/resources/native/
 /web/playwright.config.ts

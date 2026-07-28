@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import {
   candidateDetailReadyScenario,
   aggregateMetaReadyScenario,
@@ -63,6 +63,20 @@ async function openMlSignalPanel(action: ActionLookup): Promise<void> {
   await action("shell.mode.mlSignal").click();
   await action("shell.workflowStep.optimize").click();
   await expect(action("mlSignal.bundles.refresh")).toBeVisible();
+}
+
+async function expectFailedTaskRawError(
+  page: Page,
+  action: ActionLookup,
+  expected: RegExp,
+): Promise<void> {
+  await action("shell.taskCenter.open").first().click();
+  const taskCenter = page.getByRole("dialog", { name: "Task center" });
+  await expect(taskCenter).toBeVisible();
+  const details = taskCenter.locator(".taskErrorDetails").filter({ hasText: expected }).first();
+  await expect(details).toBeVisible();
+  await details.locator("summary").click();
+  await expect(details.locator(".taskErrorText")).toContainText(expected);
 }
 
 async function openSavedOptionsArtifact(
@@ -133,7 +147,9 @@ defineWorkflow({
     await expect(
       page.getByText(/Validation completed in/i).first(),
     ).toBeVisible();
-    await expect(page.getByText(/Validation complete/i).first()).toBeVisible();
+    await expect(
+      page.locator(".validationPanelVueRoot").getByText(/Validation complete/i).first(),
+    ).toBeVisible();
     await expect(
       page.locator(".validationTableVue tbody tr").first(),
     ).toBeVisible();
@@ -733,13 +749,12 @@ defineWorkflow({
   run: async ({ page, action }) => {
     await loadFixtureSampleData(page, action);
     await openMlSignalPanel(action);
+    await action("shell.workflowStep.data").click();
     await page.locator("#mlSignalDatasetExportPath").fill("C:/fixtures/ml_signal_dataset.csv");
     await expect(action("mlSignal.dataset.export")).toBeEnabled();
     await action("mlSignal.dataset.export").click();
-    await expect(
-      page.getByText(/ML dataset export failed.*ML dataset export fixture failure/i).first(),
-    ).toBeVisible();
     await expectNoStuckBusyState(page);
+    await expectFailedTaskRawError(page, action, /ML dataset export fixture failure/i);
   },
 });
 
@@ -755,10 +770,8 @@ defineWorkflow({
     await page.locator("#mlSignalScoreCachePath").fill("C:/fixtures/ml_signal_score_cache.json");
     await expect(action("mlSignal.scoreCache.build")).toBeEnabled();
     await action("mlSignal.scoreCache.build").click();
-    await expect(
-      page.getByText(/ML score cache generation failed.*ML score cache fixture failure/i).first(),
-    ).toBeVisible();
     await expectNoStuckBusyState(page);
+    await expectFailedTaskRawError(page, action, /ML score cache fixture failure/i);
   },
 });
 
@@ -771,12 +784,11 @@ defineWorkflow({
     await loadFixtureSampleData(page, action);
     await openMlSignalPanel(action);
     await page.locator("#mlSignalScoreCachePath").fill("C:/fixtures/ml_signal_score_cache.json");
+    await action("shell.workflowStep.validate").click();
     await expect(action("mlSignal.validation.run")).toBeEnabled();
     await action("mlSignal.validation.run").click();
-    await expect(
-      page.getByText(/ML validation failed.*ML validation fixture failure/i).first(),
-    ).toBeVisible();
     await expectNoStuckBusyState(page);
+    await expectFailedTaskRawError(page, action, /ML validation fixture failure/i);
   },
 });
 
@@ -789,12 +801,11 @@ defineWorkflow({
     await loadFixtureSampleData(page, action);
     await openMlSignalPanel(action);
     await page.locator("#mlSignalScoreCachePath").fill("C:/fixtures/ml_signal_score_cache.json");
+    await action("shell.workflowStep.analyze").click();
     await expect(action("mlSignal.policySweep.run")).toBeEnabled();
     await action("mlSignal.policySweep.run").click();
-    await expect(
-      page.getByText(/ML policy sweep failed.*ML policy sweep fixture failure/i).first(),
-    ).toBeVisible();
     await expectNoStuckBusyState(page);
+    await expectFailedTaskRawError(page, action, /ML policy sweep fixture failure/i);
   },
 });
 
@@ -926,19 +937,22 @@ defineWorkflow({
 
 defineWorkflow({
   id: "validation.blocked.datasetMismatch",
-  title: "reports validation dataset mismatch in UI without page errors",
+  title: "blocks validation when the optimization dataset is not loaded",
   tags: ["@workflow", "@regression"],
   scenario: validationDatasetMismatchScenario,
   run: async ({ page, action }) => {
     await action("shell.workflowStep.validate").click();
     await expect(action("validation.run")).toBeVisible();
-    await action("validation.run").click();
-    await expect(page.getByText(/Validation failed:/).first()).toBeVisible();
+    await expect(action("validation.run")).toBeDisabled();
     await expect(
       page
-        .getByText(/Load the same dataset used by the optimization artifact/)
+        .getByText(/Validation artifact expects dataset .* Load that dataset before running validation\./)
         .first(),
     ).toBeVisible();
+    const validationInvokes = (await readTauriInvokeLog(page)).filter(
+      (entry) => entry.command === "run_double_ma_validation",
+    );
+    expect(validationInvokes).toHaveLength(0);
     await expectNoStuckBusyState(page);
   },
 });

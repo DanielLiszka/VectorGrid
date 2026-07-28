@@ -16,6 +16,18 @@ function timestampForRunId(value: Date): string {
   return value.toISOString().replace(/[:.]/g, '-')
 }
 
+function ensureOrdinaryDirectory(dir: string): string {
+  if (fs.existsSync(dir)) {
+    const stat = fs.lstatSync(dir)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`Desktop evidence path must be an ordinary directory: ${dir}`)
+    }
+    return dir
+  }
+  fs.mkdirSync(dir)
+  return dir
+}
+
 export function fileSafeName(value: string): string {
   return String(value || 'unnamed')
     .trim()
@@ -27,9 +39,18 @@ export function fileSafeName(value: string): string {
 
 export function createDesktopArtifactContext(runAt = new Date()): DesktopArtifactContext {
   const runId = String(process.env.VECTORGRID_DESKTOP_SMOKE_RUN_ID || '').trim() || timestampForRunId(runAt)
-  const runDir = ensureDir(path.resolve(desktopArtifactsRoot, runId))
-  const logsDir = ensureDir(path.resolve(runDir, 'logs'))
-  const screenshotsDir = ensureDir(path.resolve(runDir, 'screenshots'))
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)) {
+    throw new Error(
+      'VECTORGRID_DESKTOP_SMOKE_RUN_ID must be one filename-safe segment.',
+    )
+  }
+  const outputRoot = path.resolve(desktopArtifactsRoot, '..', '..')
+  ensureOrdinaryDirectory(outputRoot)
+  ensureOrdinaryDirectory(path.resolve(outputRoot, 'wdio'))
+  ensureOrdinaryDirectory(desktopArtifactsRoot)
+  const runDir = ensureOrdinaryDirectory(path.resolve(desktopArtifactsRoot, runId))
+  const logsDir = ensureOrdinaryDirectory(path.resolve(runDir, 'logs'))
+  const screenshotsDir = ensureOrdinaryDirectory(path.resolve(runDir, 'screenshots'))
   return {
     runId,
     runDir,

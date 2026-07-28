@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "base_dir": "..",
+  "pairs": [
+    {
+      "name": "report-json-artifact",
+      "baseline": "scripts/baselines/samples/report.json",
+      "candidate": "_write_test/headless_reports/vectorgrid_synthetic_headless_current.json"
+    },
+    {
+      "name": "validation-shortlist-csv",
+      "kind": "csv_contract",
+      "candidate": "_write_test/headless_reports/vectorgrid_synthetic_headless_current.csv",
+      "minimum_data_rows": 1,
+      "expected_header": [
+        "rank",
+        "approval_label",
+        "approval_reason",
+        "hard_gate_passed",
+        "legacy_shortlisted",
+        "profile_kind",
+        "params_summary",
+        "robust_score",
+        "psr",
+        "dsr",
+        "track_record_bars",
+        "min_track_record_length_bars",
+        "in_sample_pnl",
+        "in_sample_sharpe",
+        "in_sample_max_dd",
+        "in_sample_trades",
+        "wf_sharpe_median",
+        "wf_dd_worst",
+        "cscv_selected_frac",
+        "cscv_oos_rank_frac_p50",
+        "cscv_oos_metric_p50",
+        "cross_score",
+        "cross_pareto",
+        "bootstrap_prob_pnl_positive",
+        "perturb_pnl_mean",
+        "warning_flags",
+        "fail_reasons",
+        "params_json",
+        "monte_carlo_mode",
+        "monte_carlo_prob_pnl_positive",
+        "monte_carlo_pnl_p05",
+        "monte_carlo_pnl_p50",
+        "monte_carlo_max_dd_p95",
+        "monte_carlo_stationary_mean_block_len",
+        "monte_carlo_stationary_pnl_p05",
+        "monte_carlo_stationary_max_dd_p95",
+        "monte_carlo_sample_count"
+      ]
+    },
+    {
+      "name": "report-xlsx-zip-structure",
+      "baseline": "scripts/baselines/samples/report.xlsx",
+      "candidate": "_write_test/headless_reports/vectorgrid_synthetic_headless_current.xlsx"
+    }
+  ]
+}

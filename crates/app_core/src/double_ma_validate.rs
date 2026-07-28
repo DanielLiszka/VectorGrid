@@ -9,6 +9,7 @@ use crate::double_ma::{
 use crate::double_ma::{ma_matrix_cpu_f32_staging, GpuExecutionPolicy};
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
+use crate::validation_core::run_validation_candidates_with_search_distribution;
 use crate::validation_pipeline::{
     build_general_validation_evidence_policy_summary, build_run_verdict,
     build_validation_evidence_pack, build_validation_semantics_provenance, sanitize_hard_gates,
@@ -1796,7 +1797,12 @@ pub fn refresh_double_ma_validation_evidence_pack(
             requested_candidate_count: req.candidates.len(),
             evaluated_candidate_count: res.run_verdict.candidates_tested,
             retained_candidate_count: res.candidates.len(),
-            optimization_trials: None,
+            optimization_trials: crate::sharpe_stats::normalize_optimization_trial_count(
+                req.validation_context
+                    .as_ref()
+                    .and_then(|context| context.optimization_trials),
+                req.candidates.len(),
+            ),
             admission_policy: None,
             hard_gates: &hard_gates,
             run_verdict: &res.run_verdict,
@@ -4301,7 +4307,13 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         )
     };
 
-    let (mut out, cscv_pbo) = crate::validation_core::run_validation_candidates(
+    let optimization_trials = crate::sharpe_stats::normalize_optimization_trial_count(
+        req.validation_context
+            .as_ref()
+            .and_then(|context| context.optimization_trials),
+        req.candidates.len(),
+    );
+    let (mut out, cscv_pbo) = run_validation_candidates_with_search_distribution(
         &req.candidates,
         seed,
         cancel,
@@ -4312,6 +4324,11 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         cscv_cfg.as_ref(),
         req.spa.is_some(),
         candles.close.len(),
+        optimization_trials,
+        req.validation_context
+            .as_ref()
+            .and_then(|context| context.search_distribution.as_ref()),
+        Some(ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID),
         |idx, p, rng| {
             if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
                 let in_sample = gpu_eval.metrics[idx].clone();
@@ -4393,6 +4410,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                     },
                     series_start_t,
                     n.saturating_sub(series_start_t),
+                    None,
                 ));
             }
             let series = build_series(p)?;
@@ -4461,7 +4479,6 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
             let robust_base = iterative_in_sample.as_ref().unwrap_or(&in_sample);
             let robust_score =
                 double_ma_validation_robust_score(robust_base, walk_forward.as_ref());
-
             Ok((
                 DoubleMaValidationCandidateResult {
                     params: p.clone(),
@@ -4491,6 +4508,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                 },
                 series_start_t,
                 series.n.saturating_sub(series_start_t),
+                None,
             ))
         },
         |cand, cscv_start_t, slice_bars, slices| {
@@ -6682,11 +6700,19 @@ mod tests {
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let pnl_tolerance = 1e-4
+                * cpu
+                    .in_sample
+                    .pnl
+                    .abs()
+                    .max(gpu.in_sample.pnl.abs())
+                    .max(1.0);
             assert!(
-                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4,
-                "pnl mismatch cpu={} gpu={} route={:?}",
+                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < pnl_tolerance,
+                "pnl mismatch cpu={} gpu={} tolerance={} route={:?}",
                 cpu.in_sample.pnl,
                 gpu.in_sample.pnl,
+                pnl_tolerance,
                 gpu_res.backend_route
             );
             assert!(

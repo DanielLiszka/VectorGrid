@@ -19,14 +19,14 @@ export async function expectedWorkspaceLabels(): Promise<string[]> {
 async function waitForShellMarkerOrUrl(urlPrefix: string, timeout: number, timeoutMsg: string): Promise<void> {
   await browser.waitUntil(
     async () => {
+      const nextUrl = await browser.getUrl().catch(() => '')
+      if (nextUrl && nextUrl !== 'about:blank' && nextUrl.startsWith(urlPrefix)) {
+        return true
+      }
       const titlebarVisible = await (await $(shellSelectors.titlebar))
         .isDisplayed()
         .catch(() => false)
-      if (titlebarVisible) {
-        return true
-      }
-      const nextUrl = await browser.getUrl().catch(() => '')
-      return Boolean(nextUrl && nextUrl !== 'about:blank' && nextUrl.startsWith(urlPrefix))
+      return titlebarVisible
     },
     {
       timeout,
@@ -37,23 +37,18 @@ async function waitForShellMarkerOrUrl(urlPrefix: string, timeout: number, timeo
 }
 
 export async function waitForShellReady(timeout = 30000): Promise<void> {
-  const currentUrl = await browser.getUrl().catch(() => '')
+  const currentUrl = await browser.getUrl()
   if (!currentUrl || currentUrl === 'about:blank') {
     if (desktopSmokeDisablePreview) {
-      try {
-        await waitForShellMarkerOrUrl(
-          desktopSmokePackagedUrl,
-          Math.min(timeout, 4_000),
-          'Desktop smoke stayed on the blank WebDriver URL long enough to require packaged-shell bootstrap.',
-        )
-      } catch {
-        await browser.url(desktopSmokePackagedUrl)
-        await waitForShellMarkerOrUrl(
-          desktopSmokePackagedUrl,
-          Math.min(timeout, 12_000),
-          `Desktop smoke never attached to the packaged shell at ${desktopSmokePackagedUrl}.`,
-        )
-      }
+      // Packaged Tauri sessions consistently attach WebDriver to about:blank
+      // first. Bootstrap immediately; waiting here can let that renderer detach
+      // before the tauri.localhost navigation is issued.
+      await browser.url(desktopSmokePackagedUrl)
+      await waitForShellMarkerOrUrl(
+        desktopSmokePackagedUrl,
+        Math.min(timeout, 12_000),
+        `Desktop smoke never attached to the packaged shell at ${desktopSmokePackagedUrl}.`,
+      )
     } else {
       await browser.url(desktopSmokeAppUrl)
       await waitForShellMarkerOrUrl(
@@ -96,13 +91,21 @@ export async function waitForShellReady(timeout = 30000): Promise<void> {
 }
 
 export async function openWorkspace(key: WorkspaceKey, timeout = 10000): Promise<void> {
-  const tab = await $(workspaceTabSelector(key))
+  const selector = workspaceTabSelector(key)
+  const tab = await $(selector)
   await tab.waitForDisplayed({ timeout })
-  await tab.click()
+  await tab.waitForClickable({ timeout })
   await browser.waitUntil(
-    async () => (await tab.getAttribute('aria-selected')) === 'true',
+    async () => {
+      const currentTab = await $(selector)
+      if ((await currentTab.getAttribute('aria-selected').catch(() => 'false')) === 'true') return true
+      if (!(await currentTab.isClickable().catch(() => false))) return false
+      await currentTab.click().catch(() => undefined)
+      return (await currentTab.getAttribute('aria-selected').catch(() => 'false')) === 'true'
+    },
     {
       timeout,
+      interval: 200,
       timeoutMsg: `Workspace ${key} never became selected.`,
     },
   )

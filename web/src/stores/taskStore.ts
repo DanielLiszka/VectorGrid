@@ -359,6 +359,67 @@ function shouldToastOnTaskSuccess(command: string): boolean {
   return isTauriCommand(command) && SUCCESS_TOAST_COMMANDS.has(command);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isPersistedTask(value: unknown): value is TrackedTask {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    typeof value.command === "string" &&
+    typeof value.label === "string" &&
+    ["queued", "running", "cancelling", "success", "failed", "cancelled"].includes(
+      String(value.status),
+    ) &&
+    hasFiniteNumber(value.startedAt) &&
+    (value.endedAt === undefined || hasFiniteNumber(value.endedAt)) &&
+    (value.progressPct === undefined || hasFiniteNumber(value.progressPct)) &&
+    (value.phase === undefined || typeof value.phase === "string") &&
+    (value.message === undefined || typeof value.message === "string") &&
+    (value.error === undefined || typeof value.error === "string")
+  );
+}
+
+function isPersistedEvent(value: unknown): value is TaskEventItem {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    hasFiniteNumber(value.atUnixMs) &&
+    typeof value.source === "string" &&
+    typeof value.message === "string" &&
+    ["info", "warn", "error"].includes(String(value.level))
+  );
+}
+
+function isPersistedTimeline(value: unknown): value is TaskTimelineItem {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    hasFiniteNumber(value.atUnixMs) &&
+    typeof value.source === "string" &&
+    typeof value.phase === "string" &&
+    typeof value.message === "string" &&
+    ["info", "warn", "error", "success"].includes(String(value.level)) &&
+    (value.taskId === undefined || typeof value.taskId === "string")
+  );
+}
+
+function isPersistedToast(value: unknown): value is TaskToastItem {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    hasFiniteNumber(value.atUnixMs) &&
+    typeof value.source === "string" &&
+    typeof value.message === "string" &&
+    ["info", "success", "warn", "error"].includes(String(value.level))
+  );
+}
+
 function hydrateStoreFromDisk(st: TaskState): void {
   if (hydratedFromStorage) return;
   hydratedFromStorage = true;
@@ -368,28 +429,34 @@ function hydrateStoreFromDisk(st: TaskState): void {
   if (!payload || (payload.version !== 1 && payload.version !== 2)) return;
 
   st.history = clampHistory(
-    (Array.isArray(payload.history) ? payload.history : []).map((task) => ({
-      ...task,
-      ...(task.message ? { message: redactKnownSecrets(task.message) } : {}),
-      ...(task.error ? { error: redactKnownSecrets(task.error) } : {}),
-    })),
+    (Array.isArray(payload.history) ? payload.history : [])
+      .filter(isPersistedTask)
+      .map((task) => ({
+        ...task,
+        ...(task.message ? { message: redactKnownSecrets(task.message) } : {}),
+        ...(task.error ? { error: redactKnownSecrets(task.error) } : {}),
+      })),
   );
   st.events = clampEvents(
-    (Array.isArray(payload.events) ? payload.events : []).map((event) => ({
-      ...event,
-      message: redactKnownSecrets(event.message),
-    })),
+    (Array.isArray(payload.events) ? payload.events : [])
+      .filter(isPersistedEvent)
+      .map((event) => ({
+        ...event,
+        message: redactKnownSecrets(event.message),
+      })),
   );
   st.timeline = clampTimeline(
-    (Array.isArray(payload.timeline) ? payload.timeline : []).map((event) => ({
-      ...event,
-      message: redactKnownSecrets(event.message),
-    })),
+    (Array.isArray(payload.timeline) ? payload.timeline : [])
+      .filter(isPersistedTimeline)
+      .map((event) => ({
+        ...event,
+        message: redactKnownSecrets(event.message),
+      })),
   );
   clearAllToastDismissTimers();
   st.toasts = clampToasts(
     Array.isArray((payload as Partial<PersistedTaskCenterV2>).toasts)
-      ? (payload as PersistedTaskCenterV2).toasts
+      ? (payload as PersistedTaskCenterV2).toasts.filter(isPersistedToast)
       : [],
   )
     .filter((toast) => !toastIsExpired(toast))
@@ -522,12 +589,21 @@ function pushToast(
 ): void {
   const st = taskStoreSingleton();
   const atUnixMs = Date.now();
+  const safeMessage = redactKnownSecrets(message);
+  const duplicate = st.toasts.find(
+    (toast) =>
+      toast.source === source &&
+      toast.message === safeMessage &&
+      toast.level === level &&
+      atUnixMs - toast.atUnixMs < 5000,
+  );
+  if (duplicate) return;
   nextToastSeq += 1;
   const toast: TaskToastItem = {
     id: `toast_${atUnixMs}_${nextToastSeq}`,
     atUnixMs,
     source,
-    message: redactKnownSecrets(message),
+    message: safeMessage,
     level,
   };
   st.toasts.unshift(toast);
@@ -901,20 +977,23 @@ export function failTrackedCommand(id: string, err: unknown): void {
     status: cancelled ? "cancelled" : "failed",
     endedAt: Date.now(),
     error: errorText || "Unknown error",
-    ...(cancelled ? { message: "Cancelled." } : {}),
+    message: cancelled ? "Cancelled." : "Failed. Open Details for technical information.",
   };
   delete st.activeById[id];
   removeActiveTaskId(st, id);
   pushHistory(done);
+  const publicTerminalMessage = cancelled
+    ? `${task.label} cancelled.`
+    : `${task.label} failed. Open task Details for technical information.`;
   pushEvent(
     task.command,
-    `${task.label} ${cancelled ? "cancelled" : "failed"}: ${done.error}`,
+    publicTerminalMessage,
     cancelled ? "warn" : "error",
   );
   pushTimeline(
     task.command,
     cancelled ? "cancelled" : "failed",
-    `${task.label} ${cancelled ? "cancelled" : "failed"}${done.error ? `: ${done.error}` : ""}`,
+    publicTerminalMessage,
     cancelled ? "warn" : "error",
     task.id,
   );

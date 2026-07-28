@@ -31,7 +31,7 @@ test.describe('browser dense history library', () => {
     await waitForShellReady(page)
 
     await page.locator(workspaceTabSelector('library')).click()
-    await page.getByRole('button', { name: 'Refresh' }).click()
+    await page.locator('[data-qa-action="library.savedRun.refresh"]').click()
 
     const savedRunsList = page.locator('ul[aria-label="Saved run artifacts"]')
     await expect(savedRunsList).toHaveClass(/historyVirtualListViewport/)

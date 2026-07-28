@@ -51,6 +51,8 @@ vi.mock('../services/executionService', () => ({
   loadExecutionRiskPolicy: vi.fn(async () => ({
     max_order_notional: null,
     max_position_notional: null,
+    max_daily_loss: null,
+    max_daily_orders: null,
     allow_short: null,
     require_bracket: null,
   })),
@@ -172,6 +174,8 @@ describe('execution store actions', () => {
     loadExecutionRiskPolicyMock.mockResolvedValue({
       max_order_notional: null,
       max_position_notional: null,
+      max_daily_loss: null,
+      max_daily_orders: null,
       allow_short: null,
       require_bracket: null,
     })
@@ -201,6 +205,8 @@ describe('execution store actions', () => {
     saveExecutionRiskPolicyMock.mockImplementation(async (policy) => ({
       max_order_notional: policy.max_order_notional ?? null,
       max_position_notional: policy.max_position_notional ?? null,
+      max_daily_loss: policy.max_daily_loss ?? null,
+      max_daily_orders: policy.max_daily_orders ?? null,
       allow_short: policy.allow_short ?? null,
       require_bracket: policy.require_bracket ?? null,
     }))
@@ -356,6 +362,8 @@ describe('execution store actions', () => {
     loadExecutionRiskPolicyMock.mockResolvedValueOnce({
       max_order_notional: 500,
       max_position_notional: 1500,
+      max_daily_loss: 200,
+      max_daily_orders: 8,
       allow_short: false,
       require_bracket: true,
     })
@@ -364,12 +372,16 @@ describe('execution store actions', () => {
 
     expect(store.riskMaxOrderNotional).toBe('500')
     expect(store.riskMaxPositionNotional).toBe('1500')
+    expect(store.riskMaxDailyLoss).toBe('200')
+    expect(store.riskMaxDailyOrders).toBe('8')
     expect(store.riskAllowShort).toBe(false)
     expect(store.riskRequireBracket).toBe(true)
     expect(store.riskPolicyStatusHint).toContain('max order=500')
 
     store.setInputField('execRiskMaxOrderNotional', '750')
     store.setInputField('execRiskMaxPositionNotional', '1750')
+    store.setInputField('execRiskMaxDailyLoss', '225')
+    store.setInputField('execRiskMaxDailyOrders', '9')
     store.setCheckboxField('execRiskAllowShort', true)
     store.setCheckboxField('execRiskRequireBracket', false)
 
@@ -378,6 +390,8 @@ describe('execution store actions', () => {
     expect(saveExecutionRiskPolicyMock).toHaveBeenCalledWith({
       max_order_notional: 750,
       max_position_notional: 1750,
+      max_daily_loss: 225,
+      max_daily_orders: 9,
       allow_short: true,
       require_bracket: false,
     })
@@ -391,10 +405,43 @@ describe('execution store actions', () => {
       symbol: 'AAPL',
       riskMaxOrderNotional: '750',
       riskMaxPositionNotional: '1750',
+      riskMaxDailyLoss: '225',
+      riskMaxDailyOrders: '9',
       riskAllowShort: true,
       riskRequireBracket: false,
     }))
     expect(store.statusLine).toBe('Policy preview allowed.')
+  })
+
+  it('uses unsaved daily-limit tightening drafts for preview and one-shot execution without replacing the saved policy', async () => {
+    const store = useExecutionStore()
+    loadExecutionRiskPolicyMock.mockResolvedValueOnce({
+      max_order_notional: 500,
+      max_position_notional: 1500,
+      max_daily_loss: 200,
+      max_daily_orders: 8,
+      allow_short: false,
+      require_bracket: true,
+    })
+
+    await store.loadRiskPolicy()
+    store.setInputField('execSymbol', 'AAPL')
+    store.setInputField('execRiskMaxDailyLoss', '125.5')
+    store.setInputField('execRiskMaxDailyOrders', '4')
+
+    store.previewRiskPolicy()
+    await waitForStoreToSettle(store)
+    store.runOnce()
+    await waitForStoreToSettle(store)
+
+    const expectedDrafts = expect.objectContaining({
+      symbol: 'AAPL',
+      riskMaxDailyLoss: '125.5',
+      riskMaxDailyOrders: '4',
+    })
+    expect(previewExecutionRiskPolicyMock).toHaveBeenCalledWith(expectedDrafts)
+    expect(runOnceMock).toHaveBeenCalledWith(expectedDrafts)
+    expect(saveExecutionRiskPolicyMock).not.toHaveBeenCalled()
   })
 
   it('confirms local paper reset through the execution service only in local-paper mode', async () => {

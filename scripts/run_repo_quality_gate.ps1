@@ -39,6 +39,60 @@ $previousCargoBuildRustcWrapper = $env:CARGO_BUILD_RUSTC_WRAPPER
 $previousSccacheNoDaemon = $env:SCCACHE_NO_DAEMON
 
 try {
+  Invoke-Step "Release authority matrix contract" {
+    node (Join-Path $repoRoot "scripts\\check_release_authority_matrix.mjs") `
+      --out (Join-Path $repoRoot "output\\qa\\release-authority-matrix-contract.json")
+  }
+
+  Invoke-Step "Canonical benchmark-lock lease contract" {
+    node --test (Join-Path $repoRoot "scripts\\benchmark_lock_contract.test.mjs")
+  }
+
+  Invoke-Step "CUDA Graph timing boundary contract" {
+    node --test (Join-Path $repoRoot "scripts\\cuda_graph_timing_contract.test.mjs")
+  }
+
+  Invoke-Step "CUDA Graph multi-tile parity contract" {
+    node --test (Join-Path $repoRoot "scripts\\cuda_graph_multitile_parity_contract.test.mjs")
+  }
+
+  Invoke-Step "Performance audit preflight contract" {
+    node --test `
+      (Join-Path $repoRoot "scripts\\performance_audit_preflight_contract.test.mjs") `
+      (Join-Path $repoRoot "scripts\\performance_child_process_contract.test.mjs")
+  }
+
+  Invoke-Step "CPU reliability soak authority contract" {
+    node --test (Join-Path $repoRoot "scripts\\cpu_reliability_soak_contract.test.mjs")
+  }
+
+  Invoke-Step "Frontend interaction latency contract" {
+    node --test `
+      (Join-Path $repoRoot "web\\scripts\\frontend-interaction-authority-lease.test.mjs") `
+      (Join-Path $repoRoot "web\\scripts\\frontend-interaction-build-attestation.test.mjs") `
+      (Join-Path $repoRoot "web\\scripts\\frontend-interaction-latency-lib.test.mjs") `
+      (Join-Path $repoRoot "web\\scripts\\frontend-interaction-static-snapshot.test.mjs") `
+      (Join-Path $repoRoot "web\\scripts\\frontend-interaction-wrapper-contract.test.mjs") `
+      (Join-Path $repoRoot "web\\scripts\\support\\mockedTauriHarness.test.mjs")
+  }
+
+  Invoke-Step "Live execution safety and public authority contracts" {
+    node --test `
+      (Join-Path $repoRoot "scripts\\live_execution_safety_harness_contract.test.mjs") `
+      (Join-Path $repoRoot "scripts\\public_live_safety_evidence_contract.test.mjs") `
+      (Join-Path $repoRoot "scripts\\public_live_release_wiring_contract.test.mjs")
+  }
+
+  Invoke-Step "Release-proof evidence and packaged-gate contracts" {
+    node --test `
+      (Join-Path $repoRoot "scripts\\release_proof_evidence_contract.test.mjs") `
+      (Join-Path $repoRoot "scripts\\release_proof_packaged_gate_contract.test.mjs")
+  }
+
+  Invoke-Step "Support-evidence privacy canaries" {
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\\test_support_evidence_bundle.ps1")
+  }
+
   Write-Host "Temporarily clearing Rust compiler wrappers for the repo quality gate to avoid sccache daemon startup failures."
   $env:RUSTC_WRAPPER = ""
   $env:CARGO_BUILD_RUSTC_WRAPPER = ""
@@ -47,6 +101,9 @@ try {
   if (-not $SkipRust) {
     Invoke-Step "Rust format" { cargo fmt --all -- --check }
     Invoke-Step "Rust check" { cargo check --workspace }
+    Invoke-Step "Rust maintainer target check" {
+      cargo check -p ta_desktop_demo_app --no-default-features --features maintainer-tools --bins
+    }
 
     if (-not $SkipClippy) {
       $clippyArgs = @("clippy", "--workspace", "--all-targets", "--no-deps")
@@ -64,6 +121,29 @@ try {
       } else {
         Write-Host "[PASS] Rust clippy"
       }
+
+      $maintainerClippyArgs = @(
+        "clippy",
+        "-p", "ta_desktop_demo_app",
+        "--no-default-features",
+        "--features", "maintainer-tools",
+        "--bins",
+        "--no-deps"
+      )
+      if ($StrictClippy) {
+        $maintainerClippyArgs += @("--", "-D", "warnings")
+      }
+      Write-Host "==> Rust maintainer target clippy"
+      cargo @maintainerClippyArgs
+      $maintainerClippyExit = $LASTEXITCODE
+      if ($maintainerClippyExit -ne 0) {
+        if ($StrictClippy) {
+          throw "Rust maintainer target clippy failed with exit code $maintainerClippyExit"
+        }
+        Write-Host "[WARN] Rust maintainer target clippy reported actionable warnings; advisory only in default mode."
+      } else {
+        Write-Host "[PASS] Rust maintainer target clippy"
+      }
     }
 
     if ($IncludeWorkspaceTests) {
@@ -75,6 +155,7 @@ try {
 
   if (-not $SkipWeb) {
     Invoke-Step "Manifest/toolchain contract" { & npm.cmd --prefix web run check:manifest-toolchain }
+    Invoke-Step "Desktop prerequisite contract" { & npm.cmd --prefix web run test:desktop:prereqs }
     Invoke-Step "Web lint" { & npm.cmd --prefix web run lint }
     Invoke-Step "Web typecheck" { & npm.cmd --prefix web run typecheck }
 

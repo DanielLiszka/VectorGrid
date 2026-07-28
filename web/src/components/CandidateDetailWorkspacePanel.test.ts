@@ -117,6 +117,30 @@ describe('CandidateDetailWorkspacePanel', () => {
     expect(document.querySelector("[data-vue-panel='drill']")?.getAttribute('data-vue-drill')).toBe('1')
   })
 
+  it('keeps historical candidate context visible while presenting stale dataset detail', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('drill', { persist: false })
+    vi.spyOn(analysisStore, 'rerenderDrill').mockImplementation(() => undefined)
+    analysisStore.selectedTopTitle = 'Rank #1 · EMA 7 / EMA 30'
+    analysisStore.drillStatus = 'Candidate detail stale/incompatible: saved result data_id dataset-a does not match loaded data_id dataset-b. Load the matching dataset; historical candidate rows remain available in Top Results.'
+
+    mount(CandidateDetailWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Rank #1 · EMA 7 / EMA 30')
+    expect(text).toContain('Candidate detail stale/incompatible')
+    expect(text).toContain('Historical candidate rows remain available in Top Results')
+    expect(analysisStore.drillWrapVisible).toBe(false)
+  })
+
   it('renders the trade table from the store model and owns shortcut selection', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

@@ -1,6 +1,10 @@
 import { $, browser, expect } from '@wdio/globals'
 import { shellSelectors } from '../support/selectors.js'
 import { getNativeAppWindowRect } from '../support/nativeWindowGeometry.js'
+import {
+  isReleaseProofRun,
+  writeReleaseProofEvidence,
+} from '../support/releaseProofEvidence.js'
 import { openWorkspace, waitForSettingsWorkspace, waitForShellReady } from '../support/waits.js'
 
 const TARGET_WIDTH = 1180
@@ -17,6 +21,8 @@ describe('desktop window geometry', () => {
     await waitForShellReady()
     const originalRect = await browser.getWindowRect()
     const originalNativeRect = await getNativeAppWindowRect()
+    let resizedRect = originalRect
+    let resizedNativeRect = originalNativeRect
 
     try {
       await browser.setWindowSize(TARGET_WIDTH, TARGET_HEIGHT)
@@ -37,6 +43,8 @@ describe('desktop window geometry', () => {
 
       await openWorkspace('settings')
       await waitForSettingsWorkspace()
+      resizedRect = await browser.getWindowRect()
+      resizedNativeRect = await getNativeAppWindowRect()
     } finally {
       await browser.setWindowRect(
         originalNativeRect.left,
@@ -67,6 +75,22 @@ describe('desktop window geometry', () => {
           timeoutMsg: 'Desktop window did not restore its original native position.',
         },
       )
+    }
+
+    if (isReleaseProofRun()) {
+      writeReleaseProofEvidence('window-geometry-proof.json', {
+        contract: 'vectorgrid-window-geometry-v1',
+        target: {
+          width: TARGET_WIDTH,
+          height: TARGET_HEIGHT,
+        },
+        original_webdriver_rect: originalRect,
+        original_native_rect: originalNativeRect,
+        resized_webdriver_rect: resizedRect,
+        resized_native_rect: resizedNativeRect,
+        restored_webdriver_rect: await browser.getWindowRect(),
+        restored_native_rect: await getNativeAppWindowRect(),
+      })
     }
   })
 })

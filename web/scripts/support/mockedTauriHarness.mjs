@@ -102,7 +102,27 @@ export async function installMockedTauri(context, options = {}) {
         }
         if (Object.prototype.hasOwnProperty.call(results, key)) {
           delayedMs = await waitForCommandDelay(key)
-          return results[key]
+          const configuredResult = results[key]
+          const byArgument = configuredResult?.__mockByArgument
+          if (byArgument && typeof byArgument === 'object') {
+            const argumentName = String(byArgument.name || '').trim()
+            const argumentValue = String(args?.[argumentName] || '')
+            const values = byArgument.values
+            if (
+              !argumentName
+              || !values
+              || typeof values !== 'object'
+              || !Object.prototype.hasOwnProperty.call(values, argumentValue)
+            ) {
+              throw new Error(
+                `Mocked ${key} has no argument-matched response for ${argumentName || '<missing>'}=${argumentValue}`,
+              )
+            }
+            entry.matchedArgumentName = argumentName
+            entry.matchedArgumentValue = argumentValue
+            return values[argumentValue]
+          }
+          return configuredResult
         }
         if (strictInvoke) {
           throw new Error(`Unexpected mocked Tauri invoke: ${key}`)

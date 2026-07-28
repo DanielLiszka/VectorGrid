@@ -132,6 +132,7 @@ describe('validation store actions', () => {
   it('starts with stricter validation defaults enabled', () => {
     const store = useValidationStore()
 
+    expect(store.admissionPolicy).toBe('auto')
     expect(store.minPsr).toBe('0.80')
     expect(store.minDsr).toBe('0.60')
     expect(store.minCscvRank).toBe('0.55')
@@ -141,8 +142,35 @@ describe('validation store actions', () => {
     expect(store.wfStep).toBe('5000')
     expect(store.cscvEnable).toBe(true)
     expect(store.cscvSlices).toBe('16')
+    expect(store.spaEnable).toBe(true)
+    expect(store.reoptWfEnable).toBe(true)
+    expect(store.perturbEnable).toBe(true)
+    expect(store.mcEnable).toBe(true)
+    expect(store.mcMode).toBe('compare')
+    expect(store.crossEnable).toBe(false)
+    expect(store.crossMode).toBe('full_stack')
+  })
+
+  it('preserves explicitly disabled validation modules from legacy snapshots', () => {
+    const store = useValidationStore()
+
+    store.applyLegacySnapshot({
+      admissionPolicy: 'legacy_topk',
+      perturbEnable: false,
+      mcEnable: false,
+      spaEnable: false,
+      reoptWfEnable: false,
+      crossEnable: false,
+      crossMode: 'auto',
+    })
+
+    expect(store.admissionPolicy).toBe('legacy_topk')
+    expect(store.perturbEnable).toBe(false)
+    expect(store.mcEnable).toBe(false)
     expect(store.spaEnable).toBe(false)
     expect(store.reoptWfEnable).toBe(false)
+    expect(store.crossEnable).toBe(false)
+    expect(store.crossMode).toBe('auto')
   })
 
   it('keeps the walk-forward step default when hydrating empty legacy snapshots', () => {
@@ -170,6 +198,49 @@ describe('validation store actions', () => {
     expect(exportReportJsonMock).toHaveBeenCalled()
     expect(exportReportXlsxMock).toHaveBeenCalled()
     expect(openReportsDirMock).toHaveBeenCalled()
+  })
+
+  it('blocks cross-ticker validation clearly until a dataset is selected', async () => {
+    const store = useValidationStore()
+    store.setCheckboxField('valCrossEnable', true)
+
+    expect(store.crossBlockedReason).toContain(
+      'no eligible datasets are selected',
+    )
+    expect(store.statusLine).toBe(store.crossBlockedReason)
+
+    store.runValidation()
+    await flushServiceImports()
+
+    expect(runValidationMock).not.toHaveBeenCalled()
+    expect(store.validationAccelerationStatus).toBe('Validation not run.')
+    expect(store.validationHint).toBe(store.crossBlockedReason)
+  })
+
+  it('allows cross-ticker validation after an eligible dataset is selected', async () => {
+    const store = useValidationStore()
+    store.applyLegacySnapshot({
+      crossEnable: true,
+      crossMax: '6',
+      crossDatasets: [
+        {
+          path: 'C:/data/SPY.csv',
+          label: 'SPY',
+          meta: 'stocks',
+          checked: true,
+          disabled: false,
+        },
+      ],
+      crossSelectedCount: 1,
+      crossTotalCount: 1,
+    })
+
+    expect(store.crossBlockedReason).toBe('')
+
+    store.runValidation()
+    await flushServiceImports()
+
+    expect(runValidationMock).toHaveBeenCalledOnce()
   })
 
   it('keeps validation service rejections inside store state', async () => {

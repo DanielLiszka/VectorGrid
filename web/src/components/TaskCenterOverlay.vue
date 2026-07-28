@@ -670,6 +670,10 @@ function openRelatedAction(action: RelatedTaskAction | null): void {
                   </div>
                 </div>
                 <div class="taskMeta">{{ taskSecondaryMeta(row.task) }}</div>
+                <details v-if="row.task.error" class="taskErrorDetails">
+                  <summary>Details</summary>
+                  <div class="taskErrorText mono">{{ row.task.error }}</div>
+                </details>
                 <div class="taskRow foot">
                   <div class="time">{{ absoluteTime(row.task.endedAt || row.task.startedAt) }}</div>
                   <button
@@ -869,6 +873,11 @@ function openRelatedAction(action: RelatedTaskAction | null): void {
 }
 
 .toastStack {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  max-height: calc(100vh - var(--desktop-titlebar-h, 0px) - 80px);
+  overflow: auto;
   display: grid;
   gap: 6px;
   justify-items: end;
@@ -949,6 +958,25 @@ function openRelatedAction(action: RelatedTaskAction | null): void {
   color: inherit;
   font-size: 0.7rem;
   padding: 2px 6px;
+}
+
+.taskErrorDetails {
+  font-size: 0.7rem;
+  color: var(--task-muted);
+}
+
+.taskErrorDetails summary {
+  cursor: pointer;
+  font-weight: 650;
+  color: var(--task-text);
+}
+
+.taskErrorText {
+  margin-top: 0.35rem;
+  max-height: 8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .taskPanel {
@@ -1038,8 +1066,9 @@ function openRelatedAction(action: RelatedTaskAction | null): void {
 }
 
 .panelCloseBtn {
+  min-height: 24px;
   padding: 4px 10px;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   border-radius: 999px;
 }
 

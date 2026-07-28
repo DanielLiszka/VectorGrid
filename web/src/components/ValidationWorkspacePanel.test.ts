@@ -99,8 +99,9 @@ describe("ValidationWorkspacePanel", () => {
     expect(document.body.textContent || "").toContain("Open reports folder");
     const runButtons = Array.from(document.querySelectorAll("button")).filter(
       (button) => button.textContent?.trim() === "Run validation",
-    );
+    ) as HTMLButtonElement[];
     expect(runButtons).toHaveLength(1);
+    expect(runButtons[0]?.disabled).toBe(true);
 
     wrapper.unmount();
   });
@@ -152,7 +153,7 @@ describe("ValidationWorkspacePanel", () => {
         },
         req: {
           strategy_kind: "DoubleMa",
-          data_id: "data-validation-preview-disabled",
+          data_id: "dataset_validation_preview",
           objective: "Sharpe",
           ma_source: "close",
           fast_ma_types: ["sma"],
@@ -220,6 +221,7 @@ describe("ValidationWorkspacePanel", () => {
       );
 
     expect(buttonByText("Export shortlist CSV")?.disabled).toBe(true);
+    expect(buttonByText("Run validation")?.disabled).toBe(false);
     expect(buttonByText("Export validation JSON")?.disabled).toBe(true);
     expect(buttonByText("Export report JSON")?.disabled).toBe(true);
     expect(buttonByText("Export report XLSX")?.disabled).toBe(true);
@@ -358,7 +360,7 @@ describe("ValidationWorkspacePanel", () => {
         },
         req: {
           strategy_kind: "DoubleMa",
-          data_id: "data-validation-results",
+          data_id: "dataset_validation_results",
           objective: "Sharpe",
           ma_source: "close",
           fast_ma_types: ["sma"],
@@ -378,10 +380,14 @@ describe("ValidationWorkspacePanel", () => {
           ],
         },
       },
-      currentValidation: null,
+      currentValidation: {
+        ts: "2026-04-09T12:31:00Z",
+        req: { candidates: 2 },
+        res: { rows: [{ approved: true }, { approved: false }] },
+      },
     });
     validationStore.tableVisible = true;
-    validationStore.tableRowCount = 1;
+    validationStore.tableRowCount = 2;
     validationStore.validationAccelerationStatus =
       "GPU validation completed with CPU follow-up checks.";
     validationStore.validationRouteSummary = "Cpu • Auto->CpuOnly";
@@ -446,6 +452,13 @@ describe("ValidationWorkspacePanel", () => {
           { text: "1.2400", className: "mono", title: "1.2400" },
         ],
       },
+      {
+        cells: [
+          { text: "review", className: "left mono", title: "review" },
+          { text: "cross-2", className: "left", title: "cross-2" },
+          { text: "0.8400", className: "mono", title: "0.8400" },
+        ],
+      },
     ];
 
     const wrapper = mount(ValidationWorkspacePanel, {
@@ -498,7 +511,7 @@ describe("ValidationWorkspacePanel", () => {
     expect(
       document.querySelector('[data-qa-panel="validation.rowDetail"]')
         ?.textContent,
-    ).toContain("Row 1 of 1");
+    ).toContain("Row 1 of 2");
     expect(
       document.querySelector('[data-qa-state="validation.rowDetail.col_0"]')
         ?.textContent,
@@ -617,7 +630,11 @@ describe("ValidationWorkspacePanel", () => {
           top: [],
         },
       },
-      currentValidation: null,
+      currentValidation: {
+        ts: "2026-04-09T12:31:00Z",
+        req: { candidates: 2 },
+        res: { rows: [{ approved: true }, { approved: false }] },
+      },
     });
     validationStore.tableRowCount = 2;
     validationStore.tableVisible = true;

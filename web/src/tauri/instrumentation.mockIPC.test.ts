@@ -115,7 +115,9 @@ describe('Tauri instrumentation with mockIPC', () => {
       command: 'run_meta_selection',
       status: 'failed',
     })
-    expect(store.events[0]?.message).toContain('backend panic')
+    expect(store.history[0]?.error).toContain('backend panic')
+    expect(store.events[0]?.message).toContain('Open task Details')
+    expect(store.events[0]?.message).not.toContain('backend panic')
   })
 
   it('ignores malformed events and records valid runner events', async () => {

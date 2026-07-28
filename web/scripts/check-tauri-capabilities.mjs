@@ -12,6 +12,8 @@ const EXPECTED_MAIN_PERMISSIONS = [
   'core:default',
   'core:window:allow-start-dragging',
   'core:window:allow-minimize',
+  'core:window:allow-maximize',
+  'core:window:allow-unmaximize',
   'core:window:allow-toggle-maximize',
   'core:window:allow-close',
   'clipboard-manager:allow-write-text',

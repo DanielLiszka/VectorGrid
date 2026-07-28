@@ -1,6 +1,8 @@
 use serde_json::json;
 use std::io::{Cursor, Read};
-use ta_desktop_demo_app::commands::build_report_xlsx_bytes_headless;
+use ta_desktop_demo_app::commands::{
+    build_report_xlsx_bytes_headless, build_validation_shortlist_csv_headless,
+};
 use zip::ZipArchive;
 
 fn read_entry(bytes: &[u8], name: &str) -> String {
@@ -52,6 +54,100 @@ fn chart_titles(bytes: &[u8]) -> Vec<String> {
 
 fn row_count(sheet_xml: &str) -> usize {
     sheet_xml.matches("<row ").count()
+}
+
+fn decode_xml_text(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn shared_strings(bytes: &[u8]) -> Vec<String> {
+    let xml = read_entry(bytes, "xl/sharedStrings.xml");
+    xml.split("<si>")
+        .skip(1)
+        .filter_map(|entry| entry.split_once("</si>").map(|(value, _)| value))
+        .map(|entry| {
+            let mut value = String::new();
+            for text_node in entry.split("<t").skip(1) {
+                let Some((_, after_open)) = text_node.split_once('>') else {
+                    continue;
+                };
+                let Some((text, _)) = after_open.split_once("</t>") else {
+                    continue;
+                };
+                value.push_str(&decode_xml_text(text));
+            }
+            value
+        })
+        .collect()
+}
+
+fn worksheet_cell(bytes: &[u8], sheet_index: usize, cell_ref: &str) -> String {
+    let xml = read_entry(bytes, &format!("xl/worksheets/sheet{sheet_index}.xml"));
+    let marker = format!("<c r=\"{cell_ref}\"");
+    let cell = xml
+        .split_once(&marker)
+        .and_then(|(_, tail)| tail.split_once("</c>").map(|(value, _)| value))
+        .unwrap_or_else(|| panic!("missing worksheet cell {cell_ref}"));
+    let raw = cell
+        .split_once("<v>")
+        .and_then(|(_, tail)| tail.split_once("</v>").map(|(value, _)| value))
+        .unwrap_or_else(|| panic!("missing worksheet value {cell_ref}"));
+    if cell.contains("t=\"s\"") {
+        let index = raw
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("invalid shared string index in {cell_ref}"));
+        shared_strings(bytes)
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| panic!("missing shared string {index} for {cell_ref}"))
+    } else {
+        raw.to_string()
+    }
+}
+
+fn parse_csv_records(text: &str) -> Vec<Vec<String>> {
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut chars = text.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes => {
+                if matches!(chars.peek(), Some('"')) {
+                    field.push('"');
+                    let _ = chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            }
+            '"' => in_quotes = true,
+            ',' if !in_quotes => record.push(std::mem::take(&mut field)),
+            '\n' if !in_quotes => {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+            }
+            '\r' if !in_quotes => {
+                if matches!(chars.peek(), Some('\n')) {
+                    continue;
+                }
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+            }
+            _ => field.push(ch),
+        }
+    }
+
+    if !field.is_empty() || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+    records
 }
 
 fn baseline_report() -> serde_json::Value {
@@ -318,6 +414,62 @@ fn baseline_report() -> serde_json::Value {
         }
       }
     })
+}
+
+#[test]
+fn validation_csv_and_xlsx_shortlist_share_candidate_identity_and_metrics() {
+    let report = baseline_report();
+    let validation_res = report
+        .pointer("/validation/res")
+        .expect("validation result");
+    let csv = build_validation_shortlist_csv_headless(validation_res).expect("CSV");
+    let records = parse_csv_records(&csv);
+    assert_eq!(records[0].len(), 37);
+    assert_eq!(records.len(), 5, "header plus four candidate rows");
+
+    let xlsx = build_report_xlsx_bytes_headless(&report, Some(10)).expect("XLSX");
+    let csv_row = &records[1];
+    let string_cells = [(0usize, "A2"), (5, "D2"), (6, "E2"), (27, "AY2")];
+    for (csv_col, xlsx_cell) in string_cells {
+        assert_eq!(
+            csv_row[csv_col],
+            worksheet_cell(&xlsx, 2, xlsx_cell),
+            "CSV column {csv_col} vs XLSX {xlsx_cell}"
+        );
+    }
+
+    let numeric_cells = [
+        (7usize, "F2"),
+        (8, "G2"),
+        (9, "H2"),
+        (10, "I2"),
+        (11, "J2"),
+        (12, "K2"),
+        (13, "L2"),
+        (14, "M2"),
+        (15, "N2"),
+        (16, "O2"),
+        (17, "P2"),
+        (19, "Q2"),
+        (20, "R2"),
+        (18, "S2"),
+        (21, "T2"),
+        (23, "V2"),
+        (24, "AB2"),
+    ];
+    for (csv_col, xlsx_cell) in numeric_cells {
+        let csv_value = csv_row[csv_col]
+            .parse::<f64>()
+            .unwrap_or_else(|_| panic!("CSV column {csv_col} should be numeric"));
+        let xlsx_value = worksheet_cell(&xlsx, 2, xlsx_cell)
+            .parse::<f64>()
+            .unwrap_or_else(|_| panic!("XLSX {xlsx_cell} should be numeric"));
+        let tolerance = 1e-12_f64.max(csv_value.abs() * 1e-12);
+        assert!(
+            (csv_value - xlsx_value).abs() <= tolerance,
+            "CSV column {csv_col} ({csv_value}) vs XLSX {xlsx_cell} ({xlsx_value})"
+        );
+    }
 }
 
 #[test]

@@ -43,6 +43,9 @@ let optimizeServicePromise: Promise<typeof import("./optimizeService")> | null =
   null;
 let analysisServicePromise: Promise<typeof import("./analysisService")> | null =
   null;
+let validationServicePromise: Promise<
+  typeof import("./validationService")
+> | null = null;
 
 function loadDataService(): Promise<typeof import("./dataService")> {
   if (!dataServicePromise) dataServicePromise = import("./dataService");
@@ -59,6 +62,12 @@ function loadAnalysisService(): Promise<typeof import("./analysisService")> {
   if (!analysisServicePromise)
     analysisServicePromise = import("./analysisService");
   return analysisServicePromise;
+}
+
+function loadValidationService(): Promise<typeof import("./validationService")> {
+  if (!validationServicePromise)
+    validationServicePromise = import("./validationService");
+  return validationServicePromise;
 }
 
 function normalizePath(path: string): string {
@@ -1864,6 +1873,9 @@ export async function applySession(ts: string): Promise<void> {
   }
   const { refreshAnalysisFromWorkflowRun } = await loadAnalysisService();
   refreshAnalysisFromWorkflowRun();
+  const { refreshValidationFromWorkflowArtifacts } =
+    await loadValidationService();
+  refreshValidationFromWorkflowArtifacts();
 }
 
 export async function exportPreset(): Promise<void> {
@@ -2064,6 +2076,9 @@ export async function loadSavedRun(path: string): Promise<void> {
   }
   const { refreshAnalysisFromWorkflowRun } = await loadAnalysisService();
   refreshAnalysisFromWorkflowRun();
+  const { refreshValidationFromWorkflowArtifacts } =
+    await loadValidationService();
+  refreshValidationFromWorkflowArtifacts();
 }
 
 export async function applySavedRun(path: string): Promise<void> {

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "timing_boundary": "workflow-regression",
+  "timing_boundary_note": "total deterministic workflow wall time including optimize, validate, meta-select, and holdout",
+  "timing_boundary_exclusions": [
+    "tauri_analysis_command_latency",
+    "workflow_artifact_sync_and_apply",
+    "top_table_hydration",
+    "heatmap_rendering",
+    "drill_and_local_stability_panel_hydration"
+  ],
+  "build_profile": "release",
+  "environment": {
+    "hostname": "LISZKA",
+    "os": "windows",
+    "arch": "x86_64",
+    "family": "windows"
+  },
+  "candles_len": 10000,
+  "train_assets": 10,
+  "holdout_assets": 6,
+  "artifacts_used": 5,
+  "groups": 14,
+  "top_meta_score": 0.7532747578867784,
+  "robust_score_p10": 0.5225337268168695,
+  "max_dd_p90": 0.0,
+  "holdout_score_p10": 0.0,
+  "holdout_max_dd_p90": 0.0,
+  "holdout_pass_rate": 0.5,
+  "runtime_ms": 309,
+  "stage": {
+    "optimize_ms_total": 21,
+    "validate_ms_total": 199,
+    "meta_select_ms": 10,
+    "holdout_ms": 57
+  }
+}

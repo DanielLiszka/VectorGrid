@@ -422,7 +422,7 @@ function Ensure-FrozenDataset {
 function Build-AppBinary {
   param([string]$Mode)
   $binName = if ($Mode -eq "app-path") { "ta_app_path_faceoff" } else { "ta_cli" }
-  $featureArg = if ($Mode -eq "app-path") { "cuda,cuda-backtest-kernel" } else { "cli,cuda,cuda-backtest-kernel" }
+  $featureArg = if ($Mode -eq "app-path") { "maintainer-tools,cuda,cuda-backtest-kernel" } else { "cli,cuda,cuda-backtest-kernel" }
   $cmdArgs = @("build", "-p", "ta_desktop_demo_app", "--release", "--bin", $binName, "--features", $featureArg)
   $null = Invoke-LoggedCommand -Exe "cargo" -CmdArgs $cmdArgs -StdoutPath (Join-Path $outPath "logs/build.stdout.txt") -StderrPath (Join-Path $outPath "logs/build.stderr.txt")
 }

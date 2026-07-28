@@ -90,6 +90,12 @@ function applyVueTextFieldUpdate(
     case "execRiskMaxPositionNotional":
       state.riskMaxPositionNotional = next;
       return true;
+    case "execRiskMaxDailyLoss":
+      state.riskMaxDailyLoss = next;
+      return true;
+    case "execRiskMaxDailyOrders":
+      state.riskMaxDailyOrders = next;
+      return true;
     case "execManualFastLen":
       state.manualFastLen = next;
       return true;
@@ -407,8 +413,12 @@ function applyExecutionRiskPolicy(
     policy.max_position_notional != null
       ? String(policy.max_position_notional)
       : "";
-  state.riskAllowShort = policy.allow_short ?? true;
-  state.riskRequireBracket = policy.require_bracket ?? false;
+  state.riskMaxDailyLoss =
+    policy.max_daily_loss != null ? String(policy.max_daily_loss) : "";
+  state.riskMaxDailyOrders =
+    policy.max_daily_orders != null ? String(policy.max_daily_orders) : "";
+  state.riskAllowShort = policy.allow_short ?? false;
+  state.riskRequireBracket = policy.require_bracket ?? true;
   state.riskPolicyStatusHint = [
     "Risk policy:",
     state.riskMaxOrderNotional
@@ -417,6 +427,12 @@ function applyExecutionRiskPolicy(
     state.riskMaxPositionNotional
       ? `max position=${state.riskMaxPositionNotional}`
       : "max position=unset",
+    state.riskMaxDailyLoss
+      ? `max daily loss=${state.riskMaxDailyLoss}`
+      : "max daily loss=unset",
+    state.riskMaxDailyOrders
+      ? `max daily orders=${state.riskMaxDailyOrders}`
+      : "max daily orders=unset",
     `short=${state.riskAllowShort ? "allowed" : "blocked"}`,
     `bracket=${state.riskRequireBracket ? "required" : "optional"}`,
   ].join(" ");
@@ -440,6 +456,14 @@ function currentExecutionRiskPolicy(
       state.riskMaxPositionNotional,
       "Max position notional",
     ),
+    max_daily_loss: parse(state.riskMaxDailyLoss, "Max daily loss"),
+    max_daily_orders: (() => {
+      const value = parse(state.riskMaxDailyOrders, "Max daily orders");
+      if (value != null && !Number.isSafeInteger(value)) {
+        throw new Error("Max daily orders must be a positive integer.");
+      }
+      return value;
+    })(),
     allow_short: state.riskAllowShort,
     require_bracket: state.riskRequireBracket,
   };
@@ -1525,6 +1549,8 @@ interface ExecutionState {
   riskTakeProfitPct: string;
   riskMaxOrderNotional: string;
   riskMaxPositionNotional: string;
+  riskMaxDailyLoss: string;
+  riskMaxDailyOrders: string;
   riskAllowShort: boolean;
   riskRequireBracket: boolean;
   riskPolicyStatusHint: string;
@@ -1607,10 +1633,12 @@ export const useExecutionStore = defineStore("execution", {
       paramSource: "selected",
       riskStopLossPct: "",
       riskTakeProfitPct: "",
-      riskMaxOrderNotional: "",
-      riskMaxPositionNotional: "",
-      riskAllowShort: true,
-      riskRequireBracket: false,
+      riskMaxOrderNotional: "1000",
+      riskMaxPositionNotional: "2500",
+      riskMaxDailyLoss: "250",
+      riskMaxDailyOrders: "20",
+      riskAllowShort: false,
+      riskRequireBracket: true,
       riskPolicyStatusHint: "Risk policy: not loaded.",
       manualFastLen: "",
       manualSlowLen: "",
@@ -1798,6 +1826,12 @@ export const useExecutionStore = defineStore("execution", {
       ).trim();
       this.riskMaxPositionNotional = String(
         snapshot.riskMaxPositionNotional ?? this.riskMaxPositionNotional ?? "",
+      ).trim();
+      this.riskMaxDailyLoss = String(
+        snapshot.riskMaxDailyLoss ?? this.riskMaxDailyLoss ?? "",
+      ).trim();
+      this.riskMaxDailyOrders = String(
+        snapshot.riskMaxDailyOrders ?? this.riskMaxDailyOrders ?? "",
       ).trim();
       this.riskAllowShort = Boolean(
         snapshot.riskAllowShort ?? this.riskAllowShort,
@@ -2048,6 +2082,8 @@ export const useExecutionStore = defineStore("execution", {
         riskTakeProfitPct: this.riskTakeProfitPct,
         riskMaxOrderNotional: this.riskMaxOrderNotional,
         riskMaxPositionNotional: this.riskMaxPositionNotional,
+        riskMaxDailyLoss: this.riskMaxDailyLoss,
+        riskMaxDailyOrders: this.riskMaxDailyOrders,
         riskAllowShort: this.riskAllowShort,
         riskRequireBracket: this.riskRequireBracket,
         manualFastLen: this.manualFastLen,

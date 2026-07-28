@@ -135,7 +135,9 @@ impl Default for Metrics {
     }
 }
 
-#[allow(clippy::type_complexity)]
+// This helper receives the scalar accumulators maintained by several hot loops.
+// Bundling them would be a broad internal rewrite with no behavior benefit.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn finalize_risk_metrics(
     compute_return_stats: bool,
     compute_drawdown_risk: bool,
@@ -1372,6 +1374,9 @@ fn clamp_bins(requested: usize, n_steps: usize) -> usize {
     req.min(n_steps)
 }
 
+// The return series and moving-average slices are validated as index-aligned.
+// Retain the shared index so the relationship stays explicit in this hot loop.
+#[allow(clippy::needless_range_loop)]
 pub fn eval_double_ma_curves_from_log_returns_and_mas_f64(
     lr: &[f64],
     fast: &[f64],
@@ -1721,6 +1726,8 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64(
     }
 }
 
+// The return and indicator slices are validated as index-aligned.
+#[allow(clippy::needless_range_loop)]
 pub fn eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
     lr: &[f64],
     fast: &[f64],
@@ -2633,6 +2640,8 @@ pub fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_fast(
     )
 }
 
+// The return and moving-average slices are validated as index-aligned.
+#[allow(clippy::needless_range_loop)]
 fn eval_double_ma_from_log_returns_and_mas_f64_impl<
     const COMPUTE_SHARPE: bool,
     const COMPUTE_DRAWDOWN_RISK: bool,
@@ -2975,6 +2984,8 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
     }
 }
 
+// The return and indicator slices are validated as index-aligned.
+#[allow(clippy::needless_range_loop)]
 fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
     const COMPUTE_SHARPE: bool,
     const COMPUTE_DRAWDOWN_RISK: bool,
@@ -3415,6 +3426,8 @@ pub fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_fast(
     )
 }
 
+// The return and moving-average slices are validated as index-aligned.
+#[allow(clippy::needless_range_loop)]
 fn eval_double_ma_from_log_returns_and_mas_f32_impl<
     const COMPUTE_SHARPE: bool,
     const COMPUTE_DRAWDOWN_RISK: bool,
@@ -3757,6 +3770,8 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
     }
 }
 
+// The return and indicator slices are validated as index-aligned.
+#[allow(clippy::needless_range_loop)]
 fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
     const COMPUTE_SHARPE: bool,
     const COMPUTE_DRAWDOWN_RISK: bool,

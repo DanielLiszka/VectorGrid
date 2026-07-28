@@ -170,6 +170,7 @@ try {
   }
   $cargoArgs += @(
     "-p", "ta_desktop_demo_app",
+    "--features", "maintainer-tools",
     "--bin", "ta_campaign_perf",
     "--",
     "--output-json", $resolvedOut,

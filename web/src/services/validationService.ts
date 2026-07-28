@@ -9,6 +9,7 @@ import {
   readLatestWorkflowRunSnapshot,
 } from "../stores/workflowArtifactsStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+import { useValidationStore } from "../stores/validationStore";
 import { computeConfigFingerprint } from "../utils/core/artifactIdentity";
 import { buildDatasetMetaForArtifact } from "../utils/core/datasetMeta";
 import {
@@ -467,6 +468,7 @@ interface WorkflowRunArtifactSnapshot {
   artifactPath: string;
   reportXlsxPath: string;
   csvPath: string;
+  configFingerprint: string;
   datasetMeta: Record<string, unknown> | null;
   routeProvenance: Record<string, unknown> | null;
   mlSignal: Record<string, unknown> | null;
@@ -504,6 +506,7 @@ interface PersistValidationArtifactResult {
   ts: string;
   csvPath: string;
   reportXlsxPath: string;
+  configFingerprint: string;
   datasetMeta: Record<string, unknown> | null;
   mlSignal: Record<string, unknown> | null;
   optimizationMetricSurface: Record<string, unknown> | null;
@@ -861,6 +864,9 @@ function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null 
     artifactPath: normalizeText(row.artifactPath ?? row.artifact_path),
     reportXlsxPath: normalizeText(row.reportXlsxPath ?? row.report_xlsx_path),
     csvPath: normalizeText(row.csvPath ?? row.csv_path),
+    configFingerprint: normalizeText(
+      row.configFingerprint ?? row.config_fingerprint,
+    ),
     datasetMeta:
       row.datasetMeta && typeof row.datasetMeta === "object"
         ? (row.datasetMeta as Record<string, unknown>)
@@ -2874,6 +2880,7 @@ async function persistValidationArtifact(
         ts,
         csvPath,
         reportXlsxPath,
+        configFingerprint,
         datasetMeta,
         mlSignal,
         optimizationMetricSurface,
@@ -2908,6 +2915,7 @@ function applyVueValidationArtifacts(
         ts: persisted.ts,
         artifact_path: persisted.path,
         report_xlsx_path: persisted.reportXlsxPath,
+        config_fingerprint: persisted.configFingerprint,
         csv_path: persisted.csvPath,
         dataset_meta: persisted.datasetMeta,
         ml_signal: persisted.mlSignal,
@@ -2927,6 +2935,127 @@ function applyVueValidationArtifacts(
     },
     "vue",
   );
+}
+
+export function refreshValidationFromWorkflowArtifacts(): boolean {
+  const pinia = resolveRuntimePinia();
+  if (!pinia) return false;
+  useValidationStore(pinia);
+  const run = readWorkflowRunArtifactFromStore();
+  const validation = readWorkflowValidationArtifactFromStore();
+  const validationReq = asRecord(validation?.req);
+  const validationRes = validation?.res ?? null;
+  if (!run || !validationReq || validationRes == null) {
+    patchValidationStoreState({
+      validationHint: "Validation not run.",
+      validationAccelerationStatus: "Validation not run.",
+      validationMeta: "-",
+      validationRouteSummary: "-",
+      validationRouteDetailSummary: "-",
+      validationCategorySummary: "-",
+      validationAuxCpuSummary: "-",
+      validationBootstrapSummary: "-",
+      validationMonteCarloSummary: "not run",
+      validationMonteCarloHistogram: [],
+      validationRegimeSummary: "-",
+      validationFrictionSummary: "-",
+      validationCrossSummary: "-",
+      validationSkippedSummary: "-",
+      validationEvidenceSummary: "Validation evidence not run.",
+      validationOverfitSummary: "Overfit evidence not run.",
+      validationOverfitStatus: "not_run",
+      validationOverfitItems: [],
+      validationWarningSummary: "-",
+      validationReoptMeta: "-",
+      validationColumns: [],
+      validationRows: [],
+      validationOutputPreview: "",
+      tableRowCount: 0,
+      tableVisible: false,
+      canExportValidationCsv: false,
+      canExportValidationJson: false,
+      canExportReportJson: false,
+      canExportReportXlsx: false,
+      validationShortlistMeta: "No validation result yet.",
+      statusLine: "Validation not run.",
+    });
+    return false;
+  }
+
+  const executionSummary = buildValidationExecutionSummary(
+    validationRes,
+    validationReq,
+  );
+  const minPsrGate = parseProbabilityGateValue(validationReq.min_psr);
+  const minDsrGate = parseProbabilityGateValue(validationReq.min_dsr);
+  const minCscvRankGate = parseProbabilityGateValue(
+    validationReq.min_cscv_oos_rank_frac,
+  );
+  const minCscvMetricGate = parseFiniteNumberValue(
+    validationReq.min_cscv_oos_metric,
+  );
+  const shortlist = computeValidationShortlist(
+    validationRes,
+    minPsrGate,
+    minDsrGate,
+    minCscvRankGate,
+    minCscvMetricGate,
+  );
+  const validationRows = buildValidationTableRows(
+    shortlist.rows,
+    shortlist.hasCross,
+  );
+  const validationShortlistMeta =
+    validationRows.length > 0
+      ? buildValidationShortlistMetaText(shortlist, minPsrGate, minDsrGate)
+      : "No validation result yet.";
+  const validationResRecord = asRecord(validationRes) ?? {};
+  const evidenceSummary = buildValidationEvidenceSummary({
+    validationReq,
+    validationRes,
+    validationEvidencePack:
+      validationResRecord.validation_evidence_pack ??
+      validationResRecord.validationEvidencePack,
+    optimizationRes: run.res,
+    datasetMeta: run.datasetMeta,
+    reportPath: run.reportXlsxPath,
+    replayClass: "exact_evidence_review",
+  });
+
+  patchValidationStoreState({
+    validationHint: buildValidationHintText(validationRes),
+    validationAccelerationStatus: executionSummary.accelerationStatus,
+    validationMeta: buildValidationMetaText(validationRes, validationReq),
+    validationRouteSummary: executionSummary.routeSummary,
+    validationRouteDetailSummary: executionSummary.routeDetailSummary,
+    validationCategorySummary: executionSummary.categorySummary,
+    validationAuxCpuSummary: executionSummary.auxCpuSummary,
+    validationBootstrapSummary: executionSummary.bootstrapSummary,
+    validationMonteCarloSummary: executionSummary.monteCarloSummary,
+    validationMonteCarloHistogram: executionSummary.monteCarloHistogram,
+    validationRegimeSummary: executionSummary.regimeSummary,
+    validationFrictionSummary: executionSummary.frictionSummary,
+    validationCrossSummary: executionSummary.crossSummary,
+    validationSkippedSummary: executionSummary.skippedSummary,
+    validationEvidenceSummary: evidenceSummary.summaryLine,
+    validationOverfitSummary: evidenceSummary.overfit.summaryLine,
+    validationOverfitStatus: evidenceSummary.overfit.status,
+    validationOverfitItems: evidenceSummary.overfit.items,
+    validationWarningSummary: executionSummary.warningSummary,
+    validationReoptMeta: buildValidationReoptMetaText(validationRes),
+    validationColumns: buildValidationTableColumns(),
+    validationRows,
+    validationOutputPreview: toOutputPreview(validationRes),
+    tableRowCount: validationRows.length,
+    tableVisible: validationRows.length > 0,
+    canExportValidationCsv: true,
+    canExportValidationJson: true,
+    canExportReportJson: true,
+    canExportReportXlsx: true,
+    validationShortlistMeta,
+    statusLine: "Loaded saved validation artifact.",
+  });
+  return true;
 }
 
 function resolveValidationBuildContextFromWorkflowArtifacts(): LegacyValidationBuildContext | null {
@@ -3855,6 +3984,7 @@ function buildPersistedValidationArtifactFromCurrentRun(
     ts: normalizeText(currentRun.ts) || new Date().toISOString(),
     csvPath: currentRun.csvPath,
     reportXlsxPath: normalizeText(reportXlsxPath),
+    configFingerprint: currentRun.configFingerprint,
     datasetMeta: currentRun.datasetMeta,
     mlSignal: currentRun.mlSignal,
     optimizationMetricSurface: currentRun.optimizationMetricSurface,

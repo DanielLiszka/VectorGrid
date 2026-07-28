@@ -251,6 +251,9 @@ mod tests {
         let wrapped = build_report_xlsx(report.clone(), Some(1))
             .await
             .expect("async xlsx");
+        // Keep this parity check sensitive to wall-clock metadata accidentally
+        // leaking back into the production workbook.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
         let direct =
             commands_reports::build_report_xlsx_blocking(report, Some(1)).expect("blocking xlsx");
         assert_eq!(wrapped, direct);

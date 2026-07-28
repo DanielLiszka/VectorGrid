@@ -6,6 +6,13 @@ use serde::{Deserialize, Serialize};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 use vector_ta::utilities::data_loader::Candles;
 
+/// Stable identity for the Sharpe metric emitted by the Double-MA evaluator.
+///
+/// Search-distribution consumers must compare this identity before using a
+/// distribution as a validation peer universe. The broader metric surface
+/// (`core17`, `trade22`, or a reduced device row) is recorded separately.
+pub const DOUBLE_MA_SHARPE_METRIC_ID: &str = "double_ma_log_return_sharpe_v1";
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ObjectiveKind {
     Pnl,
@@ -111,8 +118,227 @@ pub struct OptimizationResult {
     pub all_scores: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heatmap: Option<OptimizationHeatmap>,
+    /// Full-search statistics observed by the evaluator. This is deliberately
+    /// absent when only finalists were materialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_distribution: Option<SearchDistributionSummary>,
+    /// Precise reason why `search_distribution` could not be produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_distribution_unavailable_reason: Option<String>,
     pub num_combos: usize,
     pub num_candles: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SearchDistributionSummary {
+    /// Runtime metric surface from which the Sharpe observations were decoded.
+    pub metric_surface_kind: String,
+    /// Stable Sharpe formula/semantics identity used for comparability checks.
+    pub sharpe_metric_id: String,
+    /// Candidate evaluation attempts, including duplicate/cache-hit attempts.
+    pub attempted_count: usize,
+    /// Distinct parameter vectors actually evaluated.
+    pub unique_count: usize,
+    /// Distinct evaluated vectors that satisfied all search constraints.
+    pub feasible_count: usize,
+    /// Feasible distinct vectors whose Sharpe value was finite and observed.
+    pub finite_sharpe_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finite_sharpe_mean: Option<f64>,
+    /// Bessel-corrected sample standard deviation over finite Sharpe values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finite_sharpe_sample_std: Option<f64>,
+}
+
+impl SearchDistributionSummary {
+    pub fn is_comparable_with(&self, sharpe_metric_id: &str) -> bool {
+        !self.metric_surface_kind.trim().is_empty()
+            && !self.sharpe_metric_id.trim().is_empty()
+            && self.sharpe_metric_id == sharpe_metric_id
+            && self.attempted_count >= self.unique_count
+            && self.unique_count >= self.feasible_count
+            && self.feasible_count >= self.finite_sharpe_count
+            && self.finite_sharpe_count > 0
+            && self.finite_sharpe_mean.is_some_and(f64::is_finite)
+            && self
+                .finite_sharpe_sample_std
+                .is_some_and(|value| value.is_finite() && value >= 0.0)
+    }
+
+    pub fn try_merge(&mut self, other: &Self) -> Result<(), String> {
+        if self.metric_surface_kind != other.metric_surface_kind {
+            return Err(format!(
+                "search distribution metric-surface mismatch ('{}' vs '{}')",
+                self.metric_surface_kind, other.metric_surface_kind
+            ));
+        }
+        if self.sharpe_metric_id != other.sharpe_metric_id {
+            return Err(format!(
+                "search distribution Sharpe identity mismatch ('{}' vs '{}')",
+                self.sharpe_metric_id, other.sharpe_metric_id
+            ));
+        }
+
+        let left_n = self.finite_sharpe_count;
+        let right_n = other.finite_sharpe_count;
+        let left_mean = self.finite_sharpe_mean.unwrap_or(0.0);
+        let right_mean = other.finite_sharpe_mean.unwrap_or(0.0);
+        let left_m2 = sample_m2(left_n, self.finite_sharpe_sample_std);
+        let right_m2 = sample_m2(right_n, other.finite_sharpe_sample_std);
+
+        self.attempted_count = self.attempted_count.saturating_add(other.attempted_count);
+        self.unique_count = self.unique_count.saturating_add(other.unique_count);
+        self.feasible_count = self.feasible_count.saturating_add(other.feasible_count);
+        self.finite_sharpe_count = left_n.saturating_add(right_n);
+
+        match (left_n, right_n) {
+            (0, 0) => {
+                self.finite_sharpe_mean = None;
+                self.finite_sharpe_sample_std = None;
+            }
+            (0, _) => {
+                self.finite_sharpe_mean = other.finite_sharpe_mean;
+                self.finite_sharpe_sample_std = other.finite_sharpe_sample_std;
+            }
+            (_, 0) => {}
+            _ => {
+                let total_n = self.finite_sharpe_count;
+                let delta = right_mean - left_mean;
+                let merged_mean = left_mean + delta * (right_n as f64 / total_n.max(1) as f64);
+                let cross =
+                    delta * delta * (left_n as f64 * right_n as f64 / total_n.max(1) as f64);
+                let merged_m2 = (left_m2 + right_m2 + cross).max(0.0);
+                self.finite_sharpe_mean = Some(merged_mean);
+                self.finite_sharpe_sample_std = Some(if total_n > 1 {
+                    (merged_m2 / (total_n - 1) as f64).sqrt()
+                } else {
+                    0.0
+                });
+            }
+        }
+
+        debug_assert!(self.finite_sharpe_count <= self.feasible_count);
+        debug_assert!(self.feasible_count <= self.unique_count);
+        debug_assert!(self.unique_count <= self.attempted_count);
+        Ok(())
+    }
+}
+
+fn sample_m2(count: usize, sample_std: Option<f64>) -> f64 {
+    if count <= 1 {
+        0.0
+    } else {
+        let std = sample_std.filter(|value| value.is_finite()).unwrap_or(0.0);
+        std * std * (count - 1) as f64
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SearchDistributionAccumulator {
+    metric_surface_kind: String,
+    sharpe_metric_id: String,
+    attempted_count: usize,
+    unique_count: usize,
+    feasible_count: usize,
+    finite_sharpe_count: usize,
+    finite_sharpe_mean: f64,
+    finite_sharpe_m2: f64,
+}
+
+impl SearchDistributionAccumulator {
+    pub fn new(
+        metric_surface_kind: impl Into<String>,
+        sharpe_metric_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            metric_surface_kind: metric_surface_kind.into(),
+            sharpe_metric_id: sharpe_metric_id.into(),
+            attempted_count: 0,
+            unique_count: 0,
+            feasible_count: 0,
+            finite_sharpe_count: 0,
+            finite_sharpe_mean: 0.0,
+            finite_sharpe_m2: 0.0,
+        }
+    }
+
+    /// Records one distinct evaluator invocation.
+    pub fn record_unique_evaluation(&mut self, metrics: &Metrics, feasible: bool) {
+        self.attempted_count = self.attempted_count.saturating_add(1);
+        self.unique_count = self.unique_count.saturating_add(1);
+        if !feasible {
+            return;
+        }
+        self.feasible_count = self.feasible_count.saturating_add(1);
+        self.record_finite_sharpe(metrics.sharpe);
+    }
+
+    /// Records a repeated proposal satisfied from a cache or otherwise not
+    /// evaluated again.
+    pub fn record_duplicate_attempt(&mut self) {
+        self.attempted_count = self.attempted_count.saturating_add(1);
+    }
+
+    pub fn record_duplicate_attempts(&mut self, count: usize) {
+        self.attempted_count = self.attempted_count.saturating_add(count);
+    }
+
+    fn record_finite_sharpe(&mut self, sharpe: f64) {
+        if !sharpe.is_finite() {
+            return;
+        }
+        self.finite_sharpe_count = self.finite_sharpe_count.saturating_add(1);
+        let count = self.finite_sharpe_count as f64;
+        let delta = sharpe - self.finite_sharpe_mean;
+        self.finite_sharpe_mean += delta / count;
+        let delta2 = sharpe - self.finite_sharpe_mean;
+        self.finite_sharpe_m2 += delta * delta2;
+    }
+
+    pub fn try_merge(&mut self, other: Self) -> Result<(), String> {
+        let mut summary = self.clone().finalize();
+        summary.try_merge(&other.finalize())?;
+        *self = Self::from_summary(&summary);
+        Ok(())
+    }
+
+    pub fn finalize(self) -> SearchDistributionSummary {
+        debug_assert!(self.finite_sharpe_count <= self.feasible_count);
+        debug_assert!(self.feasible_count <= self.unique_count);
+        debug_assert!(self.unique_count <= self.attempted_count);
+        SearchDistributionSummary {
+            metric_surface_kind: self.metric_surface_kind,
+            sharpe_metric_id: self.sharpe_metric_id,
+            attempted_count: self.attempted_count,
+            unique_count: self.unique_count,
+            feasible_count: self.feasible_count,
+            finite_sharpe_count: self.finite_sharpe_count,
+            finite_sharpe_mean: (self.finite_sharpe_count > 0).then_some(self.finite_sharpe_mean),
+            finite_sharpe_sample_std: (self.finite_sharpe_count > 0).then_some(
+                if self.finite_sharpe_count > 1 {
+                    (self.finite_sharpe_m2.max(0.0) / (self.finite_sharpe_count - 1) as f64).sqrt()
+                } else {
+                    0.0
+                },
+            ),
+        }
+    }
+
+    fn from_summary(summary: &SearchDistributionSummary) -> Self {
+        Self {
+            metric_surface_kind: summary.metric_surface_kind.clone(),
+            sharpe_metric_id: summary.sharpe_metric_id.clone(),
+            attempted_count: summary.attempted_count,
+            unique_count: summary.unique_count,
+            feasible_count: summary.feasible_count,
+            finite_sharpe_count: summary.finite_sharpe_count,
+            finite_sharpe_mean: summary.finite_sharpe_mean.unwrap_or(0.0),
+            finite_sharpe_m2: sample_m2(
+                summary.finite_sharpe_count,
+                summary.finite_sharpe_sample_std,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -137,7 +363,8 @@ mod tests {
     use super::{
         compare_score_rank_desc, heatmap_axis_bins_for_period_count,
         heatmap_axis_bins_for_period_span, normalize_rank_score, ObjectiveKind,
-        OptimizationHeatmap, OptimizationMode, OptimizationResult,
+        OptimizationHeatmap, OptimizationMode, OptimizationResult, SearchDistributionAccumulator,
+        SearchDistributionSummary, DOUBLE_MA_SHARPE_METRIC_ID,
     };
     use serde_json::{json, Value};
     use std::cmp::Ordering;
@@ -233,6 +460,8 @@ mod tests {
         assert!(result.all.is_none());
         assert!(result.all_scores.is_none());
         assert!(result.heatmap.is_none());
+        assert!(result.search_distribution.is_none());
+        assert!(result.search_distribution_unavailable_reason.is_none());
         assert_eq!(result.best_params.fast_len, 5);
         assert_eq!(result.best_metrics.pnl, 1.25);
     }
@@ -291,6 +520,8 @@ mod tests {
             all: None,
             all_scores: None,
             heatmap: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
             num_combos: 12,
             num_candles: 256,
         })
@@ -302,6 +533,91 @@ mod tests {
         assert!(!object.contains_key("all"));
         assert!(!object.contains_key("all_scores"));
         assert!(!object.contains_key("heatmap"));
+        assert!(!object.contains_key("search_distribution"));
+        assert!(!object.contains_key("search_distribution_unavailable_reason"));
+    }
+
+    #[test]
+    fn search_distribution_keeps_attempt_unique_feasible_and_finite_counts_distinct() {
+        let mut stats = SearchDistributionAccumulator::new("core17", DOUBLE_MA_SHARPE_METRIC_ID);
+        stats.record_unique_evaluation(
+            &Metrics {
+                sharpe: 1.0,
+                ..Metrics::default()
+            },
+            true,
+        );
+        stats.record_unique_evaluation(
+            &Metrics {
+                sharpe: 9.0,
+                ..Metrics::default()
+            },
+            false,
+        );
+        stats.record_unique_evaluation(
+            &Metrics {
+                sharpe: 3.0,
+                ..Metrics::default()
+            },
+            true,
+        );
+        stats.record_duplicate_attempt();
+
+        let summary = stats.finalize();
+        assert_eq!(summary.attempted_count, 4);
+        assert_eq!(summary.unique_count, 3);
+        assert_eq!(summary.feasible_count, 2);
+        assert_eq!(summary.finite_sharpe_count, 2);
+        assert_eq!(summary.finite_sharpe_mean, Some(2.0));
+        assert!(
+            (summary.finite_sharpe_sample_std.expect("sample std") - 2.0f64.sqrt()).abs()
+                <= 1.0e-12
+        );
+        assert!(summary.is_comparable_with(DOUBLE_MA_SHARPE_METRIC_ID));
+        assert!(!summary.is_comparable_with("other_sharpe"));
+    }
+
+    #[test]
+    fn search_distribution_rejects_invalid_count_order_or_sample_deviation() {
+        let valid = SearchDistributionSummary {
+            metric_surface_kind: "core17".to_string(),
+            sharpe_metric_id: DOUBLE_MA_SHARPE_METRIC_ID.to_string(),
+            attempted_count: 4,
+            unique_count: 3,
+            feasible_count: 2,
+            finite_sharpe_count: 2,
+            finite_sharpe_mean: Some(0.5),
+            finite_sharpe_sample_std: Some(0.25),
+        };
+        let mut invalid_counts = valid.clone();
+        invalid_counts.unique_count = 5;
+        let mut invalid_deviation = valid;
+        invalid_deviation.finite_sharpe_sample_std = Some(-0.25);
+
+        assert!(!invalid_counts.is_comparable_with(DOUBLE_MA_SHARPE_METRIC_ID));
+        assert!(!invalid_deviation.is_comparable_with(DOUBLE_MA_SHARPE_METRIC_ID));
+    }
+
+    #[test]
+    fn search_distribution_merge_matches_single_pass_moments() {
+        let mut left = SearchDistributionAccumulator::new("core17", DOUBLE_MA_SHARPE_METRIC_ID);
+        let mut right = SearchDistributionAccumulator::new("core17", DOUBLE_MA_SHARPE_METRIC_ID);
+        let mut single = SearchDistributionAccumulator::new("core17", DOUBLE_MA_SHARPE_METRIC_ID);
+
+        for (idx, sharpe) in [0.5, 1.5, 2.5, 4.5].into_iter().enumerate() {
+            let metrics = Metrics {
+                sharpe,
+                ..Metrics::default()
+            };
+            if idx < 2 {
+                left.record_unique_evaluation(&metrics, true);
+            } else {
+                right.record_unique_evaluation(&metrics, true);
+            }
+            single.record_unique_evaluation(&metrics, true);
+        }
+        left.try_merge(right).expect("compatible merge");
+        assert_eq!(left.finalize(), single.finalize());
     }
 
     #[test]

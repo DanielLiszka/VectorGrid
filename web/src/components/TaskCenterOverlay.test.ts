@@ -293,7 +293,8 @@ describe('TaskCenterOverlay', () => {
           status: 'failed',
           startedAt: 1_700_000_000_000,
           endedAt: 1_700_000_001_000,
-          error: 'Validation failed.',
+          message: 'Failed. Open Details for technical information.',
+          error: 'run_double_ma_validation: unknown data id data-1',
         },
         {
           id: 'task_success',
@@ -326,6 +327,12 @@ describe('TaskCenterOverlay', () => {
     expect(text).toContain('Attention')
     expect(text).toContain('Completed')
     expect(document.querySelector('.taskStatus img, .taskStatus svg')).not.toBeNull()
+    const attentionCard = document.querySelector(
+      '.section[aria-label="Task center recent outcomes"] .postureColumn:first-child .taskCard',
+    )
+    expect(attentionCard?.textContent).toContain('Failed. Open Details')
+    expect(attentionCard?.textContent).not.toContain('Queued.')
+    expect(attentionCard?.querySelector('summary')?.textContent).toContain('Details')
 
     const action = Array.from(document.querySelectorAll<HTMLButtonElement>('.relatedBtn')).find((button) =>
       String(button.textContent || '').includes('Open validation'),

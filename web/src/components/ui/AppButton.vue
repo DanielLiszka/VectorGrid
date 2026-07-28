@@ -130,4 +130,10 @@ const resolvedLoadingLabel = computed(() => String(props.loadingLabel || '').tri
     transform: rotate(360deg);
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .appButtonSpinner {
+    animation: none;
+  }
+}
 </style>

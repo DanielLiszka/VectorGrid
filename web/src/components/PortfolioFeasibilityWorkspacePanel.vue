@@ -20,6 +20,7 @@ import {
 } from "../services/historyService";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { fileBasename } from "../utils/core/path";
 import {
   buildCurrentRunPortfolioSource,
   buildCurrentValidationPortfolioSource,
@@ -32,6 +33,8 @@ import {
   formatPortfolioReplayStatus,
   type PortfolioWorkspaceSource,
 } from "../utils/portfolioWorkspaceModel";
+import CompactEvidenceValue from "./CompactEvidenceValue.vue";
+import AppButton from "./ui/AppButton.vue";
 
 const workflowArtifactsStore = useWorkflowArtifactsStore();
 const historyStore = useHistoryStore();
@@ -130,16 +133,14 @@ function savedRunLabel(entry: HistorySavedRunSummary): string {
   return (
     [entry.ts, entry.strategyKind, entry.timeframe]
       .filter(Boolean)
-      .join(" | ") || entry.path
+      .join(" | ") ||
+    fileBasename(entry.path) ||
+    "Saved run artifact"
   );
 }
 
 function savedRunDetail(entry: HistorySavedRunSummary): string {
-  const flags = [
-    entry.hasValidation ? "validation" : "no validation",
-    entry.configFingerprint ? `cfg ${entry.configFingerprint}` : "",
-  ].filter(Boolean);
-  return flags.join(" | ");
+  return entry.hasValidation ? "validation" : "no validation";
 }
 
 function toggleSavedPath(path: string, checked: boolean): void {
@@ -298,7 +299,7 @@ function exportFeasibilityCsv(): void {
               <span class="eyebrow">Sources</span>
               <h3>{{ sourceCountPreview }} selected</h3>
             </div>
-            <span class="muted">{{ savedRunsMeta || historyStatusLine }}</span>
+            <span class="muted">Saved-run catalog · {{ savedRunsMeta || historyStatusLine }}</span>
           </div>
 
           <div class="sourceGroup">
@@ -352,17 +353,21 @@ function exportFeasibilityCsv(): void {
             >
               Clear
             </button>
-            <span>{{ selectedSavedCount }} saved</span>
+            <span>
+              {{ selectedSavedCount }} catalog
+              {{ selectedSavedCount === 1 ? "artifact" : "artifacts" }} selected
+            </span>
           </div>
 
           <div class="savedRunList" data-qa-panel="portfolio.savedSources">
-            <label
-              v-for="entry in savedRunRows"
+            <div
+              v-for="(entry, index) in savedRunRows"
               :key="entry.path"
               class="savedRunRow"
               :class="{ active: selectedSavedSet.has(entry.path) }"
             >
               <input
+                :id="`portfolio-saved-run-${index}`"
                 type="checkbox"
                 :checked="selectedSavedSet.has(entry.path)"
                 @change="
@@ -372,11 +377,42 @@ function exportFeasibilityCsv(): void {
                   )
                 "
               />
-              <span>
-                <strong>{{ savedRunLabel(entry) }}</strong>
-                <small>{{ savedRunDetail(entry) || entry.path }}</small>
-              </span>
-            </label>
+              <div class="savedRunContent">
+                <label
+                  class="savedRunSelectionLabel"
+                  :for="`portfolio-saved-run-${index}`"
+                >
+                  <strong>{{ savedRunLabel(entry) }}</strong>
+                  <small>{{ savedRunDetail(entry) }}</small>
+                </label>
+                <div class="savedRunEvidence">
+                  <CompactEvidenceValue
+                    label="saved run path"
+                    :value="entry.path"
+                    kind="path"
+                  >
+                    <template #actions>
+                      <AppButton
+                        size="sm"
+                        variant="subtle"
+                        class="compactEvidenceAction"
+                        data-qa-action="portfolio.saved.reveal"
+                        :aria-label="`Reveal saved run ${savedRunLabel(entry)}`"
+                        @click.stop="historyStore.revealSavedRun(entry.path)"
+                      >
+                        Reveal
+                      </AppButton>
+                    </template>
+                  </CompactEvidenceValue>
+                  <CompactEvidenceValue
+                    v-if="entry.configFingerprint"
+                    label="config fingerprint"
+                    :value="entry.configFingerprint"
+                    kind="hash"
+                  />
+                </div>
+              </div>
+            </div>
             <div v-if="!savedRunRows.length" class="emptyState">
               Saved run artifacts are not loaded.
             </div>
@@ -731,7 +767,7 @@ function exportFeasibilityCsv(): void {
 .muted,
 .sourceToolbar span,
 .checkRow small,
-.savedRunRow small {
+.savedRunSelectionLabel small {
   color: var(--muted);
   font-size: 0.76rem;
 }
@@ -759,18 +795,36 @@ function exportFeasibilityCsv(): void {
 }
 
 .checkRow span,
-.savedRunRow span {
+.savedRunSelectionLabel {
   min-width: 0;
   display: grid;
   gap: 0.12rem;
 }
 
 .checkRow strong,
-.savedRunRow strong {
+.savedRunSelectionLabel strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.savedRunContent,
+.savedRunEvidence {
+  min-width: 0;
+  display: grid;
+}
+
+.savedRunContent {
+  gap: 0.42rem;
+}
+
+.savedRunSelectionLabel {
+  cursor: pointer;
+}
+
+.savedRunEvidence {
+  gap: 0.36rem;
 }
 
 .savedRunList {

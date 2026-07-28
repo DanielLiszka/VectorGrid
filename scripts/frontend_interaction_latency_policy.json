@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "registry_id": "vectorgrid-frontend-interaction-latency-v2",
+  "profile": "scoped-warm-mocked-browser-v1",
+  "mock_profile": "strict-path-distinct-async-saved-detail-v1",
+  "fixture_profile": "path-distinct-saved-run-details-v1",
+  "warmup_samples_per_case": 3,
+  "measured_samples_per_case": 20,
+  "dom_quiet_window_ms": 64,
+  "interaction_timeout_ms": 5000,
+  "detail_mock_delay_ms": 12,
+  "build_attestation_max_age_minutes": 240,
+  "report_freshness_max_minutes": 30,
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "cases": [
+    {
+      "id": "saved-run-detail-open",
+      "label": "Saved optimization result detail",
+      "boundary": "trusted click on a path-distinct uncached saved-run result through argument-matched asynchronous hydration, a unique detail-only ready field, DOM quiet, and the following stable paint",
+      "readiness_contract_id": "saved-run-detail-hydrated-v2",
+      "require_unique_target_identity": true,
+      "p95_budget_ms": 300,
+      "max_budget_ms": 600
+    },
+    {
+      "id": "workspace-navigation",
+      "label": "Workflow to Library workspace navigation",
+      "boundary": "trusted workspace-tab click through selected-tab state, visible Library surface, DOM quiet, and the following stable paint",
+      "readiness_contract_id": "workspace-library-visible-v1",
+      "require_unique_target_identity": false,
+      "p95_budget_ms": 250,
+      "max_budget_ms": 500
+    }
+  ]
+}

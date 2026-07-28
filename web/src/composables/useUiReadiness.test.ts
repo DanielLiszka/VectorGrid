@@ -71,6 +71,42 @@ describe('useUiReadiness', () => {
     workflowArtifactsStore.clearArtifacts()
   })
 
+  it('does not treat retained evidence as current when a data id is reused for a different path', () => {
+    const dataStore = useDataStore()
+    const analysisStore = useAnalysisStore()
+    const validationStore = useValidationStore()
+    const workflowArtifactsStore = useWorkflowArtifactsStore()
+    const readiness = useUiReadiness()
+
+    dataStore.dataId = 'data-1'
+    dataStore.datasetLabel = 'vectorgrid_synthetic_ohlcv.csv'
+    dataStore.baseCsvPath = 'C:/samples/vectorgrid_synthetic_ohlcv.csv'
+    analysisStore.bestTitle = 'Retained AAPL winner'
+    analysisStore.topRows = 20
+    validationStore.tableVisible = true
+    validationStore.tableRowCount = 4
+    workflowArtifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-07-18T12:00:00Z',
+        req: { data_id: 'data-1', strategy_kind: 'DoubleMa' },
+        dataset_meta: { csv_path: 'C:/market/AAPL.csv' },
+        res: { top: [{}] },
+      },
+      currentValidation: {
+        ts: '2026-07-18T12:01:00Z',
+        req: { candidates: 4 },
+        res: { rows: [{}] },
+      },
+    })
+
+    expect(readiness.currentRunCompatibility.value).toMatchObject({
+      compatible: false,
+      code: 'dataset_mismatch',
+    })
+    expect(readiness.overviewStage.value).toBe('data_loaded_no_run')
+    expect(readiness.validationStage.value).toBe('data_loaded_no_run')
+  })
+
   it('describes blocked next actions with canonical copy', () => {
     expect(describeUiReadinessStage('pareto', 'no_data')).toMatchObject({
       title: 'Load data before opening the Pareto view.',

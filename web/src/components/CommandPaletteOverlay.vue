@@ -17,6 +17,7 @@ import { useCommandPaletteStore } from "../stores/commandPaletteStore";
 import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useSettingsStore } from "../stores/settingsStore";
+import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import {
   openTaskCenter,
@@ -28,6 +29,7 @@ import {
   createSharedShellShortcutCommands,
   type SharedShellShortcutGroup,
 } from "../utils/shellShortcutRegistry";
+import { resolveShellResultCommandReadiness } from "../utils/shellCommandReadiness";
 
 interface PaletteCommand {
   id: string;
@@ -64,6 +66,7 @@ const commandPaletteStore = useCommandPaletteStore();
 const dataStore = useDataStore();
 const optimizeStore = useOptimizeStore();
 const settingsStore = useSettingsStore();
+const workflowArtifactsStore = useWorkflowArtifactsStore();
 const workflowStore = useWorkflowStore();
 const taskCenterOpen = useTaskCenterVisibility();
 
@@ -71,11 +74,28 @@ const { canExportCsv, canExportJson } = storeToRefs(analysisStore);
 const { canOpenLatestMetaReport, canOpenLatestReport } =
   storeToRefs(commandActionStore);
 const { open, query, selectedIndex } = storeToRefs(commandPaletteStore);
-const { canBrowseCsv, canPolygonOpen } = storeToRefs(dataStore);
+const { baseCsvPath, canBrowseCsv, canPolygonOpen, csvPath, dataId, dataTimeframe } = storeToRefs(dataStore);
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore);
-const { workspace, workflowStep } = storeToRefs(workflowStore);
+const { currentRun } = storeToRefs(workflowArtifactsStore);
+const { mode, workspace, workflowStep } = storeToRefs(workflowStore);
 const { datasetReady } = useUiReadiness();
 const commandListId = "commandPaletteListbox";
+
+const resultCommandReadiness = computed(() =>
+  resolveShellResultCommandReadiness({
+    workspace: workspace.value,
+    mode: mode.value,
+    datasetReady: datasetReady.value,
+    activeDataId: dataId.value,
+    activeDatasetPath: baseCsvPath.value || csvPath.value,
+    activeTimeframe: dataTimeframe.value,
+    currentRun: currentRun.value,
+    runDisabled: runDisabled.value,
+    validateDisabled: validateDisabled.value,
+    canExportCsv: canExportCsv.value,
+    canExportJson: canExportJson.value,
+  }),
+);
 
 const commandGroupMeta: Record<PaletteCommand["group"], string> = {
   actions: "Run control",
@@ -110,16 +130,17 @@ const inputRef = ref<HTMLInputElement | null>(null);
 
 const sharedShortcutCommands = computed<PaletteCommand[]>(() =>
   createSharedShellShortcutCommands({
-    canRun: !runDisabled.value && datasetReady.value,
+    canRun: resultCommandReadiness.value.canRun,
     canCancel: canCancel.value,
-    canValidate: !validateDisabled.value,
+    canValidate: resultCommandReadiness.value.canValidate,
     canBrowseCsv: canBrowseCsv.value,
     canPolygonOpen: canPolygonOpen.value,
-    canExportCsv: canExportCsv.value,
-    canExportJson: canExportJson.value,
+    canExportCsv: resultCommandReadiness.value.canExportCsv,
+    canExportJson: resultCommandReadiness.value.canExportJson,
     canOpenLatestReport: canOpenLatestReport.value,
     canOpenLatestMetaReport: canOpenLatestMetaReport.value,
     controlsPanelVisible: !settingsStore.controlsCollapsed,
+    disabledReasons: resultCommandReadiness.value.reasons,
     browseCsv: () => {
       commandActionStore.browseCsv();
     },

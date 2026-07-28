@@ -43,7 +43,7 @@ export type WorkflowAllowedEntry = {
 export type WorkflowAllowedMap = Record<WorkflowTab, WorkflowAllowedEntry>
 
 export const ML_SIGNAL_WORKFLOW_DEFAULTS = {
-  data: { controls: 'data', results: 'overview' },
+  data: { controls: 'opt', results: 'overview' },
   optimize: { controls: 'opt', results: 'overview' },
   validate: { controls: 'opt', results: 'overview' },
   analyze: { controls: 'opt', results: 'overview' },
@@ -53,7 +53,7 @@ export const ML_SIGNAL_WORKFLOW_DEFAULTS = {
 } as const
 
 export const ML_SIGNAL_WORKFLOW_ALLOWED = {
-  data: { controls: ['data'], results: ['overview'] },
+  data: { controls: ['opt'], results: ['overview'] },
   optimize: { controls: ['opt'], results: ['overview'] },
   validate: { controls: ['opt'], results: ['overview'] },
   analyze: { controls: ['opt'], results: ['overview'] },
@@ -151,6 +151,51 @@ export const OPTIONS_WORKFLOW_STEP_SUBTITLES = {
   analyze: 'Validate options expression artifacts and inspect scenario robustness.',
   finalize: 'Review options finalist evidence, exports, and replay provenance.',
 } as const
+
+export interface OptionsPrimaryActionDescriptor {
+  kind: 'underlying' | 'options_data' | 'expression' | 'validation' | 'final_review'
+  label: string
+  shortLabel: string
+  actionable: boolean
+}
+
+export const OPTIONS_PRIMARY_ACTIONS: Record<WorkflowStep, OptionsPrimaryActionDescriptor> = {
+  data: {
+    kind: 'underlying',
+    label: 'Review underlying data',
+    shortLabel: 'Underlying',
+    actionable: false,
+  },
+  optimize: {
+    kind: 'options_data',
+    label: 'Prepare options data',
+    shortLabel: 'Options data',
+    actionable: false,
+  },
+  validate: {
+    kind: 'expression',
+    label: 'Run expression search',
+    shortLabel: 'Run search',
+    actionable: true,
+  },
+  analyze: {
+    kind: 'validation',
+    label: 'Run options validation',
+    shortLabel: 'Validate',
+    actionable: true,
+  },
+  finalize: {
+    kind: 'final_review',
+    label: 'Review options finalists',
+    shortLabel: 'Review',
+    actionable: false,
+  },
+}
+
+export function optionsPrimaryActionForStep(value: unknown): OptionsPrimaryActionDescriptor {
+  const step = normalizeWorkflowStep(value) || 'data'
+  return OPTIONS_PRIMARY_ACTIONS[step]
+}
 
 export interface MlSignalPrimaryActionDescriptor {
   kind: 'dataset_export' | 'score_cache' | 'validation' | 'policy_sweep' | 'artifacts'

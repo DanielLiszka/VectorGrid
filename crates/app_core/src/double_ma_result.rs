@@ -67,6 +67,8 @@ fn build_optimization_search_semantics_summary(
                     base_ranker: None,
                     rerank_operator: None,
                     heatmap_semantics: None,
+                    search_distribution: None,
+                    search_distribution_unavailable_reason: None,
                 }
             } else {
                 OptimizationSearchSemanticsSummary {
@@ -77,6 +79,8 @@ fn build_optimization_search_semantics_summary(
                     base_ranker: None,
                     rerank_operator: None,
                     heatmap_semantics: None,
+                    search_distribution: None,
+                    search_distribution_unavailable_reason: None,
                 }
             }
         }
@@ -88,6 +92,8 @@ fn build_optimization_search_semantics_summary(
             base_ranker: None,
             rerank_operator: None,
             heatmap_semantics: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
         },
         OptimizationModeResolved::GpuVdps => OptimizationSearchSemanticsSummary {
             approx_mode: "heuristic_reduced_output".to_string(),
@@ -97,6 +103,8 @@ fn build_optimization_search_semantics_summary(
             base_ranker: None,
             rerank_operator: None,
             heatmap_semantics: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
         },
     }
 }
@@ -221,15 +229,18 @@ fn build_grid_matrix_index(
 }
 
 pub(crate) fn build_backend_optimization_result(
-    result: OptimizationResult,
+    mut result: OptimizationResult,
     ctx: BackendResultContext<'_>,
 ) -> BackendOptimizationResult {
     debug_assert_result_alignment(&result, &ctx);
     let mode_used = ctx.mode_used.clone();
-    let search_semantics = build_optimization_search_semantics_summary(
+    let mut search_semantics = build_optimization_search_semantics_summary(
         &ctx.mode_used,
         ctx.exhaustive_output_requested,
     );
+    search_semantics.search_distribution = result.search_distribution.take();
+    search_semantics.search_distribution_unavailable_reason =
+        result.search_distribution_unavailable_reason.take();
     let best_params = resolve_params(
         &result.best_params,
         ctx.fast_ma_label,
@@ -381,7 +392,7 @@ pub(crate) fn build_backend_optimization_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::double_ma::GpuExecutionPolicy;
+    use crate::double_ma::{CudaGraphTimingUs, GpuExecutionPolicy};
 
     fn base_result() -> OptimizationResult {
         OptimizationResult {
@@ -398,6 +409,8 @@ mod tests {
             all: None,
             all_scores: None,
             heatmap: None,
+            search_distribution: None,
+            search_distribution_unavailable_reason: None,
             num_combos: 1,
             num_candles: 200,
         }
@@ -497,6 +510,68 @@ mod tests {
         );
 
         assert_eq!(built.gpu_kernel_timing_ms, Some(expected));
+    }
+
+    #[test]
+    fn cuda_graph_timing_contract_is_cpu_serializable_and_legacy_compatible() {
+        let graph_timing = CudaGraphTimingUs {
+            schema_version: 1,
+            timing_enabled: true,
+            graphs_requested: true,
+            graphs_eligible: true,
+            clock: "std_monotonic_instant".to_string(),
+            capture_boundary:
+                "cuStreamBeginCapture_v2_through_cuStreamEndCapture_including_node_recording"
+                    .to_string(),
+            capture_attempt_count: 1,
+            capture_success_count: 1,
+            capture_total_us: 41,
+            instantiate_boundary: "cuGraphInstantiate_v2_host_call".to_string(),
+            instantiate_attempt_count: 1,
+            instantiate_success_count: 1,
+            instantiate_total_us: 13,
+            update_boundary: "not_applicable_immutable_graph_exec_no_cuGraphExecUpdate_call"
+                .to_string(),
+            update_applicable: false,
+            update_attempt_count: 0,
+            update_success_count: 0,
+            update_total_us: 0,
+            replay_boundary: "cuGraphLaunch_host_submission_only_async_device_completion_excluded"
+                .to_string(),
+            replay_attempt_count: 3,
+            replay_success_count: 3,
+            replay_submit_total_us: 17,
+        };
+        let timing = GpuKernelTimingMs {
+            route_wall_ms: 9,
+            cuda_graph_timing_us: Some(graph_timing.clone()),
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(&timing).expect("serialize CUDA graph timing");
+        assert_eq!(
+            encoded["cuda_graph_timing_us"]["capture_total_us"],
+            serde_json::json!(41)
+        );
+        assert_eq!(
+            encoded["cuda_graph_timing_us"]["update_applicable"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            encoded["cuda_graph_timing_us"]["replay_submit_total_us"],
+            serde_json::json!(17)
+        );
+        let decoded: GpuKernelTimingMs =
+            serde_json::from_value(encoded).expect("deserialize CUDA graph timing");
+        assert_eq!(decoded.cuda_graph_timing_us, Some(graph_timing));
+
+        let legacy: GpuKernelTimingMs = serde_json::from_value(serde_json::json!({
+            "route_wall_ms": 5,
+            "graph_capture_ms": 1,
+            "graph_replay_count": 2
+        }))
+        .expect("deserialize pre-boundary timing payload");
+        assert!(legacy.cuda_graph_timing_us.is_none());
     }
 
     #[test]

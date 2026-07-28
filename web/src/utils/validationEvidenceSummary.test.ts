@@ -3,17 +3,16 @@ import { buildValidationEvidenceSummary } from "./validationEvidenceSummary";
 
 describe("validationEvidenceSummary", () => {
   it("returns a not-run summary when no validation result is present", () => {
-    expect(
-      buildValidationEvidenceSummary({
-        validationReq: {
-          backend: { backend: "Auto" },
-          walk_forward: { window: 100 },
-        },
-        datasetMeta: { dataset_id: "dataset-1" },
-      }),
-    ).toMatchObject({
+    const summary = buildValidationEvidenceSummary({
+      validationReq: {
+        backend: { backend: "Auto" },
+        walk_forward: { window: 100 },
+      },
+      datasetMeta: { dataset_id: "dataset-1" },
+    });
+
+    expect(summary).toMatchObject({
       status: "not_run",
-      summaryLine: "Validation evidence not run.",
       requestedBackend: "Auto",
       reportState: "not_generated",
       datasetIdentity: "dataset-1",
@@ -23,6 +22,10 @@ describe("validationEvidenceSummary", () => {
         items: [],
       },
     });
+    expect(summary.summaryLine).toContain("Validation evidence not run.");
+    expect(summary.summaryLine).toContain("Data realism incomplete;");
+    expect(summary.summaryLine).toContain("Promotion blocked;");
+    expect(summary.promotionEligibility.eligible).toBe(false);
   });
 
   it("summarizes available and missing requested modules", () => {
@@ -48,7 +51,7 @@ describe("validationEvidenceSummary", () => {
     });
 
     expect(summary.status).toBe("incomplete");
-    expect(summary.summaryLine).toBe(
+    expect(summary.summaryLine).toContain(
       "Validation evidence incomplete; 2/4 requested modules available; route Gpu.",
     );
     expect(summary.reportState).toBe("generated");
@@ -90,7 +93,7 @@ describe("validationEvidenceSummary", () => {
     });
 
     expect(summary.status).toBe("available");
-    expect(summary.summaryLine).toBe(
+    expect(summary.summaryLine).toContain(
       "Validation evidence available; no optional evidence modules requested; route Cpu.",
     );
     expect(
@@ -198,7 +201,7 @@ describe("validationEvidenceSummary", () => {
     });
 
     expect(summary.status).toBe("incomplete");
-    expect(summary.summaryLine).toBe(
+    expect(summary.summaryLine).toContain(
       "Validation evidence incomplete; pack schema 1-0-0 v1; 1/2 requested modules available; route Gpu.",
     );
     expect(summary.requestedBackend).toBe("GpuKernel");
@@ -221,6 +224,139 @@ describe("validationEvidenceSummary", () => {
       detail: "spa_skipped_not_enough_slices",
       tone: "warn",
     });
+  });
+
+  it("surfaces complete adjusted-vs-unadjusted realism evidence without calling it deployment approval", () => {
+    const summary = buildValidationEvidenceSummary({
+      validationRes: {
+        validation_evidence_pack: {
+          schema_version: "1-0-0",
+          version: 1,
+          status: "available",
+          route: {
+            realized_backend: "Cpu",
+          },
+          dataset: {
+            data_realism: {
+              price_adjustment: "unadjusted",
+              corporate_actions: "documented",
+              survivorship_bias: "documented",
+              liquidity_capacity: "not_applicable",
+              market_impact: "documented",
+              borrow_availability: "not_applicable",
+              complete: true,
+              missing_or_unknown: [],
+            },
+          },
+          promotion_eligibility: {
+            eligible: true,
+            state: "eligible_for_review",
+            gates_passed: ["statistical_validation", "data_realism"],
+            gates_failed: [],
+            reason: "all research promotion gates passed",
+          },
+        },
+      },
+    });
+
+    expect(summary.dataRealism).toMatchObject({
+      status: "complete",
+      complete: true,
+      missingOrUnknown: [],
+    });
+    expect(
+      summary.dataRealism.items.find(
+        (item) => item.id === "price_adjustment",
+      ),
+    ).toMatchObject({
+      value: "unadjusted",
+      blocking: false,
+      detail: "unadjusted prices documented",
+    });
+    expect(summary.promotionEligibility).toMatchObject({
+      eligible: true,
+      state: "eligible_for_review",
+      gatesPassed: ["statistical_validation", "data_realism"],
+      gatesFailed: [],
+    });
+    expect(summary.summaryLine).toContain(
+      "Data realism complete; price adjustment unadjusted;",
+    );
+    expect(summary.summaryLine).toContain("Promotion eligible for review;");
+    expect(summary.summaryLine).toContain(
+      "Statistical validation approval is not deployability or deployment approval.",
+    );
+  });
+
+  it("blocks inconsistent promotion claims when realism is unknown and does not infer capacity or impact from friction stress", () => {
+    const summary = buildValidationEvidenceSummary({
+      validationRes: {
+        friction_stress: {
+          pass_count: 4,
+          scenario_count: 4,
+          worst_scenario_label: "slippage_2x",
+        },
+        validation_evidence_pack: {
+          schema_version: "1-0-0",
+          version: 1,
+          status: "available",
+          dataset: {
+            data_realism: {
+              price_adjustment: "adjusted",
+              corporate_actions: "documented",
+              survivorship_bias: "unknown",
+              liquidity_capacity: "unknown",
+              market_impact: "unknown",
+              borrow_availability: "unknown",
+              complete: false,
+              missing_or_unknown: [
+                "survivorship_bias",
+                "liquidity_capacity",
+                "market_impact",
+                "borrow_availability",
+              ],
+            },
+          },
+          promotion_eligibility: {
+            eligible: true,
+            state: "eligible_for_review",
+            gates_passed: ["statistical_validation"],
+            gates_failed: [],
+            reason: "upstream payload was inconsistent",
+          },
+        },
+      },
+    });
+
+    expect(summary.dataRealism.status).toBe("incomplete");
+    expect(summary.dataRealism.missingOrUnknown).toEqual([
+      "survivorship_bias",
+      "liquidity_capacity",
+      "market_impact",
+      "borrow_availability",
+    ]);
+    expect(
+      summary.dataRealism.items.find(
+        (item) => item.id === "liquidity_capacity",
+      ),
+    ).toMatchObject({
+      value: "unknown",
+      blocking: true,
+    });
+    expect(
+      summary.dataRealism.items.find((item) => item.id === "market_impact"),
+    ).toMatchObject({
+      value: "unknown",
+      blocking: true,
+    });
+    expect(summary.promotionEligibility).toMatchObject({
+      eligible: false,
+      state: "blocked",
+    });
+    expect(summary.summaryLine).toContain("Promotion blocked;");
+    expect(summary.summaryLine).toContain(
+      "Statistical validation approval is not deployability or deployment approval.",
+    );
   });
 
   it("builds an overfit evidence panel model from validation verdicts and optional evidence blocks", () => {

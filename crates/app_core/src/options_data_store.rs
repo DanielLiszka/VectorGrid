@@ -7,9 +7,13 @@ use csv::{ReaderBuilder, StringRecord};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{btree_map::Entry, BTreeMap};
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const OPTIONS_DATASET_STAGING_PREFIX: &str = ".options-dataset-staging-";
+static OPTIONS_DATASET_STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportedOptionsDatasetCsvBuildRequest {
@@ -30,6 +34,195 @@ pub struct ImportedOptionsDatasetCsvBuildRequest {
     pub contract_reference_as_of_utc: Option<String>,
     pub underlier_reference_source: String,
     pub aggregate_price_field: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptionsDatasetManifestScanDiagnostic {
+    pub manifest_path: PathBuf,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct OptionsDatasetManifestScanResult {
+    pub manifests: Vec<OptionsDatasetManifestV1>,
+    pub diagnostics: Vec<OptionsDatasetManifestScanDiagnostic>,
+}
+
+#[derive(Debug)]
+pub struct OptionsDatasetPublication {
+    root_dir: PathBuf,
+    dataset_id: String,
+    staging_dir: PathBuf,
+    final_dir: PathBuf,
+    published: bool,
+}
+
+impl OptionsDatasetPublication {
+    pub fn begin(root_dir: &Path, dataset_id: &str) -> Result<Self, String> {
+        validate_dataset_id_path_component(dataset_id)?;
+        std::fs::create_dir_all(root_dir).map_err(|error| {
+            format!(
+                "failed to create options dataset store {}: {error}",
+                root_dir.display()
+            )
+        })?;
+
+        let final_dir = root_dir.join(dataset_id);
+        match std::fs::symlink_metadata(&final_dir) {
+            Ok(_) => {
+                return Err(format!(
+                    "options dataset id '{}' already exists at {}",
+                    dataset_id,
+                    final_dir.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect options dataset publication target {}: {error}",
+                    final_dir.display()
+                ));
+            }
+        }
+
+        let staging_prefix = dataset_staging_prefix(dataset_id);
+        let mut staging_dir = None;
+        for _ in 0..64 {
+            let candidate = root_dir.join(format!("{}{}", staging_prefix, unique_staging_suffix()));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => {
+                    staging_dir = Some(candidate);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "failed to create staged options dataset directory {}: {error}",
+                        candidate.display()
+                    ));
+                }
+            }
+        }
+        let staging_dir = staging_dir.ok_or_else(|| {
+            format!(
+                "failed to allocate a unique staged directory for options dataset '{}'",
+                dataset_id
+            )
+        })?;
+
+        Ok(Self {
+            root_dir: root_dir.to_path_buf(),
+            dataset_id: dataset_id.to_string(),
+            staging_dir,
+            final_dir,
+            published: false,
+        })
+    }
+
+    pub fn staging_dir(&self) -> &Path {
+        &self.staging_dir
+    }
+
+    pub fn final_dir(&self) -> &Path {
+        &self.final_dir
+    }
+
+    pub fn publish(mut self) -> Result<PathBuf, String> {
+        let manifest_path = self.staging_dir.join("manifest.json");
+        let manifest = read_options_dataset_manifest(&manifest_path).map_err(|error| {
+            format!(
+                "refusing to publish staged options dataset '{}': {error}",
+                self.dataset_id
+            )
+        })?;
+        if manifest.options_dataset_id != self.dataset_id {
+            return Err(format!(
+                "refusing to publish staged options dataset '{}': manifest dataset id is '{}'",
+                self.dataset_id, manifest.options_dataset_id
+            ));
+        }
+        let staged_rows_path = self.staging_dir.join("rows.csv");
+        if !staged_rows_path.is_file() {
+            return Err(format!(
+                "refusing to publish staged options dataset '{}': rows file is missing at {}",
+                self.dataset_id,
+                staged_rows_path.display()
+            ));
+        }
+        let final_rows_path = self.final_dir.join("rows.csv");
+        if Path::new(&manifest.dataset_path) != final_rows_path {
+            return Err(format!(
+                "refusing to publish staged options dataset '{}': manifest dataset_path '{}' does not match final rows path {}",
+                self.dataset_id,
+                manifest.dataset_path,
+                final_rows_path.display()
+            ));
+        }
+        let expected_rows_sha256 =
+            manifest
+                .normalized_rows_sha256
+                .as_deref()
+                .ok_or_else(|| {
+                    format!(
+                        "refusing to publish staged options dataset '{}': manifest is missing normalized_rows_sha256",
+                        self.dataset_id
+                    )
+                })?;
+        let actual_rows_sha256 = sha256_file_hex(&staged_rows_path)?;
+        if !actual_rows_sha256.eq_ignore_ascii_case(expected_rows_sha256) {
+            return Err(format!(
+                "refusing to publish staged options dataset '{}': rows SHA-256 mismatch (manifest {}, actual {})",
+                self.dataset_id, expected_rows_sha256, actual_rows_sha256
+            ));
+        }
+        let expected_manifest_sha256 =
+            manifest
+                .manifest_semantic_sha256
+                .as_deref()
+                .ok_or_else(|| {
+                    format!(
+                        "refusing to publish staged options dataset '{}': manifest is missing manifest_semantic_sha256",
+                        self.dataset_id
+                    )
+                })?;
+        let actual_manifest_sha256 = options_dataset_manifest_semantic_sha256(&manifest)?;
+        if !actual_manifest_sha256.eq_ignore_ascii_case(expected_manifest_sha256) {
+            return Err(format!(
+                "refusing to publish staged options dataset '{}': manifest semantic SHA-256 mismatch (manifest {}, actual {})",
+                self.dataset_id, expected_manifest_sha256, actual_manifest_sha256
+            ));
+        }
+
+        sync_regular_files_in_directory(&self.staging_dir)?;
+        sync_directory_best_effort(&self.staging_dir);
+        std::fs::rename(&self.staging_dir, &self.final_dir).map_err(|error| {
+            format!(
+                "failed to atomically publish options dataset '{}' from {} to {}: {error}",
+                self.dataset_id,
+                self.staging_dir.display(),
+                self.final_dir.display()
+            )
+        })?;
+        self.published = true;
+
+        if let Err(error) = cleanup_orphaned_dataset_staging_dirs(&self.root_dir, &self.dataset_id)
+        {
+            eprintln!(
+                "published options dataset '{}' but failed to clean orphan staging directories: {}",
+                self.dataset_id, error
+            );
+        }
+        sync_directory_best_effort(&self.root_dir);
+        Ok(self.final_dir.clone())
+    }
+}
+
+impl Drop for OptionsDatasetPublication {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_dir_all(&self.staging_dir);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -586,6 +779,211 @@ pub fn load_imported_options_dataset_from_csv(
     })
 }
 
+fn validate_dataset_id_path_component(dataset_id: &str) -> Result<(), String> {
+    if dataset_id.is_empty()
+        || dataset_id == "."
+        || dataset_id == ".."
+        || !dataset_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        || dataset_id.contains(['/', '\\'])
+        || Path::new(dataset_id)
+            .file_name()
+            .and_then(|value| value.to_str())
+            != Some(dataset_id)
+    {
+        return Err(format!(
+            "options dataset id '{}' is not a safe path component",
+            dataset_id
+        ));
+    }
+    Ok(())
+}
+
+fn dataset_staging_prefix(dataset_id: &str) -> String {
+    format!("{OPTIONS_DATASET_STAGING_PREFIX}{dataset_id}-")
+}
+
+fn unique_staging_suffix() -> String {
+    let counter = OPTIONS_DATASET_STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}-{nanos}-{counter}", std::process::id())
+}
+
+fn manifest_staging_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        format!(
+            "options dataset manifest path has no file name: {}",
+            path.display()
+        )
+    })?;
+    Ok(parent.join(format!(
+        ".{}.{}",
+        file_name.to_string_lossy(),
+        unique_staging_suffix()
+    )))
+}
+
+fn existing_regular_manifest_target(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "refusing to replace non-regular options dataset manifest target {}",
+                    path.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect options dataset manifest target {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn replace_existing_manifest(staged_path: &Path, final_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    fn wide_null(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let replaced = wide_null(final_path);
+    let replacement = wide_null(staged_path);
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "failed to atomically replace options dataset manifest {}: {}",
+            final_path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_manifest(staged_path: &Path, final_path: &Path) -> Result<(), String> {
+    std::fs::rename(staged_path, final_path).map_err(|error| {
+        format!(
+            "failed to atomically replace options dataset manifest {}: {error}",
+            final_path.display()
+        )
+    })
+}
+
+fn sync_regular_files_in_directory(dir: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|error| {
+        format!(
+            "failed to inspect staged options dataset directory {}: {error}",
+            dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to inspect an entry in staged options dataset directory {}: {error}",
+                dir.display()
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "failed to inspect staged options dataset entry {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if file_type.is_file() {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(entry.path())
+                .and_then(|file| file.sync_all())
+                .map_err(|error| {
+                    format!(
+                        "failed to sync staged options dataset file {}: {error}",
+                        entry.path().display()
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_orphaned_dataset_staging_dirs(root_dir: &Path, dataset_id: &str) -> Result<(), String> {
+    let staging_prefix = dataset_staging_prefix(dataset_id);
+    for entry in std::fs::read_dir(root_dir).map_err(|error| {
+        format!(
+            "failed to inspect options dataset store {}: {error}",
+            root_dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to inspect an entry in options dataset store {}: {error}",
+                root_dir.display()
+            )
+        })?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !file_name.starts_with(&staging_prefix) {
+            continue;
+        }
+        let path = entry.path();
+        if entry
+            .file_type()
+            .map_err(|error| {
+                format!(
+                    "failed to inspect orphan options dataset staging path {}: {error}",
+                    path.display()
+                )
+            })?
+            .is_dir()
+        {
+            std::fs::remove_dir_all(&path).map_err(|error| {
+                format!(
+                    "failed to remove orphan options dataset staging directory {}: {error}",
+                    path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory_best_effort(path: &Path) {
+    if let Err(error) = File::open(path).and_then(|dir| dir.sync_all()) {
+        eprintln!(
+            "failed to sync options dataset directory {}: {}",
+            path.display(),
+            error
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_directory_best_effort(_path: &Path) {}
+
 pub fn read_options_dataset_manifest(path: &Path) -> Result<OptionsDatasetManifestV1, String> {
     let bytes = std::fs::read(path).map_err(|e| {
         format!(
@@ -614,38 +1012,172 @@ pub fn write_options_dataset_manifest(
     path: &Path,
     manifest: &OptionsDatasetManifestV1,
 ) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create options dataset manifest directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let target_exists = existing_regular_manifest_target(path)?;
     let bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|e| format!("failed to serialize options dataset manifest: {e}"))?;
-    std::fs::write(path, bytes).map_err(|e| {
+    let mut staged = None;
+    for _ in 0..64 {
+        let candidate = manifest_staging_path(path)?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                staged = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to create staged options dataset manifest {}: {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+    let (staged_path, mut staged_file) = staged.ok_or_else(|| {
         format!(
-            "failed to write options dataset manifest {}: {e}",
+            "failed to allocate a unique staged options dataset manifest for {}",
             path.display()
         )
-    })
+    })?;
+
+    let stage_result = (|| -> Result<(), String> {
+        staged_file.write_all(&bytes).map_err(|error| {
+            format!(
+                "failed to write staged options dataset manifest {}: {error}",
+                staged_path.display()
+            )
+        })?;
+        staged_file.sync_all().map_err(|error| {
+            format!(
+                "failed to sync staged options dataset manifest {}: {error}",
+                staged_path.display()
+            )
+        })
+    })();
+    drop(staged_file);
+    if let Err(error) = stage_result {
+        let _ = std::fs::remove_file(&staged_path);
+        return Err(error);
+    }
+
+    let publish_result = if target_exists {
+        replace_existing_manifest(&staged_path, path)
+    } else {
+        std::fs::rename(&staged_path, path).map_err(|error| {
+            format!(
+                "failed to atomically publish options dataset manifest {}: {error}",
+                path.display()
+            )
+        })
+    };
+    if let Err(error) = publish_result {
+        let _ = std::fs::remove_file(&staged_path);
+        return Err(error);
+    }
+    sync_directory_best_effort(parent);
+    Ok(())
 }
 
-pub fn scan_options_dataset_manifests(dir: &Path) -> Result<Vec<OptionsDatasetManifestV1>, String> {
+pub fn scan_options_dataset_manifests_with_diagnostics(
+    dir: &Path,
+) -> Result<OptionsDatasetManifestScanResult, String> {
     if !dir.exists() {
-        return Ok(Vec::new());
+        return Ok(OptionsDatasetManifestScanResult::default());
     }
     let mut manifests: Vec<OptionsDatasetManifestV1> = Vec::new();
+    let mut diagnostics: Vec<OptionsDatasetManifestScanDiagnostic> = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                diagnostics.push(OptionsDatasetManifestScanDiagnostic {
+                    manifest_path: dir.to_path_buf(),
+                    error: format!(
+                        "failed to inspect an entry in options dataset store {}: {error}",
+                        dir.display()
+                    ),
+                });
+                continue;
+            }
+        };
         let path = entry.path();
-        if !path.is_dir() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                diagnostics.push(OptionsDatasetManifestScanDiagnostic {
+                    manifest_path: path,
+                    error: format!("failed to inspect an options dataset store entry: {error}"),
+                });
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(OPTIONS_DATASET_STAGING_PREFIX))
+        {
             continue;
         }
         let manifest_path = path.join("manifest.json");
         if !manifest_path.is_file() {
             continue;
         }
-        manifests.push(read_options_dataset_manifest(&manifest_path)?);
+        match read_options_dataset_manifest(&manifest_path) {
+            Ok(manifest)
+                if entry.file_name().to_str().is_some_and(|directory_id| {
+                    directory_id == manifest.options_dataset_id.as_str()
+                }) =>
+            {
+                manifests.push(manifest);
+            }
+            Ok(manifest) => diagnostics.push(OptionsDatasetManifestScanDiagnostic {
+                manifest_path,
+                error: format!(
+                    "options dataset manifest id '{}' does not match its directory name '{}'",
+                    manifest.options_dataset_id,
+                    entry.file_name().to_string_lossy()
+                ),
+            }),
+            Err(error) => diagnostics.push(OptionsDatasetManifestScanDiagnostic {
+                manifest_path,
+                error,
+            }),
+        }
     }
     manifests.sort_by(|a, b| a.options_dataset_id.cmp(&b.options_dataset_id));
-    Ok(manifests)
+    diagnostics.sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
+    Ok(OptionsDatasetManifestScanResult {
+        manifests,
+        diagnostics,
+    })
+}
+
+pub fn scan_options_dataset_manifests(dir: &Path) -> Result<Vec<OptionsDatasetManifestV1>, String> {
+    let result = scan_options_dataset_manifests_with_diagnostics(dir)?;
+    for diagnostic in &result.diagnostics {
+        eprintln!(
+            "skipping unreadable options dataset manifest {}: {}",
+            diagnostic.manifest_path.display(),
+            diagnostic.error
+        );
+    }
+    Ok(result.manifests)
 }
 
 pub fn dataset_manifest_path(root_dir: &Path, dataset_id: &str) -> PathBuf {
@@ -677,6 +1209,43 @@ mod tests {
             "SPY,SPY_P_001,put,2026-04-10,1775779200000,495,100,1775160000000,1.8,1.9,1.7,1.75,498.0,800,1500\n"
         );
         std::fs::write(path, data).expect("write dataset csv");
+    }
+
+    fn build_request(
+        dataset_id: &str,
+        dataset_path: &Path,
+    ) -> ImportedOptionsDatasetCsvBuildRequest {
+        ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: dataset_id.to_string(),
+            dataset_path: dataset_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "polygon.io".to_string(),
+            provider_source_surface: "minute_aggregate".to_string(),
+            provider_entitlement_profile: None,
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "polygon_contract_reference".to_string(),
+            contract_reference_as_of_utc: None,
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: Some("close".to_string()),
+        }
+    }
+
+    fn manifest_for_dataset(
+        dataset_id: &str,
+        source_csv: &Path,
+        published_csv: &Path,
+    ) -> OptionsDatasetManifestV1 {
+        let mut dataset =
+            load_imported_options_dataset_from_csv(&build_request(dataset_id, source_csv))
+                .expect("load fixture dataset");
+        dataset.manifest.dataset_path = published_csv.to_string_lossy().to_string();
+        dataset.manifest
     }
 
     fn write_quote_dataset(path: &Path) {
@@ -1056,5 +1625,158 @@ mod tests {
         let error = load_imported_options_dataset_from_csv(&req)
             .expect_err("should reject after retained-row quote validation");
         assert!(error.contains("retained quote-side row after timestamp dedup"));
+    }
+
+    #[test]
+    fn manifest_write_atomically_replaces_existing_manifest() {
+        let temp = make_temp_dir("options_manifest_atomic_replace");
+        let source_csv = temp.join("source.csv");
+        write_dataset(&source_csv);
+        let manifest_path = temp.join("manifest.json");
+        let mut manifest = manifest_for_dataset("spy_atomic", &source_csv, &source_csv);
+
+        write_options_dataset_manifest(&manifest_path, &manifest).expect("first manifest write");
+        manifest.row_count += 1;
+        write_options_dataset_manifest(&manifest_path, &manifest).expect("replace manifest");
+
+        let loaded = read_options_dataset_manifest(&manifest_path).expect("read replaced manifest");
+        assert_eq!(loaded.row_count, manifest.row_count);
+        let staged_files = std::fs::read_dir(&temp)
+            .expect("read temp directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(".manifest.json."))
+            })
+            .count();
+        assert_eq!(staged_files, 0);
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn manifest_scan_keeps_healthy_datasets_when_one_manifest_is_corrupt() {
+        let temp = make_temp_dir("options_manifest_scan_isolation");
+        let source_csv = temp.join("source.csv");
+        write_dataset(&source_csv);
+
+        let healthy_dir = temp.join("healthy");
+        std::fs::create_dir_all(&healthy_dir).expect("create healthy dataset directory");
+        let healthy_manifest =
+            manifest_for_dataset("healthy", &source_csv, &healthy_dir.join("rows.csv"));
+        write_options_dataset_manifest(&healthy_dir.join("manifest.json"), &healthy_manifest)
+            .expect("write healthy manifest");
+
+        let corrupt_dir = temp.join("corrupt");
+        std::fs::create_dir_all(&corrupt_dir).expect("create corrupt dataset directory");
+        std::fs::write(corrupt_dir.join("manifest.json"), b"{not-json")
+            .expect("write corrupt manifest");
+
+        let staging_dir = temp.join(format!(
+            "{}healthy-orphan",
+            dataset_staging_prefix("healthy")
+        ));
+        std::fs::create_dir_all(&staging_dir).expect("create orphan staging directory");
+        std::fs::write(staging_dir.join("manifest.json"), b"{also-not-json")
+            .expect("write corrupt staging manifest");
+
+        let scan = scan_options_dataset_manifests_with_diagnostics(&temp).expect("scan manifests");
+        assert_eq!(scan.manifests.len(), 1);
+        assert_eq!(scan.manifests[0].options_dataset_id, "healthy");
+        assert_eq!(scan.diagnostics.len(), 1);
+        assert_eq!(
+            scan.diagnostics[0].manifest_path,
+            corrupt_dir.join("manifest.json")
+        );
+        assert!(scan.diagnostics[0]
+            .error
+            .contains("failed to parse options dataset manifest"));
+
+        let compatible_scan =
+            scan_options_dataset_manifests(&temp).expect("compatible manifest scan");
+        assert_eq!(compatible_scan.len(), 1);
+        assert_eq!(compatible_scan[0].options_dataset_id, "healthy");
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn orphan_staging_directory_does_not_block_same_id_retry() {
+        let temp = make_temp_dir("options_dataset_orphan_retry");
+        let source_csv = temp.join("source.csv");
+        write_dataset(&source_csv);
+        let dataset_id = "spy_retry";
+        let orphan_dir = temp.join(format!(
+            "{}orphan-from-interrupted-import",
+            dataset_staging_prefix(dataset_id)
+        ));
+        std::fs::create_dir_all(&orphan_dir).expect("create orphan staging directory");
+        std::fs::write(orphan_dir.join("rows.csv"), b"partial").expect("write partial orphan rows");
+
+        let publication =
+            OptionsDatasetPublication::begin(&temp, dataset_id).expect("begin same-id retry");
+        let staged_rows = publication.staging_dir().join("rows.csv");
+        std::fs::copy(&source_csv, &staged_rows).expect("copy staged rows");
+        let manifest = manifest_for_dataset(
+            dataset_id,
+            &staged_rows,
+            &publication.final_dir().join("rows.csv"),
+        );
+        write_options_dataset_manifest(&publication.staging_dir().join("manifest.json"), &manifest)
+            .expect("write staged manifest");
+
+        let final_dir = publication.publish().expect("publish retried dataset");
+        assert_eq!(final_dir, temp.join(dataset_id));
+        assert!(final_dir.join("rows.csv").is_file());
+        assert!(final_dir.join("manifest.json").is_file());
+        assert!(!orphan_dir.exists());
+        let remaining_same_id_staging = std::fs::read_dir(&temp)
+            .expect("read dataset root")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(&dataset_staging_prefix(dataset_id)))
+            })
+            .count();
+        assert_eq!(remaining_same_id_staging, 0);
+
+        let duplicate = OptionsDatasetPublication::begin(&temp, dataset_id)
+            .expect_err("published dataset id must not be replaced");
+        assert!(duplicate.contains("already exists"));
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn failed_integrity_check_never_publishes_partial_dataset_directory() {
+        let temp = make_temp_dir("options_dataset_integrity_publication");
+        let source_csv = temp.join("source.csv");
+        write_dataset(&source_csv);
+        let publication =
+            OptionsDatasetPublication::begin(&temp, "spy_integrity").expect("begin publication");
+        let staged_dir = publication.staging_dir().to_path_buf();
+        let staged_rows = staged_dir.join("rows.csv");
+        std::fs::copy(&source_csv, &staged_rows).expect("copy staged rows");
+        let manifest = manifest_for_dataset(
+            "spy_integrity",
+            &staged_rows,
+            &publication.final_dir().join("rows.csv"),
+        );
+        write_options_dataset_manifest(&staged_dir.join("manifest.json"), &manifest)
+            .expect("write staged manifest");
+        std::fs::write(&staged_rows, b"tampered after manifest").expect("tamper staged rows");
+
+        let error = publication
+            .publish()
+            .expect_err("hash mismatch must block publication");
+        assert!(error.contains("rows SHA-256 mismatch"));
+        assert!(!temp.join("spy_integrity").exists());
+        assert!(!staged_dir.exists());
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }

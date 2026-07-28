@@ -86,4 +86,27 @@ describe('runtimeStore', () => {
 
     nowSpy.mockRestore()
   })
+
+  it('tracks recoverable latest-artifact hydration attempts without failing runtime readiness', () => {
+    const store = useRuntimeStore()
+    store.markBooting()
+    store.markReady()
+
+    store.markLatestArtifactHydrationStarted()
+    store.markLatestArtifactHydrationError(new Error('artifact temporarily unavailable'))
+
+    expect(store.bootPhase).toBe('ready')
+    expect(store.latestArtifactHydrationPhase).toBe('error')
+    expect(store.latestArtifactHydrationError).toBe('artifact temporarily unavailable')
+    expect(store.latestArtifactHydrationAttempts).toBe(1)
+    expect(store.desktopLogs[0]?.message).toContain('Latest artifact restore failed')
+
+    store.markLatestArtifactHydrationStarted()
+    store.markLatestArtifactHydrationReady()
+
+    expect(store.bootPhase).toBe('ready')
+    expect(store.latestArtifactHydrationPhase).toBe('ready')
+    expect(store.latestArtifactHydrationError).toBe('')
+    expect(store.latestArtifactHydrationAttempts).toBe(2)
+  })
 })

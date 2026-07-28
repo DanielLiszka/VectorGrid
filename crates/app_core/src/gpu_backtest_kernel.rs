@@ -12,9 +12,8 @@ use cust::sys as cuda_sys;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::c_void;
-use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -37,13 +36,14 @@ use crate::double_ma::{
     derived_long_exposure, derived_mean, derived_short_exposure, effective_sample_lcb_10_score,
     effective_score, exact_fee_stress_pnl, metrics_pass_constraints, objective_score,
     score_mode_metrics_count_floor, score_mode_needs_pair_observation_context, score_mode_score_fn,
-    DoubleMaConstraints, DoubleMaMetricContract, DoubleMaScoreMode,
+    CudaGraphTimingUs, DoubleMaConstraints, DoubleMaMetricContract, DoubleMaScoreMode,
     DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
     PairObservationScoreContextResolved, ShortlistSliceBenchmarkRelativeSummary,
     ShortlistSliceCandidateDiagnostics, ShortlistSliceDiagnostics, ShortlistSliceModeDiagnostics,
     ShortlistSliceSnapshot,
 };
 use crate::progress::ProgressSink;
+use crate::staged_output::AtomicFileWriter;
 use crate::strategy_gpu_program::{
     CompiledGpuPredicateProgramAbi, GpuConditionAbi, GpuConditionGroupAbi, GpuIndicatorSlotAbi,
     GpuSignalBindingsAbi,
@@ -152,9 +152,9 @@ pub(crate) fn with_test_vram_budget_mb<T>(budget_mb: Option<usize>, f: impl FnOn
 
 const BASE_METRICS_COUNT: usize = 7;
 
-const PRODUCT_REDUCED_METRICS_COUNT: usize = 10;
-const METRICS_COUNT: usize = 17;
-const TRADE_METRICS_COUNT: usize = 22;
+pub(crate) const PRODUCT_REDUCED_METRICS_COUNT: usize = 10;
+pub(crate) const METRICS_COUNT: usize = 17;
+pub(crate) const TRADE_METRICS_COUNT: usize = 22;
 const EXTRA_SHORTLIST_MAX_HEADS: usize = 3;
 const ROW_SCORE_OBJECTIVE_BASE: i32 = 100;
 const EXTRA_SHORTLIST_REQUEST_FIELD: &str = "extra_shortlist_objectives";
@@ -500,7 +500,135 @@ impl PipelineTimingProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+const CUDA_GRAPH_TIMING_SCHEMA_VERSION: u32 = 1;
+const CUDA_GRAPH_TIMING_CLOCK: &str = "std_monotonic_instant";
+const CUDA_GRAPH_CAPTURE_BOUNDARY: &str =
+    "cuStreamBeginCapture_v2_through_cuStreamEndCapture_including_node_recording";
+const CUDA_GRAPH_INSTANTIATE_BOUNDARY: &str = "cuGraphInstantiate_v2_host_call";
+const CUDA_GRAPH_UPDATE_BOUNDARY: &str =
+    "not_applicable_immutable_graph_exec_no_cuGraphExecUpdate_call";
+const CUDA_GRAPH_REPLAY_BOUNDARY: &str =
+    "cuGraphLaunch_host_submission_only_async_device_completion_excluded";
+
+#[derive(Clone, Debug, Default)]
+struct CudaGraphTimingAccumulator {
+    enabled: bool,
+    graphs_requested: bool,
+    graphs_eligible: bool,
+    capture_attempt_count: u64,
+    capture_success_count: u64,
+    capture_total_us: u64,
+    instantiate_attempt_count: u64,
+    instantiate_success_count: u64,
+    instantiate_total_us: u64,
+    replay_attempt_count: u64,
+    replay_success_count: u64,
+    replay_submit_total_us: u64,
+}
+
+impl CudaGraphTimingAccumulator {
+    #[inline]
+    fn new(enabled: bool, graphs_requested: bool, graphs_eligible: bool) -> Self {
+        Self {
+            enabled,
+            graphs_requested,
+            graphs_eligible,
+            ..Self::default()
+        }
+    }
+
+    #[inline]
+    fn begin_capture(&mut self) -> Option<Instant> {
+        if !self.enabled {
+            return None;
+        }
+        self.capture_attempt_count = self.capture_attempt_count.saturating_add(1);
+        Some(Instant::now())
+    }
+
+    #[inline]
+    fn finish_capture(&mut self, started_at: Option<Instant>, success: bool) {
+        let Some(started_at) = started_at else {
+            return;
+        };
+        self.capture_total_us = self
+            .capture_total_us
+            .saturating_add(duration_micros_u64(started_at.elapsed()));
+        if success {
+            self.capture_success_count = self.capture_success_count.saturating_add(1);
+        }
+    }
+
+    #[inline]
+    fn begin_instantiate(&mut self) -> Option<Instant> {
+        if !self.enabled {
+            return None;
+        }
+        self.instantiate_attempt_count = self.instantiate_attempt_count.saturating_add(1);
+        Some(Instant::now())
+    }
+
+    #[inline]
+    fn finish_instantiate(&mut self, started_at: Option<Instant>, success: bool) {
+        let Some(started_at) = started_at else {
+            return;
+        };
+        self.instantiate_total_us = self
+            .instantiate_total_us
+            .saturating_add(duration_micros_u64(started_at.elapsed()));
+        if success {
+            self.instantiate_success_count = self.instantiate_success_count.saturating_add(1);
+        }
+    }
+
+    #[inline]
+    fn record_replay(&mut self, elapsed: Duration, success: bool) {
+        if !self.enabled {
+            return;
+        }
+        self.replay_attempt_count = self.replay_attempt_count.saturating_add(1);
+        self.replay_submit_total_us = self
+            .replay_submit_total_us
+            .saturating_add(duration_micros_u64(elapsed));
+        if success {
+            self.replay_success_count = self.replay_success_count.saturating_add(1);
+        }
+    }
+
+    fn finish(self) -> Option<CudaGraphTimingUs> {
+        self.enabled.then(|| CudaGraphTimingUs {
+            schema_version: CUDA_GRAPH_TIMING_SCHEMA_VERSION,
+            timing_enabled: true,
+            graphs_requested: self.graphs_requested,
+            graphs_eligible: self.graphs_eligible,
+            clock: CUDA_GRAPH_TIMING_CLOCK.to_string(),
+            capture_boundary: CUDA_GRAPH_CAPTURE_BOUNDARY.to_string(),
+            capture_attempt_count: self.capture_attempt_count,
+            capture_success_count: self.capture_success_count,
+            capture_total_us: self.capture_total_us,
+            instantiate_boundary: CUDA_GRAPH_INSTANTIATE_BOUNDARY.to_string(),
+            instantiate_attempt_count: self.instantiate_attempt_count,
+            instantiate_success_count: self.instantiate_success_count,
+            instantiate_total_us: self.instantiate_total_us,
+            update_boundary: CUDA_GRAPH_UPDATE_BOUNDARY.to_string(),
+            update_applicable: false,
+            update_attempt_count: 0,
+            update_success_count: 0,
+            update_total_us: 0,
+            replay_boundary: CUDA_GRAPH_REPLAY_BOUNDARY.to_string(),
+            replay_attempt_count: self.replay_attempt_count,
+            replay_success_count: self.replay_success_count,
+            replay_submit_total_us: self.replay_submit_total_us,
+        })
+    }
+}
+
+#[inline]
+fn duration_micros_u64(duration: Duration) -> u64 {
+    duration.as_micros().min(u64::MAX as u128) as u64
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct KernelExecutorTimingMs {
     pub(crate) runtime_init_ms: u64,
     pub(crate) set_current_ms: u64,
@@ -527,6 +655,7 @@ pub(crate) struct KernelExecutorTimingMs {
     pub(crate) host_finalize_cleanup_ms: u64,
     pub(crate) graph_capture_ms: u64,
     pub(crate) graph_replay_count: u64,
+    pub(crate) cuda_graph_timing_us: Option<CudaGraphTimingUs>,
 }
 
 #[inline]
@@ -562,11 +691,14 @@ fn graph_launch_timed(
     exec: &CudaGraphExecHandle,
     stream: &Stream,
     elapsed: &mut Duration,
+    graph_timing: &mut CudaGraphTimingAccumulator,
 ) -> Result<(), String> {
     let t0 = Instant::now();
-    exec.launch(stream)?;
-    *elapsed = elapsed.saturating_add(t0.elapsed());
-    Ok(())
+    let result = exec.launch(stream);
+    let launch_elapsed = t0.elapsed();
+    *elapsed = elapsed.saturating_add(launch_elapsed);
+    graph_timing.record_replay(launch_elapsed, result.is_ok());
+    result
 }
 
 #[inline]
@@ -819,6 +951,26 @@ struct CudaGraphExecHandle {
     raw: cuda_sys::CUgraphExec,
 }
 
+/// Every field here either affects the captured launch topology or is a
+/// pointer-valued immutable kernel-node argument. Device buffers owned by
+/// `scratch` keep stable addresses across tiles, but cached valid-pair maps are
+/// tile-specific allocations. A graph may therefore be reused only when both
+/// its topology and those pointer-valued arguments are unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CudaGraphTileSignature {
+    fast_rows: usize,
+    slow_rows: usize,
+    pair_rows: usize,
+    launch_pair_rows: usize,
+    heatmap_enabled: bool,
+    compact_output: bool,
+    pair_index_map_ptr: u64,
+    pair_fast_period_rows_ptr: u64,
+    pair_slow_period_rows_ptr: u64,
+    pair_fast_local_rows_ptr: u64,
+    pair_slow_local_rows_ptr: u64,
+}
+
 #[inline]
 fn cu_result(res: cuda_sys::CUresult) -> Result<(), String> {
     if res == cuda_sys::CUresult::CUDA_SUCCESS {
@@ -850,13 +1002,19 @@ impl Drop for CudaGraphExecHandle {
 fn capture_graph_exec(
     stream: &Stream,
     record: impl FnOnce() -> Result<(), String>,
+    timing: &mut CudaGraphTimingAccumulator,
 ) -> Result<CudaGraphExecHandle, String> {
-    cu_result(unsafe {
+    let capture_started_at = timing.begin_capture();
+    let begin_result = cu_result(unsafe {
         cuda_sys::cuStreamBeginCapture_v2(
             stream.as_inner(),
             cuda_sys::CUstreamCaptureMode_enum::CU_STREAM_CAPTURE_MODE_GLOBAL,
         )
-    })?;
+    });
+    if let Err(error) = begin_result {
+        timing.finish_capture(capture_started_at, false);
+        return Err(error);
+    }
 
     if let Err(e) = record() {
         let mut graph: cuda_sys::CUgraph = std::ptr::null_mut();
@@ -864,14 +1022,19 @@ fn capture_graph_exec(
         if !graph.is_null() {
             let _ = unsafe { cuda_sys::cuGraphDestroy(graph) };
         }
+        timing.finish_capture(capture_started_at, false);
         return Err(e);
     }
 
     let mut graph = std::mem::MaybeUninit::<cuda_sys::CUgraph>::uninit();
-    cu_result(unsafe { cuda_sys::cuStreamEndCapture(stream.as_inner(), graph.as_mut_ptr()) })?;
+    let end_result =
+        cu_result(unsafe { cuda_sys::cuStreamEndCapture(stream.as_inner(), graph.as_mut_ptr()) });
+    timing.finish_capture(capture_started_at, end_result.is_ok());
+    end_result?;
     let graph = unsafe { graph.assume_init() };
 
     let mut graph_exec = std::mem::MaybeUninit::<cuda_sys::CUgraphExec>::uninit();
+    let instantiate_started_at = timing.begin_instantiate();
     let inst = unsafe {
         cuda_sys::cuGraphInstantiate_v2(
             graph_exec.as_mut_ptr(),
@@ -881,8 +1044,10 @@ fn capture_graph_exec(
             0,
         )
     };
+    let instantiate_result = cu_result(inst);
+    timing.finish_instantiate(instantiate_started_at, instantiate_result.is_ok());
     let _ = unsafe { cuda_sys::cuGraphDestroy(graph) };
-    cu_result(inst)?;
+    instantiate_result?;
 
     Ok(CudaGraphExecHandle {
         raw: unsafe { graph_exec.assume_init() },
@@ -1904,6 +2069,13 @@ pub(crate) fn load_double_crossover_module(device: Device) -> Result<Module, Str
     }
 }
 
+const DOUBLE_CROSSOVER_RUNTIME_PROBE_KERNELS: &[&str] = &[
+    "compute_log_and_simple_returns_f32",
+    "double_cross_backtest_tm_flex_f32",
+    "select_topk_from_pairs_tm_f32",
+    "pack_metric_rows_f32",
+];
+
 pub fn prepare_cuda_kernel_runtime_for_probe(device_id: u32) -> Result<usize, String> {
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<usize, String> {
         let mut map = cell.borrow_mut();
@@ -1914,6 +2086,14 @@ pub fn prepare_cuda_kernel_runtime_for_probe(device_id: u32) -> Result<usize, St
             .get_mut(&device_id)
             .ok_or_else(|| format!("missing CUDA kernel runtime for device {device_id}"))?;
         rt.set_current()?;
+        for kernel_name in DOUBLE_CROSSOVER_RUNTIME_PROBE_KERNELS {
+            let _ = rt.module.get_function(kernel_name).map_err(|error| {
+                format!(
+                    "double-crossover runtime probe could not resolve required kernel \
+                     `{kernel_name}`: {error}"
+                )
+            })?;
+        }
         Ok(rt.context.as_raw() as usize)
     })
 }
@@ -4590,6 +4770,11 @@ fn upload_f32_source_to_device(
 #[inline]
 fn kernel_cuda_graphs_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_USE_CUDA_GRAPHS", false)
+}
+
+#[inline]
+fn kernel_cuda_graph_timing_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_CUDA_GRAPH_TIMING", false)
 }
 
 #[inline]
@@ -12422,10 +12607,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             "{SHORTLIST_UNION_REQUEST_FIELD} currently requires export_all_csv_path to be unset"
         ));
     }
-    let mut export_writer: Option<BufWriter<File>> = if let Some(path) = export_path {
-        let f = File::create(path)
-            .map_err(|e| format!("failed to create export file '{path}': {e}"))?;
-        let mut w = BufWriter::new(f);
+    let mut export_writer: Option<AtomicFileWriter> = if let Some(path) = export_path {
+        let mut w = AtomicFileWriter::create(path)?;
         writeln!(
             w,
             "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,downside_frequency,downside_severity,ulcer_index,omega,kappa_tau,martin_ratio,trades,exposure,net_exposure,long_mean_return,short_mean_return,underwater_fraction,max_underwater_duration_bars,closed_trades,winning_trades,losing_trades,gross_profit,gross_loss,win_rate,avg_win,avg_loss,profit_factor,expectancy,active_mean,active_downside_deviation,active_sortino,drawdown_chronicity,downside_share,long_exposure,short_exposure,directional_bias,fee_stress_pnl,score"
@@ -13277,6 +13460,28 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     let constraints_on_device = constraints.is_some() && !device_include_all && select_v2_supported;
     let host_filter_mode = constraints.is_some() && !device_include_all && !constraints_on_device;
+    let host_observes_full_search = device_include_all || host_filter_mode;
+    if host_observes_full_search && metrics_count >= 2 {
+        let metric_surface_kind = if metrics_count >= TRADE_METRICS_COUNT {
+            "trade22".to_string()
+        } else if metrics_count >= METRICS_COUNT {
+            "core17".to_string()
+        } else {
+            format!("reduced_rows_{metrics_count}")
+        };
+        agg = agg.with_full_search_distribution(
+            metric_surface_kind,
+            ta_optimizer::DOUBLE_MA_SHARPE_METRIC_ID,
+        );
+    } else {
+        agg = agg.with_search_distribution_unavailable(
+            if !host_observes_full_search {
+                "full-search Sharpe distribution unavailable: the device top-k route materialized only finalists; no device-side Sharpe reduction was executed and CPU reconstruction is intentionally disabled"
+            } else {
+                "full-search Sharpe distribution unavailable: the reduced device metric row did not compute Sharpe for every candidate"
+            },
+        );
+    }
     let compact_valid_pair_output = should_use_compact_valid_pair_output(
         device_include_all,
         export_enabled,
@@ -13691,13 +13896,20 @@ fn optimize_double_ma_gpu_kernel_impl(
         0.0
     };
 
+    let cuda_graphs_requested = kernel_cuda_graphs_enabled();
+    let cuda_graph_timing_enabled = cuda_graphs_requested && kernel_cuda_graph_timing_enabled();
     let use_cuda_graphs = !pipeline_profile_enabled
-        && kernel_cuda_graphs_enabled()
+        && cuda_graphs_requested
         && !device_include_all
         && !host_filter_mode
         && heatmap_cfg.is_none();
+    let mut cuda_graph_timing = CudaGraphTimingAccumulator::new(
+        cuda_graph_timing_enabled,
+        cuda_graphs_requested,
+        use_cuda_graphs,
+    );
     let mut tile_graph_exec: Option<CudaGraphExecHandle> = None;
-    let mut tile_graph_shape: Option<(usize, usize, usize, usize, bool, bool)> = None;
+    let mut tile_graph_signature: Option<CudaGraphTileSignature> = None;
     let mut graph_capture_disabled = false;
     let _backtest_core_scope = crate::nvtx::scope("kernel", "backtest_core");
 
@@ -15074,25 +15286,34 @@ fn optimize_double_ma_gpu_kernel_impl(
                 && ps == ps_tile
                 && !host_filter_mode;
             if can_graph_tile {
-                let shape = (
-                    pf,
-                    ps,
-                    pairs,
-                    launch_pairs,
-                    heatmap_cfg.is_some(),
-                    compact_valid_pair_output,
-                );
-                let reusable = tile_graph_shape.map_or(false, |s| s == shape);
+                let signature = CudaGraphTileSignature {
+                    fast_rows: pf,
+                    slow_rows: ps,
+                    pair_rows: pairs,
+                    launch_pair_rows: launch_pairs,
+                    heatmap_enabled: heatmap_cfg.is_some(),
+                    compact_output: compact_valid_pair_output,
+                    pair_index_map_ptr,
+                    pair_fast_period_rows_ptr: pair_fast_rows_ptr,
+                    pair_slow_period_rows_ptr: pair_slow_rows_ptr,
+                    pair_fast_local_rows_ptr,
+                    pair_slow_local_rows_ptr,
+                };
+                let reusable = tile_graph_signature.map_or(false, |current| current == signature);
                 if !reusable {
                     tile_graph_exec = None;
-                    tile_graph_shape = None;
+                    tile_graph_signature = None;
                     let _nvtx_scope = crate::nvtx::scope("kernel", "graph_capture");
                     let graph_capture_t0 = Instant::now();
-                    match capture_graph_exec(bt_stream, || launch_score_stage()) {
+                    match capture_graph_exec(
+                        bt_stream,
+                        || launch_score_stage(),
+                        &mut cuda_graph_timing,
+                    ) {
                         Ok(exec) => {
                             graph_capture_elapsed =
                                 graph_capture_elapsed.saturating_add(graph_capture_t0.elapsed());
-                            tile_graph_shape = Some(shape);
+                            tile_graph_signature = Some(signature);
                             tile_graph_exec = Some(exec);
                         }
                         Err(_e) => {
@@ -15108,7 +15329,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                 if !graph_capture_disabled {
                     if let Some(exec) = tile_graph_exec.as_ref() {
                         let _graph_replay_scope = crate::nvtx::scope("kernel", "graph_replay");
-                        graph_launch_timed(exec, bt_stream, &mut launch_submit_elapsed)?;
+                        graph_launch_timed(
+                            exec,
+                            bt_stream,
+                            &mut launch_submit_elapsed,
+                            &mut cuda_graph_timing,
+                        )?;
                         graph_replay_count = graph_replay_count.saturating_add(1);
                     }
                 }
@@ -15165,6 +15391,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 slow_ma_id: 0,
                             };
                             agg.push(params, metrics);
+                        } else {
+                            agg.record_rejected_unique_evaluation();
                         }
                         processed = processed.saturating_add(1);
                         if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
@@ -15211,6 +15439,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 cfg.hurdle_tau,
                             );
                             if !metrics_pass_constraints(&metrics, constraints) {
+                                agg.record_rejected_unique_evaluation();
                                 return Ok(());
                             }
 
@@ -16303,6 +16532,10 @@ fn optimize_double_ma_gpu_kernel_impl(
         );
     }
 
+    if let Some(w) = export_writer {
+        w.publish()?;
+    }
+
     Ok((
         result,
         KernelExecutorTimingMs {
@@ -16346,6 +16579,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             host_finalize_cleanup_ms: host_finalize_cleanup_elapsed.as_millis() as u64,
             graph_capture_ms: graph_capture_elapsed.as_millis() as u64,
             graph_replay_count,
+            cuda_graph_timing_us: cuda_graph_timing.finish(),
         },
     ))
 }
@@ -17606,6 +17840,124 @@ mod tests {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", v),
             None => std::env::remove_var("VECTORBT_KERNEL_PINNED_H2D"),
         }
+    }
+
+    #[test]
+    fn cuda_graph_timing_flag_is_opt_in_and_parses_false_values() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_CUDA_GRAPH_TIMING").ok();
+
+        std::env::remove_var("VECTORBT_KERNEL_CUDA_GRAPH_TIMING");
+        assert!(!super::kernel_cuda_graph_timing_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_CUDA_GRAPH_TIMING", "0");
+        assert!(!super::kernel_cuda_graph_timing_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_CUDA_GRAPH_TIMING", "false");
+        assert!(!super::kernel_cuda_graph_timing_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_CUDA_GRAPH_TIMING", "1");
+        assert!(super::kernel_cuda_graph_timing_enabled());
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_CUDA_GRAPH_TIMING", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_CUDA_GRAPH_TIMING"),
+        }
+    }
+
+    #[test]
+    fn cuda_graph_timing_accumulator_separates_boundaries_and_declares_update_na() {
+        let mut timing = super::CudaGraphTimingAccumulator::new(true, true, true);
+        let capture_started_at = timing.begin_capture();
+        timing.finish_capture(capture_started_at, true);
+        let instantiate_started_at = timing.begin_instantiate();
+        timing.finish_instantiate(instantiate_started_at, true);
+        timing.record_replay(std::time::Duration::from_micros(17), true);
+
+        let summary = timing.finish().expect("enabled timing summary");
+        assert_eq!(summary.schema_version, 1);
+        assert!(summary.timing_enabled);
+        assert!(summary.graphs_requested);
+        assert!(summary.graphs_eligible);
+        assert_eq!(summary.capture_attempt_count, 1);
+        assert_eq!(summary.capture_success_count, 1);
+        assert_eq!(summary.instantiate_attempt_count, 1);
+        assert_eq!(summary.instantiate_success_count, 1);
+        assert!(!summary.update_applicable);
+        assert_eq!(summary.update_attempt_count, 0);
+        assert_eq!(summary.update_success_count, 0);
+        assert_eq!(summary.update_total_us, 0);
+        assert_eq!(summary.replay_attempt_count, 1);
+        assert_eq!(summary.replay_success_count, 1);
+        assert_eq!(summary.replay_submit_total_us, 17);
+        assert!(summary.capture_boundary.contains("cuStreamBeginCapture"));
+        assert!(summary.instantiate_boundary.contains("cuGraphInstantiate"));
+        assert!(summary.update_boundary.contains("not_applicable"));
+        assert!(summary.replay_boundary.contains("cuGraphLaunch"));
+        assert!(summary.replay_boundary.contains("completion_excluded"));
+    }
+
+    #[test]
+    fn disabled_cuda_graph_timing_has_no_measurement_summary() {
+        let mut timing = super::CudaGraphTimingAccumulator::new(false, true, true);
+        assert!(timing.begin_capture().is_none());
+        assert!(timing.begin_instantiate().is_none());
+        timing.record_replay(std::time::Duration::from_micros(17), true);
+        assert!(timing.finish().is_none());
+    }
+
+    #[test]
+    fn cuda_graph_tile_signature_rejects_changed_captured_pair_map_pointers() {
+        let base = super::CudaGraphTileSignature {
+            fast_rows: 64,
+            slow_rows: 64,
+            pair_rows: 4096,
+            launch_pair_rows: 3072,
+            heatmap_enabled: false,
+            compact_output: true,
+            pair_index_map_ptr: 0x1000,
+            pair_fast_period_rows_ptr: 0x2000,
+            pair_slow_period_rows_ptr: 0x3000,
+            pair_fast_local_rows_ptr: 0x4000,
+            pair_slow_local_rows_ptr: 0x5000,
+        };
+
+        assert_eq!(base, base);
+        assert_ne!(
+            base,
+            super::CudaGraphTileSignature {
+                pair_index_map_ptr: 0x6000,
+                ..base
+            }
+        );
+        assert_ne!(
+            base,
+            super::CudaGraphTileSignature {
+                pair_fast_period_rows_ptr: 0x7000,
+                ..base
+            }
+        );
+        assert_ne!(
+            base,
+            super::CudaGraphTileSignature {
+                pair_slow_period_rows_ptr: 0x7100,
+                ..base
+            }
+        );
+        assert_ne!(
+            base,
+            super::CudaGraphTileSignature {
+                pair_fast_local_rows_ptr: 0x7200,
+                ..base
+            }
+        );
+        assert_ne!(
+            base,
+            super::CudaGraphTileSignature {
+                pair_slow_local_rows_ptr: 0x8000,
+                ..base
+            }
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTaskCenterVisibility } from '../../composables/useTaskCenterVisibility'
 import { loadExecutionStrategySupportMatrix } from '../../services/executionService'
 import { useHistoryStore } from '../../stores/historyStore'
@@ -38,6 +38,10 @@ async function flushUi(): Promise<void> {
 }
 
 describe('WorkbenchShell', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   beforeEach(() => {
     localStorage.clear()
     localStorage.setItem('vta_ui_mode_v1', 'advanced')
@@ -88,6 +92,7 @@ describe('WorkbenchShell', () => {
     await wrapper.get('[data-qa-action="shell.workspace.aggregate"]').trigger('click')
     await flushUi()
     expect(workflowStore.workspace).toBe('aggregate')
+    expect(document.querySelector('#modeBar')).toBeNull()
     expect(document.querySelector('#workspaceBar [data-workspace="aggregate"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.querySelector('#results_panel_meta')).not.toBeNull()
     expect(document.body.textContent || '').toContain('Runs')
@@ -108,6 +113,7 @@ describe('WorkbenchShell', () => {
     await wrapper.get('[data-qa-action="shell.workspace.workflow"]').trigger('click')
     await flushUi()
     expect(workflowStore.workspace).toBe('workflow')
+    expect(document.querySelector('#modeBar')).not.toBeNull()
     expect(document.querySelector('#workflowStepBar')).not.toBeNull()
 
     wrapper.unmount()
@@ -198,6 +204,40 @@ describe('WorkbenchShell', () => {
     await wrapper.get('[data-qa-action="workbench.inspector.toggle"]').trigger('click')
     await flushUi()
     expect(document.querySelector('[data-qa-panel="workbench.inspector"]')?.getAttribute('data-collapsed')).toBe('true')
+
+    wrapper.unmount()
+  })
+
+  it('keeps the inspector available as a compact drawer below 1180px', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+      media: '(max-width: 1180px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })))
+    const pinia = createTestPinia()
+    const wrapper = mount(WorkbenchShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const launcher = wrapper.get('[data-qa-action="workbench.inspector.compactOpen"]')
+    expect(launcher.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.get('[data-qa-panel="workbench.inspector"]').attributes('aria-hidden')).toBe('true')
+
+    await launcher.trigger('click')
+    await flushUi()
+    expect(launcher.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-qa-panel="workbench.inspector"]').attributes('aria-hidden')).toBeUndefined()
+
+    await wrapper.get('[data-qa-action="workbench.inspector.toggle"]').trigger('click')
+    await flushUi()
+    expect(launcher.attributes('aria-expanded')).toBe('false')
 
     wrapper.unmount()
   })

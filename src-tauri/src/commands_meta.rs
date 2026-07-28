@@ -751,6 +751,35 @@ fn build_meta_cohort_manifest(
     }
 }
 
+fn require_meta_holdout_disjointness(
+    eval_holdout: bool,
+    holdout_artifact_count: usize,
+    cohort_manifest: &MetaCohortManifest,
+) -> Result<(), String> {
+    if !eval_holdout || holdout_artifact_count == 0 {
+        return Ok(());
+    }
+
+    let disjointness = &cohort_manifest.disjointness;
+    if disjointness.overlapping_dataset_keys > 0 {
+        return Err(format!(
+            "Meta holdout is not sealed: train and holdout cohorts share {} dataset key(s). Move every overlapping dataset into exactly one cohort before evaluating holdout evidence.",
+            disjointness.overlapping_dataset_keys
+        ));
+    }
+
+    let missing_keys = disjointness
+        .missing_train_dataset_keys
+        .saturating_add(disjointness.missing_holdout_dataset_keys);
+    if missing_keys > 0 {
+        return Err(format!(
+            "Meta holdout disjointness cannot be proven: {missing_keys} artifact(s) are missing both a dataset content fingerprint and a dataset path. Rebuild or repair those artifacts before evaluating holdout evidence."
+        ));
+    }
+
+    Ok(())
+}
+
 fn stage5_training_artifact_ref(path: &Path, meta: &Value) -> Stage5TrainingArtifactRef {
     let (strategy_kind, timeframe) = extract_meta_scope(meta)
         .map(|(strategy_kind, timeframe)| (Some(strategy_kind), Some(timeframe)))
@@ -2127,7 +2156,6 @@ fn run_ml_confidence_policy_evaluation_blocking(
     let result = evaluate_ml_confidence_policy_from_scoped_metas(&req, &scope, &label_cfg, &scoped);
 
     let ts = chrono::Utc::now().to_rfc3339();
-    let out_path = suggest_ml_policy_eval_artifact_path(&ts, &app)?;
     let payload = serde_json::json!({
         "kind": "vectorgrid_ml_confidence_policy_evaluation",
         "ts": ts,
@@ -2135,8 +2163,11 @@ fn run_ml_confidence_policy_evaluation_blocking(
         "res": result,
     });
     let out_bytes = serde_json::to_vec_pretty(&payload).map_err(|e| e.to_string())?;
-    write_bytes_atomically(&out_path, &out_bytes)?;
-    run_artifacts::prune_old_ml_policy_eval_artifacts_blocking(
+    let _artifact_library_lock = run_artifacts::acquire_artifact_library_process_lock(&app)?;
+    let out_path = suggest_ml_policy_eval_artifact_path(&ts, &app)?;
+    run_artifacts::invalidate_artifact_catalog_under_process_lock(&app)?;
+    run_artifacts::publish_new_artifact_file_atomically(&out_path, &out_bytes)?;
+    run_artifacts::prune_old_ml_policy_eval_artifacts_under_process_lock(
         &app,
         run_artifacts::artifact_retention_policy_for_app(&app).ml_policy_eval_keep_newest,
     );
@@ -2524,9 +2555,11 @@ fn run_meta_stage5_ml_confidence_blocking(
         "res": &result,
     });
     let out_bytes = serde_json::to_vec_pretty(&out_obj).map_err(|e| e.to_string())?;
+    let _artifact_library_lock = run_artifacts::acquire_artifact_library_process_lock(&app)?;
     let out_path = suggest_stage5_artifact_path(&ts, &app)?;
-    write_bytes_atomically(&out_path, &out_bytes)?;
-    run_artifacts::prune_old_stage5_artifacts_blocking(
+    run_artifacts::invalidate_artifact_catalog_under_process_lock(&app)?;
+    run_artifacts::publish_new_artifact_file_atomically(&out_path, &out_bytes)?;
+    run_artifacts::prune_old_stage5_artifacts_under_process_lock(
         &app,
         run_artifacts::artifact_retention_policy_for_app(&app).stage5_keep_newest,
     );
@@ -2808,6 +2841,11 @@ pub(super) fn run_meta_selection_blocking(
         &holdout_artifacts_with_paths,
         holdout_tag.as_deref(),
     );
+    require_meta_holdout_disjointness(
+        req.eval_holdout,
+        holdout_artifacts_with_paths.len(),
+        &cohort_manifest,
+    )?;
     let train_artifacts: Vec<Value> = train_artifacts_with_paths
         .iter()
         .map(|(_, artifact)| artifact.clone())
@@ -2991,8 +3029,9 @@ pub(super) fn run_meta_selection_blocking(
 
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_export");
     let xlsx_bytes = build_meta_report_xlsx_bytes(&ts, &result)?;
+    let _artifact_library_lock = run_artifacts::acquire_artifact_library_process_lock(&app)?;
     let report_path = suggest_meta_report_path(&ts, &app, "xlsx")?;
-    write_bytes_atomically(&report_path, &xlsx_bytes)?;
+    run_artifacts::publish_new_artifact_file_atomically(&report_path, &xlsx_bytes)?;
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_export");
 
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_save");
@@ -3009,9 +3048,10 @@ pub(super) fn run_meta_selection_blocking(
     });
     let meta_bytes = serde_json::to_vec_pretty(&meta_obj).map_err(|e| e.to_string())?;
     let meta_path = run_artifacts::suggest_meta_artifact_path(&ts, &app)?;
-    write_bytes_atomically(&meta_path, &meta_bytes)?;
+    run_artifacts::invalidate_artifact_catalog_under_process_lock(&app)?;
+    run_artifacts::publish_new_artifact_file_atomically(&meta_path, &meta_bytes)?;
 
-    run_artifacts::prune_old_meta_artifacts_blocking(
+    run_artifacts::prune_old_meta_artifacts_under_process_lock(
         &app,
         run_artifacts::artifact_retention_policy_for_app(&app).meta_keep_newest,
     );
@@ -4269,9 +4309,10 @@ mod tests {
         group_policy_eval_meta_score, group_rank_score, is_known_non_run_artifact_filename,
         ml_confidence_model_path_read_only, ml_uncertainty_from_prob,
         normalize_ml_policy_evaluation_request, normalize_ml_scope,
-        should_block_stage4_for_unhealthy_model, stable_logit, stage4_autotrain_failure_fallback,
-        stage4_training_metas_for_policy, stage5_evidence_policy_summary,
-        strategy_supports_holdout, strategy_uses_double_ma_validation, suggest_meta_report_path,
+        require_meta_holdout_disjointness, should_block_stage4_for_unhealthy_model, stable_logit,
+        stage4_autotrain_failure_fallback, stage4_training_metas_for_policy,
+        stage5_evidence_policy_summary, strategy_supports_holdout,
+        strategy_uses_double_ma_validation, suggest_meta_report_path,
         summarize_holdout_metric_columns, update_policy_arm_metrics, write_bytes_atomically,
         HoldoutAcc, HoldoutMetricSample, HoldoutSummaryScratch, MlConfidenceModelState,
         MlConfidencePolicyArmMetrics, MlConfidencePolicyEvaluationRequest,
@@ -4821,6 +4862,70 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("share 1 dataset key")));
+    }
+
+    #[test]
+    fn meta_holdout_evaluation_rejects_overlapping_dataset_keys() {
+        let train = vec![(
+            PathBuf::from("runs/train.json"),
+            json!({
+                "data": { "source_content_fingerprint": "same-content" },
+                "dataset_meta": { "timeframe": "1m" }
+            }),
+        )];
+        let holdout = vec![(
+            PathBuf::from("runs/holdout.json"),
+            json!({
+                "data": { "source_content_fingerprint": "same-content" },
+                "dataset_meta": { "timeframe": "1m" }
+            }),
+        )];
+        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"));
+
+        let error = require_meta_holdout_disjointness(true, holdout.len(), &manifest)
+            .expect_err("overlapping holdout datasets must fail closed");
+
+        assert!(error.contains("not sealed"), "{error}");
+        assert!(error.contains("share 1 dataset key"), "{error}");
+    }
+
+    #[test]
+    fn meta_holdout_evaluation_rejects_unverifiable_dataset_identity() {
+        let train = vec![(
+            PathBuf::from("runs/train.json"),
+            json!({"kind": "vectorgrid_report"}),
+        )];
+        let holdout = vec![(
+            PathBuf::from("runs/holdout.json"),
+            json!({
+                "data": { "source_content_fingerprint": "holdout-content" }
+            }),
+        )];
+        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"));
+
+        let error = require_meta_holdout_disjointness(true, holdout.len(), &manifest)
+            .expect_err("unverifiable holdout disjointness must fail closed");
+
+        assert!(error.contains("cannot be proven"), "{error}");
+        assert!(error.contains("1 artifact"), "{error}");
+    }
+
+    #[test]
+    fn meta_holdout_disjointness_gate_is_inactive_without_holdout_evaluation() {
+        let train = vec![(
+            PathBuf::from("runs/train.json"),
+            json!({"kind": "vectorgrid_report"}),
+        )];
+        let holdout = vec![(
+            PathBuf::from("runs/holdout.json"),
+            json!({"kind": "vectorgrid_report"}),
+        )];
+        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"));
+
+        require_meta_holdout_disjointness(false, holdout.len(), &manifest)
+            .expect("ordinary meta selection should retain legacy compatibility");
+        require_meta_holdout_disjointness(true, 0, &manifest)
+            .expect("an empty holdout cohort should remain a handled no-evidence case");
     }
 
     #[test]
