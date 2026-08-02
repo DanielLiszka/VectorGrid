@@ -4,6 +4,11 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  normalizeDesktopSmokeEvidence,
+  normalizeUiPerfBudgetEvidence,
+  resolveFrontendQaReportRun,
+} from "./qa-evidence-freshness.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(scriptDir, "..");
@@ -11,6 +16,8 @@ const repoRoot = path.resolve(webRoot, "..");
 const outputDir = path.resolve(repoRoot, "output", "qa");
 const jsonPath = path.resolve(outputDir, "frontend-qa-dashboard.json");
 const markdownPath = path.resolve(outputDir, "frontend-qa-dashboard.md");
+const reportGeneratedAt = new Date().toISOString();
+const reportRun = resolveFrontendQaReportRun(process.env, reportGeneratedAt);
 
 const existsCache = new Map();
 const statCache = new Map();
@@ -84,7 +91,7 @@ function newestMtimeMs(entries) {
     if (stat.isDirectory()) {
       for (const file of listFiles(
         fullPath,
-        (item) => /\.(json|mjs|ts|tsx|vue)$/.test(item),
+        (item) => /\.(css|html|js|json|mjs|ts|tsx|vue)$/.test(item),
       )) {
         newest = Math.max(newest, fileStat(file).mtimeMs);
       }
@@ -143,7 +150,11 @@ function collectFreshnessIssues() {
       "src-tauri/tauri.conf.json",
       "web/scripts/check-tauri-capabilities.mjs",
     ]),
-    reportFreshnessIssue("UI perf budget", "output/qa/ui-perf-budget.json", [
+    reportFreshnessIssue("production bundle budget", "output/qa/bundle-budget.json", [
+      "web/dist",
+      "web/scripts/check-bundle-budget.mjs",
+    ]),
+    reportFreshnessIssue("UI performance baseline budget evaluation", "output/qa/ui-perf-budget.json", [
       "scripts/baselines/ui_capture/perf_metrics.json",
       "web/scripts/check-ui-perf-budget.mjs",
     ]),
@@ -153,6 +164,7 @@ function collectFreshnessIssues() {
       "output/qa/e2e-fixture-matrix.json",
       "output/qa/qa-selector-inventory.json",
       "output/qa/tauri-capabilities.json",
+      "output/qa/bundle-budget.json",
       "output/qa/ui-perf-budget.json",
       "web/scripts/write-local-qa-summary.mjs",
     ]),
@@ -199,6 +211,7 @@ function existingArtifacts() {
     "output/qa/e2e-fixture-matrix.json",
     "output/qa/qa-selector-inventory.json",
     "output/qa/tauri-capabilities.json",
+    "output/qa/bundle-budget.json",
     "output/qa/ui-perf-budget.json",
     "output/qa/local-qa-summary.json",
     "output/playwright/action-coverage.json",
@@ -327,36 +340,25 @@ function visualBaselineIssues(evidence) {
   return out;
 }
 
-function normalizedDesktopSummary(summary, primarySummary = null) {
-  if (!summary) return null;
-  const generatedAt = summary.generatedAt || "";
-  const primaryGeneratedAt = primarySummary?.generatedAt || "";
-  const stale =
-    primaryGeneratedAt &&
-    generatedAt &&
-    Date.parse(generatedAt) < Date.parse(primaryGeneratedAt) &&
-    summary.status !== "not_run";
-  return {
-    status: stale ? "stale" : summary.status || "unknown",
-    suite: summary.suite || "",
-    specCount: summary.specCount ?? null,
-    generatedAt,
-    runId: summary.runId || "",
-    stale,
-  };
-}
-
 const localSummary = readJson("output/qa/local-qa-summary.json");
 const actionStatic = readJson("output/qa/action-coverage-static.json");
 const artifactFixtures = readJson("output/qa/artifact-fixtures.json");
 const fixtureMatrix = readJson("output/qa/e2e-fixture-matrix.json");
 const selectorInventory = readJson("output/qa/qa-selector-inventory.json");
+const bundleBudget = readJson("output/qa/bundle-budget.json");
 const perfBudget = readJson("output/qa/ui-perf-budget.json");
 const a11ySmoke = readJson("output/qa/a11y-smoke.json");
 const desktopSmoke = readJson("output/wdio/desktop-smoke-summary.json");
 const desktopSmokeExpanded = readJson("output/wdio/desktop-smoke-expanded-summary.json");
 const workflowIds = countWorkflowIds();
 const visualBaselineEvidence = collectVisualBaselineEvidence();
+const desktopSmokeEvidence = normalizeDesktopSmokeEvidence(desktopSmoke, reportRun);
+const desktopSmokeExpandedEvidence = normalizeDesktopSmokeEvidence(
+  desktopSmokeExpanded,
+  reportRun,
+  desktopSmoke,
+);
+const perfBudgetEvidence = normalizeUiPerfBudgetEvidence(perfBudget, reportRun);
 const dirtyFiles = safeGit(["status", "--porcelain"])
   .split(/\r?\n/)
   .map((line) => line.trim())
@@ -368,12 +370,21 @@ const issues = [
     (id) => `unknown workflow coverage reference: ${id}`,
   ),
   ...(fixtureMatrix?.issues || []).map((issue) => `fixture matrix: ${issue}`),
+  ...(bundleBudget?.issues || []).map((issue) => `production bundle budget: ${issue}`),
+  ...(desktopSmokeEvidence?.currentRun && desktopSmokeEvidence.sourceStatus === "failed"
+    ? ["current-report desktop smoke failed"]
+    : []),
+  ...(desktopSmokeExpandedEvidence?.currentRun
+    && desktopSmokeExpandedEvidence.sourceStatus === "failed"
+    ? ["current-report expanded desktop smoke failed"]
+    : []),
   ...visualBaselineIssues(visualBaselineEvidence),
 ];
 
 const dashboard = {
   schemaVersion: 1,
-  generatedAt: new Date().toISOString(),
+  generatedAt: reportGeneratedAt,
+  reportRun,
   status: issues.length > 0 ? "failed" : "passed",
   cicd: {
     "cicd.pipeline.name": process.env.GITHUB_WORKFLOW || "local-frontend-qa",
@@ -436,8 +447,8 @@ const dashboard = {
   visualBaselines: {
     ...visualBaselineEvidence,
   },
-  desktopSmoke: normalizedDesktopSummary(desktopSmoke),
-  desktopSmokeExpanded: normalizedDesktopSummary(desktopSmokeExpanded, desktopSmoke),
+  desktopSmoke: desktopSmokeEvidence,
+  desktopSmokeExpanded: desktopSmokeExpandedEvidence,
   a11ySmoke: normalizeOptionalReport(a11ySmoke),
   playwrightArtifacts: [
     directoryMeta("output/playwright/browser-ux-artifacts"),
@@ -445,15 +456,70 @@ const dashboard = {
     directoryMeta("output/playwright/heatmap-visual"),
     directoryMeta("output/playwright/workbench-visual"),
   ],
-  perfBudget: perfBudget
+  bundleBudget: bundleBudget
     ? {
-        source: perfBudget.source,
-        observations: perfBudget.observations,
+        status: bundleBudget.status,
+        generatedAt: bundleBudget.generatedAt,
+        source: bundleBudget.source,
+        budgets: bundleBudget.budgets,
+        observations: bundleBudget.observations,
+        warnings: bundleBudget.warnings || [],
       }
     : null,
+  perfBudget: perfBudgetEvidence,
   artifacts: existingArtifacts(),
   issues,
 };
+
+function formatKilobytes(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${value.toFixed(1)} kB`
+    : "n/a";
+}
+
+function formatBundleBudget(report) {
+  if (!report) return "- production bundle budget report not available";
+  const observations = report.observations || {};
+  const budgets = report.budgets || {};
+  return [
+    `- Status: ${report.status || "unknown"}`,
+    `- Entry chunk (${observations.entryFile || "n/a"}): ${formatKilobytes(observations.entryChunkKb)} / ${formatKilobytes(budgets.entryChunkKb)}`,
+    `- Largest lazy chunk (${observations.largestLazyFile || "n/a"}): ${formatKilobytes(observations.largestLazyChunkKb)} / ${formatKilobytes(budgets.largestLazyChunkKb)}`,
+    `- Total JavaScript: ${formatKilobytes(observations.totalJsKb)} / ${formatKilobytes(budgets.totalJsKb)}`,
+    `- Warnings: ${report.warnings?.length ? report.warnings.join("; ") : "none"}`,
+  ].join("\n");
+}
+
+function formatUiPerfEvidence(report) {
+  if (!report) return "- UI performance evidence report not available";
+  const scopeLabel = report.currentRun ? "current-run capture" : "baseline reference";
+  const lines = [
+    `- Status for this report: ${report.status}`,
+    `- Source budget evaluation status: ${report.sourceStatus}`,
+    `- Evidence scope: ${scopeLabel}`,
+    `- Freshness reason: ${report.freshnessReason}`,
+    `- Evaluation run ID: ${report.runId || "none"}`,
+    `- Evaluation generated: ${report.generatedAt || "unknown"}`,
+    `- Source capture run ID: ${report.sourceCapture?.runId || "none"}`,
+    `- Source captured: ${report.sourceCapture?.generatedAt || "unknown"}`,
+    `- Source file modified: ${report.sourceCapture?.fileModifiedAt || "unknown"}`,
+    `- Capture mode: ${report.sourceCapture?.mode || "unknown"}`,
+    `- Capture note: ${report.sourceCapture?.note || "none"}`,
+    `- Source: ${report.source || "unknown"}`,
+  ];
+  for (const [key, value] of Object.entries(report.observations || {})) {
+    lines.push(`- ${key}: ${value ?? "missing"} / ${(report.budgets || {})[key] ?? "n/a"}`);
+  }
+  return lines.join("\n");
+}
+
+function formatDesktopEvidence(label, report) {
+  if (!report) return `- ${label}: no evidence present`;
+  if (report.currentRun) {
+    return `- ${label}: ${report.status} in this report (${report.suite || "unknown suite"}, ${report.specCount ?? "n/a"} specs, run ${report.runId || "unknown"}, ${report.generatedAt || "unknown time"})`;
+  }
+  return `- ${label}: not run in this report; latest historical reference recorded ${report.sourceStatus} (${report.suite || "unknown suite"}, ${report.specCount ?? "n/a"} specs, run ${report.runId || "unknown"}, ${report.generatedAt || "unknown time"})`;
+}
 
 function formatCoverageBuckets(buckets) {
   const entries = Object.entries(buckets || {}).sort(([a], [b]) =>
@@ -465,7 +531,7 @@ function formatCoverageBuckets(buckets) {
       const required = value?.required ?? 0;
       const covered = value?.covered ?? 0;
       const waived = value?.waived ?? 0;
-      return `- ${key}: ${covered}/${required} required covered (${waived} waived)`;
+      return `- ${key}: ${covered}/${required} required actions registered with workflow references (${waived} waived)`;
     })
     .join("\n");
 }
@@ -533,14 +599,16 @@ const lines = [
   "",
   `Generated: ${dashboard.generatedAt}`,
   `Status: ${dashboard.status}`,
+  `Report run: ${dashboard.reportRun.available ? dashboard.reportRun.id : "standalone (no current-run context)"}`,
+  `Report run started: ${dashboard.reportRun.startedAt || "unknown"}`,
   `Revision: ${dashboard.cicd["vcs.ref.head.revision"] || "unknown"}`,
   `Dirty working tree: ${dashboard.cicd["vcs.working_tree.dirty"] ? `yes (${dashboard.cicd["vcs.working_tree.dirty_file_count"]} files)` : "no"}`,
   "",
   "## Coverage",
   "",
   `- Workflow ids: ${dashboard.workflows.count}`,
-  `- Manifest entries: ${dashboard.actions?.manifestEntryCount ?? "n/a"}`,
-  `- Required covered: ${dashboard.actions?.requiredCoveredCount ?? "n/a"} / ${dashboard.actions?.requiredEntryCount ?? "n/a"}`,
+  `- Manifest registrations: ${dashboard.actions?.manifestEntryCount ?? "n/a"}`,
+  `- Required manifest actions registered with workflow references: ${dashboard.actions?.requiredCoveredCount ?? "n/a"} / ${dashboard.actions?.requiredEntryCount ?? "n/a"}`,
   `- Artifact fixture packs: ${dashboard.fixtures.artifactPackCount}`,
   `- Fixture matrix: ${dashboard.fixtures.matrixStatus}`,
   `- Registered scenarios: ${dashboard.fixtures.scenarioCount}`,
@@ -551,9 +619,17 @@ const lines = [
   `- Visual snapshots: ${dashboard.visualBaselines.actualCount} actual / ${dashboard.visualBaselines.expectedCount} expected`,
   `- Visual missing/extra: ${dashboard.visualBaselines.missing.length} missing / ${dashboard.visualBaselines.extra.length} extra`,
   `- Visual older-than-spec snapshots: ${dashboard.visualBaselines.stale.length}`,
-  `- Desktop smoke summary: ${dashboard.desktopSmoke ? dashboard.desktopSmoke.status : "not present"}`,
-  `- Desktop smoke expanded summary: ${dashboard.desktopSmokeExpanded ? dashboard.desktopSmokeExpanded.status : "not present"}`,
+  formatDesktopEvidence("Desktop smoke", dashboard.desktopSmoke),
+  formatDesktopEvidence("Desktop smoke expanded", dashboard.desktopSmokeExpanded),
   `- Accessibility smoke: ${dashboard.a11ySmoke ? dashboard.a11ySmoke.status : "not present"}`,
+  "",
+  "## Production Bundle Budget",
+  "",
+  formatBundleBudget(dashboard.bundleBudget),
+  "",
+  "## UI Performance Capture / Baseline Reference",
+  "",
+  formatUiPerfEvidence(dashboard.perfBudget),
   "",
   "## Fixture Families",
   "",
@@ -563,11 +639,11 @@ const lines = [
   "",
   formatWorkflowBacklog(dashboard.fixtures.requiredWorkflowBacklog),
   "",
-  "## Required Actions By Priority",
+  "## Required Action Registrations By Priority",
   "",
   formatCoverageBuckets(dashboard.actions?.requiredCoverageByPriority),
   "",
-  "## Required Actions By Surface",
+  "## Required Action Registrations By Surface",
   "",
   formatCoverageBuckets(dashboard.actions?.requiredCoverageBySurface),
   "",

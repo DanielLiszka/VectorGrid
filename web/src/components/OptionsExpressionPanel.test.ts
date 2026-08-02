@@ -886,6 +886,131 @@ describe("OptionsExpressionPanel", () => {
     ).toBe(true);
   });
 
+  it("binds structured validation errors to the affected controls", async () => {
+    listOptionsDatasetsMock.mockResolvedValue([]);
+    listOptionsExpressionArtifactsMock.mockResolvedValue([]);
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: "C:/runs/vectorgrid_run_1.json",
+        parentStrategyKind: "DoubleMa",
+        parentDatasetLabel: "SPY.csv",
+      },
+    });
+    const store = useOptionsExpressionStore();
+    store.latestRun = makeRunSummary();
+    store.validationDatasetPolicy = "allow_same_root_replacement";
+    store.validationPlanMode = "date_range_holdout";
+    store.validationStartDateInput = "2026-02-31";
+    store.validationEndDateInput = "";
+    store.validationTupleIndexesInput = "1, nope";
+    store.minValidTradesInput = "-1";
+    await wrapper.vm.$nextTick();
+
+    const assertions = [
+      {
+        selector: "#optionsDatasetSelect",
+        errorId: "optionsDatasetSelectError",
+        message: "Select a Polygon.io replacement dataset",
+      },
+      {
+        selector: "#optionsValidationStartDate",
+        errorId: "optionsValidationStartDateError",
+        message: "must be a valid YYYY-MM-DD date",
+      },
+      {
+        selector: "#optionsValidationEndDate",
+        errorId: "optionsValidationEndDateError",
+        message: "Validation end date is required",
+      },
+      {
+        selector: "#optionsValidationTupleIndexes",
+        errorId: "optionsValidationTupleIndexesError",
+        message: "Tuple indexes must be comma-separated",
+      },
+      {
+        selector: "#optionsValidationMinValidTrades",
+        errorId: "optionsValidationMinValidTradesError",
+        message: "Min valid trades must be a non-negative whole number",
+      },
+    ];
+
+    for (const assertion of assertions) {
+      const control = wrapper.get(assertion.selector);
+      expect(control.attributes("aria-invalid")).toBe("true");
+      expect(control.attributes("aria-describedby")).toBe(assertion.errorId);
+      expect(wrapper.get(`#${assertion.errorId}`).text()).toContain(
+        assertion.message,
+      );
+    }
+
+    const planMode = wrapper.get("#optionsValidationPlanMode");
+    expect(planMode.attributes("aria-invalid")).toBe("false");
+    expect(planMode.attributes("aria-describedby")).toBeUndefined();
+
+    store.selectedDatasetId = "replacement_dataset";
+    store.validationStartDateInput = "2026-04-01";
+    store.validationEndDateInput = "2026-04-03";
+    store.validationTupleIndexesInput = "1, 3";
+    store.minValidTradesInput = "0";
+    await wrapper.vm.$nextTick();
+
+    for (const assertion of assertions) {
+      const control = wrapper.get(assertion.selector);
+      expect(control.attributes("aria-invalid")).toBe("false");
+      expect(control.attributes("aria-describedby")).toBeUndefined();
+      expect(wrapper.find(`#${assertion.errorId}`).exists()).toBe(false);
+    }
+  });
+
+  it("focuses the first invalid control when validation preview is attempted", async () => {
+    listOptionsDatasetsMock.mockResolvedValue([]);
+    listOptionsExpressionArtifactsMock.mockResolvedValue([]);
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      attachTo: document.body,
+      props: {
+        parentArtifactPath: "C:/runs/vectorgrid_run_1.json",
+        parentStrategyKind: "DoubleMa",
+        parentDatasetLabel: "SPY.csv",
+      },
+    });
+
+    try {
+      const store = useOptionsExpressionStore();
+      const previewSpy = vi
+        .spyOn(store, "previewValidationFeasibility")
+        .mockResolvedValue();
+      store.latestRun = makeRunSummary();
+      store.validationPlanMode = "date_range_holdout";
+      store.validationStartDateInput = "";
+      store.validationEndDateInput = "";
+      await wrapper.vm.$nextTick();
+
+      const previewButton = wrapper.get(
+        '[data-qa-action="options.validation.preview"]',
+      );
+      expect(previewButton.attributes("disabled")).toBeUndefined();
+
+      await previewButton.trigger("click");
+      await wrapper.vm.$nextTick();
+
+      expect(document.activeElement).toBe(
+        wrapper.get("#optionsValidationStartDate").element,
+      );
+      expect(previewSpy).not.toHaveBeenCalled();
+
+      store.validationStartDateInput = "2026-04-01";
+      store.validationEndDateInput = "2026-04-03";
+      await wrapper.vm.$nextTick();
+      await previewButton.trigger("click");
+
+      expect(previewSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("switches the workflow into the quote-aware lane and disables direct provider download", async () => {
     listOptionsDatasetsMock.mockResolvedValue([
       {

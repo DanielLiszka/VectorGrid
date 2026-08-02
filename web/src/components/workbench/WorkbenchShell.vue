@@ -45,6 +45,13 @@ type AdvancedDrawerAction = {
   detail: string;
   run: () => void;
 };
+type LiveSupportMatrixState =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "empty"
+  | "error"
+  | "unavailable";
 
 const workflowStore = useWorkflowStore();
 const settingsStore = useSettingsStore();
@@ -116,17 +123,20 @@ const { datasetReady, hasOptimizationResults, validationStage } =
 const inspectorCollapsed = ref(false);
 const compactInspector = ref(false);
 const compactInspectorOpen = ref(false);
+const compactInspectorLauncher = ref<HTMLButtonElement | null>(null);
 const requestedInspectorMode = ref<WorkbenchInspectorMode | "">("");
 const advancedDrawerOpen = ref(false);
 let compactInspectorQuery: MediaQueryList | null = null;
+let compactInspectorRestoreFocus: HTMLElement | null = null;
 
 function syncCompactInspector(event?: MediaQueryListEvent): void {
   const matches = event?.matches ?? compactInspectorQuery?.matches ?? false;
   compactInspector.value = matches;
-  if (!matches) compactInspectorOpen.value = false;
+  if (!matches && compactInspectorOpen.value) closeCompactInspector(false);
 }
 
 onMounted(() => {
+  document.addEventListener("keydown", onCompactInspectorKeydown, true);
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
   compactInspectorQuery = window.matchMedia("(max-width: 1180px)");
   syncCompactInspector();
@@ -136,6 +146,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   compactInspectorQuery?.removeEventListener("change", syncCompactInspector);
   compactInspectorQuery = null;
+  document.removeEventListener("keydown", onCompactInspectorKeydown, true);
+  compactInspectorRestoreFocus = null;
 });
 
 const modeItems = [
@@ -196,34 +208,63 @@ const liveSupportRows = ref<ExecutionStrategySupportRow[]>([]);
 const liveSupportMatrixStatus = ref(
   "Support matrix uses desktop backend data when Tauri is available.",
 );
-const liveSupportMatrixLoaded = ref(false);
+const liveSupportMatrixState = ref<LiveSupportMatrixState>("idle");
+const liveSupportMatrixLoading = computed(
+  () => liveSupportMatrixState.value === "loading",
+);
 const liveSupportStrategiesLabel = computed(() => {
+  if (liveSupportMatrixState.value === "loading") return "Loading…";
+  if (liveSupportMatrixState.value === "error") return "Unavailable";
+  if (liveSupportMatrixState.value === "unavailable") return "Desktop required";
+  if (liveSupportMatrixState.value === "empty") return "None reported";
   const supported = liveSupportRows.value
     .filter((row) => row.supported)
     .map((row) => row.strategyKind)
     .filter((value) => value.length > 0);
-  return supported.length ? supported.join(" · ") : "DoubleMa · CompositeCpu";
+  return supported.length ? supported.join(" · ") : "Not loaded";
 });
 const liveSupportAdaptersLabel = computed(() => {
+  if (liveSupportMatrixState.value === "loading") return "Loading…";
+  if (liveSupportMatrixState.value === "error") return "Unavailable";
+  if (liveSupportMatrixState.value === "unavailable") return "Desktop required";
+  if (liveSupportMatrixState.value === "empty") return "None reported";
   const adapters = liveSupportRows.value
     .filter((row) => row.supported)
     .map((row) => row.adapter || row.supportLevel)
     .filter((value) => value.length > 0);
-  return adapters.length ? adapters.join(" · ") : "Backend support matrix";
+  return adapters.length ? adapters.join(" · ") : "Not loaded";
 });
-async function refreshLiveSupportMatrix(): Promise<void> {
-  if (liveSupportMatrixLoaded.value || !tauriRuntimeAvailable()) return;
+async function refreshLiveSupportMatrix(force = false): Promise<void> {
+  if (
+    liveSupportMatrixLoading.value ||
+    (!force &&
+      (liveSupportMatrixState.value === "ready" ||
+        liveSupportMatrixState.value === "empty"))
+  ) {
+    return;
+  }
+  if (!tauriRuntimeAvailable()) {
+    liveSupportRows.value = [];
+    liveSupportMatrixState.value = "unavailable";
+    liveSupportMatrixStatus.value =
+      "Open VectorGrid in the desktop app to load the live strategy support matrix.";
+    return;
+  }
+  liveSupportRows.value = [];
+  liveSupportMatrixState.value = "loading";
+  liveSupportMatrixStatus.value = "Loading live strategy support from the desktop backend.";
   try {
     const rows = await loadExecutionStrategySupportMatrix();
     liveSupportRows.value = rows;
+    liveSupportMatrixState.value = rows.length ? "ready" : "empty";
     liveSupportMatrixStatus.value = rows.length
       ? `${rows.filter((row) => row.supported).length} supported strategy adapters reported by backend.`
       : "Backend returned an empty live strategy support matrix.";
   } catch (error) {
+    liveSupportRows.value = [];
+    liveSupportMatrixState.value = "error";
     liveSupportMatrixStatus.value =
       `Live support matrix unavailable: ${storeErrorText(error)}`.trim();
-  } finally {
-    liveSupportMatrixLoaded.value = true;
   }
 }
 const visibleControlsItems = computed(() => navState.value.controlsItems);
@@ -548,12 +589,78 @@ function toggleInspector(): void {
 }
 
 function openCompactInspector(): void {
+  if (compactInspectorOpen.value) return;
+  compactInspectorRestoreFocus =
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : compactInspectorLauncher.value;
   inspectorCollapsed.value = false;
   compactInspectorOpen.value = true;
+  nextTick(() => {
+    document
+      .querySelector<HTMLElement>(
+        '#workbenchInspector [data-qa-action="workbench.inspector.toggle"]',
+      )
+      ?.focus();
+  });
 }
 
-function closeCompactInspector(): void {
+function closeCompactInspector(restoreFocus = true): void {
+  if (!compactInspectorOpen.value) return;
   compactInspectorOpen.value = false;
+  const restoreTarget =
+    compactInspectorRestoreFocus?.isConnected === true
+      ? compactInspectorRestoreFocus
+      : compactInspectorLauncher.value;
+  compactInspectorRestoreFocus = null;
+  if (restoreFocus) nextTick(() => restoreTarget?.focus());
+}
+
+function compactInspectorFocusableElements(): HTMLElement[] {
+  const inspector = document.querySelector<HTMLElement>("#workbenchInspector");
+  if (!inspector) return [];
+  return Array.from(
+    inspector.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter(
+    (element) =>
+      element.getAttribute("aria-hidden") !== "true" &&
+      !element.hasAttribute("disabled"),
+  );
+}
+
+function onCompactInspectorKeydown(event: KeyboardEvent): void {
+  if (!compactInspector.value || !compactInspectorOpen.value) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeCompactInspector();
+    return;
+  }
+  if (event.key !== "Tab") return;
+
+  const focusable = compactInspectorFocusableElements();
+  if (focusable.length === 0) {
+    event.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first || !last) return;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !focusable.includes(active)) {
+    event.preventDefault();
+    first.focus();
+    return;
+  }
+  if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function selectInspectorMode(mode: WorkbenchInspectorMode): void {
@@ -732,10 +839,16 @@ function onResultsKeydown(
   >
     <WorkbenchRail
       :items="navState.workspaceItems"
+      :inert="compactInspector && compactInspectorOpen"
+      :aria-hidden="compactInspector && compactInspectorOpen ? 'true' : undefined"
       @select="selectWorkspace"
     />
 
-    <div class="workbenchContent">
+    <div
+      class="workbenchContent"
+      :inert="compactInspector && compactInspectorOpen"
+      :aria-hidden="compactInspector && compactInspectorOpen ? 'true' : undefined"
+    >
       <header
         class="workbenchHeader"
         role="banner"
@@ -799,6 +912,7 @@ function onResultsKeydown(
 
           <button
             v-if="compactInspector"
+            ref="compactInspectorLauncher"
             type="button"
             class="compactInspectorButton"
             :class="{ open: compactInspectorOpen }"
@@ -1263,6 +1377,7 @@ function onResultsKeydown(
           <section
             class="liveSupportPane"
             aria-label="Current live support envelope"
+            :aria-busy="liveSupportMatrixLoading ? 'true' : 'false'"
           >
             <div>
               <span class="eyebrow">Current live support envelope</span>
@@ -1296,6 +1411,24 @@ function onResultsKeydown(
                 >
               </article>
             </div>
+            <div
+              class="liveSupportStatus"
+              :class="liveSupportMatrixState"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              data-qa-state="workbench.liveSupport.status"
+            >
+              <span>{{ liveSupportMatrixStatus }}</span>
+              <button
+                v-if="liveSupportMatrixState === 'error'"
+                type="button"
+                class="liveSupportRetry"
+                @click="refreshLiveSupportMatrix(true)"
+              >
+                Retry support check
+              </button>
+            </div>
           </section>
           <div id="executionShellPane">
             <div id="executionVueShellMount"></div>
@@ -1324,7 +1457,7 @@ function onResultsKeydown(
       v-if="compactInspector && compactInspectorOpen"
       class="compactInspectorBackdrop"
       aria-hidden="true"
-      @click="closeCompactInspector"
+      @click="closeCompactInspector()"
     ></div>
 
     <WorkbenchInspector
@@ -1334,11 +1467,14 @@ function onResultsKeydown(
       :compact="compactInspector"
       :compact-open="compactInspectorOpen"
       @toggle="toggleInspector"
-      @close-compact="closeCompactInspector"
+      @close-compact="closeCompactInspector()"
       @select-mode="selectInspectorMode"
       @run-action="runInspectorAction"
     />
-    <WorkbenchActionBar />
+    <WorkbenchActionBar
+      :inert="compactInspector && compactInspectorOpen"
+      :aria-hidden="compactInspector && compactInspectorOpen ? 'true' : undefined"
+    />
   </section>
 </template>
 
@@ -1759,6 +1895,10 @@ function onResultsKeydown(
   box-shadow: var(--shadow-sm);
 }
 
+#liveShellGrid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .liveSupportPane {
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 8px;
@@ -1810,9 +1950,43 @@ function onResultsKeydown(
   text-overflow: ellipsis;
 }
 
+.liveSupportStatus {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  border-top: 1px dashed color-mix(in oklab, var(--border) 82%, transparent);
+  padding-top: 0.52rem;
+  color: var(--muted-strong);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+.liveSupportStatus.error {
+  color: var(--danger-ink);
+}
+
+.liveSupportRetry {
+  flex: 0 0 auto;
+  min-height: 30px;
+  border-radius: 8px;
+  padding: 0.28rem 0.5rem;
+  color: var(--text);
+  border-color: color-mix(in oklab, var(--danger) 48%, var(--border));
+  background: color-mix(in oklab, var(--surface-danger) 72%, var(--surface-working));
+}
+
 #executionShellPane {
+  min-width: 0;
+  max-width: 100%;
   border-top: 1px dashed color-mix(in oklab, var(--border) 88%, transparent);
   padding-top: 0.85rem;
+}
+
+#executionVueShellMount {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .srOnly {

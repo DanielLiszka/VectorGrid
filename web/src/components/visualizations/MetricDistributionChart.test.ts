@@ -1,196 +1,109 @@
 import { mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
 import MetricDistributionChart from './MetricDistributionChart.vue'
 
-const chartMocks = vi.hoisted(() => {
-  const chart = {
-    setOption: vi.fn(),
-    resize: vi.fn(),
-    dispose: vi.fn(),
-  }
-  return {
-    chart,
-    init: vi.fn(() => chart),
-    use: vi.fn(),
-  }
-})
-
-vi.mock('echarts/core', () => ({
-  init: chartMocks.init,
-  use: chartMocks.use,
-}))
-
-vi.mock('echarts/core.js', () => ({
-  init: chartMocks.init,
-  use: chartMocks.use,
-}))
-
-vi.mock('echarts/charts', () => ({
-  BarChart: { type: 'bar' },
-}))
-
-vi.mock('echarts/charts.js', () => ({
-  BarChart: { type: 'bar' },
-}))
-
-vi.mock('echarts/components', () => ({
-  AriaComponent: { type: 'aria' },
-  GridComponent: { type: 'grid' },
-  TooltipComponent: { type: 'tooltip' },
-}))
-
-vi.mock('echarts/components.js', () => ({
-  AriaComponent: { type: 'aria' },
-  GridComponent: { type: 'grid' },
-  TooltipComponent: { type: 'tooltip' },
-}))
-
-vi.mock('echarts/renderers', () => ({
-  CanvasRenderer: { type: 'canvas' },
-}))
-
-vi.mock('echarts/renderers.js', () => ({
-  CanvasRenderer: { type: 'canvas' },
-}))
-
-vi.mock('echarts/lib/chart/bar', () => ({}))
-vi.mock('echarts/lib/chart/bar.js', () => ({}))
-vi.mock('echarts/lib/component/aria', () => ({}))
-vi.mock('echarts/lib/component/aria.js', () => ({}))
-vi.mock('echarts/lib/component/grid', () => ({}))
-vi.mock('echarts/lib/component/grid.js', () => ({}))
-vi.mock('echarts/lib/component/tooltip', () => ({}))
-vi.mock('echarts/lib/component/tooltip.js', () => ({}))
-
-class ResizeObserverMock {
-  observe = vi.fn()
-  disconnect = vi.fn()
-}
+const columns = [
+  { key: 'pnl', label: 'PnL' },
+  { key: 'max_dd', label: 'Max DD' },
+]
 
 describe('MetricDistributionChart', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    chartMocks.init.mockImplementation(() => chartMocks.chart)
-    ;(globalThis as typeof globalThis & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver =
-      ResizeObserverMock as unknown as typeof ResizeObserver
-    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(480)
-    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(160)
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function getContextMock(
-      this: HTMLCanvasElement,
-    ) {
-      return {
-        canvas: this,
-        setTransform: vi.fn(),
-        resetTransform: vi.fn(),
-        clearRect: vi.fn(),
-        fillRect: vi.fn(),
-        strokeRect: vi.fn(),
-        fillText: vi.fn(),
-        strokeText: vi.fn(),
-        measureText: vi.fn(() => ({ width: 24 })),
-        save: vi.fn(),
-        restore: vi.fn(),
-        translate: vi.fn(),
-        rotate: vi.fn(),
-        scale: vi.fn(),
-        transform: vi.fn(),
-        beginPath: vi.fn(),
-        closePath: vi.fn(),
-        moveTo: vi.fn(),
-        lineTo: vi.fn(),
-        bezierCurveTo: vi.fn(),
-        quadraticCurveTo: vi.fn(),
-        arc: vi.fn(),
-        rect: vi.fn(),
-        clip: vi.fn(),
-        fill: vi.fn(),
-        stroke: vi.fn(),
-        setLineDash: vi.fn(),
-        drawImage: vi.fn(),
-        createPattern: vi.fn(() => ({})),
-        createLinearGradient: vi.fn(() => ({ addColorStop: vi.fn() })),
-        font: '',
-        fillStyle: '',
-        strokeStyle: '',
-        lineWidth: 1,
-        textAlign: 'left',
-        textBaseline: 'alphabetic',
-        globalAlpha: 1,
-      } as unknown as CanvasRenderingContext2D
-    })
-  })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
-    delete (globalThis as typeof globalThis & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver
-  })
-
-  it('renders a preferred metric histogram with summary stats', async () => {
+  it('renders an accessible preferred-metric histogram with summary stats and scaled bins', async () => {
     const wrapper = mount(MetricDistributionChart, {
       props: {
         title: 'Pareto metric distribution',
         preferredKeys: ['pnl'],
-        columns: [
-          { key: 'pnl', label: 'PnL' },
-          { key: 'max_dd', label: 'Max DD' },
-        ],
+        columns,
         rows: [
           { cells: [{ text: '10', title: '10' }, { text: '2', title: '2' }] },
+          { cells: [{ text: '11', title: '11' }, { text: '3', title: '3' }] },
           { cells: [{ text: '20', title: '20' }, { text: '5', title: '5' }] },
           { cells: [{ text: '40', title: '40' }, { text: '8', title: '8' }] },
         ],
       },
-      attachTo: document.body,
     })
 
     await nextTick()
-    await vi.waitFor(() => expect(chartMocks.init).toHaveBeenCalledTimes(1))
 
     expect(wrapper.text()).toContain('Visual summary')
     expect(wrapper.text()).toContain('Pareto metric distribution')
-    expect(wrapper.text()).toContain('PnL: n=3 min=10.0 median=20.0 max=40.0')
-    expect(chartMocks.chart.setOption).toHaveBeenCalled()
-    expect(chartMocks.chart.setOption.mock.calls[0]?.[0]).toMatchObject({
-      series: [
-        {
-          type: 'bar',
-          name: 'PnL',
-        },
-      ],
-    })
+    expect(wrapper.text()).toContain('PnL: n=4 min=10.0 median=15.5 max=40.0')
 
-    wrapper.unmount()
+    const histogram = wrapper.get('.metricDistributionHistogram')
+    expect(histogram.attributes('role')).toBe('img')
+    expect(histogram.attributes('aria-label')).toContain(
+      'PnL: n=4 min=10.0 median=15.5 max=40.0. Histogram bins:',
+    )
+    expect(histogram.attributes('aria-label')).toContain('candidates')
+    expect(histogram.attributes('style')).toContain('--metric-bin-count: 10')
+    expect(wrapper.find('canvas').exists()).toBe(false)
+
+    const bars = wrapper.findAll('.metricDistributionBar')
+    expect(bars).toHaveLength(10)
+    expect(
+      bars.reduce((sum, bar) => sum + Number(bar.attributes('data-bin-count') || 0), 0),
+    ).toBe(4)
+    expect(bars.filter((bar) => bar.classes().includes('hasValue'))).toHaveLength(3)
+    expect(bars.filter((bar) => bar.classes().includes('isPeak'))).toHaveLength(1)
+    expect(wrapper.findAll('.metricDistributionXAxis span')).toHaveLength(3)
   })
 
-  it('keeps a DOM histogram fallback available for resilient rendering', async () => {
+  it('updates the native histogram and accessible description when the metric changes', async () => {
     const wrapper = mount(MetricDistributionChart, {
       props: {
         title: 'Pareto metric distribution',
         preferredKeys: ['pnl'],
-        columns: [
-          { key: 'pnl', label: 'PnL' },
-          { key: 'max_dd', label: 'Max DD' },
-        ],
+        columns,
         rows: [
-          { cells: [{ text: '10', title: '10' }, { text: '2', title: '2' }] },
-          { cells: [{ text: '20', title: '20' }, { text: '5', title: '5' }] },
-          { cells: [{ text: '40', title: '40' }, { text: '8', title: '8' }] },
+          { cells: [{ text: '10' }, { text: '2' }] },
+          { cells: [{ text: '20' }, { text: '5' }] },
+          { cells: [{ text: '40' }, { text: '8' }] },
         ],
       },
-      attachTo: document.body,
+    })
+
+    await wrapper.get('select').setValue('max_dd')
+    await nextTick()
+
+    expect(wrapper.get('select').element.value).toBe('max_dd')
+    expect(wrapper.get('.metricDistributionStats').text()).toBe(
+      'Max DD: n=3 min=2 median=5 max=8',
+    )
+    expect(wrapper.get('.metricDistributionHistogram').attributes('aria-label')).toContain(
+      'Max DD: n=3 min=2 median=5 max=8. Histogram bins:',
+    )
+    expect(
+      wrapper.findAll('.metricDistributionBar')
+        .reduce((sum, bar) => sum + Number(bar.attributes('data-bin-count') || 0), 0),
+    ).toBe(3)
+  })
+
+  it('renders a single centered bin for a constant metric', async () => {
+    const wrapper = mount(MetricDistributionChart, {
+      props: {
+        title: 'Constant metric',
+        columns: [{ key: 'pnl', label: 'PnL' }],
+        rows: [
+          { cells: [{ text: '5' }] },
+          { cells: [{ text: '5' }] },
+        ],
+      },
     })
 
     await nextTick()
-    await vi.waitFor(() => expect(chartMocks.init).toHaveBeenCalled())
-    await nextTick()
-    await vi.waitFor(() => expect(wrapper.find('.metricDistributionFallback').exists()).toBe(true))
 
-    expect(wrapper.text()).toContain('PnL: n=3 min=10.0 median=20.0 max=40.0')
-    expect(wrapper.find('.metricDistributionFallback').attributes('aria-label')).toContain('Histogram fallback')
-    expect(wrapper.findAll('.metricDistributionFallbackRow').length).toBeGreaterThan(0)
-
-    wrapper.unmount()
+    const bars = wrapper.findAll('.metricDistributionBar')
+    expect(bars).toHaveLength(1)
+    expect(bars[0]?.attributes('data-bin-label')).toBe('5')
+    expect(bars[0]?.attributes('data-bin-count')).toBe('2')
+    expect(bars[0]?.attributes('style')).toContain('height: 100%')
+    expect(bars[0]?.classes()).toContain('isPeak')
+    expect(wrapper.get('.metricDistributionXAxis').classes()).toContain('isSingle')
+    expect(wrapper.get('.metricDistributionXAxis').text()).toBe('5')
+    expect(wrapper.get('.metricDistributionHistogram').attributes('aria-label')).toContain(
+      '5: 2 candidates',
+    )
   })
 
   it('does not mount chart chrome when no numeric metric is available', () => {
@@ -203,6 +116,6 @@ describe('MetricDistributionChart', () => {
     })
 
     expect(wrapper.html()).toBe('<!--v-if-->')
-    expect(chartMocks.init).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="img"]').exists()).toBe(false)
   })
 })

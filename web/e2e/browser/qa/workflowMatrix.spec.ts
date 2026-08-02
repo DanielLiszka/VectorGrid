@@ -127,8 +127,13 @@ defineWorkflow({
     await expect(action('data.polygon.repairSelected')).toBeDisabled()
     await expect(action('data.polygon.refresh')).toBeVisible()
     await expect(action('data.polygon.close')).toBeVisible()
+    await action('data.polygon.refresh').click()
+    await expect(page.locator('[data-qa-state="data.polygon.operation"]')).toContainText('Completed')
+    await expect(page.locator('[data-qa-state="data.polygon.operation"]')).toContainText('Refreshed Polygon cache.')
+    await expect(page.locator('[aria-labelledby="polygonWorkspaceHeading"]')).toHaveAttribute('aria-busy', 'false')
     await expect(page.getByText(/Load a dataset/i).first()).toBeVisible()
     await expect(page.getByText(/TauriRuntimeError:/)).toHaveCount(0)
+    await expectNoStuckBusyState(page)
     await expectNoHorizontalDocumentOverflow(page)
   },
 })

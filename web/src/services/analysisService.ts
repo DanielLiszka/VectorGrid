@@ -39,10 +39,14 @@ import type {
   HeatmapCellParams,
 } from "../visualizations/heatmapCanvasModel";
 import {
+  buildHeatmapAggregateWinnerCells,
   buildHeatmapSlice3dModel,
+  heatmapRequestHasMaVariantAmbiguity,
+  type HeatmapAggregateWinnerCell,
   type HeatmapSlice3dModel,
   type HeatmapSliceSourceRow,
 } from "../visualizations/heatmapSliceModel";
+import { resolveStrategyHeatmapAxes } from "../visualizations/strategyHeatmapAxes";
 import { normalizeIndexedPriceBars } from "../visualizations/priceSeriesModel";
 import {
   buildDrillChartModel,
@@ -51,6 +55,11 @@ import {
   mapTradeIndexToChartTime as modelMapTradeIndexToChartTime,
   type DrillChartPriceBar,
 } from "../visualizations/drillChartModel";
+import {
+  lightweightChartSeriesPalette,
+  resolveLightweightChartTheme,
+} from "../visualizations/chartTheme";
+import { registerAnalysisExecutionInvalidator } from "./analysisInvalidation";
 
 type TopColumn = {
   key?: unknown;
@@ -113,6 +122,8 @@ interface AnalysisStoreState {
   stabilityWrapVisible?: unknown;
   stabilityStatus?: unknown;
   stabilityMeta?: unknown;
+  stabilityRejectMeta?: unknown;
+  stabilityTableRows?: unknown;
   heatmapWrapVisible?: unknown;
   heatmapMode?: unknown;
   heatmapModeOptions?: unknown;
@@ -263,6 +274,7 @@ export interface HeatmapCanvasController {
 }
 
 export interface DrillChartController {
+  clearEvidence: () => void;
   clearTradeSelection: () => boolean;
   selectPrevTrade: () => string | null;
   selectNextTrade: () => string | null;
@@ -277,10 +289,12 @@ interface ExactNeighborhoodRobustnessSummary {
   step: number;
 }
 
-const DRILL_CURVES_CACHE_MAX = 96;
+const DRILL_CURVES_CACHE_MAX = 24;
 const STABILITY_CACHE_MAX = 96;
 const BASELINE_ARTIFACT_CACHE_MAX = 24;
 const DRILL_PRICE_BARS_CACHE_MAX = 24;
+const DYNAMIC_STABILITY_UNAVAILABLE_STATUS =
+  "Local stability unavailable for Dynamic Double MA: dynamic-IR neighborhood replay is not supported yet.";
 
 let compareSeq = 0;
 let drillSeq = 0;
@@ -1012,9 +1026,11 @@ function parseIndex(v: unknown): number {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = text(kindRaw || "DoubleMa") || "DoubleMa";
+  if (kind === "DynamicDoubleMa") return "DynamicDoubleMa";
   if (kind === "Pit") return "Pit";
   if (kind === "Set") return "Set";
   if (kind === "Mts") return "Mts";
+  if (kind === "Orc") return "Orc";
   if (kind === "Marrt") return "Marrt";
   if (kind === "Vfct") return "Vfct";
   if (kind === "Rocb") return "Rocb";
@@ -1039,6 +1055,7 @@ function isDoubleLikeKind(kindRaw: unknown): boolean {
   const kind = normalizeStrategyKindRaw(kindRaw);
   return (
     kind === "DoubleMa" ||
+    kind === "DynamicDoubleMa" ||
     kind === "Pit" ||
     kind === "Set" ||
     kind === "Mts" ||
@@ -1988,6 +2005,16 @@ function buildCandidateDetailInvocation(
   const kind = normalizeStrategyKindRaw(
     runReq.strategy_kind ?? runReq.strategyKind,
   );
+  const dynamicStrategyIrRaw =
+    runReq.dynamic_strategy_ir ?? runReq.dynamicStrategyIr;
+  const dynamicStrategyIr =
+    kind === "DynamicDoubleMa" &&
+    dynamicStrategyIrRaw &&
+    typeof dynamicStrategyIrRaw === "object" &&
+    !Array.isArray(dynamicStrategyIrRaw)
+      ? (dynamicStrategyIrRaw as Record<string, unknown>)
+      : null;
+  if (kind === "DynamicDoubleMa" && !dynamicStrategyIr) return null;
   const fastParams =
     asNumberMap(params.fast_ma_params ?? params.fastMaParams) ??
     resolveRunMaParams(runReq, "fast", fastMaType);
@@ -2008,10 +2035,10 @@ function buildCandidateDetailInvocation(
     kvdf: runReq.kvdf ?? params.kvdf ?? null,
     cdmc: runReq.cdmc ?? params.cdmc ?? null,
   };
+  const backend = runReq.backend || { backend: "CpuOnly" };
 
   const base: Record<string, unknown> = {
     data_id: dataId,
-    backend_hint: runReq.backend || { backend: "CpuOnly" },
     params: {
       fast_len: fastLen,
       slow_len: slowLen,
@@ -2033,7 +2060,10 @@ function buildCandidateDetailInvocation(
       command: "compute_double_ma_drilldown",
       request: {
         ...base,
-        backend_hint: runReq.backend || { backend: "CpuOnly" },
+        backend_hint: backend,
+        ...(kind === "DynamicDoubleMa"
+          ? { dynamic_strategy_ir: dynamicStrategyIr }
+          : {}),
         halftrend_filter:
           runReq.halftrend_filter || runReq.halftrendFilter || null,
       },
@@ -2047,6 +2077,7 @@ function buildCandidateDetailInvocation(
       command: "compute_composite_cpu_drilldown",
       request: {
         ...base,
+        backend,
         halftrend: params.halftrend,
         macz: params.macz || {},
         ott: params.ott || {},
@@ -2067,6 +2098,7 @@ function buildCandidateDetailInvocation(
     command: "compute_composite_cpu_drilldown",
     request: {
       ...base,
+      backend,
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
@@ -2101,6 +2133,7 @@ function buildLocalStabilityInvocation(
   invocation: DrillInvocation,
 ): StabilityInvocation | null {
   const runReq = invocation.runReq;
+  if (invocation.kind === "DynamicDoubleMa") return null;
   const objective = objectiveOf(runReq);
   const scoreMode = scoreModeOf(runReq);
   const base: Record<string, unknown> = {
@@ -2148,7 +2181,7 @@ function buildLocalStabilityInvocation(
       command: "compute_composite_cpu_local_stability",
       request: {
         ...base,
-        backend: invocation.request.backend_hint || { backend: "CpuOnly" },
+        backend: invocation.request.backend || { backend: "CpuOnly" },
         halftrend: params.halftrend,
         macz: params.macz || {},
         ott: params.ott || {},
@@ -2167,7 +2200,7 @@ function buildLocalStabilityInvocation(
     command: "compute_composite_cpu_local_stability",
     request: {
       ...base,
-      backend: invocation.request.backend_hint || { backend: "CpuOnly" },
+      backend: invocation.request.backend || { backend: "CpuOnly" },
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
@@ -2213,7 +2246,7 @@ function applyDrillCompletionState(
   store.drillStatus = drillStatus;
   store.drillMeta = drillMeta;
   store.topSelectionGuardrail = "—";
-  markAnalysisVue(store);
+  if (store) markAnalysisVue(store);
 }
 
 function applyStabilityCompletionState(
@@ -2222,11 +2255,103 @@ function applyStabilityCompletionState(
   stabilityMeta: string,
   stabilityStatus: string,
 ): void {
-  if (!store || !stabilityResult) return;
+  if (!store) return;
+  if (!stabilityResult) {
+    if (stabilityStatus !== "-") {
+      resetStabilityEvidenceState(store, stabilityStatus, true);
+      markAnalysisVue(store);
+    }
+    return;
+  }
   renderStabilityDom(stabilityResult, store);
   store.stabilityMeta = stabilityMeta;
   store.stabilityStatus = stabilityStatus;
   markAnalysisVue(store);
+}
+
+function resetStabilityEvidenceState(
+  store: AnalysisStoreState | null,
+  status = "-",
+  visible = false,
+): void {
+  if (store) {
+    store.stabilityWrapVisible = visible;
+    store.stabilityStatus = status;
+    store.stabilityMeta = "-";
+    store.stabilityRejectMeta = "-";
+    store.stabilityTableRows = markRaw([]);
+    return;
+  }
+  const wrap = byIds<HTMLElement>(["stabilityWrapVue", "stabilityWrap"]);
+  const statusEl = byIds<HTMLElement>([
+    "stabilityStatusVue",
+    "stabilityStatus",
+  ]);
+  const metaEl = byIds<HTMLElement>(["stabilityMetaVue", "stabilityMeta"]);
+  const rejectEl = byIds<HTMLElement>(["rejectMetaVue", "rejectMeta"]);
+  const tableWrap = byIds<HTMLElement>([
+    "stabilityTableWrapVue",
+    "stabilityTableWrap",
+  ]);
+  const tbody = byIds<HTMLElement>([
+    "stabilityTableBodyVue",
+    "stabilityTableBody",
+  ]);
+  if (wrap) wrap.style.display = visible ? "block" : "none";
+  if (statusEl) {
+    statusEl.textContent = status;
+    statusEl.className = status.startsWith("Stability failed")
+      ? "panelStatus badText"
+      : "panelStatus";
+  }
+  if (metaEl) metaEl.textContent = "-";
+  if (rejectEl) rejectEl.textContent = "-";
+  if (tableWrap) tableWrap.style.display = "none";
+  if (tbody) tbody.replaceChildren();
+}
+
+function resetDrillEvidenceState(
+  store: AnalysisStoreState | null,
+  status: string,
+  meta = "-",
+): void {
+  drillRenderState = null;
+  registeredDrillChartController?.clearEvidence();
+  disposeDrillSupportCharts();
+  if (store) {
+    store.drillWrapVisible = false;
+    store.tradeStatsWrapVisible = false;
+    store.drillChartModel = null;
+    store.drillTradeTableModel = null;
+    store.drillMeta = meta;
+    store.drillStatus = status;
+  }
+  resetStabilityEvidenceState(store);
+  if (store) {
+    markAnalysisVue(store);
+    return;
+  }
+
+  const wrap = drillWrap();
+  const hint = byIds<HTMLElement>(["drillEmptyHintVue", "drillEmptyHint"]);
+  const metaEl = byIds<HTMLElement>(["drillMetaVue", "drillMeta"]);
+  const statusEl = byIds<HTMLElement>(["drillStatusVue", "drillStatus"]);
+  const tradeWrap = byIds<HTMLElement>([
+    "tradeStatsWrapVue",
+    "tradeStatsWrap",
+  ]);
+  const tradeStats = byIds<HTMLElement>(["tradeStatsVue", "tradeStats"]);
+  const tradeBody = byIds<HTMLElement>([
+    "tradeTableBodyVue",
+    "tradeTableBody",
+  ]);
+  if (wrap) wrap.style.display = "none";
+  if (hint) hint.style.display = "";
+  if (metaEl) metaEl.textContent = meta;
+  if (statusEl) statusEl.textContent = status;
+  if (tradeWrap) tradeWrap.style.display = "none";
+  if (tradeStats) tradeStats.textContent = "-";
+  if (tradeBody) tradeBody.replaceChildren();
 }
 
 function captureDrillRenderState(
@@ -2239,13 +2364,17 @@ function captureDrillRenderState(
   stabilityResult: unknown | null,
   cachedDrill: boolean,
   cachedStability: boolean,
+  stabilityUnavailableStatus = "",
 ): void {
   const drillStatus = cachedDrill ? "Done (cached)." : "Done.";
+  const stabilityPoints = asRecord(stabilityResult).points;
   const stabilityStatus = stabilityResult
-    ? cachedStability
-      ? "Done (cached)."
-      : "Done."
-    : "-";
+    ? Array.isArray(stabilityPoints) && stabilityPoints.length > 0
+      ? cachedStability
+        ? "Done (cached)."
+        : "Done."
+      : "No stability data."
+    : stabilityUnavailableStatus || "-";
   drillRenderState = {
     runIdentity: workflowRunIdentity(run),
     rowId: topRowIdFor(row),
@@ -2287,15 +2416,18 @@ async function runVueDrillPipeline(row: TopRowModel): Promise<boolean> {
   const params = asRecord(row.params);
   const metrics = asRecord(row.metrics);
   const invocation = buildCandidateDetailInvocation(params, runReq, runRes);
-  if (!invocation) return false;
+  if (!invocation) {
+    drillSeq = (drillSeq + 1) >>> 0;
+    const message =
+      "Candidate detail unavailable: the selected result does not include a complete dataset and moving-average parameter request.";
+    resetDrillEvidenceState(store, message);
+    setStatus(store, message);
+    return false;
+  }
 
   drillSeq = (drillSeq + 1) >>> 0;
   const seq = drillSeq;
-  if (store) {
-    store.drillStatus = "Computing candidate detail…";
-    store.stabilityStatus = "-";
-    markAnalysisVue(store);
-  }
+  resetDrillEvidenceState(store, "Computing candidate detail…");
   setStatus(store, "Computing candidate detail…");
   try {
     const drillKey = requestCacheKey(invocation.command, invocation.request);
@@ -2352,50 +2484,6 @@ async function runVueDrillPipeline(row: TopRowModel): Promise<boolean> {
         ? "Candidate detail done (cached)."
         : "Candidate detail done.",
     );
-
-    const stability = buildLocalStabilityInvocation(params, invocation);
-    if (!stability) {
-      captureDrillRenderState(
-        run,
-        row,
-        params,
-        metrics,
-        curves,
-        bars,
-        null,
-        cachedDrill,
-        false,
-      );
-      return true;
-    }
-    const stabilityKey = requestCacheKey(stability.command, stability.request);
-    if (store) {
-      store.stabilityStatus = "Computing stability…";
-      markAnalysisVue(store);
-    }
-    const stabilityLoad = await cacheGetOrLoad(
-      stabilityCache,
-      stabilityPending,
-      stabilityKey,
-      async () =>
-        await invokeCommand(stability.command, { req: stability.request }),
-      STABILITY_CACHE_MAX,
-    );
-    const stabilityRes = stabilityLoad.value;
-    const cachedStability =
-      stabilityLoad.cacheHit || stabilityLoad.sharedInFlight;
-    if (seq !== drillSeq) return true;
-    renderStabilityDom(stabilityRes, store);
-    let stabilityMeta = "-";
-    const stabilityStatus = cachedStability ? "Done (cached)." : "Done.";
-    if (store) {
-      const sr = asRecord(stabilityRes);
-      const summary = asRecord(sr.summary);
-      stabilityMeta = `objective=${text(sr.objective) || "?"} radius=${num(sr.radius, 0)} step=${num(sr.step, 0)} points=${Array.isArray(sr.points) ? sr.points.length : 0} | score: base=${fmt(summary.base, 6)} median=${fmt(summary.median, 6)} min=${fmt(summary.min, 6)} max=${fmt(summary.max, 6)}`;
-      store.stabilityMeta = stabilityMeta;
-      store.stabilityStatus = stabilityStatus;
-      markAnalysisVue(store);
-    }
     captureDrillRenderState(
       run,
       row,
@@ -2403,19 +2491,81 @@ async function runVueDrillPipeline(row: TopRowModel): Promise<boolean> {
       metrics,
       curves,
       bars,
-      stabilityRes,
+      null,
       cachedDrill,
-      cachedStability,
+      false,
+      invocation.kind === "DynamicDoubleMa"
+        ? DYNAMIC_STABILITY_UNAVAILABLE_STATUS
+        : "",
     );
+
+    const stability = buildLocalStabilityInvocation(params, invocation);
+    if (!stability) {
+      if (invocation.kind === "DynamicDoubleMa") {
+        resetStabilityEvidenceState(
+          store,
+          DYNAMIC_STABILITY_UNAVAILABLE_STATUS,
+          true,
+        );
+        if (store) markAnalysisVue(store);
+      }
+      return true;
+    }
+    const stabilityKey = requestCacheKey(stability.command, stability.request);
+    resetStabilityEvidenceState(store, "Computing stability…", true);
+    if (store) markAnalysisVue(store);
+    try {
+      const stabilityLoad = await cacheGetOrLoad(
+        stabilityCache,
+        stabilityPending,
+        stabilityKey,
+        async () =>
+          await invokeCommand(stability.command, { req: stability.request }),
+        STABILITY_CACHE_MAX,
+      );
+      const stabilityRes = stabilityLoad.value;
+      const cachedStability =
+        stabilityLoad.cacheHit || stabilityLoad.sharedInFlight;
+      if (seq !== drillSeq) return true;
+      renderStabilityDom(stabilityRes, store);
+      let stabilityMeta = "-";
+      const stabilityPoints = asRecord(stabilityRes).points;
+      const stabilityStatus = Array.isArray(stabilityPoints) && stabilityPoints.length > 0
+        ? cachedStability
+          ? "Done (cached)."
+          : "Done."
+        : "No stability data.";
+      if (store) {
+        const sr = asRecord(stabilityRes);
+        const summary = asRecord(sr.summary);
+        stabilityMeta = `objective=${text(sr.objective) || "?"} radius=${num(sr.radius, 0)} step=${num(sr.step, 0)} points=${Array.isArray(sr.points) ? sr.points.length : 0} | score: base=${fmt(summary.base, 6)} median=${fmt(summary.median, 6)} min=${fmt(summary.min, 6)} max=${fmt(summary.max, 6)}`;
+        store.stabilityMeta = stabilityMeta;
+        store.stabilityStatus = stabilityStatus;
+        markAnalysisVue(store);
+      }
+      captureDrillRenderState(
+        run,
+        row,
+        params,
+        metrics,
+        curves,
+        bars,
+        stabilityRes,
+        cachedDrill,
+        cachedStability,
+      );
+    } catch (error) {
+      if (seq !== drillSeq) return true;
+      const message = formatAnalysisActionError("Stability failed", error);
+      resetStabilityEvidenceState(store, message, true);
+      if (store) markAnalysisVue(store);
+      setStatus(store, message);
+    }
     return true;
   } catch (error) {
     if (seq !== drillSeq) return true;
-    drillRenderState = null;
     const message = formatAnalysisActionError("Candidate detail failed", error);
-    if (store) {
-      store.drillStatus = message;
-      markAnalysisVue(store);
-    }
+    resetDrillEvidenceState(store, message);
     setStatus(store, message);
     return false;
   }
@@ -3084,15 +3234,19 @@ function buildHeatmapMeta(
   model: HeatmapModel,
   range: { min: number; max: number; label: string },
   multiSampleCellCount = 0,
+  selectionTruth = "",
 ): string {
+  const axes = resolveStrategyHeatmapAxes(req);
+  const axisRanges = `${axes.fastAxisLabel}=${model.fastMin}-${model.fastMax} • ${axes.slowAxisLabel}=${model.slowMin}-${model.slowMax}`;
+  const selectionNote = selectionTruth ? ` • ${selectionTruth}` : "";
   if (mode === "plateau") {
     const densityNote =
       multiSampleCellCount > 0
         ? ` • density-aware=${multiSampleCellCount} multi-sample cells`
         : "";
-    return `Derived plateau heatmap • objective=${scoreLabelOf(req)} • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label} • supportive=8-neighbor agreement${densityNote}`;
+    return `Derived plateau heatmap • objective=${scoreLabelOf(req)} • bins=${model.binsFast}x${model.binsSlow} • ${axisRanges} • scale=${range.label} • supportive=8-neighbor agreement${densityNote}${selectionNote}`;
   }
-  return `${scoreLabelOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label}`;
+  return `${scoreLabelOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • ${axisRanges} • scale=${range.label}${selectionNote}`;
 }
 
 function buildHeatmapStatusLine(
@@ -3100,23 +3254,27 @@ function buildHeatmapStatusLine(
   topK: number,
   exactRobustness: ExactNeighborhoodRobustnessSummary | null,
   multiSampleCellCount: number,
+  selectionTruth = "",
 ): string {
   const markerNote =
     topK === 0
       ? "Markers use the best candidate only."
       : "Markers reflect the visible Top rows.";
+  const drilldownNote =
+    selectionTruth ||
+    "Click a populated cell to inspect a representative parameter pair for that heatmap region.";
   if (mode === "plateau") {
     if (exactRobustness) {
-      return `Heatmap ready. Plateau mode is UI-derived from the raw objective surface; exact winner robustness ${exactRobustness.plateauLabel} ${fmtDisplay(exactRobustness.plateauScore, 4)} over ${exactRobustness.neighborCount} neighbors (radius ${exactRobustness.radius}, step ${exactRobustness.step}). Click a populated cell to inspect a representative parameter pair for that heatmap region. ${markerNote}`;
+      return `Heatmap ready. Plateau mode is UI-derived from the raw objective surface; exact winner robustness ${exactRobustness.plateauLabel} ${fmtDisplay(exactRobustness.plateauScore, 4)} over ${exactRobustness.neighborCount} neighbors (radius ${exactRobustness.radius}, step ${exactRobustness.step}). ${drilldownNote} ${markerNote}`;
     }
     if (multiSampleCellCount > 0) {
-      return `Heatmap ready. Plateau mode uses supportive 8-neighbor agreement, roughness, curvature, and max-vs-mean bin agreement; hover for plateau, raw objective, and bin details. Click a populated cell to inspect a representative parameter pair for that heatmap region. ${markerNote}`;
+      return `Heatmap ready. Plateau mode uses supportive 8-neighbor agreement, roughness, curvature, and max-vs-mean bin agreement; hover for plateau, raw objective, and bin details. ${drilldownNote} ${markerNote}`;
     }
-    return `Heatmap ready. Plateau mode uses supportive 8-neighbor agreement, roughness, and curvature over the raw objective surface; hover for plateau and objective values. Click a populated cell to inspect a representative parameter pair for that heatmap region. ${markerNote}`;
+    return `Heatmap ready. Plateau mode uses supportive 8-neighbor agreement, roughness, and curvature over the raw objective surface; hover for plateau and objective values. ${drilldownNote} ${markerNote}`;
   }
   return topK === 0
-    ? "Heatmap ready. This run disabled ranked Top rows (top_k=0), so markers use the best candidate only."
-    : "Heatmap ready. Hover for values and click a populated cell to inspect a representative parameter pair for that heatmap region.";
+    ? `Heatmap ready. This run disabled ranked Top rows (top_k=0), so markers use the best candidate only. ${drilldownNote}`
+    : `Heatmap ready. Hover for values. ${drilldownNote}`;
 }
 
 function heatmapMarkerRows(
@@ -3135,7 +3293,10 @@ function heatmapMarkerRows(
           0,
           requestedTopK(req) === 0 ? 1 : 8,
         );
-  const out: Array<{ col: number; drawRow: number; label: string }> = [];
+  const grouped = new Map<
+    string,
+    { col: number; drawRow: number; ranks: number[] }
+  >();
   for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i];
     if (!row) continue;
@@ -3144,51 +3305,130 @@ function heatmapMarkerRows(
     if (fast <= 0 || slow <= 0) continue;
     const col = heatmapColForFast(model, fast);
     const logicalRow = heatmapLogicalRowForSlow(model, slow);
-    out.push({
-      col,
-      drawRow: model.binsSlow - 1 - logicalRow,
-      label: String(Math.max(1, Math.floor(num(row.rank, i + 1)))),
-    });
+    const drawRow = model.binsSlow - 1 - logicalRow;
+    const rank = Math.max(1, Math.floor(num(row.rank, i + 1)));
+    const key = `${col}:${drawRow}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.ranks.push(rank);
+    } else {
+      grouped.set(key, { col, drawRow, ranks: [rank] });
+    }
   }
-  return out;
+  return Array.from(grouped.values(), ({ col, drawRow, ranks }) => {
+    ranks.sort((left, right) => left - right);
+    const shownRanks = ranks.slice(0, 2).join(",");
+    const hiddenCount = Math.max(0, ranks.length - 2);
+    return {
+      col,
+      drawRow,
+      label: hiddenCount > 0 ? `${shownRanks} +${hiddenCount}` : shownRanks,
+    };
+  });
 }
 
-function collectHeatmapSliceSourceRows(
+function collectHeatmapRetainedSourceRows(
   req: Record<string, unknown>,
   res: Record<string, unknown>,
-): HeatmapSliceSourceRow[] {
+): {
+  sliceRows: HeatmapSliceSourceRow[];
+  exactAggregateRows: HeatmapSliceSourceRow[];
+} {
   const all = Array.isArray(res.all) ? res.all : [];
-  if (!all.length) return [];
+  if (!all.length) return { sliceRows: [], exactAggregateRows: [] };
   const allScores = Array.isArray(res.all_scores) ? res.all_scores : [];
+  const allScoresAligned = allScores.length === all.length;
   const objective = objectiveOf(req);
   const scoreMode = scoreModeOf(req);
   const scoreContext = scoreObservationContextOf(res);
-  const rows: HeatmapSliceSourceRow[] = [];
+  const sliceRows: HeatmapSliceSourceRow[] = [];
+  const exactAggregateRows: HeatmapSliceSourceRow[] = [];
   for (let i = 0; i < all.length; i += 1) {
     const row = Array.isArray(all[i]) ? (all[i] as unknown[]) : [];
     const params = asRecord(row[0]);
     const metrics = asRecord(row[1]);
     if (!Object.keys(params).length || !Object.keys(metrics).length) continue;
     const explicitScore = Number(allScores[i]);
-    rows.push({
+    sliceRows.push({
       params,
       metrics,
       score: Number.isFinite(explicitScore)
         ? explicitScore
         : scoreOf(metrics, objective, scoreMode, params, scoreContext),
     });
+    if (allScoresAligned && Number.isFinite(explicitScore)) {
+      exactAggregateRows.push({ params, metrics, score: explicitScore });
+    }
   }
-  return rows;
+  return { sliceRows, exactAggregateRows };
+}
+
+const HEATMAP_EXACT_MA_WINNER_UNAVAILABLE_REASON =
+  "Candidate detail is unavailable because the exact winning MA variant was not retained for this aggregate cell. Use Top Results, or rerun with Advanced > Return all results enabled.";
+
+function buildExactHeatmapAggregateWinnerCells(
+  model: HeatmapModel,
+  rows: HeatmapSliceSourceRow[],
+): Array<HeatmapAggregateWinnerCell | null> | null {
+  if (!rows.length) return null;
+
+  const candidates = buildHeatmapAggregateWinnerCells({ model, rows });
+  return candidates.map((candidate, index) => {
+    const aggregateScore = model.values[index];
+    return candidate &&
+      typeof aggregateScore === "number" &&
+      Number.isFinite(aggregateScore) &&
+      candidate.score === aggregateScore
+      ? candidate
+      : null;
+  });
+}
+
+function heatmapAggregateSelectionTruth(options: {
+  model: HeatmapModel;
+  exactWinnerCells: Array<HeatmapAggregateWinnerCell | null> | null;
+  requiresExactParams: boolean;
+}): string {
+  let finiteCells = 0;
+  let exactCells = 0;
+  for (let index = 0; index < options.model.values.length; index += 1) {
+    const value = options.model.values[index];
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    finiteCells += 1;
+    const winner = options.exactWinnerCells?.[index] ?? null;
+    if (
+      winner &&
+      Object.keys(winner.params).length > 0 &&
+      winner.score === value
+    ) {
+      exactCells += 1;
+    }
+  }
+
+  if (finiteCells > 0 && exactCells === finiteCells) {
+    return "Candidate drilldown opens exact retained best-in-bin winners.";
+  }
+  if (options.requiresExactParams) {
+    if (exactCells > 0) {
+      const unresolved = Math.max(0, finiteCells - exactCells);
+      return `Candidate drilldown opens ${exactCells} exact retained winner${exactCells === 1 ? "" : "s"}; ${unresolved} unresolved cell${unresolved === 1 ? "" : "s"} cannot open because the winning MA variant was not retained. Use Top Results, or rerun with Return all results enabled.`;
+    }
+    return HEATMAP_EXACT_MA_WINNER_UNAVAILABLE_REASON;
+  }
+  if (exactCells > 0) {
+    return `Candidate drilldown opens ${exactCells} exact retained winner${exactCells === 1 ? "" : "s"}; remaining cells re-evaluate a representative parameter pair from the grid.`;
+  }
+  return "Candidate drilldown re-evaluates a representative parameter pair from the grid for each populated region; Top Results keeps exact ranked candidates.";
 }
 
 function buildHeatmapSliceModel(
   req: Record<string, unknown>,
-  res: Record<string, unknown>,
   model: HeatmapModel,
+  rows: HeatmapSliceSourceRow[],
 ): HeatmapSlice3dModel | null {
   return buildHeatmapSlice3dModel({
     model,
-    rows: collectHeatmapSliceSourceRows(req, res),
+    rows,
     scoreLabel: scoreLabelOf(req),
   });
 }
@@ -3196,14 +3436,22 @@ function buildHeatmapSliceModel(
 function applyHeatmapViewModeAvailability(
   store: AnalysisStoreState,
   slice3d: HeatmapSlice3dModel | null,
+  allow3d = true,
+  disabledReasonOverride = "",
 ): void {
-  const sliceReady = !!slice3d;
+  const sliceReady = !!slice3d && allow3d;
+  const disabledReason =
+    disabledReasonOverride ||
+    (allow3d
+      ? "3D slices need retained full-result rows for at least two MA-type or parameter variants. Enable Advanced > Return all results, configure at least two variants, then rerun optimization."
+      : "3D slices are available only in Objective score mode.");
   store.heatmapViewModeOptions = [
     { value: "2d", label: "2D heatmap", disabled: false },
     {
       value: "3d",
       label: "3D slices",
       disabled: !sliceReady,
+      ...(sliceReady ? {} : { disabledReason }),
     },
   ];
   if (!sliceReady && text(store.heatmapViewMode) === "3d") {
@@ -3231,6 +3479,7 @@ function heatmapBaseSignature(
     score_mode: scoreModeOf(req),
     top_k: requestedTopK(req),
     heatmap_bins: requestedHeatmapBins(req),
+    axes: resolveStrategyHeatmapAxes(req),
     model,
     markers: model ? heatmapMarkerRows(store, req, res, model) : [],
   });
@@ -3239,7 +3488,9 @@ function heatmapBaseSignature(
 function buildHeatmapCanvasRequest(
   req: Record<string, unknown>,
 ): HeatmapCanvasRequestModel {
+  const axes = resolveStrategyHeatmapAxes(req);
   return {
+    ...axes,
     fastMaType:
       text(
         Array.isArray(req.fast_ma_types)
@@ -3266,11 +3517,20 @@ function setHeatmapCanvasModel(
   const mode = heatmapModeOf(store);
   const model = readHeatmapModel(res);
   const exactRobustness = readExactNeighborhoodRobustness(res);
+  const heatmapRequest = buildHeatmapCanvasRequest(req);
+  const unavailableStrategyReason = heatmapRequest.supports3dSlices
+    ? ""
+    : heatmapRequest.threeDimensionalUnavailableReason;
 
   const topK = requestedTopK(req);
   const heatmapBins = requestedHeatmapBins(req);
   if (!model) {
-    applyHeatmapViewModeAvailability(store, null);
+    applyHeatmapViewModeAvailability(
+      store,
+      null,
+      heatmapRequest.supports3dSlices,
+      unavailableStrategyReason,
+    );
     heatmapRenderState = null;
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
@@ -3288,7 +3548,12 @@ function setHeatmapCanvasModel(
 
   const finite = finiteHeatmapValues(model);
   if (!finite.length) {
-    applyHeatmapViewModeAvailability(store, null);
+    applyHeatmapViewModeAvailability(
+      store,
+      null,
+      heatmapRequest.supports3dSlices,
+      unavailableStrategyReason,
+    );
     heatmapRenderState = null;
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
@@ -3302,7 +3567,12 @@ function setHeatmapCanvasModel(
   const display = resolveHeatmapDisplay(mode, req, model);
   const displayFinite = finiteValues(display.values);
   if (!displayFinite.length) {
-    applyHeatmapViewModeAvailability(store, null);
+    applyHeatmapViewModeAvailability(
+      store,
+      null,
+      heatmapRequest.supports3dSlices,
+      unavailableStrategyReason,
+    );
     heatmapRenderState = null;
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
@@ -3315,8 +3585,28 @@ function setHeatmapCanvasModel(
     return true;
   }
 
-  const slice3d = buildHeatmapSliceModel(req, res, model);
-  applyHeatmapViewModeAvailability(store, slice3d);
+  const retainedSourceRows = collectHeatmapRetainedSourceRows(req, res);
+  const slice3d = heatmapRequest.supports3dSlices
+    ? buildHeatmapSliceModel(req, model, retainedSourceRows.sliceRows)
+    : null;
+  const exactAggregateWinnerCells = buildExactHeatmapAggregateWinnerCells(
+    model,
+    retainedSourceRows.exactAggregateRows,
+  );
+  const aggregateSelectionRequiresExactParams =
+    heatmapRequest.supports3dSlices &&
+    heatmapRequestHasMaVariantAmbiguity(req);
+  const aggregateSelectionTruth = heatmapAggregateSelectionTruth({
+    model,
+    exactWinnerCells: exactAggregateWinnerCells,
+    requiresExactParams: aggregateSelectionRequiresExactParams,
+  });
+  applyHeatmapViewModeAvailability(
+    store,
+    slice3d,
+    heatmapRequest.supports3dSlices && mode !== "plateau",
+    unavailableStrategyReason,
+  );
 
   const meta = buildHeatmapMeta(
     mode,
@@ -3324,12 +3614,14 @@ function setHeatmapCanvasModel(
     model,
     display.range,
     display.multiSampleCellCount,
+    aggregateSelectionTruth,
   );
   const statusLine = buildHeatmapStatusLine(
     mode,
     topK,
     exactRobustness,
     display.multiSampleCellCount,
+    aggregateSelectionTruth,
   );
   const state: HeatmapCanvasRenderModel = {
     signature: heatmapBaseSignature(
@@ -3347,12 +3639,18 @@ function setHeatmapCanvasModel(
     displayValues: display.values,
     displayLabel: display.label,
     displayLegendNote: display.legendNote,
-    request: buildHeatmapCanvasRequest(req),
+    request: heatmapRequest,
     markers: heatmapMarkerRows(store, req, res, model),
     range: display.range,
     palette: display.palette,
     plateauDiagnostics: display.plateauDiagnostics,
     slice3d,
+    exactAggregateWinnerCells,
+    aggregateSelectionRequiresExactParams,
+    aggregateSelectionUnavailableReason:
+      aggregateSelectionRequiresExactParams
+        ? HEATMAP_EXACT_MA_WINNER_UNAVAILABLE_REASON
+        : "",
   };
 
   store.heatmapWrapVisible = true;
@@ -3379,7 +3677,13 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
   ];
   store.heatmapViewModeOptions = [
     { value: "2d", label: "2D heatmap", disabled: false },
-    { value: "3d", label: "3D slices", disabled: true },
+    {
+      value: "3d",
+      label: "3D slices",
+      disabled: true,
+      disabledReason:
+        "Run an optimization with retained full results for at least two MA-type or parameter variants to enable 3D slices.",
+    },
   ];
   const modeOptions = Array.isArray(store.heatmapModeOptions)
     ? (store.heatmapModeOptions as Array<{ value?: unknown }>)
@@ -3559,7 +3863,6 @@ export function invalidateAnalysisExecutionCaches(): void {
   drillCurvesPending.clear();
   stabilityPending.clear();
   drillPriceBarsPending.clear();
-  drillRenderState = null;
   heatmapRenderState = null;
   topRowsModelCache = [];
   topRowsAllModelCache = [];
@@ -3574,12 +3877,13 @@ export function invalidateAnalysisExecutionCaches(): void {
   topRowsAllModelCacheScoreContextKey = "";
   drillSeq = (drillSeq + 1) >>> 0;
   const store = readAnalysisStore();
-  if (store) {
-    store.drillChartModel = null;
-    store.drillTradeTableModel = null;
-  }
-  registeredDrillChartController?.clearTradeSelection();
+  resetDrillEvidenceState(
+    store,
+    "Click a Top row to view candidate detail curves.",
+  );
 }
+
+registerAnalysisExecutionInvalidator(invalidateAnalysisExecutionCaches);
 
 export function registerDrillChartController(
   controller: DrillChartController | null,
@@ -3915,147 +4219,627 @@ function renderStabilityDom(
   store: AnalysisStoreState | null,
 ): boolean {
   const result = asRecord(resultRaw);
-  const wrap = byIds<HTMLElement>(["stabilityWrapVue", "stabilityWrap"]);
+  const points = Array.isArray(result.points)
+    ? result.points.map((p) => asRecord(p))
+    : [];
+  let status = "No stability data.";
+  let meta = "-";
+  let rejectMeta = "-";
+  let rows: Array<{
+    key: string;
+    cells: Array<{ text: string; className: string }>;
+  }> = [];
+
+  if (!points.length) {
+    rows = [];
+  } else {
+    const summary = asRecord(result.summary);
+    const base = asRecord(result.base);
+    const objective = text(result.objective) || "?";
+    const radius = num(result.radius, 0);
+    const step = num(result.step, 0);
+    const startT = num(result.start_t, 0);
+    const baseScore = num(summary.base, 0);
+    const minScore = num(summary.min, 0);
+    const medScore = num(summary.median, 0);
+    const maxScore = num(summary.max, 0);
+    const peakDelta = baseScore - medScore;
+
+    status = "Done.";
+    meta = `objective=${objective} radius=${radius} step=${step} pts=${points.length} start_t=${startT} | score: base=${fmt(baseScore, 6)} median=${fmt(medScore, 6)} min=${fmt(minScore, 6)} max=${fmt(maxScore, 6)} peakΔ=${fmt(peakDelta, 6)}`;
+
+    const bf = Math.floor(num(base.fast_len, NaN));
+    const bs = Math.floor(num(base.slow_len, NaN));
+    const basePoint =
+      points.find(
+        (p) =>
+          Math.floor(num(p.fast_len, NaN)) === bf &&
+          Math.floor(num(p.slow_len, NaN)) === bs,
+      ) ?? null;
+    const filters = store ? readFilters(store) : {};
+    rejectMeta = renderStabilityFilterChecklist(
+      asRecord(basePoint?.metrics),
+      filters,
+    );
+
+    rows = [...points]
+      .sort((a, b) => num(b.score, 0) - num(a.score, 0))
+      .map((point, index) => {
+        const metrics = asRecord(point.metrics);
+        return {
+          key: [
+            Math.floor(num(point.fast_len, 0)),
+            Math.floor(num(point.slow_len, 0)),
+            index,
+          ].join(":"),
+          cells: [
+            {
+              text: String(Math.floor(num(point.fast_len, 0))),
+              className: "left mono",
+            },
+            {
+              text: String(Math.floor(num(point.slow_len, 0))),
+              className: "left mono",
+            },
+            { text: fmt(point.score, 6), className: "mono" },
+            { text: fmt(metrics.pnl, 6), className: "mono" },
+            { text: fmt(metrics.sharpe, 6), className: "mono" },
+            { text: fmt(metrics.max_dd, 6), className: "mono" },
+            {
+              text: String(Math.floor(num(metrics.trades, 0))),
+              className: "mono",
+            },
+          ],
+        };
+      });
+  }
+
+  if (store) {
+    store.stabilityWrapVisible = true;
+    store.stabilityStatus = status;
+    store.stabilityMeta = meta;
+    store.stabilityRejectMeta = rejectMeta;
+    store.stabilityTableRows = markRaw(rows);
+    return true;
+  }
+
+  const wrap = byIds<HTMLElement>(["stabilityWrap", "stabilityWrapVue"]);
   const statusEl = byIds<HTMLElement>([
-    "stabilityStatusVue",
     "stabilityStatus",
+    "stabilityStatusVue",
   ]);
-  const metaEl = byIds<HTMLElement>(["stabilityMetaVue", "stabilityMeta"]);
-  const rejectEl = byIds<HTMLElement>(["rejectMetaVue", "rejectMeta"]);
+  const metaEl = byIds<HTMLElement>(["stabilityMeta", "stabilityMetaVue"]);
+  const rejectEl = byIds<HTMLElement>(["rejectMeta", "rejectMetaVue"]);
   const tableWrap = byIds<HTMLElement>([
-    "stabilityTableWrapVue",
     "stabilityTableWrap",
+    "stabilityTableWrapVue",
   ]);
   const tbody = byIds<HTMLElement>([
-    "stabilityTableBodyVue",
     "stabilityTableBody",
+    "stabilityTableBodyVue",
   ]);
   if (!wrap || !statusEl || !metaEl || !rejectEl || !tableWrap || !tbody)
     return false;
 
   wrap.style.display = "block";
-  if (store) store.stabilityWrapVisible = true;
-  const points = Array.isArray(result.points)
-    ? result.points.map((p) => asRecord(p))
-    : [];
-  if (!points.length) {
-    statusEl.textContent = "No stability data.";
-    statusEl.className = "muted";
-    metaEl.textContent = "-";
-    rejectEl.textContent = "-";
-    tableWrap.style.display = "none";
-    tbody.innerHTML = "";
-    return true;
-  }
-
-  const summary = asRecord(result.summary);
-  const base = asRecord(result.base);
-  const objective = text(result.objective) || "?";
-  const radius = num(result.radius, 0);
-  const step = num(result.step, 0);
-  const startT = num(result.start_t, 0);
-  const baseScore = num(summary.base, 0);
-  const minScore = num(summary.min, 0);
-  const medScore = num(summary.median, 0);
-  const maxScore = num(summary.max, 0);
-  const peakDelta = baseScore - medScore;
-
-  statusEl.textContent = "Done.";
-  statusEl.className = "muted ok";
-  metaEl.textContent = `objective=${objective} radius=${radius} step=${step} pts=${points.length} start_t=${startT} | score: base=${fmt(baseScore, 6)} median=${fmt(medScore, 6)} min=${fmt(minScore, 6)} max=${fmt(maxScore, 6)} peakΔ=${fmt(peakDelta, 6)}`;
-
-  const bf = Math.floor(num(base.fast_len, NaN));
-  const bs = Math.floor(num(base.slow_len, NaN));
-  const basePoint =
-    points.find(
-      (p) =>
-        Math.floor(num(p.fast_len, NaN)) === bf &&
-        Math.floor(num(p.slow_len, NaN)) === bs,
-    ) ?? null;
-  const filters = store ? readFilters(store) : {};
-  rejectEl.textContent = renderStabilityFilterChecklist(
-    asRecord(basePoint?.metrics),
-    filters,
-  );
-
-  const sorted = [...points].sort((a, b) => num(b.score, 0) - num(a.score, 0));
-  tbody.innerHTML = "";
-  for (const point of sorted) {
-    const metrics = asRecord(point.metrics);
+  statusEl.textContent = status;
+  statusEl.className = status === "Done." ? "panelStatus ok" : "panelStatus";
+  metaEl.textContent = meta;
+  rejectEl.textContent = rejectMeta;
+  tbody.replaceChildren();
+  for (const row of rows) {
     const tr = document.createElement("tr");
-    const cells: Array<{ text: string; cls: string }> = [
-      { text: String(Math.floor(num(point.fast_len, 0))), cls: "left mono" },
-      { text: String(Math.floor(num(point.slow_len, 0))), cls: "left mono" },
-      { text: fmt(point.score, 6), cls: "mono" },
-      { text: fmt(metrics.pnl, 6), cls: "mono" },
-      { text: fmt(metrics.sharpe, 6), cls: "mono" },
-      { text: fmt(metrics.max_dd, 6), cls: "mono" },
-      { text: String(Math.floor(num(metrics.trades, 0))), cls: "mono" },
-    ];
-    for (const cell of cells) {
+    for (const cell of row.cells) {
       const td = document.createElement("td");
-      td.className = cell.cls;
+      td.className = cell.className;
       td.textContent = cell.text;
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
   }
-  tableWrap.style.display = "block";
+  tableWrap.style.display = rows.length ? "block" : "none";
   return true;
 }
 
-function drawMinMaxChartDom(
-  canvas: HTMLCanvasElement | null,
+interface MinMaxChartOptions {
+  stroke?: string;
+  tone?: "positive" | "negative";
+  baseline?: number;
+  height?: number;
+}
+
+interface MinMaxChartRenderState {
+  minmax: number[];
+  options: MinMaxChartOptions;
+}
+
+interface MinMaxChartSize {
+  cssWidth: number;
+  cssHeight: number;
+  pixelRatio: number;
+  backingWidth: number;
+  backingHeight: number;
+}
+
+const minMaxChartRenderStates =
+  new WeakMap<HTMLCanvasElement, MinMaxChartRenderState>();
+const trackedMinMaxChartCanvases = new Set<HTMLCanvasElement>();
+const resizeObservedMinMaxChartCanvases = new Set<HTMLCanvasElement>();
+let minMaxChartResizeObserver: ResizeObserver | null = null;
+let minMaxChartThemeObserver: MutationObserver | null = null;
+let minMaxChartDprMediaQuery: MediaQueryList | null = null;
+let minMaxChartDprMediaRatio: number | null = null;
+let minMaxChartDprUsesLegacyListener = false;
+let minMaxChartTheme = resolveLightweightChartTheme();
+
+function supportChartPixelRatio(): number {
+  const value =
+    typeof window === "undefined" ? 1 : Number(window.devicePixelRatio);
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function minMaxChartSize(
+  canvas: HTMLCanvasElement,
+  bins: number,
+  options: MinMaxChartOptions,
+): MinMaxChartSize {
+  const rect = canvas.getBoundingClientRect();
+  const previousRatio = Math.max(1, num(canvas.dataset.pixelRatio, 1));
+  const fallbackWidth = canvas.width > 0
+    ? canvas.width / previousRatio
+    : bins;
+  const rawWidth =
+    canvas.clientWidth ||
+    rect.width ||
+    num(canvas.dataset.logicalWidth, 0) ||
+    fallbackWidth ||
+    bins;
+  const rawHeight =
+    canvas.clientHeight ||
+    rect.height ||
+    num(options.height, 160) ||
+    num(canvas.dataset.logicalHeight, 0) ||
+    (canvas.height > 0 ? canvas.height / previousRatio : 160);
+  const cssWidth = Math.max(1, Math.round(rawWidth));
+  const cssHeight = Math.max(60, Math.round(rawHeight));
+  const pixelRatio = supportChartPixelRatio();
+  return {
+    cssWidth,
+    cssHeight,
+    pixelRatio,
+    backingWidth: Math.max(1, Math.round(cssWidth * pixelRatio)),
+    backingHeight: Math.max(1, Math.round(cssHeight * pixelRatio)),
+  };
+}
+
+function normalizeMinMaxEnvelope(minmaxRaw: unknown): number[] | null {
+  if (
+    !Array.isArray(minmaxRaw) ||
+    minmaxRaw.length < 2 ||
+    minmaxRaw.length % 2 !== 0
+  ) {
+    return null;
+  }
+  const values: number[] = [];
+  let hasFinitePair = false;
+  for (let index = 0; index < minmaxRaw.length; index += 2) {
+    const first = minmaxRaw[index];
+    const second = minmaxRaw[index + 1];
+    if (typeof first !== "number" || typeof second !== "number") return null;
+    const firstFinite = Number.isFinite(first);
+    const secondFinite = Number.isFinite(second);
+    if (firstFinite !== secondFinite) return null;
+    if (firstFinite) hasFinitePair = true;
+    values.push(first, second);
+  }
+  return hasFinitePair ? values : null;
+}
+
+function minMaxEnvelopeMatchesBins(
   minmaxRaw: unknown,
-  opts?: { stroke?: string; baseline?: number; height?: number },
-): void {
-  const mm = Array.isArray(minmaxRaw) ? minmaxRaw : [];
-  const bins = Math.floor(mm.length / 2);
-  if (!canvas || bins <= 0) return;
-  const height = Math.max(60, Math.floor(num(opts?.height, 160)));
-  canvas.width = bins;
-  canvas.height = height;
+  binsRaw: unknown,
+): boolean {
+  const bins = Math.floor(num(binsRaw, 0));
+  const minmax = normalizeMinMaxEnvelope(minmaxRaw);
+  return bins > 0 && minmax !== null && minmax.length === bins * 2;
+}
+
+function clearMinMaxChartBitmap(canvas: HTMLCanvasElement): void {
+  delete canvas.dataset.supportChartTheme;
+  delete canvas.dataset.supportChartStroke;
   const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  ctx.clearRect(0, 0, bins, height);
+  if (!ctx) {
+    canvas.width = canvas.width;
+    return;
+  }
+  if (typeof ctx.setTransform === "function") {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+  ctx.clearRect(0, 0, Math.max(1, canvas.width), Math.max(1, canvas.height));
+}
+
+function renderMinMaxChartDom(
+  canvas: HTMLCanvasElement,
+  minmaxRaw: number[],
+  options: MinMaxChartOptions,
+): boolean {
+  const bins = Math.floor(minmaxRaw.length / 2);
+  if (bins <= 0) return false;
+  const size = minMaxChartSize(canvas, bins, options);
+  if (canvas.width !== size.backingWidth) canvas.width = size.backingWidth;
+  if (canvas.height !== size.backingHeight) canvas.height = size.backingHeight;
+  canvas.dataset.pixelRatio = String(size.pixelRatio);
+  canvas.dataset.logicalWidth = String(size.cssWidth);
+  canvas.dataset.logicalHeight = String(size.cssHeight);
+  const theme = resolveLightweightChartTheme();
+  const palette = lightweightChartSeriesPalette(theme);
+  const stroke = String(
+    options.stroke ||
+    (options.tone === "negative" ? palette.negative : palette.positive),
+  );
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return false;
+  canvas.dataset.supportChartTheme = theme;
+  canvas.dataset.supportChartStroke = stroke;
+  if (typeof ctx.setTransform === "function") {
+    ctx.setTransform(size.pixelRatio, 0, 0, size.pixelRatio, 0, 0);
+  }
+  ctx.clearRect(0, 0, size.cssWidth, size.cssHeight);
+
+  const bounds = Array.from({ length: bins }, (_, index) => {
+    const first = minmaxRaw[2 * index] as number;
+    const second = minmaxRaw[2 * index + 1] as number;
+    const firstFinite = Number.isFinite(first);
+    const secondFinite = Number.isFinite(second);
+    if (firstFinite && secondFinite) {
+      return {
+        lower: Math.min(first, second),
+        upper: Math.max(first, second),
+      };
+    }
+    return {
+      lower: firstFinite ? first : null,
+      upper: secondFinite ? second : null,
+    };
+  });
 
   let minV = Number.POSITIVE_INFINITY;
   let maxV = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < mm.length; i += 1) {
-    const v = Number(mm[i]);
-    if (!Number.isFinite(v)) continue;
-    if (v < minV) minV = v;
-    if (v > maxV) maxV = v;
+  for (const bound of bounds) {
+    for (const value of [bound.lower, bound.upper]) {
+      if (value == null) continue;
+      if (value < minV) minV = value;
+      if (value > maxV) maxV = value;
+    }
   }
-  if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return;
+  if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return false;
+  const baseline = Number(options.baseline);
+  if (Number.isFinite(baseline)) {
+    minV = Math.min(minV, baseline);
+    maxV = Math.max(maxV, baseline);
+  }
   if (minV === maxV) {
     minV -= 1;
     maxV += 1;
   }
 
-  const pad = 6;
-  const scale = (height - 1 - 2 * pad) / (maxV - minV);
-  const yOf = (value: number): number => pad + (maxV - value) * scale;
+  const yPad = Math.min(6, Math.max(1, (size.cssHeight - 1) / 4));
+  const yScale =
+    (size.cssHeight - 1 - 2 * yPad) /
+    (maxV - minV);
+  const yOf = (value: number): number =>
+    yPad + (maxV - value) * yScale;
+  const xPad = Math.min(2, size.cssWidth / 4);
+  const xSpan = Math.max(0, size.cssWidth - 2 * xPad);
+  const xOf = (index: number): number =>
+    bins <= 1
+      ? size.cssWidth / 2
+      : xPad + (index / (bins - 1)) * xSpan;
+  const binStep = bins <= 1 ? size.cssWidth : xSpan / (bins - 1);
+  const isolatedHalfWidth = Math.max(0.75, Math.min(3, binStep / 4));
 
-  if (Number.isFinite(opts?.baseline)) {
-    const y = yOf(num(opts?.baseline, 0));
-    ctx.strokeStyle = "rgba(148, 163, 184, 0.45)";
+  if (Number.isFinite(baseline)) {
+    const y = yOf(baseline);
+    ctx.strokeStyle = theme === "dark"
+      ? "rgba(203, 213, 225, 0.45)"
+      : "rgba(71, 85, 105, 0.4)";
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, y + 0.5);
-    ctx.lineTo(bins, y + 0.5);
+    ctx.moveTo(0, y);
+    ctx.lineTo(size.cssWidth, y);
     ctx.stroke();
   }
 
-  ctx.strokeStyle = String(opts?.stroke || "rgba(52, 211, 153, 0.95)");
+  ctx.strokeStyle = stroke;
   ctx.lineWidth = 1;
-  for (let x = 0; x < bins; x += 1) {
-    const a = Number(mm[2 * x]);
-    const b = Number(mm[2 * x + 1]);
-    if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (let index = 0; index < bins; index += 1) {
+    const bound = bounds[index];
+    if (bound?.lower == null || bound.upper == null) continue;
+    const x = xOf(index);
     ctx.beginPath();
-    ctx.moveTo(x + 0.5, yOf(a));
-    ctx.lineTo(x + 0.5, yOf(b));
+    ctx.moveTo(x, yOf(bound.lower));
+    ctx.lineTo(x, yOf(bound.upper));
     ctx.stroke();
+  }
+
+  // A bin commonly contains a single sample when the requested canvas-sized
+  // bin count approaches the curve length. Trace both envelope bounds across
+  // the displayed CSS width so degenerate bins remain visible without scaling
+  // a low-resolution bins-wide bitmap across the pane.
+  ctx.lineWidth = 1.25;
+  const strokeBoundSegment = (
+    points: Array<{ x: number; y: number }>,
+  ): void => {
+    if (points.length === 0) return;
+    ctx.beginPath();
+    const first = points[0];
+    if (!first) return;
+    if (points.length === 1) {
+      ctx.moveTo(
+        Math.max(0, first.x - isolatedHalfWidth),
+        first.y,
+      );
+      ctx.lineTo(
+        Math.min(size.cssWidth, first.x + isolatedHalfWidth),
+        first.y,
+      );
+    } else {
+      ctx.moveTo(first.x, first.y);
+      for (let index = 1; index < points.length; index += 1) {
+        const point = points[index];
+        if (point) ctx.lineTo(point.x, point.y);
+      }
+    }
+    ctx.stroke();
+  };
+  for (const key of ["lower", "upper"] as const) {
+    let segment: Array<{ x: number; y: number }> = [];
+    for (let index = 0; index < bins; index += 1) {
+      const value = bounds[index]?.[key];
+      if (value == null) {
+        strokeBoundSegment(segment);
+        segment = [];
+        continue;
+      }
+      segment.push({ x: xOf(index), y: yOf(value) });
+    }
+    strokeBoundSegment(segment);
+  }
+  return true;
+}
+
+function disposeMinMaxChartDom(canvas: HTMLCanvasElement): void {
+  minMaxChartRenderStates.delete(canvas);
+  trackedMinMaxChartCanvases.delete(canvas);
+  if (resizeObservedMinMaxChartCanvases.delete(canvas)) {
+    try {
+      minMaxChartResizeObserver?.unobserve(canvas);
+    } catch {}
+  }
+  if (trackedMinMaxChartCanvases.size === 0 && minMaxChartResizeObserver) {
+    minMaxChartResizeObserver.disconnect();
+    minMaxChartResizeObserver = null;
+  }
+  if (trackedMinMaxChartCanvases.size === 0 && minMaxChartThemeObserver) {
+    minMaxChartThemeObserver.disconnect();
+    minMaxChartThemeObserver = null;
+  }
+  if (trackedMinMaxChartCanvases.size === 0) {
+    disconnectMinMaxChartDprObserver();
+  }
+}
+
+function pruneDisconnectedMinMaxCharts(): void {
+  for (const canvas of trackedMinMaxChartCanvases) {
+    if (!canvas.isConnected) disposeMinMaxChartDom(canvas);
+  }
+}
+
+function redrawObservedMinMaxChart(canvas: HTMLCanvasElement): void {
+  const current = minMaxChartRenderStates.get(canvas);
+  if (!current || !canvas.isConnected) {
+    disposeMinMaxChartDom(canvas);
+    return;
+  }
+  const bins = Math.floor(current.minmax.length / 2);
+  if (bins <= 0) return;
+  const nextSize = minMaxChartSize(canvas, bins, current.options);
+  if (
+    canvas.width === nextSize.backingWidth &&
+    canvas.height === nextSize.backingHeight &&
+    num(canvas.dataset.pixelRatio, 1) === nextSize.pixelRatio
+  ) {
+    return;
+  }
+  if (!renderMinMaxChartDom(canvas, current.minmax, current.options)) {
+    clearMinMaxChartBitmap(canvas);
+    disposeMinMaxChartDom(canvas);
+  }
+  observeMinMaxChartDpr();
+}
+
+function observeMinMaxChartTheme(): void {
+  if (
+    minMaxChartThemeObserver ||
+    typeof document === "undefined" ||
+    typeof MutationObserver === "undefined"
+  ) {
+    return;
+  }
+  minMaxChartTheme = resolveLightweightChartTheme();
+  try {
+    minMaxChartThemeObserver = new MutationObserver(() => {
+      const nextTheme = resolveLightweightChartTheme();
+      if (nextTheme === minMaxChartTheme) return;
+      minMaxChartTheme = nextTheme;
+      pruneDisconnectedMinMaxCharts();
+      for (const canvas of trackedMinMaxChartCanvases) {
+        const current = minMaxChartRenderStates.get(canvas);
+        if (
+          current &&
+          !renderMinMaxChartDom(canvas, current.minmax, current.options)
+        ) {
+          clearMinMaxChartBitmap(canvas);
+          disposeMinMaxChartDom(canvas);
+        }
+      }
+    });
+    minMaxChartThemeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+  } catch {
+    minMaxChartThemeObserver?.disconnect();
+    minMaxChartThemeObserver = null;
+  }
+}
+
+function disconnectMinMaxChartDprObserver(): void {
+  const query = minMaxChartDprMediaQuery;
+  const usesLegacyListener = minMaxChartDprUsesLegacyListener;
+  minMaxChartDprMediaQuery = null;
+  minMaxChartDprMediaRatio = null;
+  minMaxChartDprUsesLegacyListener = false;
+  if (!query) return;
+  try {
+    if (usesLegacyListener) {
+      query.removeListener(handleMinMaxChartDprChange);
+    } else {
+      query.removeEventListener("change", handleMinMaxChartDprChange);
+    }
+  } catch {}
+}
+
+function handleMinMaxChartDprChange(): void {
+  disconnectMinMaxChartDprObserver();
+  pruneDisconnectedMinMaxCharts();
+  for (const canvas of [...trackedMinMaxChartCanvases]) {
+    const current = minMaxChartRenderStates.get(canvas);
+    if (
+      !current ||
+      !renderMinMaxChartDom(canvas, current.minmax, current.options)
+    ) {
+      clearMinMaxChartBitmap(canvas);
+      disposeMinMaxChartDom(canvas);
+    }
+  }
+  observeMinMaxChartDpr();
+}
+
+function observeMinMaxChartDpr(): void {
+  if (
+    trackedMinMaxChartCanvases.size === 0 ||
+    typeof window === "undefined" ||
+    typeof window.matchMedia !== "function"
+  ) {
+    return;
+  }
+  const pixelRatio = supportChartPixelRatio();
+  if (
+    minMaxChartDprMediaQuery &&
+    minMaxChartDprMediaRatio === pixelRatio
+  ) {
+    return;
+  }
+  disconnectMinMaxChartDprObserver();
+  try {
+    const query = window.matchMedia(`(resolution: ${pixelRatio}dppx)`);
+    try {
+      query.addEventListener("change", handleMinMaxChartDprChange);
+    } catch {
+      query.addListener(handleMinMaxChartDprChange);
+      minMaxChartDprUsesLegacyListener = true;
+    }
+    minMaxChartDprMediaQuery = query;
+    minMaxChartDprMediaRatio = pixelRatio;
+  } catch {
+    disconnectMinMaxChartDprObserver();
+  }
+}
+
+function observeMinMaxChartSize(canvas: HTMLCanvasElement): void {
+  if (!canvas.isConnected) return;
+  pruneDisconnectedMinMaxCharts();
+  observeMinMaxChartTheme();
+  observeMinMaxChartDpr();
+  if (
+    resizeObservedMinMaxChartCanvases.has(canvas) ||
+    typeof ResizeObserver === "undefined"
+  ) {
+    return;
+  }
+  try {
+    if (!minMaxChartResizeObserver) {
+      minMaxChartResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.target instanceof HTMLCanvasElement) {
+            redrawObservedMinMaxChart(entry.target);
+          }
+        }
+      });
+    }
+    minMaxChartResizeObserver.observe(canvas);
+    resizeObservedMinMaxChartCanvases.add(canvas);
+  } catch {
+    if (resizeObservedMinMaxChartCanvases.size === 0) {
+      minMaxChartResizeObserver?.disconnect();
+      minMaxChartResizeObserver = null;
+    }
+  }
+}
+
+function drawMinMaxChartDom(
+  canvas: HTMLCanvasElement | null,
+  minmaxRaw: unknown,
+  options: MinMaxChartOptions = {},
+): void {
+  if (!canvas) return;
+  const minmax = normalizeMinMaxEnvelope(minmaxRaw);
+  if (!minmax) {
+    disposeMinMaxChartDom(canvas);
+    clearMinMaxChartBitmap(canvas);
+    return;
+  }
+  const state: MinMaxChartRenderState = {
+    minmax,
+    options: { ...options },
+  };
+  if (!renderMinMaxChartDom(canvas, minmax, state.options)) {
+    disposeMinMaxChartDom(canvas);
+    clearMinMaxChartBitmap(canvas);
+    return;
+  }
+  minMaxChartRenderStates.set(canvas, state);
+  trackedMinMaxChartCanvases.add(canvas);
+  observeMinMaxChartSize(canvas);
+}
+
+export function disposeDrillSupportCharts(): void {
+  const canvases = new Set<HTMLCanvasElement>([
+    ...trackedMinMaxChartCanvases,
+    ...resizeObservedMinMaxChartCanvases,
+  ]);
+  for (const canvas of [
+    byIds<HTMLCanvasElement>(["equityCanvasVue", "equityCanvas"]),
+    byIds<HTMLCanvasElement>(["drawdownCanvasVue", "drawdownCanvas"]),
+  ]) {
+    if (canvas) canvases.add(canvas);
+  }
+  for (const canvas of canvases) {
+    disposeMinMaxChartDom(canvas);
+    clearMinMaxChartBitmap(canvas);
+    canvas.dataset.renderReady = "false";
+  }
+  for (const status of [
+    byIds<HTMLElement>(["equityChartStatusVue", "equityChartStatus"]),
+    byIds<HTMLElement>(["drawdownChartStatusVue", "drawdownChartStatus"]),
+  ]) {
+    if (!status) continue;
+    status.hidden = true;
+    status.textContent = "";
   }
 }
 
@@ -4115,6 +4899,7 @@ function renderDrillDomFallback(
   metricsRaw: Record<string, unknown>,
   row: TopRowModel,
 ): boolean {
+  const store = readAnalysisStore();
   const wrap = drillWrap();
   const hint = byIds<HTMLElement>(["drillEmptyHintVue", "drillEmptyHint"]);
   const meta = byIds<HTMLElement>(["drillMetaVue", "drillMeta"]);
@@ -4126,35 +4911,28 @@ function renderDrillDomFallback(
     "drawdownCanvasVue",
     "drawdownCanvas",
   ]);
-  if (!wrap || !eqCanvas || !ddCanvas) return false;
+  if ((!store && !wrap) || !eqCanvas || !ddCanvas) return false;
 
   const curves = asRecord(curvesRaw);
   const eq = asRecord(curves.equity);
   const dd = asRecord(curves.drawdown);
   const bins = Math.floor(num(eq.bins, 0));
-  if (bins <= 0) {
-    wrap.style.display = "none";
-    const store = readAnalysisStore();
-    if (store) {
-      store.drillWrapVisible = false;
-      store.tradeStatsWrapVisible = false;
-      store.drillChartModel = null;
-      store.drillTradeTableModel = null;
-    }
-    if (hint) hint.style.display = "block";
-    return true;
-  }
+  const drawdownBins = Math.floor(num(dd.bins, 0));
+  const equityEnvelopeReady =
+    bins > 0 && minMaxEnvelopeMatchesBins(eq.minmax, bins);
+  const drawdownEnvelopeReady =
+    drawdownBins > 0 && minMaxEnvelopeMatchesBins(dd.minmax, drawdownBins);
 
-  wrap.style.display = "block";
-  const store = readAnalysisStore();
   if (store) {
     store.drillWrapVisible = true;
     store.tradeStatsWrapVisible = Boolean(
       asRecord(store.drillTradeTableModel).visible,
     );
+  } else {
+    if (wrap) wrap.style.display = "block";
+    if (hint) hint.style.display = "none";
   }
-  if (hint) hint.style.display = "none";
-  if (meta) {
+  if (!store && meta) {
     const metricPart = formatDrillMetricsSummary(metricsRaw);
     const moPart = formatDrillMoSummary(row.mo);
     const parts = [
@@ -4165,19 +4943,46 @@ function renderDrillDomFallback(
     parts.push(
       `bins=${bins} start_t=${num(eq.start_t, 0)} end_t=${num(eq.end_t, 0)} (min/max per bin)`,
     );
+    if (!equityEnvelopeReady || !drawdownEnvelopeReady) {
+      parts.push(
+        `support=${equityEnvelopeReady ? "equity ready" : "equity unavailable"}, ${drawdownEnvelopeReady ? "drawdown ready" : "drawdown unavailable"}`,
+      );
+    }
     meta.textContent = parts.join(" | ");
   }
 
-  drawMinMaxChartDom(eqCanvas, eq.minmax, {
-    stroke: "rgba(52, 211, 153, 0.95)",
+  drawMinMaxChartDom(eqCanvas, equityEnvelopeReady ? eq.minmax : [], {
+    tone: "positive",
     baseline: 1.0,
     height: 160,
   });
-  drawMinMaxChartDom(ddCanvas, dd.minmax, {
-    stroke: "rgba(251, 113, 133, 0.95)",
+  drawMinMaxChartDom(ddCanvas, drawdownEnvelopeReady ? dd.minmax : [], {
+    tone: "negative",
     baseline: 0.0,
     height: 160,
   });
+  const equityStatus = byIds<HTMLElement>([
+    "equityChartStatusVue",
+    "equityChartStatus",
+  ]);
+  const drawdownStatus = byIds<HTMLElement>([
+    "drawdownChartStatusVue",
+    "drawdownChartStatus",
+  ]);
+  if (equityStatus) {
+    equityStatus.hidden = equityEnvelopeReady;
+    equityStatus.textContent = equityEnvelopeReady
+      ? ""
+      : "Equity envelope unavailable: the returned bin data is incomplete.";
+  }
+  if (drawdownStatus) {
+    drawdownStatus.hidden = drawdownEnvelopeReady;
+    drawdownStatus.textContent = drawdownEnvelopeReady
+      ? ""
+      : "Drawdown envelope unavailable: the returned bin data is incomplete.";
+  }
+  eqCanvas.dataset.renderReady = equityEnvelopeReady ? "true" : "false";
+  ddCanvas.dataset.renderReady = drawdownEnvelopeReady ? "true" : "false";
   return true;
 }
 
@@ -4196,7 +5001,6 @@ function restoreDrillViewFromCache(
     return false;
   }
 
-  drillSeq = (drillSeq + 1) >>> 0;
   publishDrillChartModels(
     store,
     drillRenderState.curves,
@@ -4691,15 +5495,11 @@ export async function rerenderDrill(): Promise<void> {
             ? `Candidate detail unavailable: saved result data_id ${persistedDataId} is not currently loaded. Load the matching dataset. Historical candidate rows remain available in Top Results.`
             : `Candidate detail stale/incompatible: ${compatibility.reason} Historical candidate rows remain available in Top Results.`;
         drillSeq = (drillSeq + 1) >>> 0;
-        drillRenderState = null;
-        store.drillWrapVisible = false;
-        store.tradeStatsWrapVisible = false;
-        store.stabilityWrapVisible = false;
-        store.drillChartModel = null;
-        store.drillTradeTableModel = null;
-        store.drillMeta = `saved data_id=${persistedDataId || "missing"} | loaded data_id=${loadedDataId || "none"} | saved mode=${compatibility.runMode} | active mode=${compatibility.activeMode}`;
-        store.drillStatus = message;
-        store.stabilityStatus = "-";
+        resetDrillEvidenceState(
+          store,
+          message,
+          `saved data_id=${persistedDataId || "missing"} | loaded data_id=${loadedDataId || "none"} | saved mode=${compatibility.runMode} | active mode=${compatibility.activeMode}`,
+        );
         setStatus(store, message);
         return;
       }
@@ -4746,6 +5546,7 @@ export async function drillNextTrade(): Promise<void> {
 
 export const __analysisTestUtils = {
   buildDrillTradeMarkers,
+  drawMinMaxChartDom,
   mapTradeIndexToChartTime,
   selectDrillTradeByIndex,
 };

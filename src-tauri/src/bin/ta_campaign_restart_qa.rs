@@ -587,6 +587,7 @@ fn campaign_dataset_input(
         timeframe: Some("1m".to_string()),
         source_size_bytes: Some(identity.size),
         source_mtime_utc_ms: Some(identity.mtime_utc_ms),
+        source_change_marker: Some(identity.change_marker),
         source_content_fingerprint: Some(data_cache::content_fingerprint_for_source(path)?),
     })
 }

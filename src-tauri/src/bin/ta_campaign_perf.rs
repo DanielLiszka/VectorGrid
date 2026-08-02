@@ -370,6 +370,7 @@ fn build_campaign_request(
                 timeframe: None,
                 source_size_bytes: None,
                 source_mtime_utc_ms: None,
+                source_change_marker: None,
                 source_content_fingerprint: None,
             })
             .collect(),

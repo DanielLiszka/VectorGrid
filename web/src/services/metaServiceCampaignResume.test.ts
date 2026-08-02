@@ -70,8 +70,18 @@ function summaryFor(state: string, items: Array<Record<string, unknown>>) {
     request: {
       strategy_kind: "DoubleMa",
       datasets: [
-        { csv_path: "C:/a.csv", label: "AAPL", timeframe: "1m" },
-        { csv_path: "C:/b.csv", label: "MSFT", timeframe: "1m" },
+        {
+          csv_path: "C:/a.csv",
+          label: "AAPL",
+          timeframe: "1m",
+          source_content_fingerprint: "fnv1a64-full-a",
+        },
+        {
+          csv_path: "C:/b.csv",
+          label: "MSFT",
+          timeframe: "1m",
+          source_content_fingerprint: "fnv1a64-full-b",
+        },
       ],
       timeframe_override: "1m",
       tags: ["campaign"],
@@ -294,6 +304,7 @@ describe("meta-service campaign resume and retry", () => {
             timeframe: "1m",
             source_size_bytes: 123,
             source_mtime_utc_ms: 456,
+            source_change_marker: "133901234567890123",
             source_content_fingerprint: "sha256:a",
           },
         ],
@@ -320,6 +331,55 @@ describe("meta-service campaign resume and retry", () => {
         ],
       },
     });
+    const resumedDataset = ((
+      call?.[1] as { req?: { datasets?: Array<Record<string, unknown>> } }
+    )?.req?.datasets ?? [])[0];
+    expect(resumedDataset).not.toHaveProperty("source_change_marker");
+  });
+
+  it("accepts marker-bound identity without requiring a content fingerprint", async () => {
+    const summaryPath = "C:/runs/incomplete_marker_bound_v2.json";
+    const base = summaryFor("cancelled", [
+      {
+        csv_path: "C:/a.csv",
+        label: "AAPL",
+        timeframe: "1m",
+        is_holdout: false,
+        status: "failed",
+        error: "validation: cancelled",
+      },
+    ]);
+    const summary = {
+      ...base,
+      version: 2,
+      resume_state: "resumable",
+      request: {
+        ...base.request,
+        datasets: [
+          {
+            csv_path: "C:/a.csv",
+            label: "AAPL",
+            timeframe: "1m",
+            source_size_bytes: 123,
+            source_mtime_utc_ms: 456,
+            source_change_marker: 0,
+          },
+        ],
+      },
+    };
+    const { invokeCommandMock } = await setupHarness(summaryPath, summary);
+    const { batchResumeIncomplete } = await import("./metaService");
+
+    await batchResumeIncomplete();
+
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "run_research_campaign",
+    );
+    expect(call).toBeTruthy();
+    const resumedDataset = ((
+      call?.[1] as { req?: { datasets?: Array<Record<string, unknown>> } }
+    )?.req?.datasets ?? [])[0];
+    expect(resumedDataset).not.toHaveProperty("source_change_marker");
   });
 
   it("blocks resume when the saved summary marks campaign evidence unsafe", async () => {
@@ -353,6 +413,52 @@ describe("meta-service campaign resume and retry", () => {
       ),
     ).toBe(false);
     expect(analysisStore.statusLine).toContain("blocked from resume");
+  });
+
+  it("makes a weak pre-marker summary restart-only instead of silently rerunning it", async () => {
+    const summaryPath = "C:/runs/legacy_weak_campaign.json";
+    const base = summaryFor("cancelled", [
+      {
+        csv_path: "C:/a.csv",
+        label: "AAPL",
+        timeframe: "1m",
+        is_holdout: false,
+        status: "failed",
+        error: "validation: cancelled",
+      },
+    ]);
+    const summary = {
+      ...base,
+      version: 2,
+      resume_state: "resumable",
+      request: {
+        ...base.request,
+        datasets: [
+          {
+            csv_path: "C:/a.csv",
+            label: "AAPL",
+            timeframe: "1m",
+            source_size_bytes: 123,
+            source_mtime_utc_ms: 456,
+          },
+        ],
+      },
+    };
+    const { invokeCommandMock, analysisStore } = await setupHarness(
+      summaryPath,
+      summary,
+    );
+    const { batchResumeIncomplete } = await import("./metaService");
+
+    await batchResumeIncomplete();
+
+    expect(
+      invokeCommandMock.mock.calls.some(
+        ([command]) => command === "run_research_campaign",
+      ),
+    ).toBe(false);
+    expect(analysisStore.statusLine).toContain("legacy weak source identity");
+    expect(analysisStore.canBatchResumeIncomplete).toBe(false);
   });
 
   it("retries from a saved summary path using the original dataset set plus skip_existing", async () => {
@@ -401,6 +507,87 @@ describe("meta-service campaign resume and retry", () => {
     });
     expect(analysisStore.batchSkipDone).toBe(true);
   });
+
+  it("blocks Retry for weak legacy evidence so skip_existing cannot become a full restart", async () => {
+    const summaryPath = "C:/runs/legacy_weak_failed_campaign.json";
+    const base = summaryFor("completed_with_failures", [
+      {
+        csv_path: "C:/a.csv",
+        label: "AAPL",
+        timeframe: "1m",
+        is_holdout: false,
+        status: "failed",
+        error: "validation: decode error",
+      },
+    ]);
+    const summary = {
+      ...base,
+      version: 2,
+      resume_state: "resumable",
+      request: {
+        ...base.request,
+        datasets: [
+          {
+            csv_path: "C:/a.csv",
+            label: "AAPL",
+            timeframe: "1m",
+            source_size_bytes: 123,
+            source_mtime_utc_ms: 456,
+          },
+        ],
+      },
+    };
+    const { invokeCommandMock, analysisStore } = await setupHarness(
+      summaryPath,
+      summary,
+    );
+    const { batchRetryFailed } = await import("./metaService");
+
+    await batchRetryFailed();
+
+    expect(
+      invokeCommandMock.mock.calls.some(
+        ([command]) => command === "run_research_campaign",
+      ),
+    ).toBe(false);
+    expect(analysisStore.statusLine).toContain("legacy weak source identity");
+    expect(analysisStore.canBatchRetryFailed).toBe(false);
+  });
+
+  it.each(["restart_only", "legacy_degraded"])(
+    "blocks summaries marked %s from Resume",
+    async (resumeState) => {
+      const summaryPath = `C:/runs/${resumeState}_campaign.json`;
+      const summary = {
+        ...summaryFor("cancelled", [
+          {
+            csv_path: "C:/a.csv",
+            label: "AAPL",
+            timeframe: "1m",
+            is_holdout: false,
+            status: "failed",
+            error: "validation: cancelled",
+          },
+        ]),
+        resume_state: resumeState,
+      };
+      const { invokeCommandMock, analysisStore } = await setupHarness(
+        summaryPath,
+        summary,
+      );
+      const { batchResumeIncomplete } = await import("./metaService");
+
+      await batchResumeIncomplete();
+
+      expect(
+        invokeCommandMock.mock.calls.some(
+          ([command]) => command === "run_research_campaign",
+        ),
+      ).toBe(false);
+      expect(analysisStore.statusLine).toContain("restart-only");
+      expect(analysisStore.canBatchResumeIncomplete).toBe(false);
+    },
+  );
 
   it("does not resume when the saved summary lacks a resumable request", async () => {
     const summaryPath = "C:/runs/non_resumable_campaign.json";

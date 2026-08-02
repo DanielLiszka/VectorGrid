@@ -1,16 +1,19 @@
-import { createPinia, setActivePinia } from 'pinia'
-import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { computed, nextTick, ref } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ExecutionWorkspacePanel from './ExecutionWorkspacePanel.vue'
 import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
+enableAutoUnmount(afterEach)
+
 const executionChartServiceMock = vi.hoisted(() => ({
   syncExecutionChart: vi.fn(async (_host: HTMLElement | null, input: {
     dataId: string
     datasetLabel: string
+    datasetRevision?: string | number | null
     symbol: string
     brokerReviewLoaded: boolean
     fetchedAtUnixMs: number | null
@@ -114,6 +117,14 @@ vi.mock('../composables/useVirtualTableRows', () => ({
 }))
 
 describe('ExecutionWorkspacePanel', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((resolvePromise) => {
+      resolve = resolvePromise
+    })
+    return { promise, resolve }
+  }
+
   function findButton(label: string): HTMLButtonElement | undefined {
     return Array.from(document.querySelectorAll('button')).find((button) =>
       String(button.textContent || '').trim() === label,
@@ -138,6 +149,7 @@ describe('ExecutionWorkspacePanel', () => {
     executionChartServiceMock.syncExecutionChart.mockImplementation(async (_host: HTMLElement | null, input: {
       dataId: string
       datasetLabel: string
+      datasetRevision?: string | number | null
       symbol: string
       brokerReviewLoaded: boolean
       fetchedAtUnixMs: number | null
@@ -251,6 +263,327 @@ describe('ExecutionWorkspacePanel', () => {
     const text = document.body.textContent || ''
     expect(text).toContain('Broker order activity')
     expect(text).toContain('No broker orders for selected instrument.')
+  })
+
+  it('clears chart readiness while loading and exposes render failures accessibly', async () => {
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.symbol = 'AAPL'
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL'
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'loaded_no_markers',
+      summary: 'Execution chart loaded for AAPL.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: Date.now(),
+      markerCount: 0,
+      barCount: 2,
+      visibleRangeLabel: '0.0..1.0',
+    } as never)
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('ready')
+    })
+
+    const pending = deferred<unknown>()
+    executionChartServiceMock.syncExecutionChart.mockImplementation(
+      async () => await pending.promise as never,
+    )
+    dataStore.datasetLabel = 'AAPL refreshed'
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.tvChartFrame')?.getAttribute('aria-busy')).toBe('true')
+    })
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain('Loading chart')
+    expect(document.querySelector('[data-qa-action="executionChart.fitContent"]')?.hasAttribute('disabled')).toBe(true)
+    expect(document.body.textContent || '').not.toContain('Chart ready')
+
+    ;(document.querySelector('[data-qa-action="executionChart.panLeft"]') as HTMLButtonElement | null)?.click()
+    expect(executionChartServiceMock.panExecutionChart).not.toHaveBeenCalled()
+
+    pending.resolve({
+      state: 'broker_review_loaded_chart_unavailable',
+      summary: 'Execution chart unavailable: price bars could not be loaded for AAPL.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL refreshed',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: Date.now(),
+      markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
+    })
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('error')
+    })
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain('Chart unavailable')
+    expect(document.querySelector('#execTvChartMetaVue')?.getAttribute('aria-live')).toBe('off')
+    expect(document.querySelector('#execTvChartMetaVueLifecycleStatus')?.getAttribute('role')).toBe('alert')
+    expect(document.querySelector('#execTvChartMetaVueLifecycleStatus')?.getAttribute('aria-live')).toBe('assertive')
+    expect(document.querySelector('[data-qa-action="executionChart.fitContent"]')?.hasAttribute('disabled')).toBe(true)
+    expect(document.body.textContent || '').not.toContain('Chart ready')
+  })
+
+  it('keeps a marker-overlay failure navigable while presenting a warning', async () => {
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.symbol = 'AAPL'
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL'
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'loaded_marker_overlay_unavailable',
+      summary: 'Execution chart loaded for AAPL with 2 price bars, but the broker order marker overlay is unavailable. No broker markers are displayed.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: Date.now(),
+      markerCount: 0,
+      barCount: 2,
+      visibleRangeLabel: '0.0..1.0',
+    } as never)
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('warning')
+    })
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain('Marker overlay unavailable')
+    expect(document.querySelector('.tvChartFrame')?.getAttribute('data-chart-ready')).toBe('true')
+    expect(document.querySelector('[data-qa-action="executionChart.fitContent"]')?.hasAttribute('disabled')).toBe(false)
+    expect(document.querySelector('#execTvChartMetaVueLifecycleStatus')?.getAttribute('role')).toBe('status')
+    expect(document.querySelector('.chartLegendOverlay')?.textContent || '').toContain('Candles')
+    expect(document.querySelector('.chartLegendOverlay')?.textContent || '').not.toContain('Orders')
+    expect(document.body.textContent || '').toContain('Treat the candle chart as price context only')
+
+    ;(document.querySelector('[data-qa-action="executionChart.fitContent"]') as HTMLButtonElement | null)?.click()
+    expect(executionChartServiceMock.fitExecutionChartContent).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a provenance-suppressed candle chart navigable without exposing broker markers', async () => {
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.symbol = 'AAPL'
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL'
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'provenance_suppressed',
+      summary: 'Execution chart loaded for AAPL. Broker-confirmed markers stay suppressed until a symbol-scoped broker review is refreshed.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: null,
+      markerCount: 0,
+      barCount: 2,
+      visibleRangeLabel: '0.0..1.0',
+    } as never)
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('provenance')
+    })
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain('Broker markers suppressed')
+    expect(document.querySelector('.tvChartFrame')?.getAttribute('data-chart-ready')).toBe('true')
+    expect(document.querySelector('[data-qa-action="executionChart.fitContent"]')?.hasAttribute('disabled')).toBe(false)
+    expect(document.querySelector('[data-qa-action="executionChart.panLeft"]')?.hasAttribute('disabled')).toBe(false)
+    expect(document.querySelector('.chartLegendOverlay')?.textContent || '').toContain('Candles')
+    expect(document.querySelector('.chartLegendOverlay')?.textContent || '').not.toContain('Orders')
+    expect(document.body.textContent || '').toContain('broker order markers are intentionally suppressed')
+
+    ;(document.querySelector('[data-qa-action="executionChart.panLeft"]') as HTMLButtonElement | null)?.click()
+    ;(document.querySelector('[data-qa-action="executionChart.fitContent"]') as HTMLButtonElement | null)?.click()
+    expect(executionChartServiceMock.panExecutionChart).toHaveBeenCalledWith('left')
+    expect(executionChartServiceMock.fitExecutionChartContent).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the dataset revision stable across broker-only chart syncs and advances it after a dataset update', async () => {
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.symbol = 'AAPL'
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL'
+    dataStore.updatedAtUnixMs = 1_000
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await vi.waitFor(() => {
+      expect(executionChartServiceMock.syncExecutionChart).toHaveBeenCalled()
+      const calls = executionChartServiceMock.syncExecutionChart.mock.calls
+      expect(calls[calls.length - 1]?.[1].datasetRevision).toBe(1_000)
+    })
+    await nextTick()
+    const initialSyncCalls = executionChartServiceMock.syncExecutionChart.mock.calls.length
+
+    executionStore.updatedAtUnixMs = 2_000
+    await vi.waitFor(() => {
+      expect(executionChartServiceMock.syncExecutionChart.mock.calls.length).toBeGreaterThan(initialSyncCalls)
+    })
+    const brokerOnlyCalls = executionChartServiceMock.syncExecutionChart.mock.calls
+    expect(brokerOnlyCalls[brokerOnlyCalls.length - 1]?.[1].datasetRevision).toBe(1_000)
+    const brokerOnlySyncCalls = executionChartServiceMock.syncExecutionChart.mock.calls.length
+
+    dataStore.updatedAtUnixMs = 3_000
+    await vi.waitFor(() => {
+      expect(executionChartServiceMock.syncExecutionChart.mock.calls.length).toBeGreaterThan(brokerOnlySyncCalls)
+    })
+    const datasetUpdateCalls = executionChartServiceMock.syncExecutionChart.mock.calls
+    expect(datasetUpdateCalls[datasetUpdateCalls.length - 1]?.[1].datasetRevision).toBe(3_000)
+  })
+
+  it('distinguishes provenance and stale chart states without claiming fresh readiness', async () => {
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.symbol = 'AAPL'
+    dataStore.dataId = 'import_batch_42'
+    dataStore.datasetLabel = 'Imported prices'
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'dataset_provenance_unknown',
+      summary: 'Execution chart unavailable: loaded dataset Imported prices has no verified symbol provenance for AAPL.',
+      symbol: 'AAPL',
+      datasetId: 'import_batch_42',
+      datasetLabel: 'Imported prices',
+      datasetSymbol: '',
+      fetchedAtUnixMs: null,
+      markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
+    } as never)
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('provenance')
+    })
+
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain('Dataset provenance unknown')
+    expect(document.querySelector('[data-qa-action="executionChart.fitContent"]')?.hasAttribute('disabled')).toBe(true)
+    expect(document.querySelector('#execTvChartVue')?.getAttribute('aria-describedby')).toContain('execTvChartMetaVueDescription')
+    expect(document.querySelector('#execTvChartVue')?.getAttribute('role')).toBe('group')
+    expect(document.querySelector('#execTvChartVue')?.getAttribute('aria-roledescription')).toBe('price chart')
+    expect(document.querySelector('#execTvChartVue')?.hasAttribute('tabindex')).toBe(false)
+    expect(document.body.textContent || '').not.toContain('Chart ready')
+
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'stale_broker_review',
+      summary: 'Execution chart loaded for AAPL, but broker review is stale.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: Date.now() - 180_000,
+      markerCount: 1,
+      barCount: 2,
+      visibleRangeLabel: '0.0..1.0',
+    } as never)
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL'
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('stale')
+    })
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain('Stale broker review')
+    expect(document.querySelector('[data-qa-action="executionChart.fitContent"]')?.hasAttribute('disabled')).toBe(false)
+    expect(document.body.textContent || '').not.toContain('Chart ready')
+  })
+
+  it('ignores a late chart result after a newer generation becomes ready', async () => {
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.symbol = 'AAPL'
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL initial'
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'loaded_no_markers',
+      summary: 'Execution chart loaded for AAPL initial.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL initial',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: Date.now(),
+      markerCount: 0,
+      barCount: 2,
+      visibleRangeLabel: '0.0..1.0',
+    } as never)
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('ready')
+    })
+    const baselineSyncCalls = executionChartServiceMock.syncExecutionChart.mock.calls.length
+
+    const older = deferred<unknown>()
+    const newer = deferred<unknown>()
+    executionChartServiceMock.syncExecutionChart
+      .mockImplementationOnce(async () => await older.promise as never)
+      .mockImplementationOnce(async () => await newer.promise as never)
+    dataStore.datasetLabel = 'AAPL older'
+    await vi.waitFor(() => {
+      expect(executionChartServiceMock.syncExecutionChart.mock.calls.length).toBeGreaterThan(baselineSyncCalls)
+      expect(document.querySelector('.tvChartFrame')?.getAttribute('aria-busy')).toBe('true')
+    })
+    dataStore.datasetLabel = 'AAPL current'
+    await vi.waitFor(() => {
+      expect(executionChartServiceMock.syncExecutionChart.mock.calls.length).toBeGreaterThan(baselineSyncCalls + 1)
+    })
+    newer.resolve({
+      state: 'loaded_no_markers',
+      summary: 'Execution chart loaded for AAPL current.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL current',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: Date.now(),
+      markerCount: 0,
+      barCount: 2,
+      visibleRangeLabel: '0.0..1.0',
+    })
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('ready')
+      expect(document.querySelector('#execTvChartMetaVue')?.textContent || '').toContain('AAPL current')
+    })
+    older.resolve({
+      state: 'broker_review_loaded_chart_unavailable',
+      summary: 'Execution chart unavailable: stale older failure.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL older',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: null,
+      markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
+    })
+    await Promise.resolve()
+    await nextTick()
+
+    expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('ready')
+    expect(document.querySelector('#execTvChartMetaVue')?.textContent || '').toContain('AAPL current')
+    expect(document.body.textContent || '').not.toContain('stale older failure')
   })
 
   it('renders unknown review metadata distinctly before broker refresh confirms flat state', async () => {
@@ -448,6 +781,261 @@ describe('ExecutionWorkspacePanel', () => {
     expect(text).toContain('symbol-scoped AAPL')
     expect(text).toContain('Source: get_live_execution_snapshot')
     expect(text).toContain('"ord_123"')
+  })
+
+  it('surfaces broker price levels and lifecycle marker semantics in the chart UI', async () => {
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    const freshNow = Date.now()
+    workflowStore.selectWorkspace('live')
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL'
+    executionStore.symbol = 'AAPL'
+    executionStore.brokerReview = {
+      sourceCommand: 'get_live_execution_snapshot',
+      mode: 'paper',
+      symbol: 'AAPL',
+      fetchedAtUnixMs: freshNow,
+      staleThresholdMs: 90_000,
+      account: executionStore.accountReview,
+      position: {
+        state: 'open',
+        symbol: 'AAPL',
+        qty: 2,
+        side: 'long',
+        avgEntryPrice: 180.25,
+        currentPrice: 181,
+        marketValue: 362,
+        unrealizedPl: 1.5,
+        unrealizedPlpc: 0.00416,
+      },
+      orders: {
+        state: 'broker_confirmed',
+        scope: 'symbol_scoped',
+        sourceCommand: 'get_live_execution_snapshot',
+        fetchedAtUnixMs: freshNow,
+        totalCount: 2,
+        openCount: 1,
+      },
+      chart: {
+        state: 'sync_pending',
+        symbol: 'AAPL',
+        datasetId: 'AAPL',
+        datasetLabel: 'AAPL',
+        datasetSymbol: 'AAPL',
+        orderCount: 2,
+        sourceCommand: 'get_live_execution_snapshot',
+        fetchedAtUnixMs: freshNow,
+      },
+    }
+    executionStore.orderRows = [
+      {
+        cells: [
+          '2026-04-10 14:55:00',
+          'BUY',
+          'filled',
+          '2',
+          '2',
+          '180.25',
+          'entry-1',
+          '-',
+          '-',
+          '-',
+        ],
+      },
+      {
+        cells: [
+          '2026-04-10 14:56:00',
+          'SELL',
+          'accepted',
+          '2',
+          '0',
+          '-',
+          'stop-1',
+          'stop 176.5',
+          'stop_loss',
+          'entry-1',
+        ],
+      },
+    ]
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'loaded_broker_markers',
+      summary: 'Execution chart loaded for AAPL. 8 broker-confirmed price levels displayed.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: freshNow,
+      markerCount: 5,
+      barCount: 200,
+      visibleRangeLabel: '[0..199]',
+      referenceLines: [
+        { id: 'entry', kind: 'average_entry', label: 'AVG ENTRY 180.25', price: 180.25 },
+        { id: 'mark', kind: 'current_price', label: 'BROKER MARK 181', price: 181 },
+        { id: 'stop', kind: 'stop', label: 'STOP LOSS 176.5', price: 176.5 },
+        { id: 'target', kind: 'take_profit', label: 'TAKE PROFIT 188', price: 188 },
+        { id: 'limit', kind: 'limit', label: 'LIMIT ORDER 179', price: 179 },
+        { id: 'stop-2', kind: 'stop', label: 'STOP ORDER 175', price: 175 },
+        { id: 'target-2', kind: 'take_profit', label: 'TAKE PROFIT 190', price: 190 },
+        { id: 'limit-2', kind: 'limit', label: 'LIMIT ORDER 178', price: 178 },
+      ],
+      referenceLineIssue: '2 additional broker price levels were omitted because the chart displays at most 10.',
+      referenceLineOmittedCount: 2,
+      markerBreakdown: {
+        filled: 1,
+        partial: 1,
+        working: 1,
+        closed: 1,
+        other: 1,
+      },
+    } as never)
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('ready')
+    })
+    const syncCalls = executionChartServiceMock.syncExecutionChart.mock.calls
+    const latestInput = syncCalls[syncCalls.length - 1]?.[1]
+    expect(latestInput).toMatchObject({
+      symbol: 'AAPL',
+      positionReview: {
+        state: 'open',
+        avgEntryPrice: 180.25,
+        currentPrice: 181,
+      },
+    })
+    const chartText = document.querySelector('.priceChartPanel')?.textContent || ''
+    expect(chartText).toContain('Broker telemetry chart')
+    expect(chartText).toContain('8 broker price levels')
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain(
+      '5 markers · 8 broker price levels',
+    )
+    expect(document.querySelector('.chartStateBadge')?.textContent || '').not.toContain('live level')
+    expect(chartText).toContain('Average entry')
+    expect(chartText).toContain('180.25')
+    expect(chartText).toContain('Broker mark')
+    expect(chartText).toContain('Filled arrows')
+    expect(chartText).toContain('Partial arrows')
+    expect(chartText).toContain('Working circles')
+    expect(chartText).toContain('Closed squares · shape key')
+    expect(chartText).toContain('Other markers · side color')
+    expect(chartText).toContain('1 other lifecycle')
+    expect(chartText).toContain('+7')
+    expect(chartText).toContain(
+      '2 additional broker price levels were omitted because the chart displays at most 10.',
+    )
+    const legendItems = Array.from(document.querySelectorAll('.chartLegendItem'))
+    const filledLegend = legendItems.find((item) => item.textContent?.includes('Filled arrows'))
+    const partialLegend = legendItems.find((item) => item.textContent?.includes('Partial arrows'))
+    const closedLegend = legendItems.find((item) => item.textContent?.includes('Closed squares'))
+    expect(filledLegend?.querySelector('.chartLegendSwatch')?.getAttribute('data-chart-series')).toBe('orders')
+    expect(partialLegend?.querySelector('.chartLegendSwatch')?.getAttribute('data-chart-series')).toBe('orders')
+    expect((closedLegend?.querySelector('.chartLegendSwatch') as HTMLElement | null)?.style.background).toBe('transparent')
+    expect(document.querySelector('.tvChartFrame')?.getAttribute('aria-label')).toContain(
+      'broker-confirmed price levels',
+    )
+  })
+
+  it('reactively expires broker-review freshness without resynchronizing price bars', async () => {
+    vi.useFakeTimers()
+    const freshNow = 1_900_000_000_000
+    vi.setSystemTime(freshNow)
+    const { pinia, workflowStore, executionStore, dataStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    dataStore.dataId = 'AAPL'
+    dataStore.datasetLabel = 'AAPL'
+    executionStore.symbol = 'AAPL'
+    executionStore.brokerReview = {
+      sourceCommand: 'get_live_execution_snapshot',
+      mode: 'paper',
+      symbol: 'AAPL',
+      fetchedAtUnixMs: freshNow,
+      staleThresholdMs: 90_000,
+      account: executionStore.accountReview,
+      position: {
+        state: 'flat',
+        symbol: 'AAPL',
+        qty: 0,
+        side: '',
+        avgEntryPrice: null,
+        currentPrice: null,
+        marketValue: null,
+        unrealizedPl: null,
+        unrealizedPlpc: null,
+      },
+      orders: {
+        state: 'broker_confirmed',
+        scope: 'symbol_scoped',
+        sourceCommand: 'get_live_execution_snapshot',
+        fetchedAtUnixMs: freshNow,
+        totalCount: 1,
+        openCount: 0,
+      },
+      chart: {
+        state: 'sync_pending',
+        symbol: 'AAPL',
+        datasetId: 'AAPL',
+        datasetLabel: 'AAPL',
+        datasetSymbol: 'AAPL',
+        orderCount: 1,
+        sourceCommand: 'get_live_execution_snapshot',
+        fetchedAtUnixMs: freshNow,
+      },
+    }
+    executionStore.reconciliationState = 'broker_confirmed_flat'
+    executionStore.orderRows = [
+      {
+        cells: [
+          '2026-04-10 14:55:00',
+          'BUY',
+          'filled',
+          '10',
+          '10',
+          '182.40',
+          'ord_123',
+        ],
+      },
+    ]
+    executionChartServiceMock.syncExecutionChart.mockResolvedValue({
+      state: 'loaded_broker_markers',
+      summary: 'Execution chart loaded for AAPL with 1 broker-confirmed order marker.',
+      symbol: 'AAPL',
+      datasetId: 'AAPL',
+      datasetLabel: 'AAPL',
+      datasetSymbol: 'AAPL',
+      fetchedAtUnixMs: freshNow,
+      markerCount: 1,
+      barCount: 2,
+      visibleRangeLabel: '0.0..1.0',
+    } as never)
+
+    const wrapper = mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('ready')
+        expect(document.body.textContent || '').toContain('Fresh ·')
+      })
+      const syncCallsAtFreshness = executionChartServiceMock.syncExecutionChart.mock.calls.length
+
+      await vi.advanceTimersByTimeAsync(90_001)
+      await nextTick()
+
+      expect(document.body.textContent || '').toContain('Stale ·')
+      expect(document.querySelector('.chartStateBadge')?.getAttribute('data-chart-state')).toBe('stale')
+      expect(document.querySelector('.chartStateBadge')?.textContent || '').toContain('Stale broker review')
+      expect(document.querySelector('.chartLegendOverlay')?.textContent || '').toContain('Orders')
+      expect(executionChartServiceMock.syncExecutionChart).toHaveBeenCalledTimes(syncCallsAtFreshness)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
   })
 
   it('prefers broker review chart truth when local chart sync downgrades to no symbol', async () => {
@@ -872,6 +1460,8 @@ describe('ExecutionWorkspacePanel', () => {
     expect(text).toContain('Credential state')
     expect(text).toContain('Missing')
     expect(text).toContain('API key + secret are required for broker-armed execution.')
+    expect(document.querySelector('.credentialStateCard')?.hasAttribute('aria-live')).toBe(false)
+    expect(document.querySelector('.credentialStateCard')?.hasAttribute('role')).toBe(false)
 
     const brokerButton = findButton('Submit paper order once')
     expect(brokerButton).toBeTruthy()
@@ -909,6 +1499,7 @@ describe('ExecutionWorkspacePanel', () => {
     expect(text).toContain('Feed: Enter a symbol before starting live candles.')
     expect(text).toContain('Runner: Enter a symbol before starting the auto-runner.')
     expect(text).toContain('Runner: Start live candles first. The auto-runner only reacts to active live bars.')
+    expect(document.querySelectorAll('.preflightBlock[role="status"], .preflightBlock[aria-live]').length).toBe(0)
   })
 
   it('surfaces broker reconciliation advisories inside the broker review card', async () => {

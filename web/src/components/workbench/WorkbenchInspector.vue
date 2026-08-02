@@ -52,6 +52,9 @@ function closeInspector(): void {
   <aside
     class="workbenchInspector"
     :class="{ collapsed, compact, compactOpen }"
+    :role="compact && compactOpen ? 'dialog' : undefined"
+    :aria-modal="compact && compactOpen ? 'true' : undefined"
+    :aria-labelledby="compact && compactOpen ? 'workbenchInspectorTitle' : undefined"
     aria-label="Workbench inspector"
     data-qa-panel="workbench.inspector"
     :data-collapsed="collapsed ? 'true' : 'false'"
@@ -61,7 +64,10 @@ function closeInspector(): void {
     <header class="inspectorHeader">
       <div v-if="!collapsed" class="headerCopy">
         <span class="eyebrow">Inspector</span>
-        <strong data-qa-state="workbench.inspector.activeMode">{{ state.modes.find((item) => item.current)?.label }}</strong>
+        <strong
+          id="workbenchInspectorTitle"
+          data-qa-state="workbench.inspector.activeMode"
+        >{{ state.modes.find((item) => item.current)?.label }} Inspector</strong>
       </div>
       <button
         type="button"
@@ -85,6 +91,7 @@ function closeInspector(): void {
         :class="[{ active: mode.current }, mode.tone]"
         role="tab"
         :aria-selected="mode.current ? 'true' : 'false'"
+        aria-controls="workbench_inspector_panel"
         :tabindex="mode.current ? 0 : -1"
         :data-qa-action="mode.actionId"
         @click="emit('selectMode', mode.id)"
@@ -96,9 +103,10 @@ function closeInspector(): void {
 
     <section
       v-if="!collapsed"
+      id="workbench_inspector_panel"
       class="inspectorBody"
-      aria-label="Inspector details"
-      aria-live="polite"
+      role="tabpanel"
+      :aria-labelledby="`workbench_inspector_mode_${state.activeMode}`"
       tabindex="0"
     >
       <article

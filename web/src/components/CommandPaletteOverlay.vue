@@ -80,6 +80,7 @@ const { currentRun } = storeToRefs(workflowArtifactsStore);
 const { mode, workspace, workflowStep } = storeToRefs(workflowStore);
 const { datasetReady } = useUiReadiness();
 const commandListId = "commandPaletteListbox";
+const paletteInvokerRef = ref<HTMLElement | null>(null);
 
 const resultCommandReadiness = computed(() =>
   resolveShellResultCommandReadiness({
@@ -174,9 +175,7 @@ const sharedShortcutCommands = computed<PaletteCommand[]>(() =>
     openTaskCenter: () => {
       openTaskCenter(
         taskCenterOpen,
-        document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null,
+        paletteInvokerRef.value,
       );
     },
   }),
@@ -512,6 +511,10 @@ watch(
   open,
   async (isOpen) => {
     if (!isOpen) return;
+    paletteInvokerRef.value =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     await nextTick();
     const input = inputRef.value;
     if (!input) return;

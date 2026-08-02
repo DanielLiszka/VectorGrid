@@ -37,6 +37,13 @@ describe("DataWorkspacePanel", () => {
         polygonTicker: "AAPL",
         timeframe: "1m",
         rowCount: 5000,
+        integrity: {
+          checkedUtcMs: 1_900_000_000_000,
+          parseErrors: 0,
+          duplicates: 0,
+          outOfOrder: 0,
+          sameDayGapsGt2Min: 0,
+        },
       },
       {
         csvPath: "C:/cache/msft_5m.csv",
@@ -44,6 +51,13 @@ describe("DataWorkspacePanel", () => {
         polygonTicker: "MSFT",
         timeframe: "5m",
         rowCount: 1200,
+        integrity: {
+          checkedUtcMs: 1_900_000_000_000,
+          parseErrors: 0,
+          duplicates: 1,
+          outOfOrder: 0,
+          sameDayGapsGt2Min: 2,
+        },
       },
     ] as never[];
     dataStore.setInputField("polygonSelectedPath", "C:/cache/aapl_1m.csv");
@@ -62,6 +76,8 @@ describe("DataWorkspacePanel", () => {
     expect(buttons).toHaveLength(2);
     expect(buttons[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(buttons[1]?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttons[0]?.textContent).toContain("Integrity verified");
+    expect(buttons[1]?.textContent).toContain("3 integrity issues");
 
     const selectionStatus = document.querySelector<HTMLElement>(
       "#polygonSelectionStatus",
@@ -245,6 +261,130 @@ describe("DataWorkspacePanel", () => {
     );
     expect(bodyText).toContain(
       "API key missing · Cache: C:/default/polygon-cache · 0 cached datasets",
+    );
+    expect(document.activeElement?.id).toBe("vuePolygonApiKey");
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-qa-action="data.polygon.close"]',
+      )
+      ?.click();
+    await nextTick();
+    expect(document.activeElement?.getAttribute("data-qa-action")).toBe(
+      "data.polygon.toggle",
+    );
+  });
+
+  it("keeps Polygon operation state truthful and blocks duplicate cache actions", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const dataStore = useDataStore(pinia);
+    const workflowStore = useWorkflowStore(pinia);
+
+    vi.spyOn(dataStore, "hydrateStartupState").mockResolvedValue(undefined);
+    const refreshSpy = vi
+      .spyOn(dataStore, "refreshPolygon")
+      .mockImplementation(() => {
+        dataStore.canPolygonRefresh = false;
+        dataStore.statusLine = "Refreshing Polygon cache...";
+      });
+
+    workflowStore.selectControlsTab("data", { persist: false });
+    dataStore.polygonOpen = true;
+    dataStore.canPolygonRefresh = true;
+
+    mount(DataWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const refresh = document.querySelector<HTMLButtonElement>(
+      '[data-qa-action="data.polygon.refresh"]',
+    );
+    const polygonSection = document
+      .querySelector<HTMLElement>("#polygonWorkspaceHeading")
+      ?.closest<HTMLElement>("section");
+    const symbol = document.querySelector<HTMLInputElement>(
+      "#vuePolygonSymbol",
+    );
+
+    refresh?.click();
+    refresh?.click();
+    await nextTick();
+
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(refresh?.disabled).toBe(true);
+    expect(symbol?.disabled).toBe(true);
+    expect(polygonSection?.getAttribute("aria-busy")).toBe("true");
+    expect(
+      document.querySelector('[data-qa-state="data.polygon.operation"]')
+        ?.textContent,
+    ).toContain("Refreshing Polygon cache...");
+
+    dataStore.statusLine = "Refreshed Polygon cache.";
+    dataStore.canPolygonRefresh = true;
+    await nextTick();
+
+    const completedState = document.querySelector(
+      '[data-qa-state="data.polygon.operation"]',
+    )?.textContent;
+    expect(polygonSection?.getAttribute("aria-busy")).toBe("false");
+    expect(symbol?.disabled).toBe(false);
+    expect(completedState).toContain("Completed");
+    expect(completedState).toContain("Refreshed Polygon cache.");
+    expect(completedState).toContain(
+      "Select a cached dataset to load, validate, or repair.",
+    );
+  });
+
+  it("surfaces failed Polygon integrity actions with a useful recovery step", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const dataStore = useDataStore(pinia);
+    const workflowStore = useWorkflowStore(pinia);
+
+    vi.spyOn(dataStore, "hydrateStartupState").mockResolvedValue(undefined);
+    vi.spyOn(dataStore, "validatePolygonDataset").mockImplementation(() => {
+      dataStore.canPolygonRefresh = false;
+      dataStore.statusLine = "Validating Polygon dataset...";
+    });
+
+    workflowStore.selectControlsTab("data", { persist: false });
+    dataStore.polygonOpen = true;
+    dataStore.polygonSelectedPath = "C:/cache/aapl_1m.csv";
+    dataStore.canPolygonRefresh = true;
+    dataStore.canPolygonValidateSelected = true;
+
+    mount(DataWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-qa-action="data.polygon.validateSelected"]',
+      )
+      ?.click();
+    await nextTick();
+
+    dataStore.statusLine =
+      "Polygon validation failed. Cached file could not be parsed.";
+    dataStore.canPolygonRefresh = true;
+    await nextTick();
+
+    const operationState = document.querySelector(
+      '[data-qa-state="data.polygon.operation"]',
+    )?.textContent;
+    expect(operationState).toContain("Needs attention");
+    expect(operationState).toContain("Polygon validation failed.");
+    expect(operationState).toContain(
+      "Keep the original cache file, review its integrity details, then retry.",
     );
   });
 });

@@ -15,6 +15,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$previousFrontendQaRunId = $env:VECTORGRID_FRONTEND_QA_RUN_ID
+$previousFrontendQaRunStartedAt = $env:VECTORGRID_FRONTEND_QA_RUN_STARTED_AT
+$previousFrontendQaUiCaptureRunId = $env:VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID
+$env:VECTORGRID_FRONTEND_QA_RUN_ID = [guid]::NewGuid().ToString("N")
+$env:VECTORGRID_FRONTEND_QA_RUN_STARTED_AT = [DateTimeOffset]::UtcNow.ToString("o")
+Remove-Item Env:VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID -ErrorAction SilentlyContinue
 
 function Invoke-Step {
   param(
@@ -37,6 +43,7 @@ Push-Location $repoRoot
 try {
   if (-not $SkipBuild) {
     Invoke-Step "Web build" { & npm.cmd --prefix web run build }
+    Invoke-Step "Production bundle budget" { & npm.cmd --prefix web run check:bundle-budget }
   }
 
   if ($IncludeQaStatic) {
@@ -73,6 +80,7 @@ try {
 
   if ($IncludeBaselineUi) {
     Invoke-Step "Baseline UI capture" { & npm.cmd --prefix web run baseline:ui:built }
+    $env:VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID = $env:VECTORGRID_FRONTEND_QA_RUN_ID
   }
 
   if ($IncludeVisualBaselines) {
@@ -87,6 +95,9 @@ try {
     Invoke-Step "Scoped warm mocked-browser click-to-painted-stable latency" {
       & powershell -File (Join-Path $repoRoot "scripts\run_frontend_interaction_latency.ps1")
     }
+    Invoke-Step "Production bundle budget after interaction-latency build" {
+      & npm.cmd --prefix web run check:bundle-budget
+    }
   }
 
   if ($IncludeQaReport) {
@@ -95,5 +106,23 @@ try {
 
   Write-Host "Frontend E2E gate completed successfully."
 } finally {
-  Pop-Location
+  try {
+    Pop-Location
+  } finally {
+    if ($null -eq $previousFrontendQaRunId) {
+      Remove-Item Env:VECTORGRID_FRONTEND_QA_RUN_ID -ErrorAction SilentlyContinue
+    } else {
+      $env:VECTORGRID_FRONTEND_QA_RUN_ID = $previousFrontendQaRunId
+    }
+    if ($null -eq $previousFrontendQaRunStartedAt) {
+      Remove-Item Env:VECTORGRID_FRONTEND_QA_RUN_STARTED_AT -ErrorAction SilentlyContinue
+    } else {
+      $env:VECTORGRID_FRONTEND_QA_RUN_STARTED_AT = $previousFrontendQaRunStartedAt
+    }
+    if ($null -eq $previousFrontendQaUiCaptureRunId) {
+      Remove-Item Env:VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID -ErrorAction SilentlyContinue
+    } else {
+      $env:VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID = $previousFrontendQaUiCaptureRunId
+    }
+  }
 }

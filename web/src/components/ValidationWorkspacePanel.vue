@@ -23,7 +23,9 @@ import { useUiReadiness } from "../composables/useUiReadiness";
 import { useVirtualTableRows } from "../composables/useVirtualTableRows";
 import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import ContextHelpTip from "./ContextHelpTip.vue";
+import AppButton from "./ui/AppButton.vue";
 import AppDataTableShell from "./ui/AppDataTableShell.vue";
+import AppEmptyState from "./ui/AppEmptyState.vue";
 import AppMetricCell from "./ui/AppMetricCell.vue";
 import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
 import AppTableViewPresetControl from "./ui/AppTableViewPresetControl.vue";
@@ -271,6 +273,34 @@ const showValidationResults = computed(() => validationStage.value === "ready");
 const validationActionDisabled = computed(
   () => validateDisabled.value || !hasOptimizationResults.value,
 );
+const validationEmptyTitle = computed(() => {
+  if (validationStage.value === "no_data")
+    return "Load data before running validation.";
+  if (validationStage.value === "data_loaded_no_run")
+    return "Run an optimization before validation.";
+  return "Validation is ready to run.";
+});
+const validationEmptyBody = computed(() => {
+  if (validationStage.value === "no_data") {
+    return "Validation works on shortlisted optimization candidates, so the first step is loading a dataset.";
+  }
+  if (validationStage.value === "data_loaded_no_run") {
+    return "Your dataset is ready. Generate candidates with an optimization run, then return here to execute robustness checks.";
+  }
+  return "Optimization results are available. Run validation to populate robustness tables, reports, and exports.";
+});
+const validationEmptyHint = computed(() => {
+  if (validationStage.value === "no_data")
+    return "Next: open Data and load a dataset.";
+  if (validationStage.value === "data_loaded_no_run")
+    return "Next: open Optimize and generate a shortlist.";
+  return "Next: review the run setup below, then run validation.";
+});
+const validationEmptyActionLabel = computed(() => {
+  if (validationStage.value === "no_data") return "Open Data";
+  if (validationStage.value === "data_loaded_no_run") return "Open Optimize";
+  return "Review run setup";
+});
 const renderedColumns = computed<ValidationColumn[]>(
   () => validationColumns.value as ValidationColumn[],
 );
@@ -674,6 +704,21 @@ function runValidationAction(): void {
   validationStore.runValidation();
 }
 
+function openValidationEmptyNextStep(): void {
+  if (validationStage.value === "no_data") {
+    workflowStore.selectWorkspace("workflow", "data");
+    return;
+  }
+  if (validationStage.value === "data_loaded_no_run") {
+    workflowStore.selectWorkspace("workflow", "optimize");
+    workflowStore.selectControlsTab("opt");
+    return;
+  }
+  void nextTick(() => {
+    document.querySelector<HTMLElement>("#vueValCandidates")?.focus();
+  });
+}
+
 function exportShortlistCsvAction(): void {
   flushQueuedInputValuesNow();
   validationStore.exportShortlistCsv();
@@ -917,33 +962,22 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <section v-if="validationStage !== 'ready'" class="emptyState">
-        <div class="emptyTitle">
-          {{
-            validationStage === "no_data"
-              ? "Load data before running validation."
-              : validationStage === "data_loaded_no_run"
-                ? "Run an optimization before validation."
-                : "Validation is ready to run."
-          }}
-        </div>
-        <div class="emptyBody">
-          {{
-            validationStage === "no_data"
-              ? "Validation works on shortlisted optimization candidates, so the first step is loading a dataset."
-              : validationStage === "data_loaded_no_run"
-                ? "Your dataset is ready. Generate candidates with an optimization run, then return here to execute robustness checks."
-                : "Optimization results are available. Run validation to populate robustness tables, reports, and exports."
-          }}
-        </div>
-        <div
-          class="panelStatus mono panelNumeric"
-          role="status"
-          aria-live="polite"
-        >
-          {{ statusLine }}
-        </div>
-      </section>
+      <AppEmptyState
+        v-if="validationStage !== 'ready'"
+        :title="validationEmptyTitle"
+        :body="validationEmptyBody"
+        :hint="validationEmptyHint"
+      >
+        <template #actions>
+          <AppButton
+            variant="primary"
+            type="button"
+            @click="openValidationEmptyNextStep"
+          >
+            {{ validationEmptyActionLabel }}
+          </AppButton>
+        </template>
+      </AppEmptyState>
 
       <section class="pane panelProminentPane">
         <div class="panelSectionHeader">
@@ -1931,6 +1965,8 @@ onBeforeUnmount(() => {
           :row-count="Number(tableRowCount || 0)"
           :viewport="false"
           :density="tableDensity"
+          empty-title="No validation rows were returned."
+          empty-body="Review the validation diagnostics and run settings, then rerun validation or inspect the JSON evidence."
           toolbar-label="Validation result table controls"
           aria-label="Validation results table shell"
           keyboard-hint="Validation rows are virtualized; spacer rows are hidden from assistive technology."

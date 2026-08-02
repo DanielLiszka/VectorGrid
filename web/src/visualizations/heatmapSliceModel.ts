@@ -19,6 +19,10 @@ export interface HeatmapSliceCell {
   metrics: Record<string, unknown>
 }
 
+export interface HeatmapAggregateWinnerCell extends HeatmapSliceCell {
+  score: number
+}
+
 export interface Heatmap3dSlice {
   key: string
   label: string
@@ -26,6 +30,7 @@ export interface Heatmap3dSlice {
   values: Array<number | null>
   sampleCounts: Array<number | null>
   cells: Array<HeatmapSliceCell | null>
+  sourceRowCount: number
   finiteCells: number
   bestScore: number
 }
@@ -66,6 +71,53 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {}
+}
+
+function nonEmptyCollection(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0
+  return Object.keys(asRecord(value)).length > 0
+}
+
+function normalizedMaTypeCount(value: unknown): number {
+  if (!Array.isArray(value)) return 0
+  const types = new Set<string>()
+  for (const entry of value) {
+    const normalized = cleanText(entry).toLowerCase()
+    if (normalized) types.add(normalized)
+  }
+  return types.size
+}
+
+/**
+ * Returns true when an aggregate heatmap can combine candidates whose MA
+ * identity cannot be reconstructed from the request's fixed MA fields.
+ *
+ * Any non-empty parameter sweep is intentionally treated as ambiguous. A
+ * single-valued sweep can still override the fixed/base parameter value, so
+ * falling back to the request's base params would not be fidelity-safe.
+ */
+export function heatmapRequestHasMaVariantAmbiguity(request: unknown): boolean {
+  const record = asRecord(request)
+  if (!Object.keys(record).length) return false
+
+  if (
+    normalizedMaTypeCount(record.fast_ma_types ?? record.fastMaTypes) > 1 ||
+    normalizedMaTypeCount(record.slow_ma_types ?? record.slowMaTypes) > 1
+  ) {
+    return true
+  }
+
+  const variantCollections = [
+    record.fast_ma_param_sweeps,
+    record.fastMaParamSweeps,
+    record.slow_ma_param_sweeps,
+    record.slowMaParamSweeps,
+    record.fast_ma_param_variants,
+    record.fastMaParamVariants,
+    record.slow_ma_param_variants,
+    record.slowMaParamVariants,
+  ]
+  return variantCollections.some(nonEmptyCollection)
 }
 
 function paramsAreEmpty(value: Record<string, unknown>): boolean {
@@ -119,12 +171,64 @@ function emptySlice(key: string, params: Record<string, unknown>, cellCount: num
     key,
     label: labels.label,
     shortLabel: labels.shortLabel,
-    values: new Array<number | null>(cellCount).fill(null),
-    sampleCounts: new Array<number | null>(cellCount).fill(null),
-    cells: new Array<HeatmapSliceCell | null>(cellCount).fill(null),
+    // These arrays are deliberately holey. A 512x512 grid can otherwise force
+    // three full writes for every retained MA-parameter slice even though the
+    // shortlist normally populates only a small fraction of those cells.
+    values: new Array<number | null>(cellCount),
+    sampleCounts: new Array<number | null>(cellCount),
+    cells: new Array<HeatmapSliceCell | null>(cellCount),
+    sourceRowCount: 0,
     finiteCells: 0,
     bestScore: Number.NEGATIVE_INFINITY,
   }
+}
+
+/**
+ * Reconstructs each aggregate heatmap cell's exact retained-row winner.
+ *
+ * The axis helpers use the same floor-based period-to-bin mapping as the
+ * backend aggregator. Replacement is deliberately strict (`score > current`)
+ * so equal scores retain the first row, matching backend merge semantics.
+ */
+export function buildHeatmapAggregateWinnerCells(options: {
+  model: HeatmapModel
+  rows: HeatmapSliceSourceRow[]
+}): Array<HeatmapAggregateWinnerCell | null> {
+  const { model, rows } = options
+  const cellCount = model.binsFast * model.binsSlow
+  if (!Number.isSafeInteger(cellCount) || cellCount <= 0) return []
+
+  const cells = new Array<HeatmapAggregateWinnerCell | null>(cellCount).fill(null)
+  for (const row of rows) {
+    const score = row.score
+    if (!finiteNumber(score)) continue
+
+    const fast = Math.floor(num(row.params.fast_len))
+    const slow = Math.floor(num(row.params.slow_len))
+    if (
+      !Number.isFinite(fast) ||
+      !Number.isFinite(slow) ||
+      fast < model.fastMin ||
+      fast > model.fastMax ||
+      slow < model.slowMin ||
+      slow > model.slowMax ||
+      fast >= slow
+    ) {
+      continue
+    }
+
+    const col = heatmapColForFast(model, fast)
+    const logicalRow = heatmapLogicalRowForSlow(model, slow)
+    const idx = heatmapIndex(model, logicalRow, col)
+    const current = cells[idx]
+    if (current && score <= current.score) continue
+    cells[idx] = {
+      score,
+      params: row.params,
+      metrics: row.metrics,
+    }
+  }
+  return cells
 }
 
 export function buildHeatmapSlice3dModel(options: {
@@ -152,6 +256,7 @@ export function buildHeatmapSlice3dModel(options: {
       slice = emptySlice(key, row.params, cellCount)
       slicesByKey.set(key, slice)
     }
+    slice.sourceRowCount += 1
 
     const col = heatmapColForFast(model, fast)
     const logicalRow = heatmapLogicalRowForSlow(model, slow)

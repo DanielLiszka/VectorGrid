@@ -5,9 +5,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ta_app_core::OptionsExpressionArtifactV1;
 use tauri::Manager;
@@ -464,14 +464,127 @@ fn is_mutable_library_artifact_kind(kind: &str) -> bool {
         || is_options_expression_artifact_kind(kind)
 }
 
-fn prune_old_artifacts_by_prefixes_in_dir(dir: &Path, keep_newest: usize, prefixes: &[&str]) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+// Only the newest few campaign summaries may retain their complete run cohorts.
+// This caps the protected-path working set for a 10k-dataset campaign at roughly
+// 30k paths instead of allowing the broader summary-history quota to pin millions.
+// Older summaries stay readable but may truthfully point at pruned run artifacts.
+const RUN_RETENTION_CAMPAIGN_SUMMARY_REFERENCE_LIMIT: usize = 3;
+
+fn artifact_file_recency_key(file_name: &str, prefixes: &[&str]) -> Option<(String, u32)> {
+    let stem = Path::new(file_name).file_stem()?.to_str()?.trim();
+    let timestamp_and_suffix = prefixes
+        .iter()
+        .filter_map(|prefix| stem.strip_prefix(prefix.trim_end_matches('_')))
+        .map(|value| value.trim_start_matches('_'))
+        .find(|value| !value.is_empty())?;
+
+    if let Some((timestamp, suffix)) = timestamp_and_suffix.rsplit_once('_') {
+        if let Ok(suffix) = suffix.parse::<u32>() {
+            if suffix >= 2 && !timestamp.is_empty() {
+                return Some((timestamp.to_string(), suffix));
+            }
+        }
+    }
+
+    Some((timestamp_and_suffix.to_string(), 1))
+}
+
+fn retained_campaign_summary_values_for_run_retention(dir: &Path) -> Result<Vec<Value>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|error| {
+        format!(
+            "failed to scan campaign summaries for run retention in '{}': {error}",
+            dir.display()
+        )
+    })?;
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to inspect an artifact-library entry in '{}': {error}",
+                dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if ArtifactFamily::CampaignSummary
+            .file_prefixes()
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            paths.push(path);
+        }
+    }
+    let prefixes = ArtifactFamily::CampaignSummary.file_prefixes();
+    paths.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let right_name = right
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        artifact_file_recency_key(right_name, prefixes)
+            .cmp(&artifact_file_recency_key(left_name, prefixes))
+            .then_with(|| right_name.cmp(left_name))
+    });
+    paths
+        .into_iter()
+        .take(RUN_RETENTION_CAMPAIGN_SUMMARY_REFERENCE_LIMIT)
+        .map(|path| {
+            let raw = std::fs::read_to_string(&path).map_err(|error| {
+                format!(
+                    "failed to read retained campaign summary '{}' while protecting its run artifacts: {error}",
+                    path.display()
+                )
+            })?;
+            let value = serde_json::from_str::<Value>(&raw).map_err(|error| {
+                format!(
+                    "failed to parse retained campaign summary '{}' while protecting its run artifacts: {error}",
+                    path.display()
+                )
+            })?;
+            if value.get("items").and_then(Value::as_array).is_none() {
+                return Err(format!(
+                    "retained campaign summary '{}' is missing its items array; run retention was aborted fail-safe",
+                    path.display()
+                ));
+            }
+            super::commands_campaign::validate_campaign_summary_artifact_value(&value).map_err(
+                |error| {
+                    format!(
+                        "retained campaign summary '{}' failed integrity validation while protecting its run artifacts: {error}",
+                        path.display()
+                    )
+                },
+            )?;
+            Ok(value)
+        })
+        .collect()
+}
+
+fn prune_old_artifacts_by_prefixes_in_dir(
+    dir: &Path,
+    keep_newest: usize,
+    prefixes: &[&str],
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|error| {
+        format!(
+            "failed to scan artifact retention directory '{}': {error}",
+            dir.display()
+        )
+    })?;
 
     let mut paths: Vec<PathBuf> = Vec::new();
     for entry in entries {
-        let Ok(entry) = entry else { continue };
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to inspect an artifact-library entry in '{}': {error}",
+                dir.display()
+            )
+        })?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
@@ -485,25 +598,89 @@ fn prune_old_artifacts_by_prefixes_in_dir(dir: &Path, keep_newest: usize, prefix
         paths.push(path);
     }
 
-    paths.sort_by(|a, b| {
-        let aa = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let bb = b.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        bb.cmp(aa)
+    paths.sort_by(|left, right| {
+        let left_name = left.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let right_name = right.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        artifact_file_recency_key(right_name, prefixes)
+            .cmp(&artifact_file_recency_key(left_name, prefixes))
+            .then_with(|| right_name.cmp(left_name))
     });
 
     if paths.len() <= keep_newest {
-        return;
+        return Ok(());
     }
 
+    let protects_campaign_runs = prefixes == ArtifactFamily::Run.file_prefixes();
+    let retained_campaign_summaries = if protects_campaign_runs {
+        retained_campaign_summary_values_for_run_retention(dir)?
+    } else {
+        Vec::new()
+    };
+    let retained_campaign_cohorts: HashSet<String> = retained_campaign_summaries
+        .iter()
+        .filter_map(|value| {
+            (value.pointer("/retention/class").and_then(Value::as_str) == Some("campaign_summary"))
+                .then(|| {
+                    value
+                        .pointer("/retention/cohort_id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|cohort| !cohort.is_empty())
+                        .map(str::to_string)
+                })
+                .flatten()
+        })
+        .collect();
+    let retained_campaign_artifact_paths: HashSet<PathBuf> = retained_campaign_summaries
+        .iter()
+        .flat_map(|value| {
+            value
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|item| {
+            item.get("artifact_path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+        })
+        .collect();
+
+    // Classify every candidate before deleting anything. An unreadable artifact
+    // aborts the pass and preserves the entire retention set instead of
+    // partially pruning evidence and then reporting a misleading success.
+    let mut delete_paths = Vec::new();
     for path in paths.into_iter().skip(keep_newest) {
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        if retained_campaign_artifact_paths.contains(&path) {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "failed to read retention candidate '{}'; no artifacts were deleted: {error}",
+                path.display()
+            )
+        })?;
+        let v: Value = serde_json::from_str(&raw).map_err(|error| {
+            format!(
+                "failed to parse retention candidate '{}'; no artifacts were deleted: {error}",
+                path.display()
+            )
+        })?;
+        let retention_class = v.pointer("/retention/class").and_then(Value::as_str);
+        let campaign_cohort = (retention_class == Some("campaign_cohort"))
+            .then(|| {
+                v.pointer("/retention/cohort_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|cohort| !cohort.is_empty())
+            })
+            .flatten();
+        if campaign_cohort.is_some_and(|cohort| retained_campaign_cohorts.contains(cohort)) {
+            continue;
+        }
         let tags = v
             .get("tags")
             .and_then(|x| x.as_array())
@@ -511,11 +688,21 @@ fn prune_old_artifacts_by_prefixes_in_dir(dir: &Path, keep_newest: usize, prefix
         let tagged = tags
             .iter()
             .any(|t| t.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false));
-        if tagged {
+        if tagged && campaign_cohort.is_none() && retention_class != Some("campaign_summary") {
             continue;
         }
-        let _ = std::fs::remove_file(&path);
+        delete_paths.push(path);
     }
+
+    for path in delete_paths {
+        std::fs::remove_file(&path).map_err(|error| {
+            format!(
+                "failed to delete expired artifact '{}': {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn is_meta_artifact_file_name(name: &str) -> bool {
@@ -552,6 +739,8 @@ pub(super) fn is_known_non_run_artifact_file_name(name: &str) -> bool {
 pub struct SaveRunArtifactResponse {
     pub path: String,
     pub bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -886,6 +1075,7 @@ struct ArtifactScanEntry {
     file_name: String,
     bytes: u64,
     value: Value,
+    sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1079,6 +1269,10 @@ pub struct MetaArtifactReplayResponse {
     pub report_xlsx_bytes: usize,
     pub meta_json_path: String,
     pub meta_json_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort_manifest: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdout_execution: Option<Value>,
     pub result: Value,
 }
 
@@ -1282,23 +1476,7 @@ fn normalized_config_fingerprint_fields(artifact: &Value) -> (String, Option<u32
 }
 
 fn run_artifact_file_recency_key(file_name: &str) -> Option<(String, u32)> {
-    let stem = Path::new(file_name).file_stem()?.to_str()?.trim();
-    let ts_and_suffix = stem
-        .strip_prefix("vectorbt_run_")
-        .or_else(|| stem.strip_prefix("vectorgrid_run_"))?;
-    if ts_and_suffix.is_empty() {
-        return None;
-    }
-
-    if let Some((base_ts, suffix)) = ts_and_suffix.rsplit_once('_') {
-        if let Ok(parsed_suffix) = suffix.parse::<u32>() {
-            if parsed_suffix >= 2 && !base_ts.is_empty() {
-                return Some((base_ts.to_string(), parsed_suffix));
-            }
-        }
-    }
-
-    Some((ts_and_suffix.to_string(), 1))
+    artifact_file_recency_key(file_name, ArtifactFamily::Run.file_prefixes())
 }
 
 fn normalized_run_artifact_ts_from_value(artifact: &Value) -> String {
@@ -1322,6 +1500,11 @@ fn resolved_run_artifact_ts(path: &Path, artifact: &Value) -> String {
 }
 
 fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
+    let canonical_dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    ensure_path_is_within_canonical_dir(path, &canonical_dir)
+}
+
+fn ensure_path_is_within_canonical_dir(path: &Path, canonical_dir: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!(
             "artifact path does not exist: {}",
@@ -1329,9 +1512,8 @@ fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
         ));
     }
 
-    let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
     let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-    if !path.starts_with(&dir) {
+    if !path.starts_with(canonical_dir) {
         return Err("path is outside app runs dir".to_string());
     }
     Ok(())
@@ -2858,13 +3040,23 @@ pub fn save_run_artifact_blocking<R: tauri::Runtime>(
     existing_path: Option<String>,
 ) -> Result<SaveRunArtifactResponse, String> {
     let _process_lock = acquire_artifact_library_process_lock(&app)?;
-    save_run_artifact_under_process_lock(artifact, &app, existing_path)
+    save_run_artifact_under_process_lock(artifact, &app, existing_path, true)
+}
+
+pub(super) fn save_run_artifact_without_retention_prune_blocking<R: tauri::Runtime>(
+    artifact: Value,
+    app: tauri::AppHandle<R>,
+    existing_path: Option<String>,
+) -> Result<SaveRunArtifactResponse, String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    save_run_artifact_under_process_lock(artifact, &app, existing_path, false)
 }
 
 fn save_run_artifact_under_process_lock<R: tauri::Runtime>(
     mut artifact: Value,
     app: &tauri::AppHandle<R>,
     existing_path: Option<String>,
+    prune_after_save: bool,
 ) -> Result<SaveRunArtifactResponse, String> {
     let replace_existing = existing_path.is_some();
     let path = match existing_path.as_deref() {
@@ -2906,13 +3098,27 @@ fn save_run_artifact_under_process_lock<R: tauri::Runtime>(
         publish_new_artifact_file_atomically(&path, &bytes)?;
     }
 
-    prune_old_run_artifacts_under_process_lock(
-        app,
-        artifact_retention_policy_for_app(app).run_keep_newest,
-    );
+    let retention_warning = if prune_after_save && !replace_existing {
+        prune_old_run_artifacts_under_process_lock(
+            app,
+            artifact_retention_policy_for_app(app).run_keep_newest,
+        )
+        .err()
+        .map(|error| {
+            let warning = format!(
+                "run artifact was saved successfully at '{}', but retention cleanup was deferred: {error}",
+                path.display()
+            );
+            log::warn!("{warning}");
+            warning
+        })
+    } else {
+        None
+    };
     Ok(SaveRunArtifactResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
+        retention_warning,
     })
 }
 
@@ -2943,6 +3149,7 @@ pub(super) fn update_run_artifact_report_path_blocking<R: tauri::Runtime>(
         artifact,
         &app,
         Some(entry.path.to_string_lossy().to_string()),
+        true,
     )
 }
 
@@ -2972,9 +3179,20 @@ pub(super) fn save_batch_summary_blocking<R: tauri::Runtime>(
 fn prune_old_run_artifacts_under_process_lock<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     keep_newest: usize,
-) {
-    let Ok(dir) = runs_dir(app) else { return };
-    prune_old_artifacts_by_prefixes_in_dir(&dir, keep_newest, ArtifactFamily::Run.file_prefixes());
+) -> Result<(), String> {
+    let dir = runs_dir(app)?;
+    prune_old_artifacts_by_prefixes_in_dir(&dir, keep_newest, ArtifactFamily::Run.file_prefixes())
+}
+
+pub(super) fn prune_run_artifacts_to_retention_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let _process_lock = acquire_artifact_library_process_lock(app)?;
+    invalidate_artifact_catalog_under_process_lock(app)?;
+    prune_old_run_artifacts_under_process_lock(
+        app,
+        artifact_retention_policy_for_app(app).run_keep_newest,
+    )
 }
 
 pub(super) fn prune_old_meta_artifacts_under_process_lock<R: tauri::Runtime>(
@@ -2982,11 +3200,13 @@ pub(super) fn prune_old_meta_artifacts_under_process_lock<R: tauri::Runtime>(
     keep_newest: usize,
 ) {
     let Ok(dir) = runs_dir(app) else { return };
-    prune_old_artifacts_by_prefixes_in_dir(
+    if let Err(error) = prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
         ArtifactFamily::MetaSelection.file_prefixes(),
-    );
+    ) {
+        log::warn!("could not prune old meta artifacts: {error}");
+    }
 }
 
 #[allow(dead_code)]
@@ -3010,11 +3230,13 @@ pub(super) fn prune_old_stage5_artifacts_under_process_lock<R: tauri::Runtime>(
     keep_newest: usize,
 ) {
     let Ok(dir) = runs_dir(app) else { return };
-    prune_old_artifacts_by_prefixes_in_dir(
+    if let Err(error) = prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
         ArtifactFamily::MetaStageResult.file_prefixes(),
-    );
+    ) {
+        log::warn!("could not prune old stage5 artifacts: {error}");
+    }
 }
 
 pub(super) fn prune_old_stage5_artifacts_blocking<R: tauri::Runtime>(
@@ -3045,11 +3267,13 @@ pub(super) fn prune_old_ml_policy_eval_artifacts_under_process_lock(
     keep_newest: usize,
 ) {
     let Ok(dir) = runs_dir(app) else { return };
-    prune_old_artifacts_by_prefixes_in_dir(
+    if let Err(error) = prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
         ArtifactFamily::MlPolicyEval.file_prefixes(),
-    );
+    ) {
+        log::warn!("could not prune old ML policy-evaluation artifacts: {error}");
+    }
 }
 
 #[allow(dead_code)]
@@ -3073,11 +3297,13 @@ fn prune_old_batch_summary_artifacts_under_process_lock(
     keep_newest: usize,
 ) {
     let Ok(dir) = runs_dir(app) else { return };
-    prune_old_artifacts_by_prefixes_in_dir(
+    if let Err(error) = prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
         ArtifactFamily::BatchSummary.file_prefixes(),
-    );
+    ) {
+        log::warn!("could not prune old batch-summary artifacts: {error}");
+    }
 }
 
 pub(super) fn prune_old_campaign_summary_artifacts_under_process_lock(
@@ -3085,11 +3311,13 @@ pub(super) fn prune_old_campaign_summary_artifacts_under_process_lock(
     keep_newest: usize,
 ) {
     let Ok(dir) = runs_dir(app) else { return };
-    prune_old_artifacts_by_prefixes_in_dir(
+    if let Err(error) = prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
         ArtifactFamily::CampaignSummary.file_prefixes(),
-    );
+    ) {
+        log::warn!("could not prune old campaign-summary artifacts: {error}");
+    }
 }
 
 #[allow(dead_code)]
@@ -3112,18 +3340,26 @@ pub(super) fn prune_old_options_expression_artifacts_in_dir_under_process_lock(
     dir: &Path,
     keep_newest: usize,
 ) {
-    prune_old_artifacts_by_prefixes_in_dir(
+    if let Err(error) = prune_old_artifacts_by_prefixes_in_dir(
         dir,
         keep_newest,
         ArtifactFamily::OptionsExpression.file_prefixes(),
-    );
+    ) {
+        log::warn!("could not prune old options-expression artifacts: {error}");
+    }
 }
 
 pub(super) fn prune_old_options_validation_artifacts_in_dir_under_process_lock(
     dir: &Path,
     keep_newest: usize,
 ) {
-    prune_old_artifacts_by_prefixes_in_dir(dir, keep_newest, &["vectorgrid_options_validation_"]);
+    if let Err(error) = prune_old_artifacts_by_prefixes_in_dir(
+        dir,
+        keep_newest,
+        &["vectorgrid_options_validation_"],
+    ) {
+        log::warn!("could not prune old options-validation artifacts: {error}");
+    }
 }
 
 #[allow(dead_code)]
@@ -3201,6 +3437,7 @@ fn read_artifact_scan_entry(path: PathBuf, file_name: String) -> Option<Artifact
         file_name,
         bytes,
         value,
+        sha256: None,
     })
 }
 
@@ -3762,6 +3999,183 @@ fn load_artifact_entry_checked(
     let path = PathBuf::from(path.trim());
     ensure_path_is_within_dir(&path, &dir)?;
 
+    load_artifact_entry_from_checked_path(path)
+}
+
+#[cfg(windows)]
+fn open_checked_artifact_read_handle(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    OpenOptions::new()
+        .read(true)
+        // Do not follow a final-component reparse point and deny new writers or
+        // deleters while the exact bytes below are being authenticated.
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_checked_artifact_read_handle(path: &Path) -> std::io::Result<std::fs::File> {
+    OpenOptions::new().read(true).open(path)
+}
+
+#[cfg(windows)]
+fn checked_artifact_metadata_is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn checked_artifact_metadata_is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn final_path_for_checked_artifact_handle(file: &std::fs::File) -> Result<PathBuf, String> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, VOLUME_NAME_DOS,
+    };
+
+    let handle = file.as_raw_handle() as HANDLE;
+    let mut buffer = vec![0u16; 512];
+    loop {
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                handle,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        };
+        if length == 0 {
+            return Err("resolve opened artifact path".to_string());
+        }
+        if (length as usize) < buffer.len() {
+            buffer.truncate(length as usize);
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        let capacity = (length as usize)
+            .checked_add(1)
+            .filter(|capacity| *capacity <= 32_768)
+            .ok_or_else(|| "opened artifact path exceeds the supported length".to_string())?;
+        buffer.resize(capacity, 0);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn final_path_for_checked_artifact_handle(
+    file: &std::fs::File,
+    _original_path: &Path,
+) -> Result<PathBuf, String> {
+    use std::os::fd::AsRawFd;
+
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| e.to_string())
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn final_path_for_checked_artifact_handle(
+    file: &std::fs::File,
+    original_path: &Path,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let final_path = std::fs::canonicalize(original_path).map_err(|e| e.to_string())?;
+    let handle_metadata = file.metadata().map_err(|e| e.to_string())?;
+    let path_metadata = std::fs::metadata(&final_path).map_err(|e| e.to_string())?;
+    if handle_metadata.dev() != path_metadata.dev() || handle_metadata.ino() != path_metadata.ino()
+    {
+        return Err("artifact pathname changed after its read handle was opened".to_string());
+    }
+    Ok(final_path)
+}
+
+#[cfg(all(not(windows), not(unix)))]
+fn final_path_for_checked_artifact_handle(
+    _file: &std::fs::File,
+    _original_path: &Path,
+) -> Result<PathBuf, String> {
+    Err("opened artifact path authentication is unsupported on this platform".to_string())
+}
+
+fn load_artifact_value_checked_bounded_from_open_handle(
+    file: std::fs::File,
+    _original_path: &Path,
+    canonical_dir: &Path,
+    max_bytes: u64,
+) -> Result<(Value, String, u64, PathBuf), String> {
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink()
+        || checked_artifact_metadata_is_reparse_point(&metadata)
+        || !metadata.is_file()
+    {
+        return Err("artifact path must be an ordinary non-reparse file".to_string());
+    }
+
+    #[cfg(windows)]
+    let final_path = final_path_for_checked_artifact_handle(&file)?;
+    #[cfg(not(windows))]
+    let final_path = final_path_for_checked_artifact_handle(&file, _original_path)?;
+    if !final_path.starts_with(canonical_dir) {
+        return Err("path is outside app runs dir".to_string());
+    }
+
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "artifact exceeds the bounded {max_bytes} byte read limit"
+        ));
+    }
+    let read_limit = max_bytes
+        .checked_add(1)
+        .ok_or_else(|| "artifact read limit overflow".to_string())?;
+    let capacity = usize::try_from(metadata.len())
+        .map_err(|_| "artifact size exceeds the addressable read limit".to_string())?;
+    let mut raw = Vec::with_capacity(capacity);
+    file.take(read_limit)
+        .read_to_end(&mut raw)
+        .map_err(|e| e.to_string())?;
+    let raw_bytes =
+        u64::try_from(raw.len()).map_err(|_| "artifact byte count overflow".to_string())?;
+    if raw_bytes > max_bytes {
+        return Err(format!(
+            "artifact exceeds the bounded {max_bytes} byte read limit"
+        ));
+    }
+
+    let sha256 = format!("{:x}", Sha256::digest(&raw));
+    let value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    Ok((value, sha256, raw_bytes, final_path))
+}
+
+fn load_artifact_value_checked_bounded_under_process_lock<R: tauri::Runtime>(
+    path: &Path,
+    max_bytes: u64,
+    app: &tauri::AppHandle<R>,
+) -> Result<(Value, String, u64, PathBuf), String> {
+    let dir = runs_dir(app)?;
+    let canonical_dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+    ensure_path_is_within_canonical_dir(path, &canonical_dir)?;
+
+    #[cfg(not(windows))]
+    {
+        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("artifact path must not be a symlink".to_string());
+        }
+    }
+
+    let file = open_checked_artifact_read_handle(path).map_err(|e| e.to_string())?;
+    load_artifact_value_checked_bounded_from_open_handle(file, path, &canonical_dir, max_bytes)
+}
+
+fn load_artifact_entry_from_checked_path(path: PathBuf) -> Result<ArtifactScanEntry, String> {
     let file_name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -3771,6 +4185,9 @@ fn load_artifact_entry_checked(
         .ok_or_else(|| "artifact path is not a regular file".to_string())?
         .len();
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    let sha256 = format!("{:x}", hasher.finalize());
     let value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
     Ok(ArtifactScanEntry {
@@ -3778,6 +4195,7 @@ fn load_artifact_entry_checked(
         file_name,
         bytes,
         value,
+        sha256: Some(sha256),
     })
 }
 
@@ -5996,6 +6414,116 @@ pub(super) fn load_artifact_value_checked_blocking(
     Ok(load_artifact_entry_checked(path, app)?.value)
 }
 
+pub(super) fn load_artifact_value_checked_with_sha256_blocking(
+    path: String,
+    app: tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<(Value, String), String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    let entry = load_artifact_entry_checked(path, app)?;
+    let sha256 = entry
+        .sha256
+        .ok_or_else(|| "checked artifact load did not compute SHA-256".to_string())?;
+    Ok((entry.value, sha256))
+}
+
+/// Loads and authenticates one app-owned JSON artifact without reopening it.
+/// The artifact-library process lock covers containment validation, handle
+/// acquisition, bounded reading, hashing, and parsing. The returned byte count
+/// is the number of exact raw bytes that were parsed and hashed. The returned
+/// path is the final canonical identity resolved from that same opened handle.
+pub(super) fn load_artifact_value_checked_bounded_with_sha256_blocking<R: tauri::Runtime>(
+    path: String,
+    max_bytes: u64,
+    app: tauri::AppHandle<R>,
+) -> Result<(Value, String, u64, PathBuf), String> {
+    let _process_lock = acquire_artifact_library_process_lock(&app)?;
+    let path = PathBuf::from(path.trim());
+    load_artifact_value_checked_bounded_under_process_lock(&path, max_bytes, &app)
+}
+
+/// Loads a caller-supplied artifact cohort while holding the cross-process
+/// artifact-library lock once for the complete batch. Every path is still
+/// canonicalized and checked against the app runs directory before it is read.
+#[cfg(test)]
+pub(super) fn load_artifact_values_checked_bulk_blocking<R: tauri::Runtime>(
+    paths: &[PathBuf],
+    app: &tauri::AppHandle<R>,
+) -> Result<Vec<(PathBuf, Value)>, String> {
+    load_artifact_values_checked_bulk_with_cancel_blocking(paths, app, None)
+}
+
+#[cfg(test)]
+pub(super) fn load_artifact_values_checked_bulk_with_cancel_blocking<R: tauri::Runtime>(
+    paths: &[PathBuf],
+    app: &tauri::AppHandle<R>,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<(PathBuf, Value)>, String> {
+    Ok(
+        load_artifact_values_checked_bulk_with_sha256_and_cancel_blocking(paths, app, cancel)?
+            .into_iter()
+            .map(|(path, value, _sha256)| (path, value))
+            .collect(),
+    )
+}
+
+pub(super) fn load_artifact_values_checked_bulk_with_sha256_and_cancel_blocking<
+    R: tauri::Runtime,
+>(
+    paths: &[PathBuf],
+    app: &tauri::AppHandle<R>,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<(PathBuf, Value, String)>, String> {
+    let _process_lock = acquire_artifact_library_process_lock(app)?;
+    let dir = runs_dir(app)?;
+    let canonical_dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+    let mut artifacts = Vec::with_capacity(paths.len());
+    for raw_path in paths {
+        if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+            return Err("cancelled".to_string());
+        }
+        let path = PathBuf::from(raw_path.to_string_lossy().trim());
+        ensure_path_is_within_canonical_dir(&path, &canonical_dir)?;
+        let entry = load_artifact_entry_from_checked_path(path)?;
+        let sha256 = entry
+            .sha256
+            .ok_or_else(|| "checked artifact load did not compute SHA-256".to_string())?;
+        artifacts.push((entry.path, entry.value, sha256));
+    }
+    Ok(artifacts)
+}
+
+/// Computes exact raw-file SHA-256 values for a caller-supplied artifact cohort
+/// while holding the artifact-library lock once. Unlike the value loader this
+/// streams one file at a time and does not retain or parse the complete cohort,
+/// which keeps terminal campaign sealing bounded for large universes.
+pub(super) fn hash_artifact_files_checked_bulk_blocking<R: tauri::Runtime>(
+    paths: &[PathBuf],
+    app: &tauri::AppHandle<R>,
+) -> Result<Vec<(PathBuf, String)>, String> {
+    let _process_lock = acquire_artifact_library_process_lock(app)?;
+    let dir = runs_dir(app)?;
+    let canonical_dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+    let mut hashes = Vec::with_capacity(paths.len());
+    let mut buffer = vec![0u8; 128 * 1024];
+    for raw_path in paths {
+        let path = PathBuf::from(raw_path.to_string_lossy().trim());
+        ensure_path_is_within_canonical_dir(&path, &canonical_dir)?;
+        regular_artifact_metadata(&path)?
+            .ok_or_else(|| "artifact path is not a regular file".to_string())?;
+        let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        loop {
+            let read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        hashes.push((path, format!("{:x}", hasher.finalize())));
+    }
+    Ok(hashes)
+}
+
 pub(super) fn load_run_artifact_hydration_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
@@ -6060,6 +6588,7 @@ pub(super) fn create_live_session_artifact_blocking<R: tauri::Runtime>(
     Ok(SaveRunArtifactResponse {
         path: path.to_string_lossy().to_string(),
         bytes,
+        retention_warning: None,
     })
 }
 
@@ -6243,9 +6772,9 @@ pub(super) fn load_live_session_artifact_detail_blocking<R: tauri::Runtime>(
     build_live_session_artifact_detail_response(entry.path.to_string_lossy().as_ref(), &entry.value)
 }
 
-pub(super) fn load_meta_artifact_replay_blocking(
+pub(super) fn load_meta_artifact_replay_blocking<R: tauri::Runtime>(
     path: String,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<MetaArtifactReplayResponse, String> {
     let _process_lock = acquire_artifact_library_process_lock(&app)?;
     let entry = load_artifact_entry_checked(path, app)?;
@@ -6267,6 +6796,8 @@ pub(super) fn load_meta_artifact_replay_blocking(
         report_xlsx_bytes: 0,
         meta_json_path: entry.path.to_string_lossy().to_string(),
         meta_json_bytes: entry.bytes as usize,
+        cohort_manifest: entry.value.get("cohort_manifest").cloned(),
+        holdout_execution: entry.value.get("holdout_execution").cloned(),
         result: clone_value_or_null(entry.value.pointer("/res")),
     })
 }
@@ -6612,9 +7143,10 @@ mod tests {
         list_live_session_artifacts_blocking, list_meta_artifacts_blocking,
         list_run_artifacts_blocking, load_artifact_value_checked_blocking,
         load_latest_run_artifact_hydration_blocking, load_latest_run_artifact_summary_blocking,
-        load_live_session_artifact_detail_blocking, load_meta_artifacts_with_paths_blocking,
-        load_run_artifact_detail_blocking, normalize_dataset_meta,
-        normalize_run_artifact_value_canonical, open_runs_dir_with_revealer,
+        load_live_session_artifact_detail_blocking, load_meta_artifact_replay_blocking,
+        load_meta_artifacts_with_paths_blocking, load_run_artifact_detail_blocking,
+        normalize_dataset_meta, normalize_run_artifact_value_canonical,
+        open_runs_dir_with_revealer, prune_old_artifacts_by_prefixes_in_dir,
         prune_old_meta_artifacts_blocking, repair_run_artifact_blocking,
         resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
         resolve_run_artifact_timeframe, runs_dir, save_batch_summary_blocking,
@@ -6626,6 +7158,7 @@ mod tests {
     use crate::settings;
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
@@ -8302,6 +8835,78 @@ mod tests {
         .expect("summary");
 
         assert_eq!(summary.report_xlsx_exists, Some(false));
+    }
+
+    #[test]
+    fn meta_artifact_replay_preserves_cohort_and_holdout_execution_evidence() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let path = runs_dir(&handle).expect("runs dir").join(format!(
+            "vectorgrid_meta_{}.json",
+            unique_token("holdout_evidence")
+        ));
+        let artifact = json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": "2026-07-31T12:00:00Z",
+            "report_xlsx_path": "C:/reports/vcet-meta.xlsx",
+            "cohort_manifest": {
+                "train_dataset_count": 24,
+                "holdout_dataset_count": 10,
+                "disjointness": {
+                    "is_disjoint": true,
+                    "overlap_count": 0
+                }
+            },
+            "holdout_execution": {
+                "requested_backend": "GpuKernel",
+                "require_gpu": true,
+                "datasets_requested": 10,
+                "datasets_evaluated": 8,
+                "datasets_failed": 2,
+                "gpu_datasets": 8,
+                "cpu_datasets": 0,
+                "hybrid_datasets": 0,
+                "fallback_datasets": 0
+            },
+            "res": {
+                "strategy_kind": "Vcet",
+                "groups": []
+            }
+        });
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&artifact).expect("meta artifact JSON"),
+        )
+        .expect("write meta artifact");
+
+        let replay = load_meta_artifact_replay_blocking(path.to_string_lossy().to_string(), handle)
+            .expect("load meta replay");
+
+        let cohort = replay.cohort_manifest.as_ref().expect("cohort manifest");
+        assert_eq!(
+            cohort
+                .pointer("/disjointness/is_disjoint")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            cohort.get("holdout_dataset_count").and_then(Value::as_u64),
+            Some(10)
+        );
+
+        let execution = replay
+            .holdout_execution
+            .as_ref()
+            .expect("holdout execution evidence");
+        assert_eq!(
+            execution.get("requested_backend").and_then(Value::as_str),
+            Some("GpuKernel")
+        );
+        assert_eq!(
+            execution.get("datasets_requested").and_then(Value::as_u64),
+            Some(10)
+        );
+        assert_eq!(replay.result["strategy_kind"], "Vcet");
     }
 
     #[test]
@@ -10891,6 +11496,410 @@ mod tests {
     }
 
     #[test]
+    fn campaign_cohort_retention_tracks_retained_summaries_without_treating_tags_as_pins() {
+        let dir = make_temp_dir("campaign_cohort_retention");
+        let old_summary = dir.join("vectorgrid_campaign_summary_2026-07-01.json");
+        let new_summary = dir.join("vectorgrid_campaign_summary_2026-07-02.json");
+        let old_run = dir.join("vectorgrid_run_2026-07-01.json");
+        let old_reused_run = dir.join("vectorgrid_run_2026-07-01_reused.json");
+        let new_run_a = dir.join("vectorgrid_run_2026-07-02_1.json");
+        let new_run_b = dir.join("vectorgrid_run_2026-07-02_2.json");
+        let user_pinned = dir.join("vectorgrid_run_2026-06-01.json");
+        for (path, cohort_id) in [(&old_summary, "cohort-old"), (&new_summary, "cohort-new")] {
+            let items = if cohort_id == "cohort-new" {
+                json!([{ "artifact_path": old_reused_run.to_string_lossy() }])
+            } else {
+                json!([])
+            };
+            std::fs::write(
+                path,
+                serde_json::to_vec(&json!({
+                    "kind": "vectorgrid_campaign_summary",
+                    "tags": ["campaign-tag"],
+                    "retention": {
+                        "class": "campaign_summary",
+                        "cohort_id": cohort_id,
+                    },
+                    "items": items.clone(),
+                }))
+                .expect("serialize campaign summary"),
+            )
+            .expect("write campaign summary");
+        }
+
+        for (path, cohort_id) in [
+            (&old_run, Some("cohort-old")),
+            (&old_reused_run, Some("cohort-old")),
+            (&new_run_a, Some("cohort-new")),
+            (&new_run_b, Some("cohort-new")),
+            (&user_pinned, None),
+        ] {
+            let retention = cohort_id.map(|cohort_id| {
+                json!({
+                    "class": "campaign_cohort",
+                    "cohort_id": cohort_id,
+                })
+            });
+            std::fs::write(
+                path,
+                serde_json::to_vec(&json!({
+                    "kind": "vectorgrid_run_artifact",
+                    "tags": if cohort_id.is_some() { json!(["campaign-tag"]) } else { json!(["user-pin"]) },
+                    "retention": retention,
+                }))
+                .expect("serialize run artifact"),
+            )
+            .expect("write run artifact");
+        }
+
+        prune_old_artifacts_by_prefixes_in_dir(&dir, 1, super::ArtifactFamily::Run.file_prefixes())
+            .expect("prune old run artifacts");
+        assert!(old_run.exists(), "retained old summary protects its cohort");
+        assert!(old_reused_run.exists());
+        assert!(new_run_a.exists());
+        assert!(new_run_b.exists());
+        assert!(
+            user_pinned.exists(),
+            "explicit user tags remain durable pins"
+        );
+
+        prune_old_artifacts_by_prefixes_in_dir(
+            &dir,
+            1,
+            super::ArtifactFamily::CampaignSummary.file_prefixes(),
+        )
+        .expect("prune old campaign summaries");
+        assert!(!old_summary.exists(), "old managed summary should age out");
+        assert!(new_summary.exists());
+        prune_old_artifacts_by_prefixes_in_dir(&dir, 1, super::ArtifactFamily::Run.file_prefixes())
+            .expect("prune old run artifacts after summary retention");
+
+        assert!(!old_run.exists(), "orphaned managed cohort should age out");
+        assert!(
+            old_reused_run.exists(),
+            "an artifact referenced by a retained newer summary must remain replayable even when its owning cohort summary expires"
+        );
+        assert!(
+            new_run_a.exists(),
+            "retained summary keeps every cohort artifact"
+        );
+        assert!(
+            new_run_b.exists(),
+            "retained summary keeps every cohort artifact"
+        );
+        assert!(
+            user_pinned.exists(),
+            "ordinary user-pinned artifacts stay protected"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn run_retention_reference_window_is_bounded_for_ten_thousand_dataset_campaigns() {
+        const SUMMARIES: usize = 5;
+        const DATASETS: usize = 10_000;
+        let dir = make_temp_dir("campaign_retention_reference_bound");
+        let items: Vec<Value> = (0..DATASETS)
+            .map(|index| json!({ "artifact_path": format!("C:/runs/cohort-item-{index}.json") }))
+            .collect();
+        for index in 0..SUMMARIES {
+            let path = dir.join(format!(
+                "vectorgrid_campaign_summary_2026-07-{:02}.json",
+                index + 1
+            ));
+            std::fs::write(
+                path,
+                serde_json::to_vec(&json!({
+                    "kind": "vectorgrid_campaign_summary",
+                    "retention": {
+                        "class": "campaign_summary",
+                        "cohort_id": format!("cohort-{index}"),
+                    },
+                    "items": items.clone(),
+                }))
+                .expect("serialize large campaign summary"),
+            )
+            .expect("write large campaign summary");
+        }
+
+        let retained = super::retained_campaign_summary_values_for_run_retention(&dir)
+            .expect("load retained campaign summaries");
+        let protected_path_count: usize = retained
+            .iter()
+            .map(|summary| {
+                summary
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or_default()
+            })
+            .sum();
+        assert_eq!(
+            retained.len(),
+            super::RUN_RETENTION_CAMPAIGN_SUMMARY_REFERENCE_LIMIT
+        );
+        assert_eq!(
+            protected_path_count,
+            DATASETS * super::RUN_RETENTION_CAMPAIGN_SUMMARY_REFERENCE_LIMIT
+        );
+        assert!(protected_path_count < DATASETS * SUMMARIES);
+        let newest_cohorts: Vec<&str> = retained
+            .iter()
+            .filter_map(|summary| {
+                summary
+                    .pointer("/retention/cohort_id")
+                    .and_then(Value::as_str)
+            })
+            .collect();
+        assert_eq!(newest_cohorts, vec!["cohort-4", "cohort-3", "cohort-2"]);
+
+        let cohort_runs: Vec<PathBuf> = (0..SUMMARIES)
+            .map(|index| {
+                let path = dir.join(format!("vectorgrid_run_2026-06-{:02}.json", index + 1));
+                std::fs::write(
+                    &path,
+                    serde_json::to_vec(&json!({
+                        "kind": "vectorgrid_run_artifact",
+                        "tags": ["campaign-scale"],
+                        "retention": {
+                            "class": "campaign_cohort",
+                            "cohort_id": format!("cohort-{index}"),
+                        },
+                    }))
+                    .expect("serialize cohort run"),
+                )
+                .expect("write cohort run");
+                path
+            })
+            .collect();
+        prune_old_artifacts_by_prefixes_in_dir(&dir, 1, super::ArtifactFamily::Run.file_prefixes())
+            .expect("prune bounded campaign cohorts");
+        for (index, path) in cohort_runs.iter().enumerate() {
+            assert_eq!(
+                path.exists(),
+                index >= SUMMARIES - super::RUN_RETENTION_CAMPAIGN_SUMMARY_REFERENCE_LIMIT,
+                "only cohorts owned by the newest bounded summary window should remain: cohort-{index}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn retained_campaign_summary_order_is_prefix_neutral_and_suffix_natural() {
+        let dir = make_temp_dir("campaign_retention_natural_order");
+        for (name, cohort) in [
+            (
+                "vectorgrid_campaign_summary_2026-07-03T00-00-00Z.json",
+                "canonical-old",
+            ),
+            (
+                "vectorbt_campaign_summary_2026-07-04T00-00-00Z.json",
+                "legacy-new",
+            ),
+            (
+                "vectorgrid_campaign_summary_2026-07-05T00-00-00Z_9.json",
+                "collision-nine",
+            ),
+            (
+                "vectorbt_campaign_summary_2026-07-05T00-00-00Z_10.json",
+                "collision-ten",
+            ),
+        ] {
+            std::fs::write(
+                dir.join(name),
+                serde_json::to_vec(&json!({
+                    "kind": "vectorgrid_campaign_summary",
+                    "retention": {
+                        "class": "campaign_summary",
+                        "cohort_id": cohort,
+                    },
+                    "items": [],
+                }))
+                .expect("serialize campaign summary"),
+            )
+            .expect("write campaign summary");
+        }
+
+        let retained = super::retained_campaign_summary_values_for_run_retention(&dir)
+            .expect("load naturally ordered summaries");
+        let cohorts: Vec<&str> = retained
+            .iter()
+            .filter_map(|summary| {
+                summary
+                    .pointer("/retention/cohort_id")
+                    .and_then(Value::as_str)
+            })
+            .collect();
+        assert_eq!(
+            cohorts,
+            vec!["collision-ten", "collision-nine", "legacy-new"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn retained_campaign_summary_requires_integrity_validation_not_just_valid_json() {
+        let dir = make_temp_dir("campaign_retention_integrity");
+        std::fs::write(
+            dir.join("vectorgrid_campaign_summary_2026-07-05.json"),
+            serde_json::to_vec(&json!({
+                "kind": "vectorgrid_campaign_summary",
+                "version": 2,
+                "items": [],
+                "retention": {
+                    "class": "campaign_summary",
+                    "cohort_id": "tampered",
+                },
+            }))
+            .expect("serialize structurally tampered summary"),
+        )
+        .expect("write structurally tampered summary");
+
+        let error = super::retained_campaign_summary_values_for_run_retention(&dir)
+            .expect_err("parseable but structurally invalid summary must fail closed");
+        assert!(error.contains("failed integrity validation"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_reports_post_commit_retention_failure_as_a_warning() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let base = handle
+            .path()
+            .app_local_data_dir()
+            .expect("mock app data dir");
+        settings::set_artifact_retention_settings(
+            &base,
+            &settings::ArtifactRetentionSettings {
+                run_keep_newest: Some(1),
+                ..settings::ArtifactRetentionSettings::default()
+            },
+        )
+        .expect("persist one-run retention policy");
+        assert_eq!(
+            super::artifact_retention_policy_for_app(&handle).run_keep_newest,
+            1
+        );
+        let dir = runs_dir(&handle).expect("runs dir");
+        let old_run = dir.join("vectorgrid_run_2026-07-01T00-00-00Z.json");
+        std::fs::write(
+            &old_run,
+            serde_json::to_vec(&minimal_run_artifact("2026-07-01T00:00:00Z")).unwrap(),
+        )
+        .expect("write old run");
+        std::fs::write(
+            dir.join("vectorgrid_campaign_summary_2026-07-03T00-00-00Z.json"),
+            b"{not valid json",
+        )
+        .expect("write corrupt retained summary");
+
+        let saved =
+            save_run_artifact_blocking(minimal_run_artifact("2026-07-02T00:00:00Z"), handle, None)
+                .expect("publication is successful even when later retention is blocked");
+        assert!(Path::new(&saved.path).exists());
+        assert!(
+            old_run.exists(),
+            "fail-safe retention must not partially prune"
+        );
+        assert!(saved
+            .retention_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("saved successfully")
+                && warning.contains("retention cleanup was deferred")));
+    }
+
+    #[test]
+    fn run_retention_aborts_without_deleting_when_newest_campaign_summary_is_corrupt() {
+        let dir = make_temp_dir("campaign_retention_corrupt_newest_summary");
+        let old_run = dir.join("vectorgrid_run_2026-07-01.json");
+        let new_run = dir.join("vectorgrid_run_2026-07-02.json");
+        for path in [&old_run, &new_run] {
+            std::fs::write(path, br#"{"kind":"vectorgrid_run_artifact","tags":[]}"#)
+                .expect("write run fixture");
+        }
+        std::fs::write(
+            dir.join("vectorgrid_campaign_summary_2026-07-03.json"),
+            b"{not valid json",
+        )
+        .expect("write corrupt retained summary");
+
+        let error = prune_old_artifacts_by_prefixes_in_dir(
+            &dir,
+            1,
+            super::ArtifactFamily::Run.file_prefixes(),
+        )
+        .expect_err("corrupt newest campaign summary must fail closed");
+
+        assert!(error.contains("failed to parse retained campaign summary"));
+        assert!(
+            old_run.exists(),
+            "old run must remain after fail-safe abort"
+        );
+        assert!(
+            new_run.exists(),
+            "newest run must remain after fail-safe abort"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn retention_classifies_every_candidate_before_deleting_any_file() {
+        let dir = make_temp_dir("retention_preflight_before_delete");
+        let oldest = dir.join("vectorgrid_meta_2026-07-01.json");
+        let middle = dir.join("vectorgrid_meta_2026-07-02.json");
+        let newest = dir.join("vectorgrid_meta_2026-07-03.json");
+        std::fs::write(&oldest, b"{not valid json").expect("write corrupt old fixture");
+        for path in [&middle, &newest] {
+            std::fs::write(path, br#"{"kind":"vectorgrid_meta_selection","tags":[]}"#)
+                .expect("write meta fixture");
+        }
+
+        let error = prune_old_artifacts_by_prefixes_in_dir(
+            &dir,
+            1,
+            super::ArtifactFamily::MetaSelection.file_prefixes(),
+        )
+        .expect_err("malformed candidate must abort the retention pass");
+
+        assert!(error.contains("no artifacts were deleted"));
+        assert!(oldest.exists());
+        assert!(
+            middle.exists(),
+            "a valid candidate classified before the error must not be deleted"
+        );
+        assert!(newest.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn non_run_retention_does_not_load_campaign_summary_protection_data() {
+        let dir = make_temp_dir("non_run_retention_skips_campaign_summaries");
+        let old_meta = dir.join("vectorgrid_meta_2026-07-01.json");
+        let new_meta = dir.join("vectorgrid_meta_2026-07-02.json");
+        for path in [&old_meta, &new_meta] {
+            std::fs::write(path, br#"{"kind":"vectorgrid_meta_selection","tags":[]}"#)
+                .expect("write meta fixture");
+        }
+        std::fs::write(
+            dir.join("vectorgrid_campaign_summary_2026-07-03.json"),
+            b"{not valid json",
+        )
+        .expect("write unrelated corrupt campaign summary");
+
+        prune_old_artifacts_by_prefixes_in_dir(
+            &dir,
+            1,
+            super::ArtifactFamily::MetaSelection.file_prefixes(),
+        )
+        .expect("Meta retention must not parse campaign summaries");
+
+        assert!(!old_meta.exists());
+        assert!(new_meta.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn options_expression_and_validation_retention_use_separate_quotas() {
         let dir = make_temp_dir("options_retention_namespaces");
         let expression_old = dir.join("vectorgrid_options_expression_2026-07-27.json");
@@ -10948,6 +11957,210 @@ mod tests {
         let err = ensure_path_is_within_dir(&missing, &dir).expect_err("missing path");
         assert!(err.contains("artifact path does not exist"));
         assert!(err.contains("missing.json"));
+    }
+
+    #[test]
+    fn bounded_checked_artifact_load_hashes_and_counts_exact_raw_bytes() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let path = dir.join("vectorgrid_run_bounded_raw.json");
+        let raw = br#"{
+  "kind": "vectorgrid_run_artifact",
+  "marker": "raw-byte-contract"
+}
+"#;
+        std::fs::write(&path, raw).expect("write bounded artifact");
+
+        let (value, sha256, raw_bytes, authenticated_path) =
+            super::load_artifact_value_checked_bounded_with_sha256_blocking(
+                path.to_string_lossy().to_string(),
+                raw.len() as u64,
+                handle.clone(),
+            )
+            .expect("bounded checked load");
+        assert_eq!(
+            value.get("marker").and_then(Value::as_str),
+            Some("raw-byte-contract")
+        );
+        assert_eq!(raw_bytes, raw.len() as u64);
+        assert_eq!(sha256, format!("{:x}", Sha256::digest(raw)));
+        assert_eq!(
+            authenticated_path,
+            std::fs::canonicalize(&path).expect("canonical artifact path")
+        );
+
+        let error = super::load_artifact_value_checked_bounded_with_sha256_blocking(
+            path.to_string_lossy().to_string(),
+            raw.len() as u64 - 1,
+            handle,
+        )
+        .expect_err("bounded loader must reject an oversized raw artifact");
+        assert!(error.contains("bounded"));
+        assert!(error.contains("byte read limit"));
+
+        let outside_dir = make_temp_dir("bounded_checked_artifact_outside");
+        let outside = outside_dir.join("vectorgrid_run_outside.json");
+        std::fs::write(&outside, raw).expect("write outside bounded artifact");
+        let error = super::load_artifact_value_checked_bounded_with_sha256_blocking(
+            outside.to_string_lossy().to_string(),
+            raw.len() as u64,
+            app.handle().clone(),
+        )
+        .expect_err("bounded checked loader must reject an outside artifact");
+        assert!(error.contains("outside app runs dir"));
+        let _ = std::fs::remove_dir_all(outside_dir);
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "android"))]
+    #[test]
+    fn bounded_checked_artifact_open_handle_keeps_bytes_hash_and_path_on_name_replacement() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let canonical_dir = std::fs::canonicalize(&dir).expect("canonical runs dir");
+        let requested = dir.join("vectorgrid_run_handle_identity.json");
+        let renamed = dir.join("vectorgrid_run_handle_identity_opened.json");
+        let opened_raw = br#"{"marker":"opened-identity"}"#;
+        let replacement_raw = br#"{"marker":"replacement-name"}"#;
+        std::fs::write(&requested, opened_raw).expect("write opened identity artifact");
+
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+            const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .open(&requested)
+                .expect("open replaceable identity handle")
+        };
+        #[cfg(not(windows))]
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&requested)
+            .expect("open replaceable identity handle");
+
+        std::fs::rename(&requested, &renamed).expect("rename opened artifact");
+        std::fs::write(&requested, replacement_raw).expect("write pathname replacement");
+
+        let (value, sha256, raw_bytes, authenticated_path) =
+            super::load_artifact_value_checked_bounded_from_open_handle(
+                file,
+                &requested,
+                &canonical_dir,
+                1024,
+            )
+            .expect("load from original open handle");
+
+        assert_eq!(
+            value.get("marker").and_then(Value::as_str),
+            Some("opened-identity")
+        );
+        assert_eq!(raw_bytes, opened_raw.len() as u64);
+        assert_eq!(sha256, format!("{:x}", Sha256::digest(opened_raw)));
+        assert_eq!(
+            authenticated_path,
+            std::fs::canonicalize(&renamed).expect("canonical renamed identity")
+        );
+        assert_ne!(
+            authenticated_path,
+            std::fs::canonicalize(&requested).expect("canonical replacement path")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bounded_checked_artifact_load_rejects_reparse_file() {
+        use std::os::windows::fs::symlink_file;
+
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let target = dir.join("vectorgrid_run_reparse_target.json");
+        let link = dir.join("vectorgrid_run_reparse_link.json");
+        std::fs::write(&target, br#"{"kind":"vectorgrid_run_artifact"}"#)
+            .expect("write reparse target");
+        if symlink_file(&target, &link).is_err() {
+            return;
+        }
+
+        let error = super::load_artifact_value_checked_bounded_with_sha256_blocking(
+            link.to_string_lossy().to_string(),
+            1024,
+            handle,
+        )
+        .expect_err("bounded checked loader must reject a reparse file");
+        assert!(error.contains("reparse") || error.contains("symlink"));
+    }
+
+    #[test]
+    fn bulk_checked_artifact_load_preserves_order_and_rejects_outside_paths() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let first = dir.join("vectorgrid_run_2026-07-30_1.json");
+        let second = dir.join("vectorgrid_run_2026-07-30_2.json");
+        for (path, marker) in [(&first, "first"), (&second, "second")] {
+            std::fs::write(
+                path,
+                serde_json::to_vec(&json!({
+                    "kind": "vectorgrid_run_artifact",
+                    "marker": marker,
+                }))
+                .expect("serialize artifact"),
+            )
+            .expect("write artifact");
+        }
+
+        let loaded = super::load_artifact_values_checked_bulk_blocking(
+            &[second.clone(), first.clone()],
+            &handle,
+        )
+        .expect("bulk checked load");
+        assert_eq!(loaded[0].0, second);
+        assert_eq!(loaded[1].0, first);
+        assert_eq!(
+            loaded[0].1.get("marker").and_then(Value::as_str),
+            Some("second")
+        );
+        assert_eq!(
+            loaded[1].1.get("marker").and_then(Value::as_str),
+            Some("first")
+        );
+        let loaded_with_sha =
+            super::load_artifact_values_checked_bulk_with_sha256_and_cancel_blocking(
+                std::slice::from_ref(&second),
+                &handle,
+                None,
+            )
+            .expect("bulk checked load with raw digest");
+        let expected_sha = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&second).expect("read exact artifact bytes"))
+        );
+        assert_eq!(loaded_with_sha[0].2, expected_sha);
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert_eq!(
+            super::load_artifact_values_checked_bulk_with_sha256_and_cancel_blocking(
+                std::slice::from_ref(&first),
+                &handle,
+                Some(&cancelled),
+            )
+            .expect_err("bulk load polls cancellation before each artifact"),
+            "cancelled"
+        );
+
+        let outside_dir = make_temp_dir("bulk_artifact_outside");
+        let outside = outside_dir.join("vectorgrid_run_outside.json");
+        std::fs::write(&outside, b"{}").expect("write outside artifact");
+        let error = super::load_artifact_values_checked_bulk_blocking(&[outside], &handle)
+            .expect_err("bulk loading must preserve runs-dir containment checks");
+        assert!(error.contains("outside app runs dir"));
+        let _ = std::fs::remove_dir_all(outside_dir);
     }
 
     #[test]

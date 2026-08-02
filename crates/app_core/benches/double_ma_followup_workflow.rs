@@ -107,6 +107,7 @@ fn followup_requests(
         data_id: "bench-followup".to_string(),
         backend_hint: Some(backend.clone()),
         followup_cache_key: followup_cache_key.clone(),
+        dynamic_strategy_ir: None,
         params: best.clone(),
         ma_source: "close".to_string(),
         fast_ma_params: best.fast_ma_params.clone(),

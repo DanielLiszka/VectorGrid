@@ -2,38 +2,47 @@ export type {
   FixtureFamilyId,
   FixtureFamilyModule,
   MockTauriScenario,
-} from './types'
-export { fixtureFamilyIds } from './types'
+} from "./types";
+export { fixtureFamilyIds } from "./types";
 
-export { baseCommandResults, savedOptionsArtifactFixturePack } from './base'
-export { emptyAppScenario, emptyFixtureFamily, helpTooltipReadyScenario, staleShellStateScenario } from './empty'
-export { dataLoadFailureScenario, dataLoadSuccessScenario, datasetFixtureFamily } from './dataset'
+export { baseCommandResults, savedOptionsArtifactFixturePack } from "./base";
+export {
+  emptyAppScenario,
+  emptyFixtureFamily,
+  helpTooltipReadyScenario,
+  staleShellStateScenario,
+} from "./empty";
+export {
+  dataLoadFailureScenario,
+  dataLoadSuccessScenario,
+  datasetFixtureFamily,
+} from "./dataset";
 export {
   gpuStatusFailureScenario,
   settingsArtifactCatalogFailureScenario,
   settingsFixtureFamily,
   settingsLocalDataInventoryFailureScenario,
   settingsStorageDiagnosticsScenario,
-} from './settings'
+} from "./settings";
 export {
   validationDatasetMismatchScenario,
   validationFixtureFamily,
   validationRejectedScenario,
   validationReviewScenario,
   validationSuccessScenario,
-} from './validation'
+} from "./validation";
 export {
   optionsFixtureFamily,
   optionsValidationInputFailureScenario,
   optionsValidationPreviewFailureScenario,
   optionsValidationReadyScenario,
-} from './options'
+} from "./options";
 export {
   liveExecutionFixtureFamily,
   liveReadyScenario,
   liveSafetyReadyScenario,
   liveStreamStopReadyScenario,
-} from './liveExecution'
+} from "./liveExecution";
 export {
   mlSignalBundleStatusFailureScenario,
   mlSignalDatasetExportFailureScenario,
@@ -42,13 +51,13 @@ export {
   mlSignalScoreCacheFailureScenario,
   mlSignalUnavailableScenario,
   mlSignalValidationFailureScenario,
-} from './mlSignal'
+} from "./mlSignal";
 export {
   artifactLibraryFixtureFamily,
   savedRunOpenScenario,
   savedRunRepairScenario,
   savedRunRepairWriteScenario,
-} from './artifactLibrary'
+} from "./artifactLibrary";
 export {
   candidateDetailReadyScenario,
   compositeRouteSummaryReadyScenario,
@@ -57,30 +66,68 @@ export {
   optimizationFixtureFamily,
   optimizationSuccessScenario,
   taskCenterProgressReadyScenario,
-} from './optimization'
+} from "./optimization";
 export {
   aggregateFixtureFamily,
   aggregateMetaReadyScenario,
   aggregateMetaSelectionResponse,
-} from './aggregate'
+} from "./aggregate";
+export {
+  vcetTemporalBlockedRecoveryScenario,
+  vcetTemporalDefaultPlanDraft,
+  vcetTemporalEarlyFinalReportPoisonedScenario,
+  vcetTemporalEarlyFinalReportPoisonedStatus,
+  vcetTemporalEarlySelectionReportPoisonedScenario,
+  vcetTemporalEarlySelectionReportPoisonedStatus,
+  vcetTemporalFinalCompleteStatus,
+  vcetTemporalFinalReportBlockedScenario,
+  vcetTemporalFinalReportBlockedStatus,
+  vcetTemporalFinalReportResumeScenario,
+  vcetTemporalFinalReportResumeStatus,
+  vcetTemporalFinalReductionPath,
+  vcetTemporalFinalReportPath,
+  vcetTemporalFinalShardResumeScenario,
+  vcetTemporalFinalShardResumeStatus,
+  vcetTemporalLateFinalBlockedScenario,
+  vcetTemporalLateFinalBlockedStatus,
+  vcetTemporalLatePreFinalBlockedScenario,
+  vcetTemporalLatePreFinalBlockedStatus,
+  vcetTemporalLifecycleReadyScenario,
+  vcetTemporalMutationRecoveryScenario,
+  vcetTemporalPreparationPath,
+  vcetTemporalPreparedStatus,
+  vcetTemporalPreFinalBlockedStatus,
+  vcetTemporalSelectionCompleteStatus,
+  vcetTemporalSelectionReportBlockedScenario,
+  vcetTemporalSelectionReportBlockedStatus,
+  vcetTemporalSelectionReportResumeScenario,
+  vcetTemporalSelectionReportResumeStatus,
+  vcetTemporalSelectionReductionPath,
+  vcetTemporalSelectionReportPath,
+  vcetTemporalSelectionShardResumeScenario,
+  vcetTemporalSelectionShardResumeStatus,
+  vcetTemporalSourceSummary,
+  vcetTemporalSourceSummaryPath,
+  vcetTemporalStaleRecoveryScenario,
+} from "./vcetTemporal";
 export {
   campaignBatchReadyScenario,
   campaignFixtureFamily,
   campaignRunResponse,
-} from './campaign'
+} from "./campaign";
 
-import { artifactLibraryFixtureFamily } from './artifactLibrary'
-import { aggregateFixtureFamily } from './aggregate'
-import { campaignFixtureFamily } from './campaign'
-import { datasetFixtureFamily } from './dataset'
-import { emptyFixtureFamily } from './empty'
-import { liveExecutionFixtureFamily } from './liveExecution'
-import { mlSignalFixtureFamily } from './mlSignal'
-import { optimizationFixtureFamily } from './optimization'
-import { optionsFixtureFamily } from './options'
-import { settingsFixtureFamily } from './settings'
-import type { FixtureFamilyModule, MockTauriScenario } from './types'
-import { validationFixtureFamily } from './validation'
+import { artifactLibraryFixtureFamily } from "./artifactLibrary";
+import { aggregateFixtureFamily } from "./aggregate";
+import { campaignFixtureFamily } from "./campaign";
+import { datasetFixtureFamily } from "./dataset";
+import { emptyFixtureFamily } from "./empty";
+import { liveExecutionFixtureFamily } from "./liveExecution";
+import { mlSignalFixtureFamily } from "./mlSignal";
+import { optimizationFixtureFamily } from "./optimization";
+import { optionsFixtureFamily } from "./options";
+import { settingsFixtureFamily } from "./settings";
+import type { FixtureFamilyModule, MockTauriScenario } from "./types";
+import { validationFixtureFamily } from "./validation";
 
 export const fixtureFamilies: FixtureFamilyModule[] = [
   emptyFixtureFamily,
@@ -94,6 +141,8 @@ export const fixtureFamilies: FixtureFamilyModule[] = [
   campaignFixtureFamily,
   liveExecutionFixtureFamily,
   settingsFixtureFamily,
-]
+];
 
-export const fixtureScenarios: MockTauriScenario[] = fixtureFamilies.flatMap((family) => family.scenarios)
+export const fixtureScenarios: MockTauriScenario[] = fixtureFamilies.flatMap(
+  (family) => family.scenarios,
+);

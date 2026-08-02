@@ -1139,7 +1139,7 @@ defineWorkflow({
 defineWorkflow({
   id: "options.validation.inputFailure",
   title:
-    "blocks options validation preview on invalid date-range input before invoking Tauri",
+    "blocks invalid options validation preview before invoking Tauri and focuses the first error",
   tags: ["@workflow", "@regression"],
   scenario: optionsValidationInputFailureScenario,
   run: async ({ page, action }) => {
@@ -1153,13 +1153,15 @@ defineWorkflow({
         entry.command === "analyze_options_expression_validation_feasibility",
     ).length;
 
-    await expect(action("options.validation.preview")).toBeDisabled();
+    await expect(action("options.validation.preview")).toBeEnabled();
     await expect(action("options.validation.run")).toBeDisabled();
     await expect(
       page
         .getByText(/Validation start date must be before validation end date/i)
         .first(),
     ).toBeVisible();
+    await action("options.validation.preview").click();
+    await expect(page.getByLabel("Holdout end")).toBeFocused();
 
     const afterPreviewCount = (await readTauriInvokeLog(page)).filter(
       (entry) =>

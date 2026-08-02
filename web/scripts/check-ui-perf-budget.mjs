@@ -70,7 +70,16 @@ if ((observations.mock_tauri_invoke_count ?? 0) <= 0) {
 const report = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
+  runId: String(process.env.VECTORGRID_FRONTEND_QA_RUN_ID || '').trim(),
+  status: issues.length > 0 ? 'failed' : 'passed',
   source: path.relative(repoRoot, metricsPath).replace(/\\/g, '/'),
+  sourceCapture: {
+    generatedAt: typeof metrics.generated_at === 'string' ? metrics.generated_at : '',
+    runId: String(process.env.VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID || '').trim(),
+    fileModifiedAt: fs.statSync(metricsPath).mtime.toISOString(),
+    mode: typeof metrics.startup_capture_mode === 'string' ? metrics.startup_capture_mode : '',
+    note: typeof metrics.note === 'string' ? metrics.note : '',
+  },
   budgets,
   observations,
   issues,

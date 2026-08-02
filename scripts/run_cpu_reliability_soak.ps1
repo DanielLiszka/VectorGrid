@@ -219,6 +219,82 @@ function Get-StringSha256Hex {
   }
 }
 
+function ConvertTo-SoakAsciiLowerInvariant {
+  param([Parameter(Mandatory = $true)][string]$Text)
+
+  $builder = [System.Text.StringBuilder]::new($Text.Length)
+  foreach ($character in $Text.ToCharArray()) {
+    $code = [int][char]$character
+    if ($code -ge [int][char]'A' -and $code -le [int][char]'Z') {
+      [void]$builder.Append([char]($code + 32))
+    } else {
+      [void]$builder.Append($character)
+    }
+  }
+  return $builder.ToString()
+}
+
+function Test-SoakFullyQualifiedPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  try {
+    if (![System.IO.Path]::IsPathRooted($Path)) {
+      return $false
+    }
+    $root = [System.IO.Path]::GetPathRoot($Path)
+    [void][System.IO.Path]::GetFullPath($Path)
+    if (
+      [string]::IsNullOrWhiteSpace($root) -or
+      [string]::Equals($root, "\", [StringComparison]::Ordinal) -or
+      [string]::Equals($root, "/", [StringComparison]::Ordinal) -or
+      $root.EndsWith(":", [StringComparison]::Ordinal)
+    ) {
+      return $false
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Get-SoakNormalizedFullyQualifiedPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if (!(Test-SoakFullyQualifiedPath -Path $Path)) {
+    throw "Path is not fully qualified: $Path"
+  }
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $root = [System.IO.Path]::GetPathRoot($fullPath)
+  if (
+    [string]::Equals(
+      $fullPath,
+      $root,
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    return $fullPath
+  }
+  return $fullPath.TrimEnd('\', '/')
+}
+
+function Test-SoakNativePathWithin {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Parent
+  )
+
+  $fullPath = Get-SoakNormalizedFullyQualifiedPath -Path $Path
+  $fullParent = Get-SoakNormalizedFullyQualifiedPath -Path $Parent
+  $pathKey = ConvertTo-SoakAsciiLowerInvariant -Text $fullPath
+  $parentKey = ConvertTo-SoakAsciiLowerInvariant -Text $fullParent
+  if ([string]::Equals($pathKey, $parentKey, [StringComparison]::Ordinal)) {
+    return $true
+  }
+  $prefix = $parentKey.TrimEnd('\', '/') +
+    [System.IO.Path]::DirectorySeparatorChar
+  return $pathKey.StartsWith($prefix, [StringComparison]::Ordinal)
+}
+
 function Get-SoakNativeBuildOverrideEnvironmentNames {
   $fixedNames = @(
     "CC",
@@ -232,6 +308,10 @@ function Get-SoakNativeBuildOverrideEnvironmentNames {
     "NASM",
     "WINDRES",
     "RC",
+    "COMSPEC",
+    "EMBED_RESOURCE_RC_PATH",
+    "EMBED_RESOURCE_RC_ATTESTATION_NONCE",
+    "VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION",
     "CFLAGS",
     "CXXFLAGS",
     "CPPFLAGS",
@@ -252,6 +332,16 @@ function Get-SoakNativeBuildOverrideEnvironmentNames {
     "ZSTD_SYS_USE_PKG_CONFIG",
     "RING_PREGENERATE_ASM",
     "PERL_EXECUTABLE",
+    "ICU4X_DATA_DIR",
+    "REMOVE_UNUSED_COMMANDS",
+    "__TAURI_WORKSPACE__",
+    "RUSTC_STAGE",
+    "LZMA_API_STATIC",
+    "STATIC_VCRUNTIME",
+    "CXXSTDLIB",
+    "RANLIBFLAGS",
+    "PKG_CONFIG",
+    "NO_VCPKG",
     "VSTEL_MSBuildProjectFullPath",
     "VSCMD_ARG_HOST_ARCH",
     "VSCMD_ARG_TGT_ARCH",
@@ -270,42 +360,966 @@ function Get-SoakNativeBuildOverrideEnvironmentNames {
     "WindowsLibPath",
     "NETFXSDKDir",
     "INCLUDE",
+    "EXTERNAL_INCLUDE",
+    "IFCPATH",
     "LIB",
     "LIBPATH",
     "VSINSTALLDIR",
     "VCINSTALLDIR",
     "VCToolsInstallDir",
     "VCToolsVersion",
+    "VCToolsRedistDir",
+    "VCIDEInstallDir",
+    "VS170COMNTOOLS",
     "VisualStudioVersion",
     "WindowsSdkDir",
     "WindowsSDKVersion",
+    "WindowsSDK_ExecutablePath_x64",
+    "WindowsSDK_ExecutablePath_x86",
+    "WindowsSdkBinPath",
+    "WindowsSDKLibVersion",
+    "WindowsSdkVerBinPath",
     "UniversalCRTSdkDir",
     "UCRTVersion",
     "DevEnvDir",
     "ExtensionSdkDir",
     "FrameworkDir",
+    "FrameworkDir64",
     "FrameworkVersion",
-    "FrameworkVersion64"
+    "FrameworkVersion64",
+    "Framework40Version",
+    "__DOTNET_ADD_64BIT",
+    "__DOTNET_PREFERRED_BITNESS"
   )
   $toolTokens =
-    "(CC|CXX|CPP|AR|RANLIB|LD|LINKER|ASM|NASM|WINDRES|RC|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|ARFLAGS|ASMFLAGS)"
+    "(CC|CXX|CPP|AR|RANLIB|LD|LINKER|ASM|NASM|WINDRES|RC|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|ARFLAGS|ASMFLAGS|CXXSTDLIB|RANLIBFLAGS)"
   $dynamicNames = @(
     Get-ChildItem Env: | Where-Object {
       $_.Name -match "^${toolTokens}_.+$" -or
       $_.Name -match "^.+_${toolTokens}$" -or
+      $_.Name -match "^.+_NO_VCPKG$" -or
       $_.Name -match "^VSCMD_ARG_.+$" -or
-      $_.Name -match "^(PKG_CONFIG|VCPKG|OPENSSL|SQLITE3|LIBSQLITE3|ZSTD|RING|PERL)_.+$"
+      $_.Name -match "^(?i:_?VC_|VCLIB_|__DOTNET_|__VCVARS|VCVARS_).*$" -or
+      $_.Name -match "^(?i:_{0,2}VSCMD|VCINSTALL|VCIDE|VCTOOLS|VISUALSTUDIO|VS.*COMNTOOLS|WINDOWSSDK|WINDOWS_SDK|UNIVERSALCRT|UCRT|FRAMEWORK(DIR|VERSION)|NETFXSDK|EXTENSIONSDK|DEVENV).*$" -or
+      $_.Name -match "^(PKG_CONFIG|VCPKG|VCPKGRS|OPENSSL|SQLITE3|LIBSQLITE3|ZSTD|RING|PERL)_.+$"
     } | ForEach-Object { $_.Name }
   )
-  return @($fixedNames + $dynamicNames | Sort-Object -Unique)
+  $normalizedNames = [System.Collections.Generic.Dictionary[string, bool]]::new(
+    [StringComparer]::OrdinalIgnoreCase
+  )
+  foreach ($rawName in @($fixedNames + $dynamicNames)) {
+    $canonicalName = ([string]$rawName).ToUpperInvariant()
+    if (![string]::IsNullOrWhiteSpace($canonicalName)) {
+      $normalizedNames[$canonicalName] = $true
+    }
+  }
+  $result = [string[]]@($normalizedNames.Keys)
+  [Array]::Sort($result, [StringComparer]::Ordinal)
+  return $result
+}
+
+function Get-SoakExistingPathListDirectories {
+  param(
+    [Parameter(Mandatory = $true)][string]$Value,
+    [Parameter(Mandatory = $true)][string]$EnvironmentName
+  )
+
+  $directories = [System.Collections.Generic.Dictionary[string, string]]::new(
+    [StringComparer]::Ordinal
+  )
+  foreach ($rawSegment in $Value.Split([char]';')) {
+    $segment = ([string]$rawSegment).Trim()
+    if (
+      $segment.Length -ge 2 -and
+      $segment.StartsWith('"', [StringComparison]::Ordinal) -and
+      $segment.EndsWith('"', [StringComparison]::Ordinal)
+    ) {
+      $segment = $segment.Substring(1, $segment.Length - 2).Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($segment)) {
+      continue
+    }
+    if ($segment -match "[`t`r`n]") {
+      throw "$EnvironmentName contains a non-canonical path-list segment"
+    }
+    if (!(Test-SoakFullyQualifiedPath -Path $segment)) {
+      throw "$EnvironmentName contains a non-fully-qualified path-list segment: $segment"
+    }
+    $path = Get-SoakNormalizedFullyQualifiedPath -Path $segment
+    if (Test-Path -LiteralPath $path) {
+      if (!(Test-Path -LiteralPath $path -PathType Container)) {
+        throw "$EnvironmentName path-list segment is not a directory: $path"
+      }
+      Assert-NoReparseAncestors `
+        -Path $path `
+        -Context "$EnvironmentName path-list directory"
+      $key = ConvertTo-SoakAsciiLowerInvariant -Text $path
+      if (!$directories.ContainsKey($key)) {
+        $directories[$key] = $path
+      }
+    }
+  }
+  $keys = [string[]]@($directories.Keys)
+  [Array]::Sort($keys, [StringComparer]::Ordinal)
+  return @($keys | ForEach-Object { $directories[$_] })
+}
+
+function Resolve-SoakPathExecutable {
+  param(
+    [Parameter(Mandatory = $true)][string]$PathValue,
+    [Parameter(Mandatory = $true)][string]$ExecutableName
+  )
+
+  foreach ($rawSegment in $PathValue.Split([char]';')) {
+    $segment = ([string]$rawSegment).Trim()
+    if (
+      $segment.Length -ge 2 -and
+      $segment.StartsWith('"', [StringComparison]::Ordinal) -and
+      $segment.EndsWith('"', [StringComparison]::Ordinal)
+    ) {
+      $segment = $segment.Substring(1, $segment.Length - 2).Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($segment)) {
+      continue
+    }
+    if (
+      $segment -match "[`t`r`n]" -or
+      !(Test-SoakFullyQualifiedPath -Path $segment)
+    ) {
+      throw "Pinned PATH contains a non-canonical segment: $segment"
+    }
+    $directory = Get-SoakNormalizedFullyQualifiedPath -Path $segment
+    if (!(Test-Path -LiteralPath $directory -PathType Container)) {
+      continue
+    }
+    $candidate = [System.IO.Path]::GetFullPath(
+      (Join-Path $directory $ExecutableName)
+    )
+    if (Test-Path -LiteralPath $candidate) {
+      if (!(Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "PATH-resolved native tool is not an ordinary file: $candidate"
+      }
+      Assert-NoReparseAncestors `
+        -Path $candidate `
+        -Context "PATH-resolved native tool $ExecutableName"
+      return $candidate
+    }
+  }
+  throw "Pinned PATH does not resolve required native tool: $ExecutableName"
+}
+
+function Get-SoakNativeInputManifest {
+  param(
+    [Parameter(Mandatory = $true)][string]$VisualStudioInstallation,
+    [Parameter(Mandatory = $true)][string]$VcToolsVersion,
+    [Parameter(Mandatory = $true)][string]$WindowsSdkRoot
+  )
+
+  $vcToolsRoot = Join-Path $VisualStudioInstallation "VC\Tools\MSVC\$VcToolsVersion"
+  $vsCommon7ToolsRoot = Join-Path $VisualStudioInstallation "Common7\Tools"
+  $vsDevCmdPath = Join-Path $vsCommon7ToolsRoot "VsDevCmd.bat"
+  $vsDevCmdTree = Join-Path $vsCommon7ToolsRoot "vsdevcmd"
+  if (
+    !(Test-Path -LiteralPath $vsDevCmdPath -PathType Leaf) -or
+    !(Test-Path -LiteralPath $vsDevCmdTree -PathType Container)
+  ) {
+    throw "Selected Visual Studio Common7 tools omit VsDevCmd.bat or its vsdevcmd tree"
+  }
+  Assert-NoReparseAncestors `
+    -Path $vsDevCmdPath `
+    -Context "Visual Studio VsDevCmd.bat"
+  Assert-NoReparseAncestors `
+    -Path $vsDevCmdTree `
+    -Context "Visual Studio vsdevcmd tree"
+  $rootSpecs = @(
+    [ordered]@{ label = "vc_tools"; path = $vcToolsRoot },
+    [ordered]@{
+      label = "vc_auxiliary_build"
+      path = (Join-Path $VisualStudioInstallation "VC\Auxiliary\Build")
+    },
+    [ordered]@{
+      label = "vs_common7_tools"
+      path = $vsCommon7ToolsRoot
+    },
+    [ordered]@{ label = "windows_sdk_bin"; path = (Join-Path $WindowsSdkRoot "bin") },
+    [ordered]@{ label = "windows_sdk_include"; path = (Join-Path $WindowsSdkRoot "Include") },
+    [ordered]@{ label = "windows_sdk_lib"; path = (Join-Path $WindowsSdkRoot "Lib") }
+  )
+  foreach ($optionalSpec in @(
+      [ordered]@{
+        label = "windows_sdk_references"
+        path = (Join-Path $WindowsSdkRoot "References")
+      },
+      [ordered]@{
+        label = "windows_sdk_union_metadata"
+        path = (Join-Path $WindowsSdkRoot "UnionMetadata")
+      },
+      [ordered]@{
+        label = "netfx_sdk"
+        path = [Environment]::GetEnvironmentVariable("NETFXSDKDir", "Process")
+      }
+    )) {
+    if (
+      [string]$optionalSpec.label -eq "netfx_sdk" -and
+      ![string]::IsNullOrWhiteSpace([string]$optionalSpec.path) -and
+      !(Test-Path -LiteralPath ([string]$optionalSpec.path) -PathType Container)
+    ) {
+      throw "Pinned NETFXSDKDir does not identify a native input directory: $($optionalSpec.path)"
+    }
+    if (
+      ![string]::IsNullOrWhiteSpace([string]$optionalSpec.path) -and
+      (Test-Path -LiteralPath ([string]$optionalSpec.path) -PathType Container)
+    ) {
+      $rootSpecs += $optionalSpec
+    }
+  }
+
+  $pathEnvironmentNames = [string[]]@(
+    "EXTERNAL_INCLUDE",
+    "IFCPATH",
+    "INCLUDE",
+    "LIB",
+    "LIBPATH"
+  )
+  $pathEnvironmentRows = @(
+    foreach ($name in $pathEnvironmentNames) {
+      $value = [Environment]::GetEnvironmentVariable($name, "Process")
+      if ([string]::IsNullOrWhiteSpace([string]$value)) {
+        if ($name -eq "IFCPATH") {
+          continue
+        }
+        throw "Pinned native path environment is missing $name"
+      }
+      if ([string]$value -match "[`t`r`n]") {
+        throw "Pinned native path environment contains a control character: $name"
+      }
+      [ordered]@{
+        name = $name
+        value = [string]$value
+        value_sha256 = Get-StringSha256Hex -Text ([string]$value)
+      }
+    }
+  )
+  $uncoveredEnvironmentPaths =
+    [System.Collections.Generic.Dictionary[string, string]]::new(
+      [StringComparer]::Ordinal
+    )
+  foreach ($row in $pathEnvironmentRows) {
+    foreach (
+      $directory in @(
+        Get-SoakExistingPathListDirectories `
+          -Value ([string]$row.value) `
+          -EnvironmentName ([string]$row.name)
+      )
+    ) {
+      $covered = $false
+      foreach ($spec in $rootSpecs) {
+        if (
+          Test-SoakNativePathWithin `
+            -Path $directory `
+            -Parent ([System.IO.Path]::GetFullPath([string]$spec.path))
+        ) {
+          $covered = $true
+          break
+        }
+      }
+      if (!$covered) {
+        $key = ConvertTo-SoakAsciiLowerInvariant -Text $directory
+        if (!$uncoveredEnvironmentPaths.ContainsKey($key)) {
+          $uncoveredEnvironmentPaths[$key] = $directory
+        }
+      }
+    }
+  }
+  $uncoveredKeys = [string[]]@($uncoveredEnvironmentPaths.Keys)
+  [Array]::Sort($uncoveredKeys, [StringComparer]::Ordinal)
+  for ($index = 0; $index -lt $uncoveredKeys.Count; $index++) {
+    $rootSpecs += [ordered]@{
+      label = "environment_path_{0:D4}" -f $index
+      path = [string]$uncoveredEnvironmentPaths[$uncoveredKeys[$index]]
+    }
+  }
+
+  $rootMap = [System.Collections.Generic.Dictionary[string, object]]::new(
+    [StringComparer]::Ordinal
+  )
+  $fileMap = [System.Collections.Generic.Dictionary[string, object]]::new(
+    [StringComparer]::Ordinal
+  )
+  foreach ($spec in $rootSpecs) {
+    $label = [string]$spec.label
+    $root = [System.IO.Path]::GetFullPath([string]$spec.path)
+    if (!(Test-Path -LiteralPath $root -PathType Container)) {
+      throw "Required native input root is missing: $root"
+    }
+    Assert-NoReparseAncestors -Path $root -Context "Native input root $label"
+    if ($label -match "[`t`r`n]" -or $root -match "[`t`r`n]") {
+      throw "Native input root provenance contains a non-canonical control character"
+    }
+    $rootMap[$label] = [ordered]@{ label = $label; path = $root }
+    $rootPrefix = $root.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    foreach ($item in Get-ChildItem -Force -LiteralPath $root -Recurse) {
+      if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Native input manifest refuses reparse-point input: $($item.FullName)"
+      }
+      if (!$item.PSIsContainer) {
+        $absolute = [System.IO.Path]::GetFullPath($item.FullName)
+        if (!$absolute.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+          throw "Native input escaped its attested root: $absolute"
+        }
+        $relative = $absolute.Substring($rootPrefix.Length).Replace('\', '/')
+        if ($relative -match "[`t`r`n]") {
+          throw "Native input relative path contains a non-canonical control character"
+        }
+        $key = "$label`t$relative"
+        if ($fileMap.ContainsKey($key)) {
+          throw "Duplicate native input manifest row: $key"
+        }
+        $fileMap[$key] = [ordered]@{
+          root = $label
+          path = $relative
+          bytes = [long]$item.Length
+          sha256 = Get-Sha256Hex -Path $absolute
+        }
+      }
+    }
+  }
+  $rootKeys = [string[]]@($rootMap.Keys)
+  [Array]::Sort($rootKeys, [StringComparer]::Ordinal)
+  $rootRows = @($rootKeys | ForEach-Object { $rootMap[$_] })
+  $fileKeys = [string[]]@($fileMap.Keys)
+  [Array]::Sort($fileKeys, [StringComparer]::Ordinal)
+  $fileRows = @($fileKeys | ForEach-Object { $fileMap[$_] })
+  $canonicalRows = @(
+    $pathEnvironmentRows | ForEach-Object {
+      "path_environment`t{0}`t{1}" -f $_.name, $_.value_sha256
+    }
+    $rootRows | ForEach-Object {
+      "root`t{0}`t{1}" -f $_.label, $_.path
+    }
+    $fileRows | ForEach-Object {
+      "file`t{0}`t{1}`t{2}`t{3}" -f $_.root, $_.path, $_.bytes, $_.sha256
+    }
+  )
+  $canonical = $canonicalRows -join "`n"
+  $totalBytes = [long]0
+  foreach ($row in $fileRows) {
+    $totalBytes += [long]$row.bytes
+  }
+  return [pscustomobject][ordered]@{
+    schema_version = 3
+    kind = "vectorgrid_cpu_reliability_soak_native_inputs"
+    aggregate_algorithm =
+      "sha256(path_environment_tab_name_tab_value_sha256_then_root_tab_label_tab_absolute_path_then_file_tab_root_label_tab_relative_path_tab_bytes_tab_sha256_lf)"
+    aggregate_sha256 = Get-StringSha256Hex -Text $canonical
+    path_environment_count = $pathEnvironmentRows.Count
+    path_environment = [object[]]$pathEnvironmentRows
+    root_count = $rootRows.Count
+    file_count = $fileRows.Count
+    total_bytes = $totalBytes
+    roots = [object[]]$rootRows
+    files = [object[]]$fileRows
+  }
+}
+
+function Get-SoakRegistryPackageTreeManifest {
+  param(
+    [Parameter(Mandatory = $true)][string]$Label,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $rootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+  if (!(Test-Path -LiteralPath $rootPath -PathType Container)) {
+    throw "Cargo registry package tree is missing: $rootPath"
+  }
+  Assert-NoReparseAncestors -Path $rootPath -Context "Cargo registry package tree $Label"
+  if ($Label -match "[`t`r`n]" -or $rootPath -match "[`t`r`n]") {
+    throw "Cargo registry package tree provenance contains a control character"
+  }
+  $rootPrefix = $rootPath + [System.IO.Path]::DirectorySeparatorChar
+  $fileMap = [System.Collections.Generic.Dictionary[string, object]]::new(
+    [StringComparer]::Ordinal
+  )
+  foreach ($item in Get-ChildItem -Force -LiteralPath $rootPath -Recurse) {
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Cargo registry package tree refuses reparse input: $($item.FullName)"
+    }
+    if (!$item.PSIsContainer) {
+      $absolute = [System.IO.Path]::GetFullPath($item.FullName)
+      if (!$absolute.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Cargo registry package input escaped its attested root: $absolute"
+      }
+      $relative = $absolute.Substring($rootPrefix.Length).Replace('\', '/')
+      if ([string]::IsNullOrWhiteSpace($relative) -or $relative -match "[`t`r`n]") {
+        throw "Cargo registry package relative path is not canonical: $relative"
+      }
+      if ($fileMap.ContainsKey($relative)) {
+        throw "Duplicate Cargo registry package row: $relative"
+      }
+      $fileMap[$relative] = [ordered]@{
+        path = $relative
+        bytes = [long]$item.Length
+        sha256 = Get-Sha256Hex -Path $absolute
+      }
+    }
+  }
+  $fileKeys = [string[]]@($fileMap.Keys)
+  [Array]::Sort($fileKeys, [StringComparer]::Ordinal)
+  $files = @($fileKeys | ForEach-Object { $fileMap[$_] })
+  if ($files.Count -eq 0 -or !$fileMap.ContainsKey("Cargo.toml")) {
+    throw "Cargo registry package tree is empty or omits Cargo.toml: $rootPath"
+  }
+  $totalBytes = [long]0
+  foreach ($row in $files) {
+    $totalBytes += [long]$row.bytes
+  }
+  $canonical = @(
+    "root`t$Label`t$rootPath"
+    $files | ForEach-Object {
+      "file`t{0}`t{1}`t{2}" -f $_.path, $_.bytes, $_.sha256
+    }
+  ) -join "`n"
+  return [pscustomobject][ordered]@{
+    schema_version = 1
+    kind = "vectorgrid_cpu_reliability_soak_registry_package_tree"
+    aggregate_algorithm =
+      "sha256(root_tab_label_tab_absolute_path_then_file_tab_relative_path_tab_bytes_tab_sha256_lf)"
+    label = $Label
+    root_path = $rootPath
+    file_count = $files.Count
+    total_bytes = $totalBytes
+    files = [object[]]$files
+    aggregate_sha256 = Get-StringSha256Hex -Text $canonical
+  }
+}
+
+function Get-SoakEmbedResourceCargoResolution {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string]$CargoHome,
+    [Parameter(Mandatory = $true)][string]$CargoExecutablePath,
+    [Parameter(Mandatory = $true)][string]$HostTargetTriple
+  )
+
+  $repoRootPath = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+  $cargoHomePath = [System.IO.Path]::GetFullPath($CargoHome).TrimEnd('\', '/')
+  $cargoPath = [System.IO.Path]::GetFullPath($CargoExecutablePath)
+  $rootManifestRelativePath = "src-tauri/Cargo.toml"
+  $rootManifestPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $repoRootPath $rootManifestRelativePath)
+  )
+  $embedManifestRelativePath = "vendor/embed-resource-3.0.6/Cargo.toml"
+  $embedManifestPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $repoRootPath $embedManifestRelativePath)
+  )
+  foreach ($pathSpec in @(
+      [ordered]@{ path = $repoRootPath; kind = "container"; label = "Cargo metadata repository" },
+      [ordered]@{ path = $cargoHomePath; kind = "container"; label = "Cargo home" },
+      [ordered]@{ path = $cargoPath; kind = "leaf"; label = "Pinned Cargo executable" },
+      [ordered]@{ path = $rootManifestPath; kind = "leaf"; label = "Root package manifest" },
+      [ordered]@{ path = $embedManifestPath; kind = "leaf"; label = "Vendored embed-resource manifest" }
+    )) {
+    if (
+      [string]$pathSpec.kind -eq "container" -and
+      !(Test-Path -LiteralPath ([string]$pathSpec.path) -PathType Container)
+    ) {
+      throw "$($pathSpec.label) is missing: $($pathSpec.path)"
+    }
+    if (
+      [string]$pathSpec.kind -eq "leaf" -and
+      !(Test-Path -LiteralPath ([string]$pathSpec.path) -PathType Leaf)
+    ) {
+      throw "$($pathSpec.label) is missing: $($pathSpec.path)"
+    }
+    Assert-NoReparseAncestors `
+      -Path ([string]$pathSpec.path) `
+      -Context ([string]$pathSpec.label)
+  }
+  if ($HostTargetTriple -ne "x86_64-pc-windows-msvc") {
+    throw "Cargo build-chain attestation requires x86_64-pc-windows-msvc"
+  }
+
+  $metadataArguments = [string[]]@(
+    "metadata",
+    "--locked",
+    "--offline",
+    "--format-version",
+    "1",
+    "--filter-platform",
+    $HostTargetTriple,
+    "--no-default-features",
+    "--features",
+    "ta_desktop_demo_app/maintainer-tools"
+  )
+  Push-Location $repoRootPath
+  try {
+    $metadataLines = @(& $cargoPath @metadataArguments)
+    $metadataExitCode = $LASTEXITCODE
+  } finally {
+    Pop-Location
+  }
+  if ($metadataExitCode -ne 0 -or $metadataLines.Count -eq 0) {
+    throw "Pinned locked/offline Cargo metadata failed (exit code $metadataExitCode)"
+  }
+  $metadataText = $metadataLines -join "`n"
+  try {
+    $metadata = $metadataText | ConvertFrom-Json
+  } catch {
+    throw "Pinned Cargo metadata returned invalid JSON: $($_.Exception.Message)"
+  }
+  if ([int]$metadata.version -ne 1 -or $null -eq $metadata.resolve) {
+    throw "Pinned Cargo metadata format or resolved graph is invalid"
+  }
+  $metadataWorkspaceRoot = [System.IO.Path]::GetFullPath(
+    [string]$metadata.workspace_root
+  ).TrimEnd('\', '/')
+  Assert-NoReparseAncestors `
+    -Path $metadataWorkspaceRoot `
+    -Context "Cargo metadata workspace root"
+  if (
+    ![string]::Equals(
+      $metadataWorkspaceRoot,
+      $repoRootPath,
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    throw "Cargo metadata workspace root differs from the pinned repository"
+  }
+
+  $rootPackages = @($metadata.packages | Where-Object {
+      [string]$_.name -eq "ta_desktop_demo_app"
+    })
+  if ($rootPackages.Count -ne 1 -or [string]$rootPackages[0].version -ne "0.1.0") {
+    throw "Cargo metadata must resolve exactly one ta_desktop_demo_app 0.1.0 package"
+  }
+  $rootPackage = $rootPackages[0]
+  $rootPackageId = [string]$rootPackage.id
+  $resolvedRootManifestPath = [System.IO.Path]::GetFullPath(
+    [string]$rootPackage.manifest_path
+  )
+  if (
+    $null -ne $rootPackage.source -or
+    !$rootPackageId.StartsWith("path+file:///", [StringComparison]::Ordinal) -or
+    !$rootPackageId.EndsWith(
+      "#ta_desktop_demo_app@0.1.0",
+      [StringComparison]::Ordinal
+    ) -or
+    ![string]::Equals(
+      $resolvedRootManifestPath,
+      $rootManifestPath,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    @($metadata.workspace_members | Where-Object {
+        [string]::Equals([string]$_, $rootPackageId, [StringComparison]::Ordinal)
+      }).Count -ne 1
+  ) {
+    throw "Cargo metadata did not resolve the canonical root workspace package"
+  }
+  Assert-NoReparseAncestors `
+    -Path $resolvedRootManifestPath `
+    -Context "Cargo-resolved root package manifest"
+
+  $tauriBuildPackages = @($metadata.packages | Where-Object {
+      [string]$_.name -eq "tauri-build"
+    })
+  if ($tauriBuildPackages.Count -ne 1 -or [string]$tauriBuildPackages[0].version -ne "2.5.6") {
+    throw "Cargo metadata must resolve exactly one tauri-build 2.5.6 package"
+  }
+  $tauriBuildPackage = $tauriBuildPackages[0]
+  $tauriBuildPackageId = [string]$tauriBuildPackage.id
+  $tauriBuildSource = [string]$tauriBuildPackage.source
+  if (
+    $tauriBuildPackageId -ne
+      "registry+https://github.com/rust-lang/crates.io-index#tauri-build@2.5.6" -or
+    $tauriBuildSource -ne
+      "registry+https://github.com/rust-lang/crates.io-index"
+  ) {
+    throw "Cargo metadata resolved an unexpected tauri-build package"
+  }
+  $tauriBuildManifestPath = [System.IO.Path]::GetFullPath(
+    [string]$tauriBuildPackage.manifest_path
+  )
+  Assert-NoReparseAncestors `
+    -Path $tauriBuildManifestPath `
+    -Context "Cargo-resolved tauri-build manifest"
+  $tauriBuildTree = Get-SoakRegistryPackageTreeManifest `
+    -Label "tauri-build@2.5.6" `
+    -Root (Split-Path -Parent $tauriBuildManifestPath)
+
+  $tauriWinresPackages = @($metadata.packages | Where-Object {
+      [string]$_.name -eq "tauri-winres"
+    })
+  if (
+    $tauriWinresPackages.Count -ne 1 -or
+    [string]$tauriWinresPackages[0].version -ne "0.3.5"
+  ) {
+    throw "Cargo metadata must resolve exactly one tauri-winres 0.3.5 package"
+  }
+  $tauriWinresPackage = $tauriWinresPackages[0]
+  $tauriWinresPackageId = [string]$tauriWinresPackage.id
+  $tauriWinresSource = [string]$tauriWinresPackage.source
+  if (
+    $tauriWinresPackageId -ne
+      "registry+https://github.com/rust-lang/crates.io-index#tauri-winres@0.3.5" -or
+    $tauriWinresSource -ne
+      "registry+https://github.com/rust-lang/crates.io-index"
+  ) {
+    throw "Cargo metadata resolved an unexpected tauri-winres package"
+  }
+  $tauriWinresManifestPath = [System.IO.Path]::GetFullPath(
+    [string]$tauriWinresPackage.manifest_path
+  )
+  Assert-NoReparseAncestors `
+    -Path $tauriWinresManifestPath `
+    -Context "Cargo-resolved tauri-winres manifest"
+  $tauriWinresTree = Get-SoakRegistryPackageTreeManifest `
+    -Label "tauri-winres@0.3.5" `
+    -Root (Split-Path -Parent $tauriWinresManifestPath)
+  $registrySourceRoot = [System.IO.Path]::GetFullPath(
+    (Join-Path $cargoHomePath "registry\src")
+  )
+  foreach ($treeSpec in @(
+      [ordered]@{
+        tree = $tauriBuildTree
+        directory_name = "tauri-build-2.5.6"
+      },
+      [ordered]@{
+        tree = $tauriWinresTree
+        directory_name = "tauri-winres-0.3.5"
+      }
+    )) {
+    if (
+      !(Test-PathWithin `
+          -Path ([string]$treeSpec.tree.root_path) `
+          -Parent $registrySourceRoot) -or
+      (Split-Path -Leaf ([string]$treeSpec.tree.root_path)) -ne
+        [string]$treeSpec.directory_name
+    ) {
+      throw "Cargo registry package tree escaped the pinned CARGO_HOME registry source"
+    }
+  }
+
+  $embedPackages = @($metadata.packages | Where-Object {
+      [string]$_.name -eq "embed-resource"
+    })
+  if ($embedPackages.Count -ne 1 -or [string]$embedPackages[0].version -ne "3.0.6") {
+    throw "Cargo metadata must resolve exactly one embed-resource 3.0.6 package"
+  }
+  $embedPackage = $embedPackages[0]
+  $embedPackageId = [string]$embedPackage.id
+  $resolvedEmbedManifestPath = [System.IO.Path]::GetFullPath(
+    [string]$embedPackage.manifest_path
+  )
+  if (
+    $null -ne $embedPackage.source -or
+    !$embedPackageId.StartsWith("path+file:///", [StringComparison]::Ordinal) -or
+    !$embedPackageId.EndsWith(
+      "#embed-resource@3.0.6",
+      [StringComparison]::Ordinal
+    ) -or
+    ![string]::Equals(
+      $resolvedEmbedManifestPath,
+      $embedManifestPath,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    @($metadata.workspace_members | Where-Object {
+        [string]::Equals([string]$_, $embedPackageId, [StringComparison]::Ordinal)
+      }).Count -ne 1
+  ) {
+    throw "Cargo metadata did not resolve the canonical vendored embed-resource package"
+  }
+  Assert-NoReparseAncestors `
+    -Path $resolvedEmbedManifestPath `
+    -Context "Cargo-resolved embed-resource manifest"
+
+  $rootNodes = @($metadata.resolve.nodes | Where-Object {
+      [string]$_.id -eq $rootPackageId
+    })
+  $tauriBuildNodes = @($metadata.resolve.nodes | Where-Object {
+      [string]$_.id -eq $tauriBuildPackageId
+    })
+  $tauriWinresNodes = @($metadata.resolve.nodes | Where-Object {
+      [string]$_.id -eq $tauriWinresPackageId
+    })
+  if (
+    $rootNodes.Count -ne 1 -or
+    $tauriBuildNodes.Count -ne 1 -or
+    $tauriWinresNodes.Count -ne 1 -or
+    @($rootNodes[0].features).Count -ne 1 -or
+    [string]$rootNodes[0].features[0] -ne "maintainer-tools"
+  ) {
+    throw "Cargo metadata does not contain the exact maintainer-tools root resolve node"
+  }
+
+  $rootDeclaredEdges = @($rootPackage.dependencies | Where-Object {
+      [string]$_.name -eq "tauri-build"
+    })
+  $tauriBuildDeclaredEdges = @($tauriBuildPackage.dependencies | Where-Object {
+      [string]$_.name -eq "tauri-winres"
+    })
+  $tauriWinresDeclaredEdges = @($tauriWinresPackage.dependencies | Where-Object {
+      [string]$_.name -eq "embed-resource"
+    })
+  if (
+    $rootDeclaredEdges.Count -ne 1 -or
+    [string]$rootDeclaredEdges[0].req -ne "^2" -or
+    [string]$rootDeclaredEdges[0].kind -ne "build" -or
+    $null -ne $rootDeclaredEdges[0].target -or
+    $null -ne $rootDeclaredEdges[0].rename -or
+    [bool]$rootDeclaredEdges[0].optional -or
+    ![bool]$rootDeclaredEdges[0].uses_default_features -or
+    @($rootDeclaredEdges[0].features).Count -ne 0 -or
+    $null -ne $rootDeclaredEdges[0].registry
+  ) {
+    throw "Root package does not declare the exact tauri-build build dependency"
+  }
+  if (
+    $tauriBuildDeclaredEdges.Count -ne 1 -or
+    [string]$tauriBuildDeclaredEdges[0].req -ne "^0.3" -or
+    $null -ne $tauriBuildDeclaredEdges[0].kind -or
+    $null -ne $tauriBuildDeclaredEdges[0].target -or
+    $null -ne $tauriBuildDeclaredEdges[0].rename -or
+    [bool]$tauriBuildDeclaredEdges[0].optional -or
+    ![bool]$tauriBuildDeclaredEdges[0].uses_default_features -or
+    @($tauriBuildDeclaredEdges[0].features).Count -ne 0 -or
+    $null -ne $tauriBuildDeclaredEdges[0].registry
+  ) {
+    throw "tauri-build does not declare the exact normal tauri-winres dependency"
+  }
+  if (
+    $tauriWinresDeclaredEdges.Count -ne 1 -or
+    [string]$tauriWinresDeclaredEdges[0].req -ne "^3" -or
+    $null -ne $tauriWinresDeclaredEdges[0].kind -or
+    $null -ne $tauriWinresDeclaredEdges[0].target -or
+    $null -ne $tauriWinresDeclaredEdges[0].rename -or
+    [bool]$tauriWinresDeclaredEdges[0].optional -or
+    ![bool]$tauriWinresDeclaredEdges[0].uses_default_features -or
+    @($tauriWinresDeclaredEdges[0].features).Count -ne 0 -or
+    $null -ne $tauriWinresDeclaredEdges[0].registry
+  ) {
+    throw "tauri-winres does not declare the exact normal embed-resource dependency"
+  }
+
+  $rootResolvedEdges = @($rootNodes[0].deps | Where-Object {
+      [string]$_.name -eq "tauri_build"
+    })
+  $tauriBuildResolvedEdges = @($tauriBuildNodes[0].deps | Where-Object {
+      [string]$_.name -eq "tauri_winres"
+    })
+  $tauriWinresResolvedEdges = @($tauriWinresNodes[0].deps | Where-Object {
+      [string]$_.name -eq "embed_resource"
+    })
+  if (
+    $rootResolvedEdges.Count -ne 1 -or
+    [string]$rootResolvedEdges[0].pkg -ne $tauriBuildPackageId -or
+    @($rootResolvedEdges[0].dep_kinds).Count -ne 1 -or
+    [string]$rootResolvedEdges[0].dep_kinds[0].kind -ne "build" -or
+    $null -ne $rootResolvedEdges[0].dep_kinds[0].target
+  ) {
+    throw "Root package did not resolve its build edge to exact tauri-build"
+  }
+  if (
+    $tauriBuildResolvedEdges.Count -ne 1 -or
+    [string]$tauriBuildResolvedEdges[0].pkg -ne $tauriWinresPackageId -or
+    @($tauriBuildResolvedEdges[0].dep_kinds).Count -ne 1 -or
+    $null -ne $tauriBuildResolvedEdges[0].dep_kinds[0].kind -or
+    $null -ne $tauriBuildResolvedEdges[0].dep_kinds[0].target
+  ) {
+    throw "tauri-build did not resolve its normal edge to exact tauri-winres"
+  }
+  if (
+    $tauriWinresResolvedEdges.Count -ne 1 -or
+    [string]$tauriWinresResolvedEdges[0].pkg -ne $embedPackageId -or
+    @($tauriWinresResolvedEdges[0].dep_kinds).Count -ne 1 -or
+    $null -ne $tauriWinresResolvedEdges[0].dep_kinds[0].kind -or
+    $null -ne $tauriWinresResolvedEdges[0].dep_kinds[0].target
+  ) {
+    throw "tauri-winres did not resolve its normal edge to vendored embed-resource"
+  }
+
+  foreach ($canonicalText in @(
+      $repoRootPath,
+      $cargoHomePath,
+      $cargoPath,
+      $rootPackageId,
+      $resolvedRootManifestPath,
+      $tauriBuildPackageId,
+      $tauriBuildSource,
+      $tauriBuildManifestPath,
+      $tauriWinresPackageId,
+      $tauriWinresSource,
+      $tauriWinresManifestPath,
+      $embedPackageId,
+      $resolvedEmbedManifestPath
+    )) {
+    if ([string]$canonicalText -match "[`t`r`n]") {
+      throw "Cargo build-chain provenance contains a non-canonical control character"
+    }
+  }
+
+  $cargoItem = Get-Item -Force -LiteralPath $cargoPath
+  $rootManifestItem = Get-Item -Force -LiteralPath $rootManifestPath
+  $embedManifestItem = Get-Item -Force -LiteralPath $embedManifestPath
+  $cargoSha256 = Get-Sha256Hex -Path $cargoPath
+  $rootManifestSha256 = Get-Sha256Hex -Path $rootManifestPath
+  $embedManifestSha256 = Get-Sha256Hex -Path $embedManifestPath
+  $metadataSha256 = Get-StringSha256Hex -Text $metadataText
+  $canonical = @(
+    "metadata_format_version`t1",
+    "metadata_output_sha256`t$metadataSha256",
+    "metadata_arguments`t$($metadataArguments -join "`t")",
+    "workspace_root`t$repoRootPath",
+    "cargo_home`t$cargoHomePath",
+    "workspace_member_count`t$(@($metadata.workspace_members).Count)",
+    "root_resolved_features`tmaintainer-tools",
+    "cargo`t$cargoPath`t$([long]$cargoItem.Length)`t$cargoSha256",
+    "root_package_match_count`t1",
+    "root_package`t$rootPackageId`t0.1.0`tnull`t$resolvedRootManifestPath`t$rootManifestRelativePath`t$([long]$rootManifestItem.Length)`t$rootManifestSha256",
+    "tauri_build_match_count`t1",
+    "tauri_build`t$tauriBuildPackageId`t2.5.6`t$tauriBuildSource`t$tauriBuildManifestPath`t$($tauriBuildTree.aggregate_sha256)",
+    "tauri_winres_match_count`t1",
+    "tauri_winres`t$tauriWinresPackageId`t0.3.5`t$tauriWinresSource`t$tauriWinresManifestPath`t$($tauriWinresTree.aggregate_sha256)",
+    "embed_resource_match_count`t1",
+    "embed_resource`t$embedPackageId`t3.0.6`tnull`t$resolvedEmbedManifestPath`t$embedManifestRelativePath`t$([long]$embedManifestItem.Length)`t$embedManifestSha256",
+    "root_to_tauri_build_declared_match_count`t1",
+    "root_to_tauri_build_resolved_match_count`t1",
+    "root_to_tauri_build_edge`t$rootPackageId`ttauri-build`ttauri_build`t$tauriBuildPackageId`tbuild`tnull`t^2",
+    "tauri_build_to_winres_declared_match_count`t1",
+    "tauri_build_to_winres_resolved_match_count`t1",
+    "tauri_build_to_winres_edge`t$tauriBuildPackageId`ttauri-winres`ttauri_winres`t$tauriWinresPackageId`tnormal`tnull`t^0.3",
+    "winres_to_embed_declared_match_count`t1",
+    "winres_to_embed_resolved_match_count`t1",
+    "winres_to_embed_edge`t$tauriWinresPackageId`tembed-resource`tembed_resource`t$embedPackageId`tnormal`tnull`t^3"
+  ) -join "`n"
+
+  return [pscustomobject][ordered]@{
+    schema_version = 2
+    kind = "vectorgrid_cpu_reliability_soak_windows_build_dependency_chain"
+    aggregate_algorithm = "sha256(canonical_tab_rows_lf)"
+    metadata_format_version = 1
+    metadata_output_sha256 = $metadataSha256
+    metadata_arguments = [object[]]$metadataArguments
+    workspace_root = $repoRootPath
+    cargo_home = $cargoHomePath
+    workspace_member_count = @($metadata.workspace_members).Count
+    root_resolved_features = [object[]]@("maintainer-tools")
+    cargo = [ordered]@{
+      path = $cargoPath
+      bytes = [long]$cargoItem.Length
+      sha256 = $cargoSha256
+    }
+    root_package_name_match_count = 1
+    root_package = [ordered]@{
+      package_id = $rootPackageId
+      name = "ta_desktop_demo_app"
+      version = "0.1.0"
+      source = $null
+      manifest_path = $resolvedRootManifestPath
+      manifest_repo_relative_path = $rootManifestRelativePath
+      manifest_bytes = [long]$rootManifestItem.Length
+      manifest_sha256 = $rootManifestSha256
+      workspace_member = $true
+    }
+    tauri_build_package_name_match_count = 1
+    tauri_build = [ordered]@{
+      package_id = $tauriBuildPackageId
+      name = "tauri-build"
+      version = "2.5.6"
+      source = $tauriBuildSource
+      manifest_path = $tauriBuildManifestPath
+      source_tree = $tauriBuildTree
+    }
+    tauri_winres_package_name_match_count = 1
+    tauri_winres = [ordered]@{
+      package_id = $tauriWinresPackageId
+      name = "tauri-winres"
+      version = "0.3.5"
+      source = $tauriWinresSource
+      manifest_path = $tauriWinresManifestPath
+      source_tree = $tauriWinresTree
+    }
+    embed_resource_package_name_match_count = 1
+    embed_resource = [ordered]@{
+      package_id = $embedPackageId
+      name = "embed-resource"
+      version = "3.0.6"
+      source = $null
+      manifest_path = $resolvedEmbedManifestPath
+      manifest_repo_relative_path = $embedManifestRelativePath
+      manifest_bytes = [long]$embedManifestItem.Length
+      manifest_sha256 = $embedManifestSha256
+      workspace_member = $true
+    }
+    root_to_tauri_build_declared_edge_match_count = 1
+    root_to_tauri_build_resolved_edge_match_count = 1
+    root_to_tauri_build_edge = [ordered]@{
+      from_package_id = $rootPackageId
+      declared_dependency_name = "tauri-build"
+      resolved_dependency_name = "tauri_build"
+      to_package_id = $tauriBuildPackageId
+      kind = "build"
+      target = $null
+      declared_requirement = "^2"
+    }
+    tauri_build_to_winres_declared_edge_match_count = 1
+    tauri_build_to_winres_resolved_edge_match_count = 1
+    tauri_build_to_winres_edge = [ordered]@{
+      from_package_id = $tauriBuildPackageId
+      declared_dependency_name = "tauri-winres"
+      resolved_dependency_name = "tauri_winres"
+      to_package_id = $tauriWinresPackageId
+      kind = "normal"
+      target = $null
+      declared_requirement = "^0.3"
+    }
+    winres_to_embed_declared_edge_match_count = 1
+    winres_to_embed_resolved_edge_match_count = 1
+    winres_to_embed_edge = [ordered]@{
+      from_package_id = $tauriWinresPackageId
+      declared_dependency_name = "embed-resource"
+      resolved_dependency_name = "embed_resource"
+      to_package_id = $embedPackageId
+      kind = "normal"
+      target = $null
+      declared_requirement = "^3"
+    }
+    aggregate_sha256 = Get-StringSha256Hex -Text $canonical
+  }
 }
 
 function Get-SoakNativeBuildProvenance {
-  param([Parameter(Mandatory = $true)][string]$HostTargetTriple)
+  param(
+    [Parameter(Mandatory = $true)][string]$HostTargetTriple,
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string]$CargoHome,
+    [Parameter(Mandatory = $true)][string]$CargoExecutablePath,
+    [Parameter(Mandatory = $true)][string]$ResourceCompilerAttestationNonce,
+    [string[]]$PinnedEnvironmentNames = @(),
+    [object]$ResourceCompilerInvocation = $null,
+    [switch]$ConfigurePinnedEnvironment
+  )
 
   if ($env:OS -ne "Windows_NT" -or $HostTargetTriple -ne "x86_64-pc-windows-msvc") {
     throw "Native build provenance currently supports only x86_64-pc-windows-msvc"
   }
+  if ($ResourceCompilerAttestationNonce -notmatch '^[a-f0-9]{32}$') {
+    throw "Resource compiler attestation nonce must be 32 lowercase hexadecimal characters"
+  }
+
+  $systemRoot = [Environment]::GetEnvironmentVariable("SystemRoot", "Machine")
+  if ([string]::IsNullOrWhiteSpace($systemRoot)) {
+    $systemRoot = [Environment]::GetFolderPath(
+      [Environment+SpecialFolder]::Windows
+    )
+  }
+  $systemRoot = [System.IO.Path]::GetFullPath($systemRoot).TrimEnd('\', '/')
+  $cmdPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $systemRoot "System32\cmd.exe")
+  )
+  if (!(Test-Path -LiteralPath $cmdPath -PathType Leaf)) {
+    throw "Canonical Windows command processor is missing: $cmdPath"
+  }
+  Assert-NoReparseAncestors -Path $cmdPath -Context "Canonical Windows command processor"
 
   $vswherePath = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
   if (!(Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
@@ -333,7 +1347,17 @@ function Get-SoakNativeBuildProvenance {
   if ($vcToolsVersion -notmatch '^\d+\.\d+\.\d+$') {
     throw "Visual C++ default tool version is malformed: $vcToolsVersion"
   }
-  $vcBinDir = Join-Path $installationPath "VC\Tools\MSVC\$vcToolsVersion\bin\Hostx64\x64"
+  $vcToolsRoot = Join-Path $installationPath "VC\Tools\MSVC\$vcToolsVersion"
+  $vcBinDir = Join-Path $vcToolsRoot "bin\Hostx64\x64"
+  $targetLinkerEnvironmentName =
+    "CARGO_TARGET_{0}_LINKER" -f
+      $HostTargetTriple.Replace("-", "_").ToUpperInvariant()
+  if ($targetLinkerEnvironmentName -notmatch '^CARGO_TARGET_[A-Z0-9_]+_LINKER$') {
+    throw "Host target triple cannot form a canonical Cargo linker environment name"
+  }
+  $targetLinkerPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $vcBinDir "link.exe")
+  )
 
   $kitsRoot = [string](Get-ItemPropertyValue `
       -LiteralPath "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows Kits\Installed Roots" `
@@ -341,61 +1365,337 @@ function Get-SoakNativeBuildProvenance {
       -ErrorAction Stop)
   $kitsRoot = [System.IO.Path]::GetFullPath($kitsRoot)
   Assert-NoReparseAncestors -Path $kitsRoot -Context "Windows SDK root"
-  $sdkVersionDirectory = Get-ChildItem -LiteralPath (Join-Path $kitsRoot "bin") -Directory |
-    Where-Object {
-      $_.Name -match '^\d+\.\d+\.\d+\.\d+$' -and
-      (Test-Path -LiteralPath (Join-Path $_.FullName "x64\rc.exe") -PathType Leaf)
-    } |
-    Sort-Object { [version]$_.Name } -Descending |
-    Select-Object -First 1
-  if ($null -eq $sdkVersionDirectory) {
+  $sdkVersionDirectories = @(
+    Get-ChildItem -LiteralPath (Join-Path $kitsRoot "bin") -Directory |
+      Where-Object {
+        $_.Name -match '^\d+\.\d+\.\d+\.\d+$' -and
+        (Test-Path -LiteralPath (Join-Path $_.FullName "x64\rc.exe") -PathType Leaf)
+      } |
+      Sort-Object { [version]$_.Name }
+  )
+  if ($sdkVersionDirectories.Count -eq 0) {
     throw "No usable x64 Windows SDK tool directory was found under $kitsRoot"
   }
+  $sdkVersionDirectory = $sdkVersionDirectories[-1]
   $sdkVersion = [string]$sdkVersionDirectory.Name
   $sdkBinDir = Join-Path $sdkVersionDirectory.FullName "x64"
+  $resourceCompilerPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $sdkBinDir "rc.exe")
+  )
+  $vcvarsAllPath = Join-Path $installationPath "VC\Auxiliary\Build\vcvarsall.bat"
+  if (!(Test-Path -LiteralPath $vcvarsAllPath -PathType Leaf)) {
+    throw "Pinned Visual C++ environment initializer is missing: $vcvarsAllPath"
+  }
+  $vcvarsAllPath = [System.IO.Path]::GetFullPath($vcvarsAllPath)
+
+  $explicitSelectionEnvironmentNames = [string[]]@(
+    $targetLinkerEnvironmentName,
+    "COMSPEC",
+    "EMBED_RESOURCE_RC_ATTESTATION_NONCE",
+    "EMBED_RESOURCE_RC_PATH"
+  )
+  $vcvarsEnvironmentNames = [string[]]@()
+  if ($ConfigurePinnedEnvironment) {
+    $baselineEnvironment = [System.Collections.Generic.Dictionary[string, string]]::new(
+      [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($entry in Get-ChildItem Env:) {
+      $canonicalName = ([string]$entry.Name).ToUpperInvariant()
+      if ($baselineEnvironment.ContainsKey($canonicalName)) {
+        throw "Process environment contains a case-insensitive duplicate name: $canonicalName"
+      }
+      $baselineEnvironment[$canonicalName] = [string]$entry.Value
+    }
+    $vcvarsCommand =
+      'call "' + $vcvarsAllPath + '" x64 ' + $sdkVersion +
+      ' -vcvars_ver=' + $vcToolsVersion + ' >nul && set'
+    $vcvarsLines = @(& $cmdPath /d /s /c $vcvarsCommand)
+    if ($LASTEXITCODE -ne 0 -or $vcvarsLines.Count -eq 0) {
+      throw "Pinned vcvarsall environment initialization failed"
+    }
+    $vcvarsEnvironment = [System.Collections.Generic.Dictionary[string, string]]::new(
+      [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($line in $vcvarsLines) {
+      $separator = ([string]$line).IndexOf("=")
+      if ($separator -gt 0) {
+        $canonicalName =
+          ([string]$line).Substring(0, $separator).ToUpperInvariant()
+        if ($vcvarsEnvironment.ContainsKey($canonicalName)) {
+          throw "vcvarsall emitted a case-insensitive duplicate name: $canonicalName"
+        }
+        $vcvarsEnvironment[$canonicalName] =
+          ([string]$line).Substring($separator + 1)
+      }
+    }
+    $vcvarsEnvironmentNames = [string[]]@(
+      $vcvarsEnvironment.Keys | Where-Object {
+        $explicitSelectionEnvironmentNames -notcontains [string]$_ -and
+        (
+          !$baselineEnvironment.ContainsKey([string]$_) -or
+          ![string]::Equals(
+            [string]$baselineEnvironment[[string]$_],
+            [string]$vcvarsEnvironment[[string]$_],
+            [StringComparison]::Ordinal
+          )
+        )
+      }
+    )
+    [Array]::Sort($vcvarsEnvironmentNames, [StringComparer]::Ordinal)
+    if ($vcvarsEnvironmentNames.Count -eq 0) {
+      throw "Pinned vcvarsall did not produce any changed environment names"
+    }
+    foreach ($name in $vcvarsEnvironmentNames) {
+      if (
+        $name -match '^(?i:CARGO_|RUST|TAURI_|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|POLYGON_|EMBED_RESOURCE_)'
+      ) {
+        throw "vcvarsall attempted to change a protected soak environment name: $name"
+      }
+      [Environment]::SetEnvironmentVariable(
+        $name,
+        [string]$vcvarsEnvironment[$name],
+        "Process"
+      )
+    }
+    [Environment]::SetEnvironmentVariable(
+      "COMSPEC",
+      $cmdPath,
+      "Process"
+    )
+    [Environment]::SetEnvironmentVariable(
+      "EMBED_RESOURCE_RC_PATH",
+      $resourceCompilerPath,
+      "Process"
+    )
+    [Environment]::SetEnvironmentVariable(
+      "EMBED_RESOURCE_RC_ATTESTATION_NONCE",
+      $ResourceCompilerAttestationNonce,
+      "Process"
+    )
+    [Environment]::SetEnvironmentVariable(
+      $targetLinkerEnvironmentName,
+      $targetLinkerPath,
+      "Process"
+    )
+    $selectionEnvironmentNames = [string[]]@(
+      $vcvarsEnvironmentNames + $explicitSelectionEnvironmentNames |
+        Select-Object -Unique
+    )
+    [Array]::Sort($selectionEnvironmentNames, [StringComparer]::Ordinal)
+  } else {
+    if ($PinnedEnvironmentNames.Count -eq 0) {
+      throw "Post-build native provenance requires the pinned vcvars environment-name set"
+    }
+    $pinnedNameSet = [System.Collections.Generic.Dictionary[string, bool]]::new(
+      [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($rawName in $PinnedEnvironmentNames) {
+      $canonicalName = ([string]$rawName).ToUpperInvariant()
+      if (
+        [string]$rawName -cne $canonicalName -or
+        $pinnedNameSet.ContainsKey($canonicalName)
+      ) {
+        throw "Pinned native environment names must be uppercase and case-insensitively unique"
+      }
+      $pinnedNameSet[$canonicalName] = $true
+    }
+    $selectionEnvironmentNames = [string[]]@($pinnedNameSet.Keys)
+    [Array]::Sort($selectionEnvironmentNames, [StringComparer]::Ordinal)
+    $vcvarsEnvironmentNames = [string[]]@(
+      $selectionEnvironmentNames | Where-Object {
+        $explicitSelectionEnvironmentNames -notcontains $_
+      }
+    )
+  }
+
+  $requiredEnvironment = @(
+    "PATH",
+    "COMSPEC",
+    $targetLinkerEnvironmentName,
+    "EMBED_RESOURCE_RC_ATTESTATION_NONCE",
+    "EMBED_RESOURCE_RC_PATH",
+    "EXTERNAL_INCLUDE",
+    "FRAMEWORK40VERSION",
+    "__DOTNET_ADD_64BIT",
+    "__DOTNET_PREFERRED_BITNESS",
+    "INCLUDE",
+    "LIB",
+    "LIBPATH",
+    "VSINSTALLDIR",
+    "VCINSTALLDIR",
+    "VCTOOLSINSTALLDIR",
+    "VCTOOLSVERSION",
+    "WINDOWSSDKDIR",
+    "WINDOWSSDKVERSION",
+    "UNIVERSALCRTSDKDIR",
+    "UCRTVERSION",
+    "VSCMD_ARG_HOST_ARCH",
+    "VSCMD_ARG_TGT_ARCH",
+    "VSCMD_ARG_VCVARS_VER",
+    "VSCMD_ARG_WINSDK"
+  )
+  foreach ($name in $requiredEnvironment) {
+    if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, "Process"))) {
+      throw "Pinned native build environment is missing $name"
+    }
+  }
+  $normalizedVsInstall = [System.IO.Path]::GetFullPath($env:VSINSTALLDIR).TrimEnd('\', '/')
+  $normalizedDiscoveredVs = $installationPath.TrimEnd('\', '/')
+  $normalizedSdkRoot = [System.IO.Path]::GetFullPath($env:WindowsSdkDir).TrimEnd('\', '/')
+  $normalizedDiscoveredSdkRoot = $kitsRoot.TrimEnd('\', '/')
+  $normalizedResourceCompilerOverride =
+    [System.IO.Path]::GetFullPath($env:EMBED_RESOURCE_RC_PATH)
+  if (
+    ![string]::Equals(
+      $normalizedVsInstall,
+      $normalizedDiscoveredVs,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    ![string]::Equals(
+      ([string]$env:VCToolsVersion).TrimEnd('\'),
+      $vcToolsVersion,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    ![string]::Equals(
+      $normalizedSdkRoot,
+      $normalizedDiscoveredSdkRoot,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    ![string]::Equals(
+      ([string]$env:WindowsSDKVersion).TrimEnd('\'),
+      $sdkVersion,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    ![string]::Equals(
+      $normalizedResourceCompilerOverride,
+      $resourceCompilerPath,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    $env:VSCMD_ARG_HOST_ARCH -ne "x64" -or
+    $env:VSCMD_ARG_TGT_ARCH -ne "x64" -or
+    ![string]::Equals(
+      [System.IO.Path]::GetFullPath($env:COMSPEC),
+      $cmdPath,
+      [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    $env:EMBED_RESOURCE_RC_ATTESTATION_NONCE -ne
+      $ResourceCompilerAttestationNonce
+  ) {
+    throw "Pinned native build environment does not match the discovered VC/SDK selection"
+  }
 
   $toolSpecs = @(
     [ordered]@{ name = "vswhere"; path = $vswherePath },
+    [ordered]@{ name = "vcvarsall"; path = $vcvarsAllPath },
+    [ordered]@{ name = "cmd"; path = $cmdPath },
     [ordered]@{ name = "cl"; path = (Join-Path $vcBinDir "cl.exe") },
-    [ordered]@{ name = "link"; path = (Join-Path $vcBinDir "link.exe") },
+    [ordered]@{ name = "link"; path = $targetLinkerPath },
     [ordered]@{ name = "lib"; path = (Join-Path $vcBinDir "lib.exe") },
     [ordered]@{ name = "ml64"; path = (Join-Path $vcBinDir "ml64.exe") },
-    [ordered]@{ name = "rc"; path = (Join-Path $sdkBinDir "rc.exe") },
+    [ordered]@{ name = "rc"; path = $resourceCompilerPath },
     [ordered]@{ name = "mt"; path = (Join-Path $sdkBinDir "mt.exe") }
   )
-  $tools = @(
-    foreach ($spec in $toolSpecs) {
-      $path = [System.IO.Path]::GetFullPath([string]$spec.path)
-      if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Required native build tool is missing: $path"
+  $toolMap = [System.Collections.Generic.Dictionary[string, object]]::new(
+    [StringComparer]::Ordinal
+  )
+  foreach ($spec in $toolSpecs) {
+    $name = [string]$spec.name
+    $path = [System.IO.Path]::GetFullPath([string]$spec.path)
+    if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "Required native build tool is missing: $path"
+    }
+    Assert-NoReparseAncestors -Path $path -Context "Native build tool $name"
+    $item = Get-Item -Force -LiteralPath $path
+    $toolMap[$name] = [ordered]@{
+      name = $name
+      path = $path
+      bytes = [long]$item.Length
+      sha256 = Get-Sha256Hex -Path $path
+    }
+  }
+  $toolKeys = [string[]]@($toolMap.Keys)
+  [Array]::Sort($toolKeys, [StringComparer]::Ordinal)
+  $tools = @($toolKeys | ForEach-Object { $toolMap[$_] })
+  $pathValue = [Environment]::GetEnvironmentVariable("PATH", "Process")
+  if ([string]::IsNullOrWhiteSpace([string]$pathValue) -or $pathValue -match "[`t`r`n]") {
+    throw "Pinned PATH is missing or non-canonical"
+  }
+  $pathResolvedTools = @(
+    foreach ($name in [string[]]@("cl", "lib", "link", "ml64", "mt", "rc")) {
+      $executableName = "$name.exe"
+      $resolvedPath = Resolve-SoakPathExecutable `
+        -PathValue ([string]$pathValue) `
+        -ExecutableName $executableName
+      $resolvedPathKey =
+        ConvertTo-SoakAsciiLowerInvariant -Text $resolvedPath
+      $attestedPathKey =
+        ConvertTo-SoakAsciiLowerInvariant -Text ([string]$toolMap[$name].path)
+      if (
+        ![string]::Equals(
+          $resolvedPathKey,
+          $attestedPathKey,
+          [StringComparison]::Ordinal
+        )
+      ) {
+        throw "Pinned PATH resolves $executableName outside its attested tool path: $resolvedPath"
       }
-      Assert-NoReparseAncestors -Path $path -Context "Native build tool $($spec.name)"
+      [ordered]@{
+        name = $name
+        executable_name = $executableName
+        path = [string]$toolMap[$name].path
+        bytes = [long]$toolMap[$name].bytes
+        sha256 = [string]$toolMap[$name].sha256
+      }
+    }
+  )
+  $pathToolCanonical = ($pathResolvedTools | ForEach-Object {
+      "{0}`t{1}`t{2}`t{3}`t{4}" -f
+        $_.name, $_.executable_name, $_.path, $_.bytes, $_.sha256
+    }) -join "`n"
+  $pathValueSha256 = Get-StringSha256Hex -Text ([string]$pathValue)
+  $pathToolAggregateCanonical =
+    "path_value_sha256`t$pathValueSha256`n$pathToolCanonical"
+  $pathToolResolution = [ordered]@{
+    schema_version = 1
+    kind = "vectorgrid_cpu_reliability_soak_path_tool_resolution"
+    environment_name = "PATH"
+    value = [string]$pathValue
+    value_sha256 = $pathValueSha256
+    resolution_policy =
+      "first_existing_ordinary_executable_in_recorded_path_order"
+    tool_count = $pathResolvedTools.Count
+    tools = [object[]]$pathResolvedTools
+    aggregate_algorithm =
+      "sha256(path_value_sha256_then_name_tab_executable_tab_path_tab_bytes_tab_sha256_lf)"
+    aggregate_sha256 = Get-StringSha256Hex -Text $pathToolAggregateCanonical
+  }
+  $resourceCompilerExecution = [ordered]@{
+    environment_name = "EMBED_RESOURCE_RC_PATH"
+    path = [string]$toolMap["rc"].path
+    bytes = [long]$toolMap["rc"].bytes
+    sha256 = [string]$toolMap["rc"].sha256
+  }
+  $cargoResolution = Get-SoakEmbedResourceCargoResolution `
+    -RepoRoot $RepoRoot `
+    -CargoHome $CargoHome `
+    -CargoExecutablePath $CargoExecutablePath `
+    -HostTargetTriple $HostTargetTriple
+  $resourceCompilerCandidates = @(
+    foreach ($directory in $sdkVersionDirectories) {
+      $path = [System.IO.Path]::GetFullPath((Join-Path $directory.FullName "x64\rc.exe"))
       $item = Get-Item -Force -LiteralPath $path
       [ordered]@{
-        name = [string]$spec.name
+        version = [string]$directory.Name
         path = $path
         bytes = [long]$item.Length
         sha256 = Get-Sha256Hex -Path $path
       }
     }
   )
-  $tools = @($tools | Sort-Object name)
-
-  $selectionEnvironmentNames = @(
-    "PATH",
-    "INCLUDE",
-    "LIB",
-    "LIBPATH",
-    "VSINSTALLDIR",
-    "VCINSTALLDIR",
-    "VCToolsInstallDir",
-    "VCToolsVersion",
-    "VisualStudioVersion",
-    "WindowsSdkDir",
-    "WindowsSDKVersion",
-    "UniversalCRTSdkDir",
-    "UCRTVersion"
-  )
+  $nativeInputManifest = Get-SoakNativeInputManifest `
+    -VisualStudioInstallation $installationPath `
+    -VcToolsVersion $vcToolsVersion `
+    -WindowsSdkRoot $kitsRoot
   $environment = @(
     foreach ($name in $selectionEnvironmentNames) {
       $value = [Environment]::GetEnvironmentVariable($name, "Process")
@@ -416,31 +1716,126 @@ function Get-SoakNativeBuildProvenance {
   $toolCanonical = ($tools | ForEach-Object {
       "{0}`t{1}`t{2}`t{3}" -f $_.name, $_.path, $_.bytes, $_.sha256
     }) -join "`n"
-  $aggregateCanonical = @(
+  $resourceCompilerCanonical = ($resourceCompilerCandidates | ForEach-Object {
+      "{0}`t{1}`t{2}`t{3}" -f $_.version, $_.path, $_.bytes, $_.sha256
+    }) -join "`n"
+  $resourceCompilerExecutionCanonical =
+    "{0}`t{1}`t{2}`t{3}" -f
+      $resourceCompilerExecution.environment_name,
+      $resourceCompilerExecution.path,
+      $resourceCompilerExecution.bytes,
+      $resourceCompilerExecution.sha256
+  $vcvarsEnvironmentCanonical = $vcvarsEnvironmentNames -join "`t"
+  $preExecutionCanonical = @(
     "host_target_triple`t$HostTargetTriple",
+    "system_root`t$systemRoot",
     "visual_studio_installation`t$installationPath",
     "vc_tools_version`t$vcToolsVersion",
     "windows_sdk_root`t$kitsRoot",
     "windows_sdk_version`t$sdkVersion",
     "tools`t$toolCanonical",
+    "path_tool_resolution`t$($pathToolResolution.aggregate_sha256)",
+    "resource_compiler_execution`t$resourceCompilerExecutionCanonical",
+    "resource_compiler_candidates`t$resourceCompilerCanonical",
+    "cargo_resolution`t$($cargoResolution.aggregate_sha256)",
+    "native_inputs`t$($nativeInputManifest.aggregate_sha256)",
+    "vcvars_environment_names`t$vcvarsEnvironmentCanonical",
     "environment`t$environmentCanonical"
   ) -join "`n"
+  $preExecutionAggregate = Get-StringSha256Hex -Text $preExecutionCanonical
+  $aggregateCanonical = $preExecutionCanonical
+  if ($null -ne $ResourceCompilerInvocation) {
+    $expectedMarkerValue =
+      "$ResourceCompilerAttestationNonce|$resourceCompilerPath"
+    $expectedMarkerHash = Get-StringSha256Hex -Text $expectedMarkerValue
+    if (
+      [int]$ResourceCompilerInvocation.schema_version -ne 1 -or
+      [string]$ResourceCompilerInvocation.kind -ne
+        "vectorgrid_cpu_reliability_soak_resource_compiler_invocation" -or
+      [int]$ResourceCompilerInvocation.build_script_event_match_count -ne 1 -or
+      [int]$ResourceCompilerInvocation.marker_match_count -ne 1 -or
+      [string]$ResourceCompilerInvocation.package_id -ne
+        [string]$cargoResolution.root_package.package_id -or
+      [string]$ResourceCompilerInvocation.package_name -ne
+        "ta_desktop_demo_app" -or
+      [string]$ResourceCompilerInvocation.target_triple -ne
+        $HostTargetTriple -or
+      [string]::IsNullOrWhiteSpace(
+        [string]$ResourceCompilerInvocation.build_script_out_dir
+      ) -or
+      [string]$ResourceCompilerInvocation.environment_name -ne
+        "VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION" -or
+      [string]$ResourceCompilerInvocation.nonce -ne
+        $ResourceCompilerAttestationNonce -or
+      ![string]::Equals(
+        [string]$ResourceCompilerInvocation.resource_compiler_path,
+        $resourceCompilerPath,
+        [StringComparison]::Ordinal
+      ) -or
+      [long]$ResourceCompilerInvocation.resource_compiler_bytes -ne
+        [long]$resourceCompilerExecution.bytes -or
+      [string]$ResourceCompilerInvocation.resource_compiler_sha256 -ne
+        [string]$resourceCompilerExecution.sha256 -or
+      [string]$ResourceCompilerInvocation.marker_value_sha256 -ne
+        $expectedMarkerHash -or
+      ![bool]$ResourceCompilerInvocation.file_lock_held_during_build -or
+      [string]$ResourceCompilerInvocation.file_lock_share_mode -ne
+        "read_access_share_read_only_denies_write_delete"
+    ) {
+      throw "Resource compiler invocation event does not match the pinned build selection"
+    }
+    $invocationCanonical =
+      "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`t{7}`t{8}`t{9}`t{10}" -f
+        $ResourceCompilerInvocation.package_id,
+        $ResourceCompilerInvocation.package_name,
+        $ResourceCompilerInvocation.target_triple,
+        $ResourceCompilerInvocation.build_script_out_dir,
+        $ResourceCompilerInvocation.environment_name,
+        $ResourceCompilerInvocation.nonce,
+        $ResourceCompilerInvocation.resource_compiler_path,
+        $ResourceCompilerInvocation.resource_compiler_bytes,
+        $ResourceCompilerInvocation.resource_compiler_sha256,
+        $ResourceCompilerInvocation.marker_value_sha256,
+        $ResourceCompilerInvocation.file_lock_share_mode
+    $aggregateCanonical =
+      "$preExecutionCanonical`nresource_compiler_invocation`t$invocationCanonical"
+  }
 
   return [pscustomobject][ordered]@{
-    schema_version = 1
+    schema_version = 6
     kind = "vectorgrid_cpu_reliability_soak_native_build_provenance"
     host_target_triple = $HostTargetTriple
     selection_policy =
-      "vswhere_latest_vc_tools_plus_latest_windows_sdk_with_native_overrides_cleared"
-    override_environment_cleared = $true
+      "pinned_cmd_vcvarsall_plus_absolute_target_linker_plus_success_attested_rc_plus_locked_offline_build_chain"
+    ambient_override_environment_cleared = $true
+    pinned_environment_applied = $true
+    resource_compiler_execution_pinned = $true
+    resource_compiler_candidate_set_attested = $true
+    cargo_resolution_attested = $true
+    resource_compiler_success_attested = $null -ne $ResourceCompilerInvocation
+    resource_compiler_write_delete_lock_required = $true
+    system_root = $systemRoot
     visual_studio_installation = $installationPath
     vc_tools_version = $vcToolsVersion
     windows_sdk_root = $kitsRoot
     windows_sdk_version = $sdkVersion
-    path_prefix_directories = @($vcBinDir, $sdkBinDir)
-    environment = $environment
+    path_tool_resolution = $pathToolResolution
+    target_linker_path_pinned = $true
+    target_linker_environment_name = $targetLinkerEnvironmentName
+    vcvars_environment_selection_policy =
+      "all_changed_or_added_vcvars_names_plus_explicit_target_linker_and_rc_attestation"
+    vcvars_environment_name_count = $vcvarsEnvironmentNames.Count
+    vcvars_environment_names = [object[]]$vcvarsEnvironmentNames
+    environment = [object[]]$environment
     environment_aggregate_sha256 = Get-StringSha256Hex -Text $environmentCanonical
-    tools = $tools
+    tools = [object[]]$tools
+    resource_compiler_execution = $resourceCompilerExecution
+    resource_compiler_candidates = [object[]]$resourceCompilerCandidates
+    resource_compiler_attestation_nonce = $ResourceCompilerAttestationNonce
+    resource_compiler_invocation = $ResourceCompilerInvocation
+    cargo_resolution = $cargoResolution
+    native_inputs = $nativeInputManifest
+    pre_execution_aggregate_sha256 = $preExecutionAggregate
     aggregate_sha256 = Get-StringSha256Hex -Text $aggregateCanonical
   }
 }
@@ -803,6 +2198,7 @@ function Get-SoakSourceManifest {
     (Join-Path $RepoRoot "src-tauri/gen"),
     (Join-Path $RepoRoot "src-tauri/icons"),
     (Join-Path $RepoRoot "src-tauri/resources"),
+    (Join-Path $RepoRoot "vendor/embed-resource-3.0.6"),
     (Join-Path $RepoRoot "vendor/vector-ta-0.2.4")
   )
   $repoPrefix = $RepoRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
@@ -1219,6 +2615,9 @@ if ($SourceManifestOnly) {
     includes_tauri_resources = @($sourceManifest.files.path | Where-Object {
         $_.StartsWith("src-tauri/resources/", [StringComparison]::Ordinal)
       }).Count -gt 0
+    includes_vendored_embed_resource = @($sourceManifest.files.path | Where-Object {
+        $_.StartsWith("vendor/embed-resource-3.0.6/", [StringComparison]::Ordinal)
+      }).Count -gt 0
     frontend_dist_effective = $false
     context_asset_mode = "dev_url_no_embedded_frontend_assets"
     includes_vendored_vector_ta = @($sourceManifest.files.path | Where-Object {
@@ -1404,6 +2803,7 @@ $managedEnvNames = @(
     "CARGO_ENCODED_RUSTFLAGS",
     "RUSTUP_TOOLCHAIN",
     "RUSTC_BOOTSTRAP",
+    "RUSTC_STAGE",
     "TAURI_CONFIG",
     "TAURI_ENV_TARGET_TRIPLE",
       "SCCACHE_NO_DAEMON",
@@ -1451,6 +2851,11 @@ $cargoTargetTriple = $null
 $cargoConfiguration = $null
 $nativeBuildProvenance = $null
 $nativeBuildProvenanceBefore = $null
+$resourceCompilerAttestationNonce = [guid]::NewGuid().ToString("N")
+$pinnedNativeEnvironmentNames = [string[]]@()
+$runtimeClearedPinnedNativeEnvironmentNames = [string[]]@()
+$resourceCompilerLease = $null
+$resourceCompilerInvocation = $null
 $retainedBinaryPath = Join-Path $runDir $exeName
 $retainedBinarySha256 = $null
 
@@ -1534,7 +2939,8 @@ try {
       "RUSTC",
       "CARGO_BUILD_RUSTC",
       "RUSTUP_TOOLCHAIN",
-      "RUSTC_BOOTSTRAP"
+      "RUSTC_BOOTSTRAP",
+      "RUSTC_STAGE"
     )) {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
   }
@@ -1558,15 +2964,46 @@ try {
   $cargoExecutablePath = [string]$toolchainProvenance.cargo_path
   $rustcToolchainPath = [string]$toolchainProvenance.rustc_path
   if (!$SkipBuild) {
-    $nativeBuildDiscovery = Get-SoakNativeBuildProvenance `
-      -HostTargetTriple $cargoTargetTriple
-    $pathPrefix = @($nativeBuildDiscovery.path_prefix_directories) -join ";"
-    if ([string]::IsNullOrWhiteSpace($pathPrefix)) {
-      throw "Native build provenance did not resolve a deterministic tool PATH prefix"
-    }
-    $env:PATH = "$pathPrefix;$env:PATH"
     $nativeBuildProvenanceBefore = Get-SoakNativeBuildProvenance `
-      -HostTargetTriple $cargoTargetTriple
+      -HostTargetTriple $cargoTargetTriple `
+      -RepoRoot $repoRoot `
+      -CargoHome $resolvedCargoHome `
+      -CargoExecutablePath $cargoExecutablePath `
+      -ResourceCompilerAttestationNonce $resourceCompilerAttestationNonce `
+      -ConfigurePinnedEnvironment
+    $pinnedNativeEnvironmentNames = [string[]]@(
+      $nativeBuildProvenanceBefore.environment | ForEach-Object {
+        [string]$_.name
+      }
+    )
+    $pinnedPathEnvironmentNames = @(
+      $pinnedNativeEnvironmentNames | Where-Object {
+        [string]::Equals([string]$_, "PATH", [StringComparison]::OrdinalIgnoreCase)
+      }
+    )
+    if ($pinnedPathEnvironmentNames.Count -ne 1) {
+      throw "Pinned native environment must contain exactly one PATH entry"
+    }
+    $runtimeClearedPinnedNativeEnvironmentNames = [string[]]@(
+      $pinnedNativeEnvironmentNames | Where-Object {
+        ![string]::Equals([string]$_, "PATH", [StringComparison]::OrdinalIgnoreCase)
+      }
+    )
+    $leasePath = [string]$nativeBuildProvenanceBefore.resource_compiler_execution.path
+    $resourceCompilerLease = [System.IO.File]::Open(
+      $leasePath,
+      [System.IO.FileMode]::Open,
+      [System.IO.FileAccess]::Read,
+      [System.IO.FileShare]::Read
+    )
+    if (
+      [long]$resourceCompilerLease.Length -ne
+        [long]$nativeBuildProvenanceBefore.resource_compiler_execution.bytes -or
+      (Get-Sha256Hex -Path $leasePath) -ne
+        [string]$nativeBuildProvenanceBefore.resource_compiler_execution.sha256
+    ) {
+      throw "Pinned rc.exe changed between attestation and the deny-write/delete lease"
+    }
   }
   Push-Location $repoRoot
   try {
@@ -1611,6 +3048,8 @@ try {
           }
           if (
             [string]$message.reason -eq "compiler-artifact" -and
+            [string]$message.package_id -eq
+              [string]$nativeBuildProvenanceBefore.cargo_resolution.root_package.package_id -and
             [string]$message.target.name -eq "ta_cpu_reliability_soak" -and
             @($message.target.kind) -contains "bin" -and
             ![string]::IsNullOrWhiteSpace([string]$message.executable)
@@ -1627,6 +3066,87 @@ try {
       }
       if ($artifactCandidates.Count -ne 1) {
         throw "Cargo did not emit exactly one ta_cpu_reliability_soak executable artifact"
+      }
+      $buildScriptEvents = @(
+        foreach ($line in $cargoOutput) {
+          try {
+            $message = [string]$line | ConvertFrom-Json
+          } catch {
+            continue
+          }
+          if ([string]$message.reason -eq "build-script-executed") {
+            $message
+          }
+        }
+      )
+      $rootPackageId =
+        [string]$nativeBuildProvenanceBefore.cargo_resolution.root_package.package_id
+      $rootBuildScriptEvents = @($buildScriptEvents | Where-Object {
+          [string]$_.package_id -eq $rootPackageId
+        })
+      $attestationEnvironmentName =
+        "VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION"
+      $markerEvents = @(
+        foreach ($event in $buildScriptEvents) {
+          foreach ($pair in @($event.env)) {
+            if (
+              @($pair).Count -eq 2 -and
+              [string]$pair[0] -eq $attestationEnvironmentName
+            ) {
+              [pscustomobject]@{
+                package_id = [string]$event.package_id
+                value = [string]$pair[1]
+              }
+            }
+          }
+        }
+      )
+      if (
+        $rootBuildScriptEvents.Count -ne 1 -or
+        $markerEvents.Count -ne 1 -or
+        [string]$markerEvents[0].package_id -ne $rootPackageId
+      ) {
+        throw "Cargo did not emit one success-attested resource-compiler marker on the exact app build script"
+      }
+      $expectedResourceCompilerPath =
+        [string]$nativeBuildProvenanceBefore.resource_compiler_execution.path
+      $expectedMarkerValue =
+        "$resourceCompilerAttestationNonce|$expectedResourceCompilerPath"
+      if ([string]$markerEvents[0].value -ne $expectedMarkerValue) {
+        throw "Cargo app build-script resource-compiler marker differs from the pinned nonce/path"
+      }
+      $buildScriptOutDir = [System.IO.Path]::GetFullPath(
+        [string]$rootBuildScriptEvents[0].out_dir
+      )
+      if (
+        !(Test-Path -LiteralPath $buildScriptOutDir -PathType Container) -or
+        !(Test-PathWithin -Path $buildScriptOutDir -Parent $resolvedCargoTargetDir)
+      ) {
+        throw "Attested app build-script output escaped the fresh Cargo target"
+      }
+      Assert-NoReparseAncestors `
+        -Path $buildScriptOutDir `
+        -Context "Attested app build-script output"
+      $resourceCompilerInvocation = [pscustomobject][ordered]@{
+        schema_version = 1
+        kind = "vectorgrid_cpu_reliability_soak_resource_compiler_invocation"
+        build_script_event_match_count = 1
+        marker_match_count = 1
+        package_id = $rootPackageId
+        package_name = "ta_desktop_demo_app"
+        target_triple = $cargoTargetTriple
+        build_script_out_dir = $buildScriptOutDir
+        environment_name = $attestationEnvironmentName
+        nonce = $resourceCompilerAttestationNonce
+        resource_compiler_path = $expectedResourceCompilerPath
+        resource_compiler_bytes =
+          [long]$nativeBuildProvenanceBefore.resource_compiler_execution.bytes
+        resource_compiler_sha256 =
+          [string]$nativeBuildProvenanceBefore.resource_compiler_execution.sha256
+        marker_value_sha256 = Get-StringSha256Hex -Text $expectedMarkerValue
+        file_lock_held_during_build = $null -ne $resourceCompilerLease
+        file_lock_share_mode =
+          "read_access_share_read_only_denies_write_delete"
       }
       $binaryPath = [System.IO.Path]::GetFullPath([string]$artifactCandidates[0].executable)
       $cargoArtifactFresh = [bool]$artifactCandidates[0].fresh
@@ -1646,12 +3166,49 @@ try {
     }
     if (!$SkipBuild) {
       $nativeBuildProvenance = Get-SoakNativeBuildProvenance `
-        -HostTargetTriple $cargoTargetTriple
+        -HostTargetTriple $cargoTargetTriple `
+        -RepoRoot $repoRoot `
+        -CargoHome $resolvedCargoHome `
+        -CargoExecutablePath $cargoExecutablePath `
+        -ResourceCompilerAttestationNonce $resourceCompilerAttestationNonce `
+        -PinnedEnvironmentNames $pinnedNativeEnvironmentNames `
+        -ResourceCompilerInvocation $resourceCompilerInvocation
       if (
-        [string]$nativeBuildProvenance.aggregate_sha256 -ne
-          [string]$nativeBuildProvenanceBefore.aggregate_sha256
+        [string]$nativeBuildProvenance.cargo_resolution.aggregate_sha256 -ne
+          [string]$nativeBuildProvenanceBefore.cargo_resolution.aggregate_sha256
+      ) {
+        throw "Locked/offline Cargo metadata resolution changed during the build"
+      }
+      if (
+        [string]$nativeBuildProvenance.pre_execution_aggregate_sha256 -ne
+          [string]$nativeBuildProvenanceBefore.pre_execution_aggregate_sha256
       ) {
         throw "Native compiler/linker/Windows SDK inputs changed during the build"
+      }
+      if ($null -eq $resourceCompilerLease) {
+        throw "Pinned rc.exe deny-write/delete lease was lost before build completion"
+      }
+      $resourceCompilerLease.Dispose()
+      $resourceCompilerLease = $null
+      foreach ($name in @(
+          $nativeBuildOverrideEnvNames + $pinnedNativeEnvironmentNames |
+            Select-Object -Unique
+        )) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+      }
+      [Environment]::SetEnvironmentVariable(
+        "PATH",
+        $environmentSnapshot["PATH"],
+        "Process"
+      )
+      if (
+        ![string]::Equals(
+          [string][Environment]::GetEnvironmentVariable("PATH", "Process"),
+          [string]$environmentSnapshot["PATH"],
+          [StringComparison]::Ordinal
+        )
+      ) {
+        throw "Ambient PATH was not restored exactly after the native build"
       }
     }
     $sourceManifest = Get-SoakSourceManifest -RepoRoot $repoRoot
@@ -1694,8 +3251,10 @@ try {
       "CARGO_BUILD_RUSTFLAGS",
       "CARGO_ENCODED_RUSTFLAGS",
       "RUSTUP_TOOLCHAIN",
-      "RUSTC_BOOTSTRAP"
-    ) + $targetSpecificBuildEnvNames + $nativeBuildOverrideEnvNames
+      "RUSTC_BOOTSTRAP",
+      "RUSTC_STAGE"
+    ) + $targetSpecificBuildEnvNames + $nativeBuildOverrideEnvNames +
+      $runtimeClearedPinnedNativeEnvironmentNames
     $remainingCompilerOverrides = @(
       $compilerOverrideEnvNames | Where-Object {
         $value = [Environment]::GetEnvironmentVariable($_, "Process")
@@ -1765,6 +3324,7 @@ try {
         native_build_override_environment_cleared = $true
         native_build_environment_attested = -not [bool]$SkipBuild
         compiler_path_pinned_during_build = -not [bool]$SkipBuild
+        target_linker_path_pinned_during_build = -not [bool]$SkipBuild
         cargo_execution_uses_toolchain_binary = -not [bool]$SkipBuild
         profile_override_environment_cleared = $true
         incremental_compilation_disabled = $true
@@ -1904,6 +3464,7 @@ try {
     ![bool]$evidence.provenance.launcher_manifest.matched_expected -or
     [string]$evidence.provenance.launcher_manifest.contents.run_id -ne $runId -or
     ![bool]$evidence.provenance.launcher_manifest.contents.build.compiler_override_environment_cleared -or
+    ![bool]$evidence.provenance.launcher_manifest.contents.build.native_build_override_environment_cleared -or
     ![bool]$evidence.provenance.launcher_manifest.contents.build.tauri_config_environment_cleared -or
     ![bool]$evidence.provenance.launcher_manifest.contents.build.tauri_target_environment_cleared -or
     ![bool]$evidence.provenance.launcher_manifest.contents.build.custom_protocol_disabled -or
@@ -1918,6 +3479,8 @@ try {
       [string]$toolchainProvenance.input_manifest.aggregate_sha256 -or
     [bool]$evidence.provenance.launcher_manifest.contents.build.compiler_path_pinned_during_build -ne
       (-not [bool]$SkipBuild) -or
+    [bool]$evidence.provenance.launcher_manifest.contents.build.target_linker_path_pinned_during_build -ne
+      (-not [bool]$SkipBuild) -or
     [string]$evidence.provenance.cargo_target_dir -ne $resolvedCargoTargetDir -or
     ![bool]$evidence.provenance.benchmark_lock.inherited -or
     ![bool]$evidence.provenance.benchmark_lock.mutex_contention_verified -or
@@ -1925,6 +3488,30 @@ try {
     [bool]$evidence.provenance.fresh_build -ne (-not [bool]$SkipBuild)
   ) {
     throw "CPU reliability soak provenance validation failed"
+  }
+  $compiledResourceCompilerAttestation =
+    $evidence.provenance.compiled_resource_compiler_attestation
+  $compiledResourceCompilerAttestationRequired = -not [bool]$SkipBuild
+  if (
+    [string]$compiledResourceCompilerAttestation.environment_name -ne
+      "VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION" -or
+    [bool]$compiledResourceCompilerAttestation.required -ne
+      $compiledResourceCompilerAttestationRequired -or
+    [bool]$compiledResourceCompilerAttestation.matched_native_invocation -ne
+      $compiledResourceCompilerAttestationRequired
+  ) {
+    throw "Compiled resource-compiler attestation evidence does not match the build mode"
+  }
+  if ($compiledResourceCompilerAttestationRequired) {
+    if (
+      ![bool]$compiledResourceCompilerAttestation.present -or
+      [string]$compiledResourceCompilerAttestation.value_sha256 -ne
+        [string]$resourceCompilerInvocation.marker_value_sha256
+    ) {
+      throw "Compiled resource-compiler attestation does not match the exact native invocation"
+    }
+  } elseif ($null -ne $compiledResourceCompilerAttestation.value_sha256) {
+    throw "Prebuilt evidence must not claim a matched compiled resource-compiler invocation"
   }
   if ((Get-Sha256Hex -Path $sourceManifestPath) -ne $sourceManifestSha256) {
     throw "CPU reliability soak source manifest changed during execution"
@@ -1966,6 +3553,11 @@ try {
     ![bool]$evidence.offline_contract.external_http_proxy_trapped -or
     ![bool]$evidence.offline_contract.cargo_dependency_resolution_offline -or
     ![bool]$evidence.offline_contract.compiler_override_environment_cleared -or
+    ![bool]$evidence.offline_contract.native_build_override_environment_cleared -or
+    [bool]$evidence.offline_contract.target_linker_path_pinned_during_build -ne
+      (-not [bool]$SkipBuild) -or
+    [bool]$evidence.offline_contract.compiled_resource_compiler_attestation_matched -ne
+      (-not [bool]$SkipBuild) -or
     ![bool]$evidence.offline_contract.build_environment_attested -or
     ![bool]$evidence.offline_contract.tauri_config_environment_cleared -or
     ![bool]$evidence.offline_contract.tauri_target_environment_cleared -or
@@ -2114,6 +3706,13 @@ try {
   $completedSuccessfully = $true
 } finally {
   try {
+    if ($null -ne $resourceCompilerLease) {
+      $resourceCompilerLease.Dispose()
+      $resourceCompilerLease = $null
+    }
+    foreach ($name in $pinnedNativeEnvironmentNames) {
+      Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+    }
     if (Test-Path -LiteralPath $isolationRoot) {
       Remove-OwnedSoakIsolation `
         -IsolationRoot $isolationRoot `

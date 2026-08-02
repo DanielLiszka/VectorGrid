@@ -491,6 +491,8 @@ defineWorkflow({
     await expect(page.locator('#heatmapSurface3DSliceSelectVue')).toBeVisible()
     await expect(page.locator('#heatmapSurface3DMetaVue')).toContainText(/MA type \/ parameter slice/)
     await expect(page.locator('#heatmapSurface3DViewportVue')).toHaveAttribute('data-render-ready', 'true')
+    await expect(page.locator('#heatmapSurface3DViewportVue')).toHaveAttribute('data-export-ready', 'true')
+    await expect(page.locator('[data-qa-action="heatmap.exportPng"]')).toBeEnabled()
     await expect(page.locator('#heatmapSurface3DCanvasVue')).toBeVisible()
     await expectWebglCanvasHasPaint(page)
     await expectNoHorizontalDocumentOverflow(page)

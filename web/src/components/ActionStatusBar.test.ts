@@ -166,7 +166,11 @@ describe('ActionStatusBar', () => {
     expect(primary).toBeDefined()
     expect(primary?.disabled).toBe(true)
     expect(primary?.getAttribute('title')).toBe('Readiness: Load data first.')
-    expect(document.body.textContent || '').toContain('Readiness: Load data first.')
+    const reasonId = primary?.getAttribute('aria-describedby')
+    expect(reasonId).toBe('footerPrimaryDisabledReason')
+    expect(document.getElementById(reasonId || '')?.textContent).toContain(
+      'Readiness: Load data first.',
+    )
 
     wrapper.unmount()
   })

@@ -34,6 +34,7 @@ const REQUIRED_CLAIMS = [
   "broad-repo-quality",
   "campaign-orchestration-performance",
   "cpu-performance",
+  "cpu-reliability-operator-authority",
   "frontend-scoped-warm-mocked-browser-latency",
   "frontend-workflow-behavior",
   "full-local-release-rehearsal",
@@ -44,6 +45,7 @@ const REQUIRED_CLAIMS = [
   "live-execution-safety",
   "ml-signal-quality-native-cpu",
   "options-expression-gpu-promotion",
+  "public-release-eligibility",
   "release-readiness",
   "repo-wide-performance-authority-inventory",
   "support-surface-performance",
@@ -58,9 +60,16 @@ const REQUIRED_RELEASE_VARIANTS = [
   "options-gpu-scorer",
 ];
 const PUBLIC_LIVE_EXECUTION_VARIANTS = ["cpu", "gpu-kernel", "gpu-ma"];
+const PUBLIC_RELEASE_VARIANTS = ["cpu", "gpu-kernel", "gpu-ma"];
 const REQUIRED_PUBLIC_LIVE_SAFETY_SOURCES = [
   "execution_safety_gate",
   "live_safety_harness",
+];
+const REQUIRED_PUBLIC_RELEASE_SOURCES = [
+  "packaged_smoke_artifact",
+  "public_release_gate",
+  "public_release_summary_artifact",
+  "release_proof_evidence_manifest_artifact",
 ];
 const REQUIRED_PUBLIC_LIVE_SAFETY_WIRING = [
   "execution-safety-credential-isolation",
@@ -69,6 +78,172 @@ const REQUIRED_PUBLIC_LIVE_SAFETY_WIRING = [
   "live-safety-harness-public-evidence-quality-contract",
   "live-safety-harness-public-routing",
 ];
+const REQUIRED_PUBLIC_RELEASE_WIRING = [
+  "public-release-dirty-unsigned-ineligible",
+  "public-release-release-proof-suite",
+  "public-release-runtime-executed",
+  "public-release-source-state-revalidation",
+];
+const REQUIRED_CPU_RELIABILITY_WIRING = [
+  "cpu-reliability-operator-minimum",
+  "cpu-reliability-short-fail-closed",
+];
+const PINNED_AUTHORITY_SOURCE_CONTRACTS = {
+  cpu_reliability_soak_artifact: {
+    authority_class: "release_authority_artifact",
+    kind: "artifact",
+    artifact_name: "cpu-reliability-soak-evidence.json",
+    producer: "cpu_reliability_soak_gate",
+    status: "active",
+  },
+  cpu_reliability_soak_gate: {
+    authority_class: "subsystem_authority",
+    kind: "command",
+    path: "scripts/run_cpu_reliability_soak.ps1",
+    invocation:
+      "powershell -File scripts/run_cpu_reliability_soak.ps1 -Mode operator -Hours 6 -CargoTargetDir <dedicated-path>",
+    status: "active",
+    script_needles: [
+      "$minimumOperatorSeconds = 6 * 60 * 60",
+      "$minimumOperatorMeasuredCycles = 30",
+      "$maximumOperatorSampleGapMs = 15 * 60 * 1000",
+      "fresh_build_required = $Mode -eq \"operator\"",
+      "![bool]$evidence.authority.operator_release_eligible",
+      "Short soak must not claim operator release authority",
+    ],
+  },
+  packaged_smoke_artifact: {
+    authority_class: "release_authority_artifact",
+    kind: "artifact",
+    artifact_name: "packaged-smoke-summary.json",
+    producer: "packaged_smoke_runner",
+    status: "active",
+  },
+  packaged_smoke_runner: {
+    authority_class: "subsystem_authority",
+    kind: "command",
+    path: "scripts/run_packaged_smoke.ps1",
+    invocation: "powershell -File scripts/run_packaged_smoke.ps1 <required args>",
+    status: "active",
+    script_needles: [
+      "$isReleaseProof = $DesktopSuite -eq \"release-proof\"",
+      "release-proof-evidence-manifest.json",
+      "runtime_executed = -not [bool]$StaticInspectionOnly",
+      "binary_origin = $binaryOrigin",
+    ],
+  },
+  public_release_gate: {
+    authority_class: "broad_authoritative_gate",
+    kind: "command",
+    path: "scripts/run_public_release_gate.ps1",
+    invocation:
+      "powershell -File scripts/run_public_release_gate.ps1 -Variant <variant> <required signing args>",
+    status: "active",
+    script_needles: [
+      "public_release_eligible = (Test-PublicReleaseEligibility -Status $Status)",
+      "-not [bool]$AllowDirtyWorktree -and",
+      "-not [bool]$AllowUnsignedBeta -and",
+      "[bool]$script:SourceStateRevalidated -and",
+      "[bool]$script:SourceMutationMonitorRevalidated -and",
+      "[bool]$script:SourceReadLeaseRevalidated -and",
+      "[string]$script:FinalSourceSnapshot.head -eq",
+      "[string]$script:FinalSourceSnapshot.status_sha256 -eq",
+      "git ls-files -v -z --cached -- .",
+      "Get-PublicReleaseRawFileManifest",
+      "Assert-PublicReleaseSourceHasSingleLink",
+      "Assert-PublicReleaseSourceReadLeasesActive",
+      "Start-PublicReleaseSourceMutationMonitor",
+      "Assert-PublicReleaseSourceMutationMonitorClean",
+      "\"-DesktopSuite\", \"release-proof\"",
+      "if (-not [bool]$smoke.runtime_executed -or [string]$smoke.binary_origin -ne \"extracted-bundle\")",
+      "Public release requires one passing, current-run release-proof manifest covering every allowlisted native journey.",
+      "Final public release requires -ExpectedSignerThumbprint",
+      "Public release requires a trusted timestamp on the embedded application signature.",
+      "Invoke-PublicReleaseStep -Name \"Final source-state revalidation\"",
+      "Assert-PublicReleaseSourceSnapshotStable",
+    ],
+  },
+  public_release_summary_artifact: {
+    authority_class: "release_authority_artifact",
+    kind: "artifact",
+    artifact_name: "public-release-summary.json",
+    producer: "public_release_gate",
+    status: "active",
+  },
+  release_proof_evidence_manifest_artifact: {
+    authority_class: "release_authority_artifact",
+    kind: "artifact",
+    artifact_name: "release-proof-evidence-manifest.json",
+    producer: "packaged_smoke_runner",
+    status: "active",
+  },
+};
+const PINNED_CLAIM_CONTRACTS = {
+  "cpu-reliability-operator-authority": {
+    label: "CPU reliability operator authority",
+    status: "active",
+    primary_authority: ["cpu_reliability_soak_gate"],
+    companion_sources: ["cpu_reliability_soak_artifact"],
+    required_companion_evidence_needles: [
+      "fresh release build",
+      "at least six hours",
+      "at least 30 measured cycles",
+      "maximum sample gap",
+      "operator_release_eligible=true",
+      "short mode",
+      "not operator release authority",
+    ],
+    not_authority_needles: [
+      "CPU or GPU performance",
+      "Native desktop",
+      "public-release behavior",
+      "short-mode soak",
+    ],
+  },
+  "public-release-eligibility": {
+    label: "Public release eligibility",
+    status: "active",
+    primary_authority: ["public_release_gate"],
+    companion_sources: [
+      "packaged_smoke_artifact",
+      "public_release_summary_artifact",
+      "release_proof_evidence_manifest_artifact",
+    ],
+    required_companion_evidence_needles: [
+      "runtime_executed=true",
+      "binary_origin=extracted-bundle",
+      "desktop_suite=release-proof",
+      "current run",
+      "release variant",
+      "packaged-binary identity",
+      "clean",
+      "signed",
+      "timestamped",
+      "public_release_eligible=true",
+      "dirty-worktree",
+      "unsigned-beta",
+      "rehearsal-only",
+      "exact Git HEAD",
+      "raw NUL-delimited",
+      "match byte-for-byte",
+      "canonical raw-byte manifests",
+      "nonstandard tracked index flags",
+      "single-link source files",
+      "retained read leases",
+      "run-long filesystem monitor",
+      "zero in-scope mutation events",
+      "source-state change fails closed",
+    ],
+    not_authority_needles: [
+      "release-candidate rehearsal alone",
+      "Static package inspection",
+      "raw-binary smoke",
+      "dirty-worktree",
+      "unsigned-beta rehearsal",
+      "branch protection alone",
+    ],
+  },
+};
 const REQUIRED_IMPLEMENTED_GAPS = [
   "cuda-graphs-timing-boundary",
   "dedicated-gpu-ma-perf-authority",
@@ -232,6 +407,131 @@ function validateRequiredIds(actualIds, requiredIds, location, errors) {
     if (!actualIds.has(requiredId)) {
       addError(errors, location, `missing required id ${requiredId}`);
     }
+  }
+}
+
+function validateExactStringArray(value, expected, location, errors) {
+  if (
+    !Array.isArray(value) ||
+    JSON.stringify(value) !== JSON.stringify(expected)
+  ) {
+    addError(
+      errors,
+      location,
+      `must equal ${JSON.stringify(expected)}`,
+    );
+  }
+}
+
+function validateTextNeedles(text, needles, location, errors) {
+  const normalized = typeof text === "string" ? text.toLowerCase() : "";
+  for (const needle of needles) {
+    if (!normalized.includes(needle.toLowerCase())) {
+      addError(errors, location, `missing required authority text: ${needle}`);
+    }
+  }
+}
+
+function validatePinnedAuthoritySourceContracts({
+  evidenceSources,
+  repoRoot,
+  errors,
+}) {
+  for (const [sourceId, expected] of Object.entries(
+    PINNED_AUTHORITY_SOURCE_CONTRACTS,
+  )) {
+    const location = `pinned_authority_sources.${sourceId}`;
+    const source = evidenceSources.get(sourceId);
+    if (!source) {
+      addError(errors, location, "missing pinned authority source");
+      continue;
+    }
+    for (const field of [
+      "authority_class",
+      "kind",
+      "path",
+      "invocation",
+      "artifact_name",
+      "producer",
+      "status",
+    ]) {
+      if (
+        Object.hasOwn(expected, field) &&
+        source[field] !== expected[field]
+      ) {
+        addError(
+          errors,
+          `${location}.${field}`,
+          `must equal ${JSON.stringify(expected[field])}`,
+        );
+      }
+    }
+    if (Array.isArray(expected.script_needles)) {
+      const scriptPath = resolveWithinRepo(repoRoot, expected.path);
+      if (!fs.existsSync(scriptPath) || !fs.statSync(scriptPath).isFile()) {
+        addError(
+          errors,
+          `${location}.script_needles`,
+          `pinned script does not exist: ${expected.path}`,
+        );
+        continue;
+      }
+      const scriptText = fs.readFileSync(scriptPath, "utf8");
+      validateTextNeedles(
+        scriptText,
+        expected.script_needles,
+        `${location}.script_needles`,
+        errors,
+      );
+    }
+  }
+}
+
+function validatePinnedClaimContracts(claims, errors) {
+  for (const [claimId, expected] of Object.entries(PINNED_CLAIM_CONTRACTS)) {
+    const location = `pinned_claims.${claimId}`;
+    const claim = claims.get(claimId);
+    if (!claim) {
+      addError(errors, location, "missing pinned authority claim");
+      continue;
+    }
+    for (const field of ["label", "status"]) {
+      if (claim[field] !== expected[field]) {
+        addError(
+          errors,
+          `${location}.${field}`,
+          `must equal ${JSON.stringify(expected[field])}`,
+        );
+      }
+    }
+    validateExactStringArray(
+      claim.primary_authority,
+      expected.primary_authority,
+      `${location}.primary_authority`,
+      errors,
+    );
+    validateExactStringArray(
+      claim.companion_sources,
+      expected.companion_sources,
+      `${location}.companion_sources`,
+      errors,
+    );
+    validateTextNeedles(
+      Array.isArray(claim.required_companion_evidence)
+        ? claim.required_companion_evidence.join("\n")
+        : "",
+      expected.required_companion_evidence_needles,
+      `${location}.required_companion_evidence`,
+      errors,
+    );
+    validateTextNeedles(
+      Array.isArray(claim.not_authority)
+        ? claim.not_authority.join("\n")
+        : "",
+      expected.not_authority_needles,
+      `${location}.not_authority`,
+      errors,
+    );
   }
 }
 
@@ -461,6 +761,11 @@ export function validateAuthorityMatrix({
       }
     }
   }
+  validatePinnedAuthoritySourceContracts({
+    evidenceSources,
+    repoRoot,
+    errors,
+  });
 
   const claims = validateSortedUniqueIds(matrix.claims, "claims", errors);
   validateRequiredIds(claims, REQUIRED_CLAIMS, "claims", errors);
@@ -517,6 +822,7 @@ export function validateAuthorityMatrix({
       },
     );
   }
+  validatePinnedClaimContracts(claims, errors);
 
   const releaseVariants = validateSortedUniqueIds(
     matrix.release_variants,
@@ -575,6 +881,24 @@ export function validateAuthorityMatrix({
             errors,
             `${location}.required_sources`,
             `public desktop variants ship live execution and must require ${sourceId}`,
+          );
+        }
+      }
+    }
+    if (PUBLIC_RELEASE_VARIANTS.includes(id)) {
+      if (!variant.required_claims.includes("public-release-eligibility")) {
+        addError(
+          errors,
+          `${location}.required_claims`,
+          "public desktop variants must require public-release-eligibility for publication",
+        );
+      }
+      for (const sourceId of REQUIRED_PUBLIC_RELEASE_SOURCES) {
+        if (!variant.required_sources.includes(sourceId)) {
+          addError(
+            errors,
+            `${location}.required_sources`,
+            `public desktop variants must require ${sourceId} for publication`,
           );
         }
       }
@@ -656,7 +980,11 @@ export function validateAuthorityMatrix({
   );
   validateRequiredIds(
     contractWiring,
-    REQUIRED_PUBLIC_LIVE_SAFETY_WIRING,
+    [
+      ...REQUIRED_CPU_RELIABILITY_WIRING,
+      ...REQUIRED_PUBLIC_LIVE_SAFETY_WIRING,
+      ...REQUIRED_PUBLIC_RELEASE_WIRING,
+    ],
     "contract_wiring",
     errors,
   );

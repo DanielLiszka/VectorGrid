@@ -12,11 +12,16 @@ use ta_strategies::double_ma::{
 #[cfg(feature = "cuda")]
 use vector_ta::utilities::enums::Kernel;
 
+use crate::analysis_series::{
+    build_strategy_indicator_bundle, AnalysisReferenceLine, AnalysisSeriesInput,
+    AnalysisSeriesKind, AnalysisSeriesUnit, StrategyIndicatorBundle, ANALYSIS_SERIES_MAX_POINTS,
+};
 use crate::asr::{
     build_asr_desired_positions, clear_asr_route_diagnostics, compute_asr_fast_signals,
     compute_asr_kaufman_stops, compute_asr_slow_signals, compute_asr_start_t,
     eval_asr_curves_from_desired, eval_asr_metrics_from_desired, resolve_asr_periods,
-    take_asr_route_diagnostics, validate_asr_params, AsrStrategyParams,
+    take_asr_route_diagnostics, validate_asr_params, AsrFastSignals, AsrKaufmanStops,
+    AsrSlowSignals, AsrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::asr::{
@@ -30,7 +35,7 @@ use crate::asr_gpu_kernel::{
 };
 use crate::carm::{
     build_carm_desired_positions, compute_carm_signals, compute_carm_start_t, resolve_carm_periods,
-    validate_carm_params, CarmStrategyParams,
+    validate_carm_params, CarmSignals, CarmStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::carm::{
@@ -44,7 +49,7 @@ use crate::carm_gpu_kernel::{
 };
 use crate::cdmc::{
     build_cdmc_desired_positions, compute_cdmc_signals, compute_cdmc_start_t, resolve_cdmc_periods,
-    validate_cdmc_params, CdmcStrategyParams,
+    validate_cdmc_params, CdmcSignals, CdmcStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::cdmc::{
@@ -87,7 +92,7 @@ use crate::indicator_catalog::{
 use crate::kqsr::{
     build_kqsr_desired_positions, clear_kqsr_route_diagnostics, compute_kqsr_signals,
     compute_kqsr_start_t, resolve_kqsr_periods, take_kqsr_route_diagnostics, validate_kqsr_params,
-    KqsrStrategyParams,
+    KqsrSignals, KqsrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kqsr::{compute_kqsr_fast_signals_f32, compute_kqsr_slow_signals_f32};
@@ -98,7 +103,7 @@ use crate::kqsr_gpu_kernel::{
 use crate::kvdf::{
     build_kvdf_desired_positions, clear_kvdf_route_diagnostics, compute_kvdf_signals,
     compute_kvdf_start_t, resolve_kvdf_periods, take_kvdf_route_diagnostics, validate_kvdf_params,
-    KvdfStrategyParams,
+    KvdfSignals, KvdfStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kvdf::{
@@ -112,7 +117,8 @@ use crate::kvdf_gpu_kernel::{
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::mkcs::{
     build_mkcs_desired_positions, compute_mkcs_breakout_signals, compute_mkcs_compression_signals,
-    compute_mkcs_start_t, resolve_mkcs_periods, validate_mkcs_params, MkcsStrategyParams,
+    compute_mkcs_start_t, resolve_mkcs_periods, validate_mkcs_params, MkcsBreakoutSignals,
+    MkcsCompressionSignals, MkcsStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::mkcs::{
@@ -127,7 +133,8 @@ use crate::progress::ProgressSink;
 use crate::request_normalization::{normalize_heatmap_bins, normalize_topk_include_all};
 use crate::rocb::{
     build_rocb_desired_positions_into, compute_rocb_breakout_signals, compute_rocb_risk_signals,
-    compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbStrategyParams,
+    compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbBreakoutSignals,
+    RocbRiskSignals, RocbStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::rocb::{
@@ -142,7 +149,8 @@ use crate::strategy_ir::StrategyProfileKind;
 use crate::vcc::{
     build_vcc_desired_positions, clear_vcc_route_diagnostics, compute_vcc_fast_signals,
     compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods,
-    take_vcc_route_diagnostics, validate_vcc_params, VccStrategyParams,
+    take_vcc_route_diagnostics, validate_vcc_params, VccFastSignals, VccStrategyParams,
+    VccTrendSignals,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::{
@@ -155,7 +163,8 @@ use crate::vcc_gpu_kernel::{
 use crate::vcet::{
     build_vcet_desired_positions, clear_vcet_route_diagnostics, compute_vcet_chandelier_signals,
     compute_vcet_start_t, compute_vcet_vidya_signals, resolve_vcet_periods,
-    take_vcet_route_diagnostics, validate_vcet_params, VcetStrategyParams,
+    take_vcet_route_diagnostics, validate_vcet_params, VcetChandelierSignals, VcetStrategyParams,
+    VcetVidyaSignals,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet::{
@@ -169,7 +178,8 @@ use crate::vcet_gpu_kernel::{
 use crate::vemr::{
     build_vemr_desired_positions, clear_vemr_route_diagnostics, compute_vemr_fast_signals,
     compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods,
-    take_vemr_route_diagnostics, validate_vemr_params, VemrStrategyParams,
+    take_vemr_route_diagnostics, validate_vemr_params, VemrFastSignals, VemrRiskSignals,
+    VemrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vemr::{
@@ -500,6 +510,831 @@ pub struct CompositeCpuDrilldownResult {
     pub curves: DoubleMaCurves,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composite_indicator_bars: Vec<CompositeIndicatorBar>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy_indicator_bundle: Option<StrategyIndicatorBundle>,
+}
+
+fn analysis_reference(value: f64, label: &str) -> AnalysisReferenceLine {
+    AnalysisReferenceLine::new(value, label)
+}
+
+fn analysis_mkcs_compression_ratio(stddev: f64, price: f64) -> f64 {
+    if stddev.is_finite() && price.is_finite() {
+        stddev.abs() / price.abs().max(1.0e-12)
+    } else {
+        f64::NAN
+    }
+}
+
+fn analysis_kqsr_prb_fraction(price: f64, lower: f64, upper: f64) -> f64 {
+    let width = upper - lower;
+    if price.is_finite()
+        && lower.is_finite()
+        && upper.is_finite()
+        && width.is_finite()
+        && width.abs() > 1.0e-12
+    {
+        (price - lower) / width
+    } else {
+        f64::NAN
+    }
+}
+
+fn analysis_carm_otto_regime_spread(price: f64, hott: f64, lott: f64) -> f64 {
+    if price.is_finite() && hott.is_finite() && lott.is_finite() {
+        (lott - hott) / price.abs().max(1.0e-9)
+    } else {
+        f64::NAN
+    }
+}
+
+fn build_asr_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    cfg: &AsrStrategyParams,
+    fast: &AsrFastSignals,
+    slow: &AsrSlowSignals,
+    kaufman: &AsrKaufmanStops,
+) -> Result<StrategyIndicatorBundle, String> {
+    build_strategy_indicator_bundle(
+        candles,
+        "Asr",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "asr_kaufman_long_stop",
+                "Kaufman long stop",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &kaufman.long,
+            ),
+            AnalysisSeriesInput::new(
+                "asr_kaufman_short_stop",
+                "Kaufman short stop",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &kaufman.short,
+            ),
+            AnalysisSeriesInput::new(
+                "asr_squeeze_state",
+                "Squeeze state",
+                AnalysisSeriesKind::Histogram,
+                "asr_squeeze",
+                "asr_state",
+                AnalysisSeriesUnit::State,
+                true,
+                &fast.squeeze_state,
+            )
+            .with_reference_lines(vec![analysis_reference(0.5, "Squeeze on")]),
+            AnalysisSeriesInput::new(
+                "asr_squeeze_momentum",
+                "Squeeze momentum",
+                AnalysisSeriesKind::Histogram,
+                "asr_squeeze",
+                "asr_momentum",
+                AnalysisSeriesUnit::PriceDelta,
+                true,
+                &fast.momentum,
+            )
+            .with_reference_lines(vec![analysis_reference(0.0, "Zero")]),
+            AnalysisSeriesInput::new(
+                "asr_linearreg_angle",
+                "Linear-regression angle",
+                AnalysisSeriesKind::Line,
+                "asr_angle",
+                "asr_angle",
+                AnalysisSeriesUnit::Degrees,
+                false,
+                &slow.angle,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(cfg.angle_deg_min, "Long trend minimum"),
+                analysis_reference(-cfg.angle_deg_min, "Short trend minimum"),
+                analysis_reference(cfg.angle_deg_mr, "Mean-reversion upper"),
+                analysis_reference(-cfg.angle_deg_mr, "Mean-reversion lower"),
+            ]),
+            AnalysisSeriesInput::new(
+                "asr_efficiency_ratio",
+                "Efficiency ratio",
+                AnalysisSeriesKind::Line,
+                "asr_efficiency",
+                "asr_efficiency",
+                AnalysisSeriesUnit::Ratio,
+                false,
+                &slow.er,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(cfg.er_min, "Trend minimum"),
+                analysis_reference(cfg.er_mr, "Mean-reversion maximum"),
+            ]),
+            AnalysisSeriesInput::new(
+                "asr_zscore",
+                "Z-score",
+                AnalysisSeriesKind::Line,
+                "asr_zscore",
+                "asr_zscore",
+                AnalysisSeriesUnit::ZScore,
+                true,
+                &slow.zscore,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(-cfg.z_entry, "Long entry"),
+                analysis_reference(cfg.z_entry, "Short entry"),
+                analysis_reference(-cfg.z_exit, "Long exit"),
+                analysis_reference(cfg.z_exit, "Short exit"),
+            ]),
+        ],
+    )
+}
+
+fn build_vcc_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    fast: &VccFastSignals,
+    trend: &VccTrendSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    build_strategy_indicator_bundle(
+        candles,
+        "Vcc",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "vcc_squeeze_state",
+                "Squeeze state",
+                AnalysisSeriesKind::Histogram,
+                "vcc_state",
+                "vcc_state",
+                AnalysisSeriesUnit::State,
+                true,
+                &fast.squeeze_state,
+            )
+            .with_reference_lines(vec![analysis_reference(0.5, "Squeeze on")]),
+            AnalysisSeriesInput::new(
+                "vcc_trend_state",
+                "Trend state",
+                AnalysisSeriesKind::Line,
+                "vcc_state",
+                "vcc_state",
+                AnalysisSeriesUnit::State,
+                true,
+                &trend.trend_state,
+            )
+            .with_reference_lines(vec![analysis_reference(0.5, "Bullish threshold")]),
+            AnalysisSeriesInput::new(
+                "vcc_squeeze_momentum",
+                "Squeeze momentum",
+                AnalysisSeriesKind::Histogram,
+                "vcc_momentum",
+                "vcc_momentum",
+                AnalysisSeriesUnit::PriceDelta,
+                true,
+                &fast.momentum,
+            )
+            .with_reference_lines(vec![analysis_reference(0.0, "Zero")]),
+        ],
+    )
+}
+
+fn build_vemr_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    cfg: &VemrStrategyParams,
+    fast: &VemrFastSignals,
+    risk: &VemrRiskSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    build_strategy_indicator_bundle(
+        candles,
+        "Vemr",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "vemr_bb_upper",
+                "Bollinger upper",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &fast.bb_upper,
+            ),
+            AnalysisSeriesInput::new(
+                "vemr_bb_middle",
+                "Bollinger middle",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &fast.bb_middle,
+            ),
+            AnalysisSeriesInput::new(
+                "vemr_bb_lower",
+                "Bollinger lower",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &fast.bb_lower,
+            ),
+            AnalysisSeriesInput::new(
+                "vemr_zscore",
+                "Z-score",
+                AnalysisSeriesKind::Line,
+                "vemr_zscore",
+                "vemr_zscore",
+                AnalysisSeriesUnit::ZScore,
+                true,
+                &fast.zscore,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(-cfg.z_entry, "Long entry"),
+                analysis_reference(cfg.z_entry, "Short entry"),
+                analysis_reference(-cfg.z_exit, "Long exit"),
+                analysis_reference(cfg.z_exit, "Short exit"),
+            ]),
+            AnalysisSeriesInput::new(
+                "vemr_atr",
+                "Average true range",
+                AnalysisSeriesKind::Line,
+                "vemr_volatility",
+                "vemr_atr",
+                AnalysisSeriesUnit::PriceDelta,
+                false,
+                &risk.atr,
+            ),
+        ],
+    )
+}
+
+fn build_rocb_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    breakout: &RocbBreakoutSignals,
+    risk: &RocbRiskSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    build_strategy_indicator_bundle(
+        candles,
+        "Rocb",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "rocb_donchian_upper",
+                "Donchian upper",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &breakout.upper,
+            ),
+            AnalysisSeriesInput::new(
+                "rocb_donchian_lower",
+                "Donchian lower",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &breakout.lower,
+            ),
+            AnalysisSeriesInput::new(
+                "rocb_atr",
+                "Average true range",
+                AnalysisSeriesKind::Line,
+                "rocb_volatility",
+                "rocb_atr",
+                AnalysisSeriesUnit::PriceDelta,
+                false,
+                &risk.atr,
+            ),
+        ],
+    )
+}
+
+fn build_vcet_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    vidya: &VcetVidyaSignals,
+    chandelier: &VcetChandelierSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    build_strategy_indicator_bundle(
+        candles,
+        "Vcet",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "vcet_vidya",
+                "VIDYA",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &vidya.values,
+            ),
+            AnalysisSeriesInput::new(
+                "vcet_chandelier_long",
+                "Chandelier long stop",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &chandelier.long_stop,
+            ),
+            AnalysisSeriesInput::new(
+                "vcet_chandelier_short",
+                "Chandelier short stop",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &chandelier.short_stop,
+            ),
+        ],
+    )
+}
+
+fn build_mkcs_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    close: &[f64],
+    cfg: &MkcsStrategyParams,
+    compression: &MkcsCompressionSignals,
+    breakout: &MkcsBreakoutSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    let compression_ratio: Vec<f64> = compression
+        .stddev
+        .iter()
+        .copied()
+        .zip(close.iter().copied())
+        .map(|(stddev, price)| analysis_mkcs_compression_ratio(stddev, price))
+        .collect();
+    build_strategy_indicator_bundle(
+        candles,
+        "Mkcs",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "mkcs_donchian_upper",
+                "Donchian upper",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &breakout.upper,
+            ),
+            AnalysisSeriesInput::new(
+                "mkcs_donchian_lower",
+                "Donchian lower",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &breakout.lower,
+            ),
+            AnalysisSeriesInput::new(
+                "mkcs_compression_ratio",
+                "Compression ratio",
+                AnalysisSeriesKind::Line,
+                "mkcs_compression",
+                "mkcs_compression",
+                AnalysisSeriesUnit::Ratio,
+                true,
+                &compression_ratio,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(cfg.compression_threshold, "Compression threshold"),
+                analysis_reference(cfg.reexpansion_threshold, "Re-expansion threshold"),
+            ]),
+        ],
+    )
+}
+
+fn build_kqsr_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    close: &[f64],
+    cfg: &KqsrStrategyParams,
+    signals: &KqsrSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    let prb_fraction: Vec<f64> = close
+        .iter()
+        .copied()
+        .zip(signals.prb_lower.iter().copied())
+        .zip(signals.prb_upper.iter().copied())
+        .map(|((price, lower), upper)| analysis_kqsr_prb_fraction(price, lower, upper))
+        .collect();
+    build_strategy_indicator_bundle(
+        candles,
+        "Kqsr",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "kqsr_prb_upper",
+                "PRB upper",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.prb_upper,
+            ),
+            AnalysisSeriesInput::new(
+                "kqsr_prb_lower",
+                "PRB lower",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.prb_lower,
+            ),
+            AnalysisSeriesInput::new(
+                "kqsr_kdj_j",
+                "KDJ J",
+                AnalysisSeriesKind::Line,
+                "kqsr_bounded",
+                "kqsr_bounded",
+                AnalysisSeriesUnit::Oscillator,
+                true,
+                &signals.j,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(cfg.oversold, "Oversold"),
+                analysis_reference(50.0, "Neutral"),
+                analysis_reference(cfg.overbought, "Overbought"),
+            ]),
+            AnalysisSeriesInput::new(
+                "kqsr_srsi_k",
+                "Stochastic RSI K",
+                AnalysisSeriesKind::Line,
+                "kqsr_bounded",
+                "kqsr_bounded",
+                AnalysisSeriesUnit::Oscillator,
+                true,
+                &signals.srsi_k,
+            ),
+            AnalysisSeriesInput::new(
+                "kqsr_srsi_d",
+                "Stochastic RSI D",
+                AnalysisSeriesKind::Line,
+                "kqsr_bounded",
+                "kqsr_bounded",
+                AnalysisSeriesUnit::Oscillator,
+                true,
+                &signals.srsi_d,
+            ),
+            AnalysisSeriesInput::new(
+                "kqsr_qqe_fast",
+                "QQE fast",
+                AnalysisSeriesKind::Line,
+                "kqsr_bounded",
+                "kqsr_bounded",
+                AnalysisSeriesUnit::Oscillator,
+                true,
+                &signals.qqe_fast,
+            ),
+            AnalysisSeriesInput::new(
+                "kqsr_qqe_slow",
+                "QQE slow",
+                AnalysisSeriesKind::Line,
+                "kqsr_bounded",
+                "kqsr_bounded",
+                AnalysisSeriesUnit::Oscillator,
+                true,
+                &signals.qqe_slow,
+            ),
+            AnalysisSeriesInput::new(
+                "kqsr_ift_rsi",
+                "Inverse Fisher RSI",
+                AnalysisSeriesKind::Line,
+                "kqsr_ift",
+                "kqsr_ift",
+                AnalysisSeriesUnit::Ratio,
+                true,
+                &signals.ift_rsi,
+            )
+            .with_reference_lines(vec![analysis_reference(0.0, "Zero")]),
+            AnalysisSeriesInput::new(
+                "kqsr_prb_fraction",
+                "PRB band fraction",
+                AnalysisSeriesKind::Line,
+                "kqsr_prb_fraction",
+                "kqsr_prb_fraction",
+                AnalysisSeriesUnit::Ratio,
+                false,
+                &prb_fraction,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(cfg.prb_threshold, "Long gate"),
+                analysis_reference(1.0 - cfg.prb_threshold, "Short gate"),
+            ]),
+        ],
+    )
+}
+
+fn build_carm_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    close: &[f64],
+    cfg: &CarmStrategyParams,
+    signals: &CarmSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    let otto_regime_spread: Vec<f64> = close
+        .iter()
+        .copied()
+        .zip(signals.otto_hott.iter().copied())
+        .zip(signals.otto_lott.iter().copied())
+        .map(|((price, hott), lott)| analysis_carm_otto_regime_spread(price, hott, lott))
+        .collect();
+    build_strategy_indicator_bundle(
+        candles,
+        "Carm",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "carm_otto_hott",
+                "OTTO HOTT",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.otto_hott,
+            ),
+            AnalysisSeriesInput::new(
+                "carm_otto_lott",
+                "OTTO LOTT",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.otto_lott,
+            ),
+            AnalysisSeriesInput::new(
+                "carm_coppock",
+                "Coppock curve",
+                AnalysisSeriesKind::Line,
+                "carm_coppock",
+                "carm_coppock",
+                AnalysisSeriesUnit::Oscillator,
+                false,
+                &signals.coppock,
+            )
+            .with_reference_lines(vec![analysis_reference(0.0, "Zero")]),
+            AnalysisSeriesInput::new(
+                "carm_ao",
+                "Awesome oscillator",
+                AnalysisSeriesKind::Histogram,
+                "carm_price_delta",
+                "carm_price_delta",
+                AnalysisSeriesUnit::PriceDelta,
+                false,
+                &signals.ao,
+            )
+            .with_reference_lines(vec![analysis_reference(0.0, "Zero")]),
+            AnalysisSeriesInput::new(
+                "carm_apo",
+                "Absolute price oscillator",
+                AnalysisSeriesKind::Line,
+                "carm_price_delta",
+                "carm_price_delta",
+                AnalysisSeriesUnit::PriceDelta,
+                false,
+                &signals.apo,
+            ),
+            AnalysisSeriesInput::new(
+                "carm_rocr",
+                "Rate of change ratio",
+                AnalysisSeriesKind::Line,
+                "carm_rocr",
+                "carm_rocr",
+                AnalysisSeriesUnit::Ratio,
+                false,
+                &signals.rocr,
+            )
+            .with_reference_lines(vec![analysis_reference(1.0, "Neutral")]),
+            AnalysisSeriesInput::new(
+                "carm_otto_regime_spread",
+                "OTTO regime spread",
+                AnalysisSeriesKind::Line,
+                "carm_otto_spread",
+                "carm_otto_spread",
+                AnalysisSeriesUnit::Ratio,
+                true,
+                &otto_regime_spread,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(cfg.otto_threshold, "Bullish threshold"),
+                analysis_reference(-cfg.otto_threshold, "Bearish threshold"),
+            ]),
+        ],
+    )
+}
+
+fn build_kvdf_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    cfg: &KvdfStrategyParams,
+    signals: &KvdfSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    let dti_threshold = cfg.dti_threshold.abs();
+    build_strategy_indicator_bundle(
+        candles,
+        "Kvdf",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "kvdf_keltner_upper",
+                "Keltner upper",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.keltner_upper,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_keltner_middle",
+                "Keltner middle",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.keltner_middle,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_keltner_lower",
+                "Keltner lower",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.keltner_lower,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_vwap",
+                "VWAP",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.vwap,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_devstop_long",
+                "DevStop long",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                false,
+                &signals.devstop_long,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_devstop_short",
+                "DevStop short",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                false,
+                &signals.devstop_short,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_fvg_upper",
+                "FVG upper trail",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                false,
+                &signals.fvg_upper_ts,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_fvg_lower",
+                "FVG lower trail",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                false,
+                &signals.fvg_lower_ts,
+            ),
+            AnalysisSeriesInput::new(
+                "kvdf_dti",
+                "Directional trend index",
+                AnalysisSeriesKind::Histogram,
+                "kvdf_dti",
+                "kvdf_dti",
+                AnalysisSeriesUnit::Oscillator,
+                true,
+                &signals.dti,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(-dti_threshold, "Bearish threshold"),
+                analysis_reference(0.0, "Zero"),
+                analysis_reference(dti_threshold, "Bullish threshold"),
+            ]),
+        ],
+    )
+}
+
+fn build_cdmc_strategy_indicator_bundle(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    bins: Option<usize>,
+    cfg: &CdmcStrategyParams,
+    signals: &CdmcSignals,
+) -> Result<StrategyIndicatorBundle, String> {
+    let phase_threshold = cfg.phase_threshold.abs();
+    build_strategy_indicator_bundle(
+        candles,
+        "Cdmc",
+        bins,
+        vec![
+            AnalysisSeriesInput::new(
+                "cdmc_mama",
+                "MAMA",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.mama,
+            ),
+            AnalysisSeriesInput::new(
+                "cdmc_fama",
+                "FAMA",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.fama,
+            ),
+            AnalysisSeriesInput::new(
+                "cdmc_decycler",
+                "Decycler",
+                AnalysisSeriesKind::Line,
+                "price",
+                "price",
+                AnalysisSeriesUnit::Price,
+                true,
+                &signals.decycler,
+            ),
+            AnalysisSeriesInput::new(
+                "cdmc_dpo",
+                "Detrended price oscillator",
+                AnalysisSeriesKind::Histogram,
+                "cdmc_dpo",
+                "cdmc_dpo",
+                AnalysisSeriesUnit::PriceDelta,
+                true,
+                &signals.dpo,
+            )
+            .with_reference_lines(vec![analysis_reference(0.0, "Zero")]),
+            AnalysisSeriesInput::new(
+                "cdmc_cycle_angle",
+                "Correlation-cycle angle",
+                AnalysisSeriesKind::Line,
+                "cdmc_cycle",
+                "cdmc_angle",
+                AnalysisSeriesUnit::Degrees,
+                true,
+                &signals.cycle_angle,
+            )
+            .with_reference_lines(vec![
+                analysis_reference(-phase_threshold, "Bearish phase"),
+                analysis_reference(phase_threshold, "Bullish phase"),
+            ]),
+            AnalysisSeriesInput::new(
+                "cdmc_cycle_state",
+                "Correlation-cycle state",
+                AnalysisSeriesKind::Histogram,
+                "cdmc_cycle",
+                "cdmc_state",
+                AnalysisSeriesUnit::State,
+                true,
+                &signals.cycle_state,
+            )
+            .with_reference_lines(vec![analysis_reference(0.0, "Regime boundary")]),
+        ],
+    )
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -4976,9 +5811,18 @@ fn run_asr_drilldown(
         &asr_cfg,
     );
     let curves = eval_asr_curves_from_desired(candles, &lr, &desired, start_t, &strategy, bins);
+    let strategy_indicator_bundle = build_asr_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        &asr_cfg,
+        &fast_signals,
+        &slow_signals,
+        &kaufman,
+    )?;
     Ok(CompositeCpuDrilldownResult {
         curves,
         composite_indicator_bars: Vec::new(),
+        strategy_indicator_bundle: Some(strategy_indicator_bundle),
     })
 }
 
@@ -5076,9 +5920,17 @@ fn run_vemr_drilldown(
         &vemr_cfg,
     );
     let curves = eval_asr_curves_from_desired(candles, &lr, &desired, start_t, &strategy, bins);
+    let strategy_indicator_bundle = build_vemr_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        &vemr_cfg,
+        &fast_signals,
+        &risk_signals,
+    )?;
     Ok(CompositeCpuDrilldownResult {
         curves,
         composite_indicator_bars: Vec::new(),
+        strategy_indicator_bundle: Some(strategy_indicator_bundle),
     })
 }
 
@@ -5130,6 +5982,7 @@ fn build_analysis_drilldown_result(
     start_t: usize,
     strategy: &StrategyConfig,
     bins: Option<usize>,
+    strategy_indicator_bundle: StrategyIndicatorBundle,
 ) -> CompositeCpuDrilldownResult {
     let lr = compute_log_returns_f64(close);
     let bins = bins.unwrap_or(1024).clamp(1, 8192);
@@ -5137,6 +5990,7 @@ fn build_analysis_drilldown_result(
     CompositeCpuDrilldownResult {
         curves,
         composite_indicator_bars: Vec::new(),
+        strategy_indicator_bundle: Some(strategy_indicator_bundle),
     }
 }
 
@@ -6127,8 +6981,20 @@ fn run_vcc_drilldown(
         &strategy,
         &vcc_cfg,
     );
+    let strategy_indicator_bundle = build_vcc_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        &fast_signals,
+        &trend_signals,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -6200,8 +7066,20 @@ fn run_rocb_drilldown(
         &strategy,
         &rocb_cfg,
     );
+    let strategy_indicator_bundle = build_rocb_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        &breakout,
+        &risk,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -6270,8 +7148,20 @@ fn run_vcet_drilldown(
     }
 
     let desired = build_vcet_desired_positions(close, &vidya, &ce, start_t, &strategy, &vcet_cfg);
+    let strategy_indicator_bundle = build_vcet_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        &vidya,
+        &ce,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -6341,8 +7231,22 @@ fn run_mkcs_drilldown(
         &strategy,
         &mkcs_cfg,
     );
+    let strategy_indicator_bundle = build_mkcs_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        close,
+        &mkcs_cfg,
+        &compression,
+        &breakout,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -6391,8 +7295,21 @@ fn run_kqsr_drilldown(
     }
 
     let desired = build_kqsr_desired_positions(close, &signals, start_t, &strategy, &kqsr_cfg);
+    let strategy_indicator_bundle = build_kqsr_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        close,
+        &kqsr_cfg,
+        &signals,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -6441,8 +7358,21 @@ fn run_carm_drilldown(
     }
 
     let desired = build_carm_desired_positions(close, &signals, start_t, &strategy, &carm_cfg);
+    let strategy_indicator_bundle = build_carm_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        close,
+        &carm_cfg,
+        &signals,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -6491,8 +7421,20 @@ fn run_kvdf_drilldown(
     }
 
     let desired = build_kvdf_desired_positions(close, &signals, start_t, &strategy, &kvdf_cfg);
+    let strategy_indicator_bundle = build_kvdf_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        &kvdf_cfg,
+        &signals,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -6541,8 +7483,20 @@ fn run_cdmc_drilldown(
     }
 
     let desired = build_cdmc_desired_positions(close, &signals, start_t, &strategy, &cdmc_cfg);
+    let strategy_indicator_bundle = build_cdmc_strategy_indicator_bundle(
+        candles,
+        Some(ANALYSIS_SERIES_MAX_POINTS),
+        &cdmc_cfg,
+        &signals,
+    )?;
     Ok(build_analysis_drilldown_result(
-        candles, close, &desired, start_t, &strategy, req.bins,
+        candles,
+        close,
+        &desired,
+        start_t,
+        &strategy,
+        req.bins,
+        strategy_indicator_bundle,
     ))
 }
 
@@ -13021,6 +13975,7 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
     Ok(CompositeCpuDrilldownResult {
         curves,
         composite_indicator_bars,
+        strategy_indicator_bundle: None,
     })
 }
 
@@ -14577,6 +15532,204 @@ mod tests {
             result.curves.equity.minmax.len(),
             result.curves.equity.bins.saturating_mul(2)
         );
+    }
+
+    fn assert_strategy_indicator_bundle(
+        result: &CompositeCpuDrilldownResult,
+        strategy_kind: &str,
+        expected_series_ids: &[&str],
+    ) {
+        assert_drilldown_result_has_curves(result);
+        let bundle = result
+            .strategy_indicator_bundle
+            .as_ref()
+            .unwrap_or_else(|| panic!("{strategy_kind} strategy indicator bundle missing"));
+        assert_eq!(bundle.strategy_kind, strategy_kind);
+        assert_eq!(
+            bundle
+                .series
+                .iter()
+                .map(|series| series.id.as_str())
+                .collect::<Vec<_>>(),
+            expected_series_ids
+        );
+        assert!(!bundle.bars.is_empty());
+        assert!(bundle.bars.len() <= ANALYSIS_SERIES_MAX_POINTS);
+        assert!(bundle
+            .bars
+            .windows(2)
+            .all(|pair| pair[0].time < pair[1].time));
+        let mut bundle_has_finite_evidence = false;
+        for series in &bundle.series {
+            assert!(!series.label.trim().is_empty());
+            assert!(!series.pane_id.trim().is_empty());
+            assert!(!series.scale_id.trim().is_empty());
+            assert_eq!(series.values.len(), bundle.bars.len());
+            bundle_has_finite_evidence |= series.values.iter().any(Option::is_some);
+            assert!(series
+                .reference_lines
+                .iter()
+                .all(|line| line.value.is_finite() && !line.label.trim().is_empty()));
+        }
+        assert!(
+            bundle_has_finite_evidence,
+            "{strategy_kind} bundle should contain finite evidence"
+        );
+    }
+
+    fn assert_standalone_heatmap_contract(
+        label: &str,
+        result: &BackendOptimizationResult,
+        expect_gpu: bool,
+    ) {
+        assert!(
+            if expect_gpu {
+                matches!(result.backend_used, BackendUsed::Gpu)
+            } else {
+                matches!(result.backend_used, BackendUsed::Cpu)
+            },
+            "{label} expected {} backend, got {:?}; route={:?}; fallback={:?}",
+            if expect_gpu { "GPU" } else { "CPU" },
+            result.backend_used,
+            result.backend_route,
+            result.backend_fallback_reason,
+        );
+        assert_eq!(result.num_combos, 4, "{label} combo count");
+
+        let all = result
+            .all
+            .as_ref()
+            .unwrap_or_else(|| panic!("{label} include-all rows missing"));
+        assert_eq!(all.len(), 4, "{label} include-all row count");
+        let pnl_by_period: std::collections::HashMap<(u16, u16), f64> = all
+            .iter()
+            .map(|(params, metrics)| {
+                assert!(
+                    metrics.pnl.is_finite(),
+                    "{label} returned non-finite PnL for ({}, {})",
+                    params.fast_len,
+                    params.slow_len
+                );
+                ((params.fast_len, params.slow_len), metrics.pnl)
+            })
+            .collect();
+        assert_eq!(pnl_by_period.len(), 4, "{label} unique period count");
+
+        let expected_values = [(20, 40), (21, 40), (20, 41), (21, 41)]
+            .map(|periods| {
+                Some(
+                    *pnl_by_period
+                        .get(&periods)
+                        .unwrap_or_else(|| panic!("{label} missing retained row for {periods:?}")),
+                )
+            })
+            .to_vec();
+
+        let heatmap = result
+            .heatmap
+            .as_ref()
+            .unwrap_or_else(|| panic!("{label} heatmap missing"));
+        assert_eq!(heatmap.bins_fast, 2, "{label} fast bins");
+        assert_eq!(heatmap.bins_slow, 2, "{label} slow bins");
+        assert_eq!((heatmap.fast_min, heatmap.fast_max), (20, 21));
+        assert_eq!((heatmap.slow_min, heatmap.slow_max), (40, 41));
+        assert_eq!(
+            heatmap.cell_order.as_deref(),
+            Some(ta_optimizer::HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR),
+            "{label} cell order"
+        );
+        assert_eq!(heatmap.values, expected_values, "{label} winner values");
+        assert_eq!(
+            heatmap.mean_values.as_ref(),
+            Some(&expected_values),
+            "{label} mean values"
+        );
+        assert_eq!(
+            heatmap.sample_counts.as_deref(),
+            Some([1_u32, 1, 1, 1].as_slice()),
+            "{label} sample counts"
+        );
+    }
+
+    fn standalone_heatmap_request(label: &str, backend: Backend) -> CompositeCpuRequest {
+        let mut req = make_base_composite_req();
+        match label {
+            "ASR" => req.asr = Some(Default::default()),
+            "VCC" => req.vcc = Some(Default::default()),
+            "VEMR" => req.vemr = Some(Default::default()),
+            "ROCB" => req.rocb = Some(Default::default()),
+            "VCET" => req.vcet = Some(Default::default()),
+            "MKCS" => req.mkcs = Some(Default::default()),
+            "KQSR" => req.kqsr = Some(Default::default()),
+            "CARM" => req.carm = Some(Default::default()),
+            "KVDF" => req.kvdf = Some(Default::default()),
+            "CDMC" => req.cdmc = Some(Default::default()),
+            _ => unreachable!("unknown standalone strategy test label"),
+        }
+        req.backend = backend;
+        req.fast_range = (20, 21, 1);
+        req.slow_range = (40, 41, 1);
+        req.objective = ObjectiveKind::Pnl;
+        req.mode = OptimizationMode::Grid;
+        req.top_k = Some(4);
+        req.include_all = Some(true);
+        req.heatmap_bins = Some(2);
+        req.extra_shortlist_objectives = None;
+        req.shortlist_confidence_mode = None;
+        req.shortlist_union_mode = None;
+        req.include_trade_metrics = false;
+        req.metric_contract = None;
+        req
+    }
+
+    #[test]
+    fn all_standalone_cpu_strategies_emit_exact_two_dimensional_heatmaps() {
+        // CARM's default OTTO surface requires 800 valid observations.
+        let candles = make_kvdf_flow_candles(1_024);
+        let cancel = AtomicBool::new(false);
+
+        for label in [
+            "ASR", "VCC", "VEMR", "ROCB", "VCET", "MKCS", "KQSR", "CARM", "KVDF", "CDMC",
+        ] {
+            let req = standalone_heatmap_request(label, Backend::CpuOnly);
+            let result =
+                run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                    .unwrap_or_else(|error| panic!("{label} optimization failed: {error}"));
+            assert_standalone_heatmap_contract(label, &result, false);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn all_standalone_gpu_kernel_strategies_emit_exact_two_dimensional_heatmaps() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        // CARM's default OTTO surface requires 800 valid observations.
+        let candles = make_kvdf_flow_candles(1_024);
+        let cancel = AtomicBool::new(false);
+
+        for label in [
+            "ASR", "VCC", "VEMR", "ROCB", "VCET", "MKCS", "KQSR", "CARM", "KVDF", "CDMC",
+        ] {
+            let req = standalone_heatmap_request(label, Backend::GpuKernel { device_id: 0 });
+            let result =
+                run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                    .unwrap_or_else(|error| panic!("{label} GPU optimization failed: {error}"));
+            assert_standalone_heatmap_contract(label, &result, true);
+        }
+    }
+
+    #[test]
+    fn analysis_decision_derived_series_match_strategy_gate_formulas() {
+        assert!((analysis_mkcs_compression_ratio(2.0, 100.0) - 0.02).abs() <= 1.0e-12);
+        assert!((analysis_kqsr_prb_fraction(101.0, 99.0, 103.0) - 0.5).abs() <= 1.0e-12);
+        assert!((analysis_carm_otto_regime_spread(100.0, 99.0, 101.0) - 0.02).abs() <= 1.0e-12);
+        assert!(analysis_mkcs_compression_ratio(f64::NAN, 100.0).is_nan());
+        assert!(analysis_kqsr_prb_fraction(100.0, 100.0, 100.0).is_nan());
+        assert!(analysis_carm_otto_regime_spread(100.0, f64::NAN, 101.0).is_nan());
     }
 
     fn assert_local_stability_result_has_points(result: &LocalStabilityResult) {
@@ -17600,10 +18753,18 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("asr drilldown run");
-        assert!(res.curves.equity.bins > 0);
-        assert_eq!(
-            res.curves.equity.minmax.len(),
-            res.curves.equity.bins.saturating_mul(2)
+        assert_strategy_indicator_bundle(
+            &res,
+            "Asr",
+            &[
+                "asr_kaufman_long_stop",
+                "asr_kaufman_short_stop",
+                "asr_squeeze_state",
+                "asr_squeeze_momentum",
+                "asr_linearreg_angle",
+                "asr_efficiency_ratio",
+                "asr_zscore",
+            ],
         );
     }
 
@@ -17831,10 +18992,16 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("vemr drilldown run");
-        assert!(res.curves.equity.bins > 0);
-        assert_eq!(
-            res.curves.equity.minmax.len(),
-            res.curves.equity.bins.saturating_mul(2)
+        assert_strategy_indicator_bundle(
+            &res,
+            "Vemr",
+            &[
+                "vemr_bb_upper",
+                "vemr_bb_middle",
+                "vemr_bb_lower",
+                "vemr_zscore",
+                "vemr_atr",
+            ],
         );
     }
 
@@ -17940,7 +19107,15 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("vcc drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Vcc",
+            &[
+                "vcc_squeeze_state",
+                "vcc_trend_state",
+                "vcc_squeeze_momentum",
+            ],
+        );
     }
 
     #[test]
@@ -17951,7 +19126,11 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("rocb drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Rocb",
+            &["rocb_donchian_upper", "rocb_donchian_lower", "rocb_atr"],
+        );
     }
 
     #[test]
@@ -17962,7 +19141,15 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("vcet drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Vcet",
+            &[
+                "vcet_vidya",
+                "vcet_chandelier_long",
+                "vcet_chandelier_short",
+            ],
+        );
     }
 
     #[test]
@@ -17984,7 +19171,15 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("mkcs drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Mkcs",
+            &[
+                "mkcs_donchian_upper",
+                "mkcs_donchian_lower",
+                "mkcs_compression_ratio",
+            ],
+        );
     }
 
     #[test]
@@ -18006,7 +19201,21 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("kqsr drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Kqsr",
+            &[
+                "kqsr_prb_upper",
+                "kqsr_prb_lower",
+                "kqsr_kdj_j",
+                "kqsr_srsi_k",
+                "kqsr_srsi_d",
+                "kqsr_qqe_fast",
+                "kqsr_qqe_slow",
+                "kqsr_ift_rsi",
+                "kqsr_prb_fraction",
+            ],
+        );
     }
 
     #[test]
@@ -18028,7 +19237,19 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("carm drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Carm",
+            &[
+                "carm_otto_hott",
+                "carm_otto_lott",
+                "carm_coppock",
+                "carm_ao",
+                "carm_apo",
+                "carm_rocr",
+                "carm_otto_regime_spread",
+            ],
+        );
     }
 
     #[test]
@@ -18050,7 +19271,21 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("kvdf drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Kvdf",
+            &[
+                "kvdf_keltner_upper",
+                "kvdf_keltner_middle",
+                "kvdf_keltner_lower",
+                "kvdf_vwap",
+                "kvdf_devstop_long",
+                "kvdf_devstop_short",
+                "kvdf_fvg_upper",
+                "kvdf_fvg_lower",
+                "kvdf_dti",
+            ],
+        );
     }
 
     #[test]
@@ -18072,7 +19307,18 @@ mod tests {
 
         let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("cdmc drilldown run");
-        assert_drilldown_result_has_curves(&res);
+        assert_strategy_indicator_bundle(
+            &res,
+            "Cdmc",
+            &[
+                "cdmc_mama",
+                "cdmc_fama",
+                "cdmc_decycler",
+                "cdmc_dpo",
+                "cdmc_cycle_angle",
+                "cdmc_cycle_state",
+            ],
+        );
     }
 
     #[test]

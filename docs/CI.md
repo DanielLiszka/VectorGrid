@@ -39,9 +39,12 @@ job must not hide regressions in either crate behind the legacy workspace
 warning backlog.
 
 Rust compilation and tests use one Cargo job, incremental compilation is
-disabled, `Cargo.lock` is checked with `--locked`, Rust test threads are
-serialized, Vitest uses one worker without file parallelism, and the Playwright
-configuration uses one headless Chromium worker.
+disabled, and the complete locked dependency graph is fetched before an
+offline full-metadata resolution check. This makes a cold CI cache deterministic
+while ensuring the later manifest/toolchain contract cannot resolve or download
+a different graph. Rust test threads are serialized, Vitest uses one worker
+without file parallelism, and the Playwright configuration uses one headless
+Chromium worker.
 The workflow installs the repo's stable Rust components, selects Node `22.12.0`
 from the supported `web/package.json` engine range, installs the exact
 `packageManager` npm version from that file, and installs dependencies with

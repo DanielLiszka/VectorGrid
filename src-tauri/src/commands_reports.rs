@@ -1,4 +1,7 @@
-use super::{run_artifacts, SaveReportXlsxResponse};
+use super::{
+    commands_meta::{MetaCohortManifest, MetaHoldoutExecutionEvidence},
+    run_artifacts, SaveReportXlsxResponse,
+};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use ta_app_core::MetaSelectionResult;
@@ -14,6 +17,8 @@ mod commands_reports_shared;
 mod commands_reports_validation_common;
 #[path = "commands_reports_validation_xlsx.rs"]
 mod commands_reports_validation_xlsx;
+#[path = "commands_reports_vcet_temporal_xlsx.rs"]
+mod commands_reports_vcet_temporal_xlsx;
 
 #[cfg(test)]
 pub(crate) fn existing_path(path: String) -> Result<PathBuf, String> {
@@ -26,6 +31,63 @@ pub(crate) fn sanitize_filename_component(raw: &str) -> String {
 
 pub(crate) fn reports_dir_for_base(base: &Path) -> Result<PathBuf, String> {
     commands_reports_shared::reports_dir_for_base(base)
+}
+
+fn vcet_temporal_report_stage(stage: &str) -> Result<&'static str, String> {
+    match stage {
+        "selection" => Ok("selection"),
+        "final" => Ok("final"),
+        _ => Err(format!(
+            "unsupported VCET temporal report stage '{stage}'; expected selection or final"
+        )),
+    }
+}
+
+pub(crate) fn vcet_temporal_report_filename_matches_stage(file_name: &str, stage: &str) -> bool {
+    let Ok(stage) = vcet_temporal_report_stage(stage) else {
+        return false;
+    };
+    let prefix = format!("vectorgrid_vcet_temporal_{stage}_");
+    !file_name.contains(':')
+        && file_name.starts_with(&prefix)
+        && file_name.ends_with(".xlsx")
+        && file_name.len() > prefix.len() + ".xlsx".len()
+}
+
+fn vcet_temporal_report_file_stem(
+    stage: &str,
+    label: Option<&str>,
+    universe_sha256: &str,
+) -> Result<String, String> {
+    let stage = vcet_temporal_report_stage(stage)?;
+    let normalized_hash = universe_sha256
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(universe_sha256.trim());
+    let short_hash = normalized_hash.chars().take(12).collect::<String>();
+    let label = label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("evidence");
+    let safe_label = sanitize_filename_component(label)
+        .chars()
+        .take(48)
+        .collect::<String>();
+    Ok(format!(
+        "vectorgrid_vcet_temporal_{stage}_{safe_label}_{short_hash}"
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn persist_vcet_temporal_report_bytes_for_test(
+    stage: &str,
+    label: Option<&str>,
+    universe_sha256: &str,
+    base: &Path,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let file_stem = vcet_temporal_report_file_stem(stage, label, universe_sha256)?;
+    commands_reports_shared::persist_named_report_bytes_for_base(&file_stem, base, bytes)
 }
 
 pub(crate) fn build_validation_shortlist_csv_blocking(
@@ -41,8 +103,55 @@ pub fn build_validation_shortlist_csv_headless(validation_res: &Value) -> Result
 pub(crate) fn build_meta_report_xlsx_bytes(
     ts: &str,
     meta: &MetaSelectionResult,
+    holdout_execution: Option<&MetaHoldoutExecutionEvidence>,
+    cohort_manifest: Option<&MetaCohortManifest>,
 ) -> Result<Vec<u8>, String> {
-    commands_reports_meta_xlsx::build_meta_report_xlsx_bytes(ts, meta)
+    commands_reports_meta_xlsx::build_meta_report_xlsx_bytes(
+        ts,
+        meta,
+        holdout_execution,
+        cohort_manifest,
+    )
+}
+
+pub(crate) fn build_vcet_temporal_report_xlsx_bytes(
+    sealed_universe: &super::commands_vcet_temporal_universe::VcetTemporalSealedDatasetUniverseV1,
+    pre_final: &super::commands_vcet_temporal_prefinal::ReduceVcetTemporalPreFinalShardsResponseV1,
+    final_test: Option<
+        &super::commands_vcet_temporal_final::ReduceVcetTemporalFinalTestShardsResponseV1,
+    >,
+) -> Result<Vec<u8>, String> {
+    commands_reports_vcet_temporal_xlsx::build_vcet_temporal_report_xlsx_bytes(
+        sealed_universe,
+        pre_final,
+        final_test,
+    )
+}
+
+pub(crate) fn save_vcet_temporal_report_xlsx_for_base(
+    sealed_universe: &super::commands_vcet_temporal_universe::VcetTemporalSealedDatasetUniverseV1,
+    pre_final: &super::commands_vcet_temporal_prefinal::ReduceVcetTemporalPreFinalShardsResponseV1,
+    final_test: Option<
+        &super::commands_vcet_temporal_final::ReduceVcetTemporalFinalTestShardsResponseV1,
+    >,
+    label: Option<&str>,
+    base: &Path,
+) -> Result<SaveReportXlsxResponse, String> {
+    let bytes = build_vcet_temporal_report_xlsx_bytes(sealed_universe, pre_final, final_test)?;
+    let stage = if final_test.is_some() {
+        "final"
+    } else {
+        "selection"
+    };
+    let base_name = vcet_temporal_report_file_stem(stage, label, &sealed_universe.universe_sha256)?;
+    let path =
+        commands_reports_shared::persist_named_report_bytes_for_base(&base_name, base, &bytes)?;
+    Ok(SaveReportXlsxResponse {
+        path: path.to_string_lossy().to_string(),
+        bytes: bytes.len(),
+        artifact_updated: false,
+        artifact_update_warning: String::new(),
+    })
 }
 
 fn normalize_max_rows(max_rows: Option<usize>) -> Option<usize> {

@@ -1516,8 +1516,10 @@ void vcet_backtest_metrics_f32(
     int combo_count,
     unsigned int flags,
     float commission,
-    int require_vidya_slope,
-    int max_trade_bars,
+    const int* __restrict__ combo_require_vidya_slope,
+    const int* __restrict__ combo_max_trade_bars,
+    int uniform_require_vidya_slope,
+    int uniform_max_trade_bars,
     float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
@@ -1529,6 +1531,12 @@ void vcet_backtest_metrics_f32(
     const int ce_row = combo_ce_row_idx[idx];
     const int start_t = combo_start_t[idx];
     const int end_t = combo_end_t[idx];
+    const int require_vidya_slope = (combo_require_vidya_slope != nullptr)
+        ? combo_require_vidya_slope[idx]
+        : uniform_require_vidya_slope;
+    const int max_trade_bars = (combo_max_trade_bars != nullptr)
+        ? combo_max_trade_bars[idx]
+        : uniform_max_trade_bars;
     const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
     const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
@@ -1674,7 +1682,8 @@ void vcet_backtest_metrics_f32(
                     pos_signal = -1;
                     bars_in_trade = 1;
                 } else {
-                    exit_now = 1;
+                    pos_signal = 0;
+                    bars_in_trade = 0;
                 }
             } else if (exit_now) {
                 pos_signal = 0;
@@ -1689,7 +1698,8 @@ void vcet_backtest_metrics_f32(
                     pos_signal = 1;
                     bars_in_trade = 1;
                 } else {
-                    exit_now = 1;
+                    pos_signal = 0;
+                    bars_in_trade = 0;
                 }
             } else if (exit_now) {
                 pos_signal = 0;
@@ -1717,7 +1727,7 @@ void vcet_backtest_metrics_f32(
         float step_r = 0.0f;
         if (t > 0 && t < T) {
             step_log += (float)pos_bar * lr[t];
-            step_r += (pos_bar == 0) ? 0.0f : ((float)pos_bar * expm1f(lr[t]));
+            step_r += (pos_bar == 0) ? 0.0f : expm1f(step_log);
         }
         log_eq += step_log;
         log_peak = fmaxf(log_peak, log_eq);

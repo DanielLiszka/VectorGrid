@@ -3,65 +3,206 @@ export interface ChartSize {
   height: number
 }
 
+export type LightweightChartTheme = 'light' | 'dark'
+
+export interface LightweightChartSeriesPalette {
+  canvas: string
+  positive: string
+  negative: string
+  fast: string
+  slow: string
+  ott: string
+  neutral: string
+  highlight: string
+}
+
+export type LightweightChartSeriesTone =
+  | 'positive'
+  | 'negative'
+  | 'fast'
+  | 'slow'
+  | 'ott'
+  | 'neutral'
+  | 'highlight'
+
+export type LightweightChartLegendPaletteKey =
+  | 'candles'
+  | 'fast'
+  | 'slow'
+  | 'halftrend'
+  | 'ott'
+  | 'macz'
+  | 'entries'
+  | 'exits'
+  | 'orders'
+
+export interface LightweightChartLegendItem {
+  label: string
+  paletteKey?: LightweightChartLegendPaletteKey
+  color?: string
+  value?: string
+}
+
 export function normalizeChartSize(widthRaw: unknown, heightRaw: unknown): ChartSize {
   const width = Math.max(240, Math.floor(Number(widthRaw) || 820))
   const height = Math.max(220, Math.floor(Number(heightRaw) || 360))
   return { width, height }
 }
 
-export function baseLightweightChartOptions(size: ChartSize): Record<string, unknown> {
+export function resolveLightweightChartTheme(
+  root: Pick<HTMLElement, 'dataset'> | null | undefined =
+    typeof document !== 'undefined' ? document.documentElement : null,
+): LightweightChartTheme {
+  return String(root?.dataset.theme || '').trim().toLowerCase() === 'dark'
+    ? 'dark'
+    : 'light'
+}
+
+export function lightweightChartSeriesPalette(
+  theme: LightweightChartTheme,
+): Readonly<LightweightChartSeriesPalette> {
+  if (theme === 'dark') {
+    return {
+      canvas: 'rgb(2, 6, 23)',
+      positive: '#22c55e',
+      negative: '#fb7185',
+      fast: '#38bdf8',
+      slow: '#fbbf24',
+      ott: '#c084fc',
+      neutral: '#cbd5e1',
+      highlight: '#fde047',
+    }
+  }
+  return {
+    canvas: 'rgb(255, 253, 250)',
+    positive: '#047857',
+    negative: '#be123c',
+    fast: '#0369a1',
+    slow: '#92400e',
+    ott: '#7e22ce',
+    neutral: '#475569',
+    highlight: '#854d0e',
+  }
+}
+
+export function lightweightChartSeriesColor(
+  theme: LightweightChartTheme,
+  tone: LightweightChartSeriesTone,
+): string {
+  return lightweightChartSeriesPalette(theme)[tone]
+}
+
+export function lightweightChartLegendColor(
+  theme: LightweightChartTheme,
+  key: LightweightChartLegendPaletteKey,
+): string {
+  const palette = lightweightChartSeriesPalette(theme)
+  if (key === 'fast' || key === 'slow' || key === 'ott') return palette[key]
+  if (key === 'exits' || key === 'orders') {
+    return `linear-gradient(90deg, ${palette.positive} 0 33.333%, ${palette.negative} 33.333% 66.666%, ${palette.neutral} 66.666% 100%)`
+  }
+  return `linear-gradient(90deg, ${palette.positive} 0 50%, ${palette.negative} 50% 100%)`
+}
+
+export function colorizeHistogramSeriesData<T extends { value: number }>(
+  data: readonly T[],
+  theme: LightweightChartTheme,
+): Array<T & { color: string }> {
+  const palette = lightweightChartSeriesPalette(theme)
+  return data.map((point) => ({
+    ...point,
+    color: Number(point.value) >= 0 ? palette.positive : palette.negative,
+  }))
+}
+
+export function lightweightChartThemeOptions(
+  theme: LightweightChartTheme,
+): Record<string, unknown> {
+  const dark = theme === 'dark'
+  const seriesPalette = lightweightChartSeriesPalette(theme)
+  const textColor = dark
+    ? 'rgba(226, 232, 240, 0.95)'
+    : 'rgba(24, 34, 50, 0.94)'
+  const gridColor = dark
+    ? 'rgba(100, 116, 139, 0.34)'
+    : 'rgba(90, 102, 119, 0.22)'
+  const borderColor = dark
+    ? 'rgba(148, 163, 184, 0.55)'
+    : 'rgba(90, 102, 119, 0.48)'
+  const crosshairColor = dark
+    ? 'rgba(226, 232, 240, 0.58)'
+    : 'rgba(24, 34, 50, 0.48)'
+  const crosshairLabelBackground = dark ? 'rgb(15, 23, 42)' : 'rgb(59, 71, 87)'
+  return {
+    layout: {
+      textColor,
+      background: { type: 'solid', color: seriesPalette.canvas },
+      attributionLogo: true,
+    },
+    grid: {
+      vertLines: { color: gridColor },
+      horzLines: { color: gridColor },
+    },
+    rightPriceScale: {
+      borderColor,
+      entireTextOnly: true,
+    },
+    timeScale: {
+      borderColor,
+    },
+    crosshair: {
+      vertLine: { color: crosshairColor, labelBackgroundColor: crosshairLabelBackground },
+      horzLine: { color: crosshairColor, labelBackgroundColor: crosshairLabelBackground },
+    },
+  }
+}
+
+export function baseLightweightChartOptions(
+  size: ChartSize,
+  theme: LightweightChartTheme = resolveLightweightChartTheme(),
+): Record<string, unknown> {
+  const themeOptions = lightweightChartThemeOptions(theme)
   return {
     width: size.width,
     height: size.height,
-    layout: {
-      textColor: 'rgba(226, 232, 240, 0.95)',
-      background: { type: 'solid', color: 'rgb(2, 6, 23)' },
-    },
-    grid: {
-      vertLines: { color: 'rgba(100, 116, 139, 0.34)' },
-      horzLines: { color: 'rgba(100, 116, 139, 0.34)' },
-    },
+    ...themeOptions,
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.55)',
-      entireTextOnly: true,
+      ...(themeOptions.rightPriceScale as Record<string, unknown>),
     },
     overlayPriceScales: {
       borderVisible: false,
       scaleMargins: { top: 0.78, bottom: 0.03 },
     },
     timeScale: {
-      borderColor: 'rgba(148, 163, 184, 0.55)',
+      ...(themeOptions.timeScale as Record<string, unknown>),
       fixLeftEdge: false,
       fixRightEdge: false,
       timeVisible: true,
       secondsVisible: false,
     },
-    crosshair: {
-      vertLine: { color: 'rgba(226, 232, 240, 0.58)', labelBackgroundColor: 'rgb(15, 23, 42)' },
-      horzLine: { color: 'rgba(226, 232, 240, 0.58)', labelBackgroundColor: 'rgb(15, 23, 42)' },
-    },
   }
 }
 
-export function candlestickSeriesOptions(): Record<string, unknown> {
+export function candlestickSeriesOptions(
+  theme: LightweightChartTheme = resolveLightweightChartTheme(),
+): Record<string, unknown> {
+  const palette = lightweightChartSeriesPalette(theme)
   return {
-    upColor: 'rgba(22, 163, 74, 0.9)',
-    downColor: 'rgba(225, 29, 72, 0.9)',
-    wickUpColor: 'rgba(22, 163, 74, 0.9)',
-    wickDownColor: 'rgba(225, 29, 72, 0.9)',
+    upColor: palette.positive,
+    downColor: palette.negative,
+    wickUpColor: palette.positive,
+    wickDownColor: palette.negative,
     borderVisible: true,
-    borderUpColor: 'rgba(22, 163, 74, 1)',
-    borderDownColor: 'rgba(225, 29, 72, 1)',
+    borderUpColor: palette.positive,
+    borderDownColor: palette.negative,
   }
 }
 
-export function lineSeriesOptions(kind: 'fast' | 'slow' | 'ott'): Record<string, unknown> {
-  const color =
-    kind === 'fast'
-      ? 'rgba(14, 165, 233, 0.95)'
-      : kind === 'slow'
-        ? 'rgba(245, 158, 11, 0.95)'
-        : 'rgba(168, 85, 247, 0.95)'
+export function lineSeriesOptions(
+  kind: 'fast' | 'slow' | 'ott',
+  theme: LightweightChartTheme = resolveLightweightChartTheme(),
+): Record<string, unknown> {
+  const color = lightweightChartSeriesPalette(theme)[kind]
   return {
     color,
     lineWidth: 2,
@@ -84,9 +225,13 @@ export function histogramPriceScaleOptions(kind: HistogramSeriesKind): Record<st
   }
 }
 
-export function histogramSeriesOptions(kind: HistogramSeriesKind = 'macz'): Record<string, unknown> {
+export function histogramSeriesOptions(
+  kind: HistogramSeriesKind = 'macz',
+  theme: LightweightChartTheme = resolveLightweightChartTheme(),
+): Record<string, unknown> {
+  const palette = lightweightChartSeriesPalette(theme)
   return {
-    color: kind === 'halftrend' ? 'rgba(34, 197, 94, 0.42)' : 'rgba(148, 163, 184, 0.6)',
+    color: kind === 'halftrend' ? palette.positive : palette.neutral,
     priceScaleId: kind,
     priceLineVisible: false,
     lastValueVisible: false,

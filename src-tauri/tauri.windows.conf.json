@@ -5,6 +5,8 @@
     "resources": {
       "resources/native/catboostmodel.dll": "native/catboostmodel.dll",
       "resources/licenses/CatBoost-LICENSE.txt": "licenses/CatBoost-LICENSE.txt",
+      "resources/licenses/TradingView-Lightweight-Charts-LICENSE.txt": "licenses/TradingView-Lightweight-Charts-LICENSE.txt",
+      "resources/licenses/TradingView-Lightweight-Charts-NOTICE.txt": "licenses/TradingView-Lightweight-Charts-NOTICE.txt",
       "resources/sample-data/vectorgrid_synthetic_ohlcv.csv": "sample-data/vectorgrid_synthetic_ohlcv.csv"
     },
     "windows": {

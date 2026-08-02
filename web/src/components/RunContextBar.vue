@@ -122,6 +122,11 @@ withDefaults(
   display: none;
 }
 
+.contextOverflowSummary:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: 2px;
+}
+
 .contextOverflowBody {
   min-width: 0;
   display: grid;
@@ -158,6 +163,47 @@ withDefaults(
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-overlay) 94%, var(--panel));
   box-shadow: var(--shadow-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .contextCard,
+  .contextOverflowIcon {
+    transition: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .contextCard,
+  .contextOverflowSummary,
+  .contextOverflowPanel {
+    border-color: CanvasText !important;
+    background: Canvas !important;
+    color: CanvasText !important;
+    box-shadow: none !important;
+  }
+
+  .contextKey,
+  .contextOverflowIcon {
+    color: GrayText !important;
+  }
+
+  .contextCard.current,
+  .contextOverflow[open] .contextOverflowSummary {
+    border-color: Highlight !important;
+    background: Highlight !important;
+    color: HighlightText !important;
+    box-shadow: none !important;
+  }
+
+  .contextCard.current .contextKey,
+  .contextOverflow[open] .contextKey,
+  .contextOverflow[open] .contextOverflowIcon {
+    color: HighlightText !important;
+  }
+
+  .contextOverflowSummary:focus-visible {
+    outline-color: Highlight !important;
+  }
 }
 
 @media (max-width: 760px) {

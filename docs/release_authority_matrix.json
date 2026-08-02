@@ -21,7 +21,7 @@
     },
     {
       "id": "required_cpu_ci_mirror",
-      "description": "Merge enforcement that delegates to repo-owned CPU, static, and headless contracts."
+      "description": "Tracked CI workflow contract that delegates to repo-owned CPU, static, and headless gates; actual merge enforcement depends on remote workflow execution and branch protection."
     },
     {
       "id": "subsystem_authority",
@@ -51,6 +51,22 @@
       "kind": "command",
       "path": "scripts/run_cpu_perf_gate.ps1",
       "invocation": "powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate",
+      "status": "active"
+    },
+    {
+      "id": "cpu_reliability_soak_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "cpu-reliability-soak-evidence.json",
+      "producer": "cpu_reliability_soak_gate",
+      "status": "active"
+    },
+    {
+      "id": "cpu_reliability_soak_gate",
+      "authority_class": "subsystem_authority",
+      "kind": "command",
+      "path": "scripts/run_cpu_reliability_soak.ps1",
+      "invocation": "powershell -File scripts/run_cpu_reliability_soak.ps1 -Mode operator -Hours 6 -CargoTargetDir <dedicated-path>",
       "status": "active"
     },
     {
@@ -218,7 +234,7 @@
       "authority_class": "subsystem_authority",
       "kind": "command",
       "path": "scripts/run_performance_audit_baseline_pack.ps1",
-      "invocation": "powershell -File scripts/run_performance_audit_baseline_pack.ps1 -FailOnCoverageGap",
+      "invocation": "powershell -File scripts/run_performance_audit_baseline_pack.ps1 -FailOnCoverageGap -FailOnActivePerfProcess -FailOnMissingReleaseBaseline",
       "status": "active"
     },
     {
@@ -235,6 +251,22 @@
       "kind": "command",
       "path": "scripts/capture_release_provenance.ps1",
       "invocation": "powershell -File scripts/capture_release_provenance.ps1 <required args>",
+      "status": "active"
+    },
+    {
+      "id": "public_release_gate",
+      "authority_class": "broad_authoritative_gate",
+      "kind": "command",
+      "path": "scripts/run_public_release_gate.ps1",
+      "invocation": "powershell -File scripts/run_public_release_gate.ps1 -Variant <variant> <required signing args>",
+      "status": "active"
+    },
+    {
+      "id": "public_release_summary_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "public-release-summary.json",
+      "producer": "public_release_gate",
       "status": "active"
     },
     {
@@ -267,6 +299,14 @@
       "kind": "command",
       "path": "scripts/generate_release_manifest.ps1",
       "invocation": "powershell -File scripts/generate_release_manifest.ps1 <required args>",
+      "status": "active"
+    },
+    {
+      "id": "release_proof_evidence_manifest_artifact",
+      "authority_class": "release_authority_artifact",
+      "kind": "artifact",
+      "artifact_name": "release-proof-evidence-manifest.json",
+      "producer": "packaged_smoke_runner",
       "status": "active"
     },
     {
@@ -378,6 +418,22 @@
         "Workflow gate when the product workflow path changes."
       ],
       "not_authority": ["GPU gates."]
+    },
+    {
+      "id": "cpu-reliability-operator-authority",
+      "label": "CPU reliability operator authority",
+      "status": "active",
+      "primary_authority": ["cpu_reliability_soak_gate"],
+      "companion_sources": ["cpu_reliability_soak_artifact"],
+      "required_companion_evidence": [
+        "Operator evidence must use a fresh release build, run for at least six hours, retain at least 30 measured cycles, keep the maximum sample gap at or below 15 minutes, and report operator_release_eligible=true.",
+        "The short mode is a bounded diagnostic only and must report that it is not operator release authority."
+      ],
+      "not_authority": [
+        "CPU or GPU performance.",
+        "Native desktop, provider, broker, clean-machine, or public-release behavior.",
+        "A short-mode soak."
+      ]
     },
     {
       "id": "frontend-scoped-warm-mocked-browser-latency",
@@ -513,6 +569,29 @@
       "not_authority": ["Options Criterion benchmarks alone."]
     },
     {
+      "id": "public-release-eligibility",
+      "label": "Public release eligibility",
+      "status": "active",
+      "primary_authority": ["public_release_gate"],
+      "companion_sources": [
+        "packaged_smoke_artifact",
+        "public_release_summary_artifact",
+        "release_proof_evidence_manifest_artifact"
+      ],
+      "required_companion_evidence": [
+        "The packaged smoke must report runtime_executed=true, binary_origin=extracted-bundle, and desktop_suite=release-proof for the exact staged variant.",
+        "Every allowlisted release-proof journey must be bound to the same current run, release variant, and packaged-binary identity.",
+        "Only a passing clean, signed, timestamped run may report public_release_eligible=true; dirty-worktree or unsigned-beta allowances are rehearsal-only and must remain ineligible.",
+        "The initial and final exact Git HEAD and raw NUL-delimited worktree-status snapshot must match byte-for-byte; canonical raw-byte manifests of every tracked and current untracked file must match; nonstandard tracked index flags and non-single-link source files are rejected; retained read leases keep all captured source bytes immutable through the candidate/signing interval; and a fail-closed run-long filesystem monitor must observe zero in-scope mutation events or errors, so any source-state change fails closed."
+      ],
+      "not_authority": [
+        "A release-candidate rehearsal alone.",
+        "Static package inspection or raw-binary smoke.",
+        "A dirty-worktree or unsigned-beta rehearsal.",
+        "Required CPU CI, remote workflow presence, or branch protection alone."
+      ]
+    },
+    {
       "id": "release-readiness",
       "label": "Release readiness",
       "status": "active",
@@ -571,15 +650,20 @@
         "broad-repo-quality",
         "full-local-release-rehearsal",
         "live-execution-safety",
+        "public-release-eligibility",
         "release-readiness"
       ],
       "required_sources": [
         "execution_safety_gate",
         "live_safety_harness",
         "manifest_artifact",
+        "packaged_smoke_artifact",
         "provenance_artifact",
+        "public_release_gate",
+        "public_release_summary_artifact",
         "release_candidate_gate",
         "release_doctor",
+        "release_proof_evidence_manifest_artifact",
         "sha256sums_artifact"
       ],
       "conditional_sources": [],
@@ -597,6 +681,7 @@
         "full-local-release-rehearsal",
         "gpu-cuda-performance",
         "live-execution-safety",
+        "public-release-eligibility",
         "release-readiness"
       ],
       "required_sources": [
@@ -604,8 +689,12 @@
         "gpu_perf_gate",
         "live_safety_harness",
         "manifest_artifact",
+        "packaged_smoke_artifact",
+        "public_release_gate",
+        "public_release_summary_artifact",
         "release_candidate_gate",
-        "release_doctor"
+        "release_doctor",
+        "release_proof_evidence_manifest_artifact"
       ],
       "conditional_sources": [
         "gpu_validation_perf_gate",
@@ -626,14 +715,19 @@
         "full-local-release-rehearsal",
         "gpu-ma-performance",
         "live-execution-safety",
+        "public-release-eligibility",
         "release-readiness"
       ],
       "required_sources": [
         "execution_safety_gate",
         "gpu_ma_perf_gate",
         "live_safety_harness",
+        "packaged_smoke_artifact",
+        "public_release_gate",
+        "public_release_summary_artifact",
         "release_candidate_gate",
-        "release_doctor"
+        "release_doctor",
+        "release_proof_evidence_manifest_artifact"
       ],
       "conditional_sources": [],
       "invariants": [
@@ -785,9 +879,9 @@
     },
     {
       "id": "required-cpu-ci-enforcement",
-      "label": "Required CPU CI enforcement",
+      "label": "Required CPU CI workflow contract",
       "status": "implemented",
-      "reason": "The active workflow delegates to the repo-owned required CPU gate; branch protection activation remains an external repository setting.",
+      "reason": "The tracked, locally committed workflow delegates to the repo-owned required CPU gate. A pushed successful GitHub run and branch protection activation remain external repository state and are not claimed by this matrix.",
       "implemented_by": [
         ".github/workflows/cpu-quality.yml",
         "scripts/run_cpu_ci_gate.ps1"
@@ -814,6 +908,16 @@
       "id": "cpu-ci-delegates-repo-quality",
       "path": "scripts/run_cpu_ci_gate.ps1",
       "must_include": "run_repo_quality_gate.ps1"
+    },
+    {
+      "id": "cpu-reliability-operator-minimum",
+      "path": "scripts/run_cpu_reliability_soak.ps1",
+      "must_include": "$minimumOperatorSeconds = 6 * 60 * 60"
+    },
+    {
+      "id": "cpu-reliability-short-fail-closed",
+      "path": "scripts/run_cpu_reliability_soak.ps1",
+      "must_include": "Short soak must not claim operator release authority"
     },
     {
       "id": "cuda-graph-multitile-quality-contract",
@@ -969,6 +1073,26 @@
       "id": "options-promotion-release-routing",
       "path": "scripts/run_release_candidate_gate.ps1",
       "must_include": "-IncludeOptionsGpuPromotion"
+    },
+    {
+      "id": "public-release-dirty-unsigned-ineligible",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "public_release_eligible = (Test-PublicReleaseEligibility -Status $Status)"
+    },
+    {
+      "id": "public-release-release-proof-suite",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "\"-DesktopSuite\", \"release-proof\""
+    },
+    {
+      "id": "public-release-runtime-executed",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "if (-not [bool]$smoke.runtime_executed -or [string]$smoke.binary_origin -ne \"extracted-bundle\")"
+    },
+    {
+      "id": "public-release-source-state-revalidation",
+      "path": "scripts/run_public_release_gate.ps1",
+      "must_include": "Invoke-PublicReleaseStep -Name \"Final source-state revalidation\""
     },
     {
       "id": "release-doctor-runs-authority-contract",

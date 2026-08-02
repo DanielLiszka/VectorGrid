@@ -10,8 +10,10 @@ import { useOptimizeStore } from "../stores/optimizeStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { LAST_BATCH_SUMMARY_KEY } from "../utils/core/storageKeys";
 import {
+  canonicalJsonString,
   defaultBatchTag,
   dedupTags,
+  hashFNV1a64Hex,
   splitHoldoutPaths,
 } from "../utils/core/artifactIdentity";
 import { openPathWithRevealFallback } from "../utils/openPath";
@@ -21,11 +23,25 @@ import {
   writeStorageString,
 } from "../utils/storage";
 import { formatUiCount, formatUtcDateFromUnixMs } from "../utils/uiFormat";
-import { buildMetaBatchRequest } from "./metaBatchRequestBuilder";
+import { buildVcetCampaignEvidenceModel } from "../visualizations/vcetCampaignEvidenceModel";
+import {
+  buildMetaBatchRequest,
+  buildVcetFixedCandidateManifest,
+} from "./metaBatchRequestBuilder";
 import { buildMetaMlScope } from "./metaMlScopeBuilder";
 import { buildMetaSelectionRequest } from "./metaRequestBuilder";
 import { buildMetaStage5Request } from "./metaStage4RequestBuilder";
+import {
+  analyzeVcetSearchConfigRequest,
+  buildVcetSearchConfigFromDraft,
+  createDefaultVcetSearchDraft,
+  normalizeVcetCandidateDesignMode,
+} from "./vcetSearchRequestBuilder";
 import { storeErrorText } from "../utils/storeErrorText";
+import {
+  vcetTemporalNativePathKey,
+  type VcetTemporalSourceEligibilityIdentity,
+} from "./vcetTemporalCampaignService";
 import {
   buildCampaignStageCompletion,
   buildMetaStageCompletion,
@@ -41,6 +57,13 @@ export interface MetaRunOptions {
 
 export interface MetaBatchRunOptions {
   request?: unknown;
+}
+
+export interface VcetTemporalCampaignSourceEligibility {
+  eligible: boolean;
+  summaryPath: string;
+  identity: VcetTemporalSourceEligibilityIdentity | null;
+  message: string;
 }
 
 export interface MetaStage4RunOptions {
@@ -93,6 +116,21 @@ interface BatchDatasetEntry {
 interface BatchSummaryEnvelope {
   path: string;
   summary: Record<string, unknown>;
+  sourceSummaryContentFingerprint?: string;
+}
+
+const DEFAULT_VCET_CROSS_UNIVERSE_ADMISSION = Object.freeze({
+  min_profitable_share_requested: 0.55,
+  min_hard_gate_pass_share_requested: 0.5,
+  min_pnl_p10: 0,
+  min_sharpe_p10: 0,
+});
+
+function finiteStoreNumber(field: string, fallback: number): number {
+  const raw = readStoreTextInputValue(field).trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 type AnalysisStore = ReturnType<typeof useAnalysisStore>;
@@ -108,7 +146,9 @@ const META_TABLE_COLUMNS: MetaTableColumn[] = markRaw([
   { key: "max_dd_p90", label: "DD p90", alignLeft: false },
   { key: "psr", label: "PSR", alignLeft: false },
   { key: "dsr", label: "DSR", alignLeft: false },
+  { key: "holdout_evaluation_rate", label: "H eval", alignLeft: false },
   { key: "holdout_pass_rate", label: "H pass", alignLeft: false },
+  { key: "holdout_profitable_rate", label: "H PnL+", alignLeft: false },
   { key: "holdout_score_p10", label: "H p10", alignLeft: false },
   { key: "holdout_score_median", label: "H med", alignLeft: false },
   { key: "holdout_max_dd_p90", label: "H DD p90", alignLeft: false },
@@ -135,6 +175,16 @@ const ANALYSIS_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   metaClusterFloatBucket: { key: "metaClusterFloatBucket" },
   batchHoldoutPct: { key: "batchHoldoutPct" },
   batchHoldoutTag: { key: "batchHoldoutTag" },
+  batchExecutionMode: { key: "batchExecutionMode" },
+  batchPreloadPolicy: { key: "batchPreloadPolicy" },
+  batchAdmissionMinProfitableShare: {
+    key: "batchAdmissionMinProfitableShare",
+  },
+  batchAdmissionMinHardGateShare: {
+    key: "batchAdmissionMinHardGateShare",
+  },
+  batchAdmissionMinPnlP10: { key: "batchAdmissionMinPnlP10" },
+  batchAdmissionMinSharpeP10: { key: "batchAdmissionMinSharpeP10" },
   batchTags: { key: "batchTags" },
   metaStage4TopK: { key: "metaStage4TopK" },
   metaStage4MinConf: { key: "metaStage4MinConf" },
@@ -296,6 +346,10 @@ const BATCH_SUMMARY_ARTIFACT_KINDS = new Set([
   "vectorgrid_batch",
   "vectorbt_batch_summary",
   "vectorgrid_batch_summary",
+  "vectorbt_campaign_summary",
+  "vectorgrid_campaign_summary",
+]);
+const CAMPAIGN_SUMMARY_ARTIFACT_KINDS = new Set([
   "vectorbt_campaign_summary",
   "vectorgrid_campaign_summary",
 ]);
@@ -510,8 +564,6 @@ function readStoreCheckboxValue(id: string): boolean {
 }
 
 function tryBuildAutoMetaRequest(): Record<string, unknown> | null {
-
-
   return buildMetaSelectionRequest({
     strategyKind: readStoreTextInputValue("metaStrategyKind"),
     timeframe: readStoreTextInputValue("metaTimeframe"),
@@ -555,9 +607,14 @@ function normalizeBatchPreloadPolicy(
 
 function normalizeBatchExecutionMode(
   value: unknown,
-): "full" | "optimize_only" | "validate_only" {
+): "full" | "optimize_only" | "validate_only" | "evaluate_candidates" {
   const raw = normalizeText(value).toLowerCase();
-  if (raw === "optimize_only" || raw === "validate_only") return raw;
+  if (
+    raw === "optimize_only" ||
+    raw === "validate_only" ||
+    raw === "evaluate_candidates"
+  )
+    return raw;
   return "full";
 }
 
@@ -656,7 +713,6 @@ function currentMetaScope(): { strategy_kind: string; timeframe: string } {
   const store = getAnalysisStore();
   const result = asRecord(LAST_META_RUN?.result);
 
-
   const strategy =
     normalizeText(
       result?.strategy_kind ?? store?.metaStrategyKind ?? "CompositeMo",
@@ -708,13 +764,26 @@ function normalizeMlScope(scopeValue: unknown): {
   return currentMetaScope();
 }
 
-function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
+function buildMetaRows(
+  groups: Record<string, unknown>[],
+  holdoutExecution: Record<string, unknown> | null,
+): MetaTableRow[] {
+  const hasRequestedUniverseGroupMetrics =
+    asRecordArray(holdoutExecution?.group_metrics).length > 0;
+  const holdoutExecutionByGroup = new Map<string, Record<string, unknown>>();
+  for (const metric of asRecordArray(holdoutExecution?.group_metrics)) {
+    const key = normalizeText(metric.group_key);
+    if (key) holdoutExecutionByGroup.set(key, metric);
+  }
   const rows: MetaTableRow[] = [];
   for (let index = 0; index < groups.length; index += 1) {
     const group = groups[index] ?? {};
     const params = asRecord(group.params) ?? {};
     const holdout = asRecord(group.holdout);
     const holdoutCoverage = asRecord(group.holdout_coverage);
+    const holdoutExecutionMetric = holdoutExecutionByGroup.get(
+      normalizeText(group.key),
+    );
     const evidenceFlags = Array.isArray(group.evidence_flags)
       ? group.evidence_flags
           .map((item) => normalizeText(item))
@@ -747,7 +816,17 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
       fmtFixed(group.max_dd_p90, 6),
       fmtFixed(group.psr_median, 4),
       fmtFixed(group.dsr_median, 4),
-      holdout ? fmtPct(holdout.pass_rate, 1) : "-",
+      holdoutExecutionMetric
+        ? fmtPct(holdoutExecutionMetric.evaluation_rate, 1)
+        : "-",
+      holdoutExecutionMetric
+        ? fmtPct(holdoutExecutionMetric.pass_rate, 1)
+        : !hasRequestedUniverseGroupMetrics && holdout
+          ? fmtPct(holdout.pass_rate, 1)
+          : "-",
+      holdoutExecutionMetric
+        ? fmtPct(holdoutExecutionMetric.profitable_rate, 1)
+        : "-",
       holdout ? fmtFixed(holdout.score_p10, 6) : "-",
       holdout ? fmtFixed(holdout.score_median, 6) : "-",
       holdout ? fmtFixed(holdout.max_dd_p90, 6) : "-",
@@ -764,7 +843,7 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
     rows.push({
       cells: cells.map((text, cellIndex) => ({
         text,
-        className: cellIndex >= 15 ? "left" : "",
+        className: cellIndex >= 17 ? "left" : "",
         title:
           cellIndex === 3 || cellIndex === cells.length - 1
             ? evidenceTitle
@@ -775,6 +854,40 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
   return rows;
 }
 
+function buildMetaTableColumns(
+  holdoutExecution: Record<string, unknown> | null,
+): MetaTableColumn[] {
+  const hasRequestedUniverseGroupMetrics =
+    asRecordArray(holdoutExecution?.group_metrics).length > 0;
+  return META_TABLE_COLUMNS.map((column) => {
+    if (column.key === "holdout_evaluation_rate") {
+      return {
+        ...column,
+        label: hasRequestedUniverseGroupMetrics
+          ? "H eval (requested)"
+          : "H eval",
+      };
+    }
+    if (column.key === "holdout_pass_rate") {
+      return {
+        ...column,
+        label: hasRequestedUniverseGroupMetrics
+          ? "H pass (requested)"
+          : "H pass (legacy reported)",
+      };
+    }
+    if (column.key === "holdout_profitable_rate") {
+      return {
+        ...column,
+        label: hasRequestedUniverseGroupMetrics
+          ? "H PnL+ (requested)"
+          : "H PnL+",
+      };
+    }
+    return column;
+  });
+}
+
 function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const previousMetaPath = normalizePath(LAST_META_RUN?.meta_json_path);
   LAST_META_RUN = resp;
@@ -783,13 +896,43 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const groups = asRecordArray(result?.groups);
   const holdout = asRecord(result?.holdout);
   const holdoutCoverage = asRecord(result?.holdout_coverage);
+  const holdoutExecution = asRecord(resp?.holdout_execution);
   const cohortManifest = asRecord(resp?.cohort_manifest);
   const cohortDisjointness = asRecord(cohortManifest?.disjointness);
+  const campaignLineage = asRecord(cohortManifest?.campaign_lineage);
   const holdoutDatasets = Math.max(
     0,
     Math.floor(Number(holdout?.datasets || 0)),
   );
   const holdoutSkipped = Math.max(0, Math.floor(Number(holdout?.skipped || 0)));
+  const holdoutRequested = Math.max(
+    0,
+    Math.floor(Number(holdoutExecution?.datasets_requested || 0)),
+  );
+  const holdoutEvaluated = Math.max(
+    0,
+    Math.floor(Number(holdoutExecution?.datasets_evaluated || 0)),
+  );
+  const holdoutFailed = Math.max(
+    0,
+    Math.floor(Number(holdoutExecution?.datasets_failed || 0)),
+  );
+  const holdoutGpuDatasets = Math.max(
+    0,
+    Math.floor(Number(holdoutExecution?.gpu_datasets || 0)),
+  );
+  const holdoutCpuDatasets = Math.max(
+    0,
+    Math.floor(Number(holdoutExecution?.cpu_datasets || 0)),
+  );
+  const holdoutHybridDatasets = Math.max(
+    0,
+    Math.floor(Number(holdoutExecution?.hybrid_datasets || 0)),
+  );
+  const holdoutFallbackDatasets = Math.max(
+    0,
+    Math.floor(Number(holdoutExecution?.fallback_datasets || 0)),
+  );
   const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
   const groupsWithEvidenceFlags = groups.filter(
     (group) =>
@@ -832,8 +975,14 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const holdoutCoverageText = holdoutCoverage
     ? ` · holdout_coverage=${Math.max(0, Math.floor(Number(holdoutCoverage.groups_evaluated || 0)))}/${Math.max(0, Math.floor(Number(holdoutCoverage.groups_total || 0)))} ${normalizeText(holdoutCoverage.coverage_mode) || "unknown"}`
     : "";
+  const holdoutExecutionText = holdoutExecution
+    ? ` · holdout_route=${normalizeText(holdoutExecution.requested_backend) || "CpuOnly"} eval=${holdoutEvaluated}/${holdoutRequested} gpu=${holdoutGpuDatasets} hybrid=${holdoutHybridDatasets} cpu=${holdoutCpuDatasets} failed=${holdoutFailed} fallback=${holdoutFallbackDatasets}`
+    : "";
   const cohortText = cohortDisjointness
     ? ` · cohort_disjoint=${normalizeBoolean(cohortDisjointness.disjoint) ? "yes" : "no"}`
+    : "";
+  const campaignCohortText = campaignLineage
+    ? ` · campaign_scope=${Math.max(0, Math.floor(Number(campaignLineage.matched_train_artifacts || 0)))}/${Math.max(0, Math.floor(Number(campaignLineage.expected_train_datasets || 0)))} train`
     : "";
   const rankMode = groups.some((group) =>
     Number.isFinite(Number(group.final_score)),
@@ -842,7 +991,7 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
     : "";
 
   const metaMeta = result
-    ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${holdoutCoverageText}${cohortText}${rankMode}${evidenceText}${warnText}`
+    ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${holdoutCoverageText}${holdoutExecutionText}${cohortText}${campaignCohortText}${rankMode}${evidenceText}${warnText}`
     : "—";
 
   const previewLines: string[] = [];
@@ -860,9 +1009,36 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
         `holdout coverage=${Math.max(0, Math.floor(Number(holdoutCoverage.groups_evaluated || 0)))}/${Math.max(0, Math.floor(Number(holdoutCoverage.groups_total || 0)))} mode=${normalizeText(holdoutCoverage.coverage_mode) || "unknown"} policy=${normalizeText(holdoutCoverage.selection_policy) || "unknown"}`,
       );
     }
+    if (holdoutExecution) {
+      previewLines.push(
+        `holdout execution backend=${normalizeText(holdoutExecution.requested_backend) || "CpuOnly"} required_gpu=${normalizeBoolean(holdoutExecution.require_gpu) ? "yes" : "no"} evaluated=${holdoutEvaluated}/${holdoutRequested} failed=${holdoutFailed} fully_gpu=${holdoutGpuDatasets} hybrid=${holdoutHybridDatasets} cpu=${holdoutCpuDatasets} fallback=${holdoutFallbackDatasets}`,
+      );
+      const auxiliaryStages = Array.isArray(
+        holdoutExecution.configured_auxiliary_stages,
+      )
+        ? holdoutExecution.configured_auxiliary_stages
+            .map((stage) => normalizeText(stage))
+            .filter((stage) => stage.length > 0)
+        : [];
+      if (auxiliaryStages.length > 0) {
+        previewLines.push(
+          `holdout auxiliary stages=${auxiliaryStages.join(", ")} (CPU-resident; hybrid execution)`,
+        );
+      }
+      if (asRecordArray(holdoutExecution.group_metrics).length > 0) {
+        previewLines.push(
+          `holdout rates use requested-universe denominators (${normalizeText(holdoutExecution.pass_rate_denominator) || "requested datasets"})`,
+        );
+      }
+    }
     if (cohortDisjointness) {
       previewLines.push(
         `cohort train=${Math.max(0, Math.floor(Number(cohortDisjointness.train_artifacts || 0)))} holdout=${Math.max(0, Math.floor(Number(cohortDisjointness.holdout_artifacts || 0)))} disjoint=${normalizeBoolean(cohortDisjointness.disjoint) ? "yes" : "no"} overlap=${Math.max(0, Math.floor(Number(cohortDisjointness.overlapping_dataset_keys || 0)))}`,
+      );
+    }
+    if (campaignLineage) {
+      previewLines.push(
+        `campaign cohort=${fileBasename(normalizePath(campaignLineage.campaign_summary_path)) || "unknown"} manifest=${normalizeText(campaignLineage.manifest_hash) || "unknown"} train=${Math.max(0, Math.floor(Number(campaignLineage.matched_train_artifacts || 0)))}/${Math.max(0, Math.floor(Number(campaignLineage.expected_train_datasets || 0)))} holdout=${Math.max(0, Math.floor(Number(campaignLineage.matched_holdout_artifacts || 0)))}/${Math.max(0, Math.floor(Number(campaignLineage.expected_holdout_datasets || 0)))} excluded=${Math.max(0, Math.floor(Number(campaignLineage.excluded_out_of_scope_artifacts || 0)))}`,
       );
     }
     if (groupsWithEvidenceFlags > 0) {
@@ -902,11 +1078,13 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const latestArtifacts = result
     ? `${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))}`
     : "—";
-  const latestHoldout = holdoutDatasets
-    ? `${holdoutDatasets}${holdoutSkipped ? ` (skip ${holdoutSkipped})` : ""}`
-    : result
-      ? "0"
-      : "—";
+  const latestHoldout = holdoutExecution
+    ? `${holdoutEvaluated}/${holdoutRequested}${holdoutGpuDatasets || holdoutHybridDatasets ? ` (${[holdoutGpuDatasets ? `GPU ${holdoutGpuDatasets}` : "", holdoutHybridDatasets ? `hybrid ${holdoutHybridDatasets}` : ""].filter(Boolean).join(" · ")})` : ""}${holdoutFailed ? ` · fail ${holdoutFailed}` : ""}`
+    : holdoutDatasets
+      ? `${holdoutDatasets}${holdoutSkipped ? ` (skip ${holdoutSkipped})` : ""}`
+      : result
+        ? "0"
+        : "—";
   const runtimeMs = Math.max(0, Math.floor(Number(result?.runtime_ms || 0)));
   const latestRuntime = result
     ? runtimeMs >= 1000
@@ -919,8 +1097,8 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
     metaOutputPreview: result
       ? `${previewLines.join("\n")}${pretty(result)}`
       : "-",
-    metaTableColumns: META_TABLE_COLUMNS,
-    metaTableRows: markRaw(buildMetaRows(groups)),
+    metaTableColumns: markRaw(buildMetaTableColumns(holdoutExecution)),
+    metaTableRows: markRaw(buildMetaRows(groups, holdoutExecution)),
     canOpenMetaReport: canOpenReport,
     canRevealMetaFiles: !!(reportPath || metaPath),
     aggregateSummaryLatestGroups: latestGroups,
@@ -950,7 +1128,9 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   updateMetaStage4Buttons();
 }
 
-function formatStage5EvidencePolicyMeta(result: Record<string, unknown>): string {
+function formatStage5EvidencePolicyMeta(
+  result: Record<string, unknown>,
+): string {
   const summary = asRecord(result.evidence_policy_summary);
   const metrics = asRecordArray(summary?.metrics);
   if (!metrics.length) return "";
@@ -1075,9 +1255,7 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   }
 
   if (warnings.length > 0) {
-    lines.push(
-      `warnings=${warnings.length}: ${warnings.join(" | ")}`,
-    );
+    lines.push(`warnings=${warnings.length}: ${warnings.join(" | ")}`);
   }
   const effectiveWarningCount = Math.max(warningCount, warnings.length);
   const warningStatus =
@@ -2175,6 +2353,26 @@ function batchSummaryResumeState(summary: Record<string, unknown>): string {
   return normalizeText(summary.resume_state).toLowerCase();
 }
 
+function batchSummaryUsesLegacyWeakIdentity(
+  summary: Record<string, unknown>,
+): boolean {
+  const request = batchSummaryRequest(summary);
+  const datasets = Array.isArray(request?.datasets)
+    ? (request.datasets as unknown[])
+    : [];
+  if (datasets.length === 0) return false;
+
+  return datasets.some((value) => {
+    const dataset = asRecord(value);
+    if (!dataset) return true;
+    if (normalizeText(dataset.source_content_fingerprint)) return false;
+    return (
+      dataset.source_change_marker === null ||
+      dataset.source_change_marker === undefined
+    );
+  });
+}
+
 function batchSummaryResumeBlockedReason(
   summary: Record<string, unknown>,
 ): string {
@@ -2184,6 +2382,12 @@ function batchSummaryResumeBlockedReason(
   }
   if (resumeState === "blocked_stale") {
     return "Current summary is blocked from resume because its campaign evidence is stale. Restart the campaign instead.";
+  }
+  if (resumeState === "restart_only" || resumeState === "legacy_degraded") {
+    return "Current summary is restart-only and cannot safely reuse its prior campaign evidence. Start a new campaign instead.";
+  }
+  if (batchSummaryUsesLegacyWeakIdentity(summary)) {
+    return "Current summary uses legacy weak source identity and cannot safely reuse its prior campaign evidence. Start a new campaign instead.";
   }
   return "";
 }
@@ -2263,6 +2467,10 @@ function batchRunDisabledReason(): string {
 
 function syncBatchButtons(): void {
   const hasSummaryPath = !!normalizePath(LAST_BATCH_SUMMARY?.path);
+  const summary = LAST_BATCH_SUMMARY?.summary;
+  const summaryResumeBlocked = summary
+    ? !!batchSummaryResumeBlockedReason(summary)
+    : false;
   const disabledReason = batchRunDisabledReason();
   patchAnalysisStore({
     canRunBatch: !disabledReason,
@@ -2270,7 +2478,8 @@ function syncBatchButtons(): void {
     canBatchRefresh: !BATCH_RUNNING,
     canBatchSelectAll: !BATCH_RUNNING,
     canBatchSelectNone: !BATCH_RUNNING,
-    canBatchRetryFailed: !BATCH_RUNNING && batchFailedCount() > 0,
+    canBatchRetryFailed:
+      !BATCH_RUNNING && !summaryResumeBlocked && batchFailedCount() > 0,
     canBatchResumeIncomplete:
       !BATCH_RUNNING &&
       !!LAST_BATCH_SUMMARY?.summary &&
@@ -2289,6 +2498,16 @@ function updateBatchMeta(extra = ""): void {
     readStoreTextInputValue("batchExecutionMode"),
   );
   parts.push(`mode=${executionMode}`);
+  const fixedCandidateEvaluation = asRecord(
+    LAST_BATCH_SUMMARY?.summary?.fixed_candidate_evaluation,
+  );
+  if (fixedCandidateEvaluation) {
+    parts.push(
+      `VCET replay ${Math.max(0, Math.floor(Number(fixedCandidateEvaluation.evaluated_datasets || 0)))}/${Math.max(0, Math.floor(Number(fixedCandidateEvaluation.requested_datasets || 0)))}`,
+      `GPU ${Math.max(0, Math.floor(Number(fixedCandidateEvaluation.gpu_kernel_datasets || 0)))}`,
+      `missing ${Math.max(0, Math.floor(Number(fixedCandidateEvaluation.missing_or_failed_datasets || 0)))}`,
+    );
+  }
   const note = normalizeText(extra);
   if (note) parts.push(note);
   const disabledReason = batchRunDisabledReason();
@@ -2374,13 +2593,9 @@ function normalizeBatchDatasetEntry(
   const sourceMtime = normalizeMaybeInteger(
     row.source_mtime_utc_ms ?? fallback.source_mtime_utc_ms,
   );
-  const integritySha256 = normalizeText(
-    integrity?.csv_sha256 ?? integrity?.csvSha256,
-  ).toLowerCase();
-  const sourceFp =
-    normalizeText(
-      row.source_content_fingerprint ?? fallback.source_content_fingerprint,
-    ) || (integritySha256 ? `sha256:${integritySha256}` : "");
+  const sourceFp = normalizeText(
+    row.source_content_fingerprint ?? fallback.source_content_fingerprint,
+  );
   const marketLabel = normalizeMarketLabel(market, adjusted === true);
   const minTs = formatYmdUtc(row.min_ts);
   const maxTs = formatYmdUtc(row.max_ts);
@@ -2493,6 +2708,234 @@ async function ensureBatchDatasetsLoaded(): Promise<void> {
   await refreshBatchDatasetsInternal();
 }
 
+const BATCH_PREVIEW_FAILURE_LIMIT = 12;
+const BATCH_PREVIEW_WARNING_LIMIT = 12;
+const BATCH_PREVIEW_TEXT_LIMIT = 240;
+
+function hasOwnKey(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function boundedPreviewText(value: unknown): string {
+  const text = normalizeText(value).replace(/\s+/gu, " ");
+  if (text.length <= BATCH_PREVIEW_TEXT_LIMIT) return text;
+  return `${text.slice(0, BATCH_PREVIEW_TEXT_LIMIT - 1)}…`;
+}
+
+function compareCandidateMetricDescending(
+  leftRaw: unknown,
+  rightRaw: unknown,
+): number {
+  const metric = (raw: unknown): number => {
+    if (raw == null || raw === "") return Number.NEGATIVE_INFINITY;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+  };
+  const left = metric(leftRaw);
+  const right = metric(rightRaw);
+  if (left === right) return 0;
+  return left > right ? -1 : 1;
+}
+
+function formatCandidateMetric(value: unknown, digits: number): string {
+  if (value == null || value === "") return "-";
+  return fmtFixed(value, digits);
+}
+
+function formatCandidatePercent(value: unknown, digits: number): string {
+  if (value == null || value === "") return "-";
+  return fmtPct(value, digits);
+}
+
+function candidateRankingOrder(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): number {
+  const profitableOrder = compareCandidateMetricDescending(
+    left.profitable_share_requested,
+    right.profitable_share_requested,
+  );
+  if (profitableOrder !== 0) return profitableOrder;
+  const gateOrder = compareCandidateMetricDescending(
+    left.hard_gate_pass_share_requested,
+    right.hard_gate_pass_share_requested,
+  );
+  if (gateOrder !== 0) return gateOrder;
+  const sharpeOrder = compareCandidateMetricDescending(
+    left.sharpe_p10,
+    right.sharpe_p10,
+  );
+  if (sharpeOrder !== 0) return sharpeOrder;
+  const pnlOrder = compareCandidateMetricDescending(
+    left.pnl_p10,
+    right.pnl_p10,
+  );
+  if (pnlOrder !== 0) return pnlOrder;
+  return normalizeText(left.candidate_id).localeCompare(
+    normalizeText(right.candidate_id),
+  );
+}
+
+function summaryHasConfiguredHoldout(
+  summary: Record<string, unknown>,
+): boolean {
+  if (Number(summary.holdout_pct || 0) > 0) return true;
+  return batchSummaryItems(summary).some((item) =>
+    normalizeBoolean(item.is_holdout),
+  );
+}
+
+function fixedCandidatePreviewLines(
+  summary: Record<string, unknown>,
+): string[] {
+  const evaluation = asRecord(summary.fixed_candidate_evaluation);
+  if (!evaluation) return [];
+
+  const training = asRecord(evaluation.training);
+  const holdout = asRecord(evaluation.holdout);
+  const separateSchema =
+    hasOwnKey(evaluation, "training") || hasOwnKey(evaluation, "holdout");
+  const configuredHoldout = summaryHasConfiguredHoldout(summary);
+  const legacyRankingAllowed = !separateSchema && !configuredHoldout;
+  const rankingAggregate =
+    training ?? (legacyRankingAllowed ? evaluation : null);
+  const candidateRows = asRecordArray(rankingAggregate?.candidates);
+  const rankingEvidenceAvailable =
+    !!rankingAggregate &&
+    Number(rankingAggregate.evaluated_datasets || 0) > 0 &&
+    candidateRows.some(
+      (candidate) => Number(candidate.evaluated_datasets || 0) > 0,
+    );
+  const candidates = rankingEvidenceAvailable
+    ? candidateRows.slice().sort(candidateRankingOrder)
+    : [];
+  const selectedCandidateId = rankingEvidenceAvailable
+    ? normalizeText(evaluation.selected_candidate_id)
+    : "";
+  const crossUniverseAdmission = asRecord(evaluation.cross_universe_admission);
+  const selectionStatus = normalizeText(evaluation.selection_status);
+  const admittedCandidateCount = Math.max(
+    0,
+    Math.floor(Number(evaluation.admitted_candidate_count || 0)),
+  );
+
+  const lines = [
+    "VCET candidate-universe replay",
+    `datasets=${Math.max(0, Math.floor(Number(evaluation.evaluated_datasets || 0)))}/${Math.max(0, Math.floor(Number(evaluation.requested_datasets || 0)))} fully_gpu=${Math.max(0, Math.floor(Number(evaluation.gpu_kernel_datasets || 0)))} missing_or_failed=${Math.max(0, Math.floor(Number(evaluation.missing_or_failed_datasets || 0)))}`,
+    `manifest=${normalizeText(evaluation.candidate_manifest_hash) || "unknown"}`,
+  ];
+
+  if (training) {
+    lines.push(
+      `training-only ranking: datasets=${Math.max(0, Math.floor(Number(training.evaluated_datasets || 0)))}/${Math.max(0, Math.floor(Number(training.requested_datasets || 0)))} candidates=${candidateRows.length}`,
+    );
+  } else if (legacyRankingAllowed) {
+    lines.push(`legacy no-holdout ranking: candidates=${candidates.length}`);
+  } else {
+    lines.push(
+      "candidate ranking unavailable: legacy aggregate includes a holdout cohort; holdout evidence is audit-only and is never ranked",
+    );
+  }
+
+  if (crossUniverseAdmission) {
+    lines.push(
+      `cross-universe admission: PnL+ requested >= ${formatCandidatePercent(crossUniverseAdmission.min_profitable_share_requested, 1)} · hard gate requested >= ${formatCandidatePercent(crossUniverseAdmission.min_hard_gate_pass_share_requested, 1)} · PnL p10 >= ${formatCandidateMetric(crossUniverseAdmission.min_pnl_p10, 6)} · Sharpe p10 >= ${formatCandidateMetric(crossUniverseAdmission.min_sharpe_p10, 4)} · admitted=${admittedCandidateCount}/${candidateRows.length}`,
+    );
+    if (Math.floor(Number(evaluation.schema_version || 0)) >= 4) {
+      lines.push(
+        "p10 requested-tail rule: missing or failed training datasets rank below every finite result; if p10 falls in that missing tail, the metric is unavailable and admission fails",
+      );
+    }
+  }
+
+  if (training && !rankingEvidenceAvailable) {
+    lines.push("selection unavailable: no training evidence");
+  } else if (legacyRankingAllowed && !rankingEvidenceAvailable) {
+    lines.push("selection unavailable: no candidate evidence");
+  }
+
+  if (selectedCandidateId) {
+    lines.push(
+      `selection_status=${selectionStatus || "selected"} selection_cohort=${normalizeText(evaluation.selection_cohort) || (training ? "training" : "legacy")} selected_candidate_id=${selectedCandidateId}`,
+    );
+  } else if (
+    rankingEvidenceAvailable &&
+    selectionStatus === "no_candidate_met_admission"
+  ) {
+    lines.push(
+      "selection unavailable: no candidate met cross-universe admission",
+    );
+  }
+
+  if (holdout || hasOwnKey(evaluation, "holdout") || configuredHoldout) {
+    lines.push(
+      holdout
+        ? `holdout audit-only (excluded from ranking): datasets=${Math.max(0, Math.floor(Number(holdout.evaluated_datasets || 0)))}/${Math.max(0, Math.floor(Number(holdout.requested_datasets || 0)))} candidates=${asRecordArray(holdout.candidates).length}`
+        : "holdout audit-only (excluded from ranking): separate holdout aggregate unavailable",
+    );
+  }
+
+  lines.push(
+    ...candidates.slice(0, 12).map((candidate, index) => {
+      const fast = Math.max(0, Math.floor(Number(candidate.fast_len || 0)));
+      const slow = Math.max(0, Math.floor(Number(candidate.slow_len || 0)));
+      return `#${index + 1} ${fast}/${slow} · PnL+ ${formatCandidatePercent(candidate.profitable_share_requested, 1)} · gate ${formatCandidatePercent(candidate.hard_gate_pass_share_requested, 1)} · PnL p10 ${formatCandidateMetric(candidate.pnl_p10, 6)} · Sharpe p10 ${formatCandidateMetric(candidate.sharpe_p10, 4)} · DD p90 ${formatCandidatePercent(candidate.max_drawdown_p90, 1)} · eval ${Math.max(0, Math.floor(Number(candidate.evaluated_datasets || 0)))}/${Math.max(0, Math.floor(Number(candidate.requested_datasets || 0)))}${selectedCandidateId && normalizeText(candidate.candidate_id) === selectedCandidateId ? " · backend-selected" : ""}`;
+    }),
+  );
+  return lines;
+}
+
+function buildBatchSummaryPreview(
+  summary: Record<string, unknown>,
+  summaryPath: string,
+): string {
+  const counts = asRecord(summary.counts);
+  const items = batchSummaryItems(summary);
+  const failedItems = items.filter(
+    (item) =>
+      normalizeText(item.status).toLowerCase() === "failed" ||
+      normalizeText(item.error).length > 0,
+  );
+  const warnings = Array.isArray(summary.warnings)
+    ? summary.warnings.map((warning) => boundedPreviewText(warning))
+    : [];
+  const request = asRecord(summary.request);
+  const requestDatasets = Array.isArray(request?.datasets)
+    ? request.datasets.length
+    : items.length;
+  const lines = [
+    "Research campaign summary",
+    `path=${summaryPath || "not persisted"}`,
+    `kind=${normalizeText(summary.kind) || "unknown"} version=${Math.max(0, Math.floor(Number(summary.version || 0)))}`,
+    `state=${normalizeText(summary.state) || "unknown"} strategy=${normalizeText(summary.strategy_kind) || "unknown"} timeframe=${normalizeText(summary.timeframe) || "unknown"}`,
+    `counts total=${Math.max(0, Math.floor(Number(counts?.total || items.length)))} validated=${Math.max(0, Math.floor(Number(counts?.validated || 0)))} skipped=${Math.max(0, Math.floor(Number(counts?.skipped || 0)))} failed=${Math.max(0, Math.floor(Number(counts?.failed || failedItems.length)))} cancelled=${normalizeBoolean(counts?.cancelled) ? "yes" : "no"}`,
+    `items=${items.length} request_datasets=${requestDatasets} runtime=${Math.max(0, Math.floor(Number(summary.runtime_ms || 0)))}ms`,
+    ...fixedCandidatePreviewLines(summary),
+  ];
+
+  if (failedItems.length > 0) {
+    lines.push(
+      `failed items showing ${Math.min(BATCH_PREVIEW_FAILURE_LIMIT, failedItems.length)}/${failedItems.length}:`,
+      ...failedItems
+        .slice(0, BATCH_PREVIEW_FAILURE_LIMIT)
+        .map((item, index) => {
+          const path = normalizePath(item.csv_path ?? item.path);
+          const error = boundedPreviewText(item.error) || "failed";
+          return `${index + 1}. ${boundedPreviewText(path) || "unknown dataset"} — ${error}`;
+        }),
+    );
+  }
+  if (warnings.length > 0) {
+    lines.push(
+      `warnings showing ${Math.min(BATCH_PREVIEW_WARNING_LIMIT, warnings.length)}/${warnings.length}:`,
+      ...warnings
+        .slice(0, BATCH_PREVIEW_WARNING_LIMIT)
+        .map((warning, index) => `${index + 1}. ${warning}`),
+    );
+  }
+  return lines.join("\n");
+}
+
 function setBatchSummaryState(
   summary: Record<string, unknown> | null,
   path: string,
@@ -2511,18 +2954,35 @@ function setBatchSummaryState(
               buildCampaignStageCompletion({
                 ts: rawPayload.ts,
                 artifactPath: summaryPath,
-                res: { ...rawPayload, summary_path: summaryPath },
+                res: {
+                  ts: rawPayload.ts,
+                  strategy_kind: rawPayload.strategy_kind,
+                  timeframe: rawPayload.timeframe,
+                  counts: rawPayload.counts,
+                  summary_path: summaryPath,
+                },
                 backfilled: true,
               }),
             ]),
       }
     : null;
-  LAST_BATCH_SUMMARY = payload ? { path: summaryPath, summary: payload } : null;
+  LAST_BATCH_SUMMARY = payload
+    ? {
+        path: summaryPath,
+        summary: payload,
+        sourceSummaryContentFingerprint:
+          temporalSourceContentFingerprint(rawPayload),
+      }
+    : null;
+  const batchVcetEvidence = payload
+    ? buildVcetCampaignEvidenceModel(payload)
+    : null;
 
   patchAnalysisStore({
     batchOutputPreview: payload
-      ? pretty({ path: summaryPath || null, summary: payload })
+      ? buildBatchSummaryPreview(payload, summaryPath)
       : "-",
+    batchVcetEvidence: batchVcetEvidence ? markRaw(batchVcetEvidence) : null,
   });
   if (summaryPath) writeStorageString(LAST_BATCH_SUMMARY_KEY, summaryPath);
   else removeStorageKey(LAST_BATCH_SUMMARY_KEY);
@@ -2530,21 +2990,389 @@ function setBatchSummaryState(
   syncBatchButtons();
 }
 
-async function loadLastBatchSummaryFromDisk(): Promise<void> {
-  if (LAST_BATCH_SUMMARY) return;
+async function loadLastBatchSummaryFromDisk(
+  options: { forceDiskRead?: boolean; updateUiState?: boolean } = {},
+): Promise<BatchSummaryEnvelope | null> {
   const path = normalizePath(readStorageString(LAST_BATCH_SUMMARY_KEY, ""));
-  if (!path) return;
+  if (!path) return null;
+  if (
+    !options.forceDiskRead &&
+    normalizePath(LAST_BATCH_SUMMARY?.path) === path
+  ) {
+    return LAST_BATCH_SUMMARY;
+  }
   try {
     const artifact = (await invokeCommand("load_artifact", {
       path,
     })) as unknown;
+    const currentPath = normalizePath(
+      readStorageString(LAST_BATCH_SUMMARY_KEY, ""),
+    );
+    if (currentPath !== path) return null;
     const row = asRecord(artifact);
     if (!row || !BATCH_SUMMARY_ARTIFACT_KINDS.has(normalizeText(row.kind)))
-      return;
+      return null;
+    if (options.updateUiState === false) {
+      return {
+        path,
+        summary: row,
+        sourceSummaryContentFingerprint: temporalSourceContentFingerprint(row),
+      };
+    }
     setBatchSummaryState(row, path);
+    return LAST_BATCH_SUMMARY;
   } catch {
-
+    // Preserve the retained pointer and existing UI state, but do not let a
+    // previously loaded summary silently stand in for a different path that
+    // could not be verified from disk.
+    return null;
   }
+}
+
+const META_CAMPAIGN_COMPLETED_STATES = new Set([
+  "completed",
+  "completed_with_failures",
+  "completed_with_warnings",
+]);
+
+function equalScopeText(left: unknown, right: unknown): boolean {
+  return (
+    normalizeText(left).toLowerCase() === normalizeText(right).toLowerCase()
+  );
+}
+
+function canonicalCampaignTimeframe(value: unknown): string {
+  const raw = normalizeText(value).toLowerCase();
+  const seconds = raw.match(/^(\d+)s$/u);
+  if (!seconds) return raw;
+  const aliases: Record<string, string> = {
+    "60": "1m",
+    "120": "2m",
+    "180": "3m",
+    "300": "5m",
+    "900": "15m",
+    "1800": "30m",
+    "3600": "1h",
+    "7200": "2h",
+    "14400": "4h",
+    "86400": "1d",
+  };
+  return aliases[seconds[1] ?? ""] ?? raw;
+}
+
+function campaignManifestCohortTag(manifestHash: unknown): string {
+  const normalizedHash = normalizeText(manifestHash);
+  if (!normalizedHash) return "";
+  const hash = normalizedHash.startsWith("sha256:")
+    ? normalizedHash.slice("sha256:".length)
+    : normalizedHash;
+  return hash ? `campaign-cohort:${hash}` : "";
+}
+
+function isCampaignCohortTag(value: unknown): boolean {
+  return /^campaign-cohort:[0-9a-f]+$/iu.test(normalizeText(value));
+}
+
+function campaignArtifactReferencesAreSealed(
+  summary: Record<string, unknown>,
+): boolean {
+  return batchSummaryItems(summary).every((item) => {
+    const artifactPath = normalizePath(item.artifact_path);
+    return (
+      !artifactPath ||
+      /^[0-9a-f]{64}$/iu.test(normalizeText(item.artifact_sha256))
+    );
+  });
+}
+
+function temporalSourceIneligible(
+  message: string,
+): VcetTemporalCampaignSourceEligibility {
+  return { eligible: false, summaryPath: "", identity: null, message };
+}
+
+function temporalSourceContentFingerprint(value: unknown): string {
+  return `campaign-summary-v2-fnv1a64-${hashFNV1a64Hex(canonicalJsonString(value))}`;
+}
+
+function temporalSourceContentFingerprintIsValid(value: unknown): boolean {
+  return /^campaign-summary-v2-fnv1a64-[0-9a-f]{8,16}$/iu.test(
+    normalizeText(value),
+  );
+}
+
+function temporalSourceHashIsSealed(value: unknown): boolean {
+  return /^(?:sha256:)?[0-9a-f]{64}$/iu.test(normalizeText(value));
+}
+
+function normalizedTemporalSourceHash(value: unknown): string {
+  const hash = normalizeText(value).toLowerCase();
+  return hash.startsWith("sha256:") ? hash.slice("sha256:".length) : hash;
+}
+
+function temporalSourceItemIsComplete(item: Record<string, unknown>): boolean {
+  const status = normalizeText(item.status).toLowerCase();
+  const evidenceState = normalizeText(item.evidence_state).toLowerCase();
+  const resumeState = normalizeText(item.resume_state).toLowerCase();
+  return (
+    status !== "failed" &&
+    (status === "ok" ||
+      evidenceState === "complete" ||
+      resumeState === "complete")
+  );
+}
+
+export function deriveVcetTemporalCampaignSourceEligibility(
+  value: unknown,
+): VcetTemporalCampaignSourceEligibility {
+  const envelope = asRecord(value);
+  const path = normalizePath(envelope?.path);
+  const summary = asRecord(envelope?.summary);
+  if (!path || !summary) {
+    return temporalSourceIneligible(
+      "Complete an eligible VCET candidate-universe replay to unlock temporal preparation.",
+    );
+  }
+  if (
+    normalizeText(summary.kind) !== "vectorgrid_campaign_summary" ||
+    Math.floor(Number(summary.version || 0)) !== 2
+  ) {
+    return temporalSourceIneligible(
+      "The latest batch artifact is not a sealed campaign summary v2.",
+    );
+  }
+  if (
+    !META_CAMPAIGN_COMPLETED_STATES.has(
+      normalizeText(summary.state).toLowerCase(),
+    ) ||
+    normalizeBoolean(asRecord(summary.counts)?.cancelled)
+  ) {
+    return temporalSourceIneligible(
+      "The latest VCET campaign must be terminal and non-cancelled.",
+    );
+  }
+
+  const manifest = asRecord(summary.manifest);
+  const request = asRecord(summary.request);
+  const evaluation = asRecord(summary.fixed_candidate_evaluation);
+  if (!manifest || !request || !evaluation) {
+    return temporalSourceIneligible(
+      "The latest campaign is missing sealed VCET candidate-admission evidence.",
+    );
+  }
+  if (
+    !equalScopeText(summary.strategy_kind, "Vcet") ||
+    !equalScopeText(manifest.strategy_kind, "Vcet") ||
+    !equalScopeText(request.strategy_kind, "Vcet") ||
+    normalizeText(manifest.execution_mode).toLowerCase() !==
+      "evaluate_candidates" ||
+    normalizeText(request.execution_mode).toLowerCase() !==
+      "evaluate_candidates"
+  ) {
+    return temporalSourceIneligible(
+      "Temporal preparation requires the latest completed VCET evaluate_candidates campaign.",
+    );
+  }
+
+  const items = batchSummaryItems(summary);
+  const requestDatasets = Array.isArray(request.datasets)
+    ? request.datasets
+    : [];
+  const hasSelection = items.some((item) => !normalizeBoolean(item.is_holdout));
+  const hasFinalTest = items.some((item) => normalizeBoolean(item.is_holdout));
+  if (
+    items.length < 1 ||
+    items.length > 64 ||
+    requestDatasets.length !== items.length ||
+    !hasSelection ||
+    !hasFinalTest
+  ) {
+    return temporalSourceIneligible(
+      "The latest VCET campaign must contain 1–64 exact datasets with non-empty selection and final-test cohorts.",
+    );
+  }
+  if (
+    !items.every(
+      (item) =>
+        !!normalizeText(item.item_id) &&
+        temporalSourceItemIsComplete(item) &&
+        !!normalizePath(item.artifact_path) &&
+        temporalSourceHashIsSealed(item.artifact_sha256),
+    )
+  ) {
+    return temporalSourceIneligible(
+      "Every source dataset must be complete and retain a stable ID plus hash-sealed terminal run artifact.",
+    );
+  }
+
+  const admittedCandidateIds = Array.isArray(evaluation.admitted_candidate_ids)
+    ? evaluation.admitted_candidate_ids
+        .map((candidateId) => normalizeText(candidateId))
+        .filter((candidateId) => candidateId.length > 0)
+    : [];
+  const uniqueAdmittedCandidateIds = new Set(admittedCandidateIds);
+  const candidateManifestHash = normalizeText(
+    evaluation.candidate_manifest_hash,
+  );
+  if (
+    Math.floor(Number(evaluation.schema_version || 0)) !== 4 ||
+    admittedCandidateIds.length < 1 ||
+    admittedCandidateIds.length !== uniqueAdmittedCandidateIds.size ||
+    Math.floor(Number(evaluation.admitted_candidate_count || 0)) !==
+      admittedCandidateIds.length ||
+    !temporalSourceHashIsSealed(candidateManifestHash) ||
+    normalizedTemporalSourceHash(candidateManifestHash) !==
+      normalizedTemporalSourceHash(manifest.candidate_manifest_hash) ||
+    !temporalSourceHashIsSealed(manifest.manifest_hash)
+  ) {
+    return temporalSourceIneligible(
+      "The latest VCET campaign does not contain a complete, unique schema-v4 admitted candidate set.",
+    );
+  }
+
+  return {
+    eligible: true,
+    summaryPath: path,
+    identity: {
+      nativePathKey: vcetTemporalNativePathKey(path),
+      summaryContentFingerprint: temporalSourceContentFingerprintIsValid(
+        envelope?.sourceSummaryContentFingerprint,
+      )
+        ? normalizeText(envelope?.sourceSummaryContentFingerprint).toLowerCase()
+        : temporalSourceContentFingerprint(summary),
+    },
+    message: `Structurally eligible terminal VCET source: ${fileBasename(path) || path}. Pending sealing-time verification of the exact path, content, cohort, and run artifacts.`,
+  };
+}
+
+export async function resolveLatestVcetTemporalCampaignSource(): Promise<VcetTemporalCampaignSourceEligibility> {
+  const retainedPath = normalizePath(
+    readStorageString(LAST_BATCH_SUMMARY_KEY, ""),
+  );
+  if (!retainedPath) {
+    return temporalSourceIneligible(
+      "Complete an eligible VCET candidate-universe replay to unlock temporal preparation.",
+    );
+  }
+  // Temporal source admission is a sealing boundary. Always reload the
+  // retained summary through the native artifact reader so an in-memory UI
+  // cache can never stand in for the current disk-backed artifact.
+  const envelope = await loadLastBatchSummaryFromDisk({
+    forceDiskRead: true,
+    updateUiState: false,
+  });
+  if (!envelope || normalizePath(envelope.path) !== retainedPath) {
+    return temporalSourceIneligible(
+      "The latest saved batch summary could not be verified from disk.",
+    );
+  }
+  return deriveVcetTemporalCampaignSourceEligibility(envelope);
+}
+
+function compatibleMetaCampaignSummaryPath(
+  req: Record<string, unknown>,
+  envelope: BatchSummaryEnvelope | null,
+): string {
+  const path = normalizePath(envelope?.path);
+  const summary = envelope?.summary;
+  if (!path || !summary) return "";
+  if (!CAMPAIGN_SUMMARY_ARTIFACT_KINDS.has(normalizeText(summary.kind)))
+    return "";
+  if (Math.floor(Number(summary.version || 0)) !== 2) return "";
+  if (
+    !META_CAMPAIGN_COMPLETED_STATES.has(
+      normalizeText(summary.state).toLowerCase(),
+    ) ||
+    normalizeBoolean(asRecord(summary.counts)?.cancelled)
+  ) {
+    return "";
+  }
+
+  const manifest = asRecord(summary.manifest);
+  const campaignReq = asRecord(summary.request);
+  const evaluation = asRecord(summary.fixed_candidate_evaluation);
+  if (!manifest || !campaignReq || !evaluation) return "";
+  if (
+    normalizeText(manifest.execution_mode).toLowerCase() !==
+      "evaluate_candidates" ||
+    normalizeText(campaignReq.execution_mode).toLowerCase() !==
+      "evaluate_candidates"
+  ) {
+    return "";
+  }
+  const admittedCandidateIds = Array.isArray(evaluation.admitted_candidate_ids)
+    ? evaluation.admitted_candidate_ids
+        .map((candidateId) => normalizeText(candidateId))
+        .filter((candidateId) => candidateId.length > 0)
+    : [];
+  const selectedCandidateId = normalizeText(evaluation.selected_candidate_id);
+  if (
+    Math.floor(Number(evaluation.schema_version || 0)) !== 4 ||
+    !campaignArtifactReferencesAreSealed(summary) ||
+    normalizeText(evaluation.selection_status) !== "selected" ||
+    Math.floor(Number(evaluation.admitted_candidate_count || 0)) !==
+      admittedCandidateIds.length ||
+    admittedCandidateIds.length === 0 ||
+    !selectedCandidateId ||
+    !admittedCandidateIds.includes(selectedCandidateId)
+  ) {
+    return "";
+  }
+
+  const requestedStrategy = normalizeText(
+    req.strategy_kind ?? req.strategyKind,
+  );
+  if (
+    !equalScopeText(requestedStrategy, "Vcet") ||
+    !equalScopeText(summary.strategy_kind, "Vcet") ||
+    !equalScopeText(manifest.strategy_kind, "Vcet") ||
+    !equalScopeText(campaignReq.strategy_kind, "Vcet")
+  ) {
+    return "";
+  }
+
+  const manifestHash = normalizeText(manifest.manifest_hash);
+  const candidateManifestHash = normalizeText(manifest.candidate_manifest_hash);
+  if (
+    !manifestHash ||
+    !candidateManifestHash ||
+    candidateManifestHash !== normalizeText(evaluation.candidate_manifest_hash)
+  ) {
+    return "";
+  }
+
+  const requestedTimeframe = canonicalCampaignTimeframe(req.timeframe);
+  const campaignTimeframe = canonicalCampaignTimeframe(summary.timeframe);
+  if (
+    !requestedTimeframe ||
+    !campaignTimeframe ||
+    !equalScopeText(requestedTimeframe, campaignTimeframe)
+  ) {
+    return "";
+  }
+
+  const requiredTag = normalizeText(req.required_tag ?? req.requiredTag);
+  if (!requiredTag) return "";
+  const cohortTag = campaignManifestCohortTag(manifestHash);
+  if (!equalScopeText(cohortTag, requiredTag)) {
+    return "";
+  }
+
+  if (normalizeBoolean(req.eval_holdout ?? req.evalHoldout)) {
+    const requestedHoldoutTag = normalizeText(
+      req.holdout_tag ?? req.holdoutTag,
+    );
+    const campaignHoldoutTag = normalizeText(summary.holdout_tag);
+    if (
+      !requestedHoldoutTag ||
+      Number(summary.holdout_pct || 0) <= 0 ||
+      !equalScopeText(requestedHoldoutTag, campaignHoldoutTag)
+    ) {
+      return "";
+    }
+  }
+
+  return path;
 }
 
 function buildValidationFingerprintReq(
@@ -2727,7 +3555,7 @@ function buildValidationCampaignConfig(
           slices: spaSlices,
           bootstrap_samples: spaBootstrapSamples,
           block_length: spaBlockLength,
-          benchmark: "buy_hold",
+          benchmark: "buy_and_hold",
         }
       : null,
     min_cscv_oos_rank_frac: minCscvOosRankFrac,
@@ -2736,15 +3564,52 @@ function buildValidationCampaignConfig(
   };
 }
 
+function normalizeCampaignStrategyCosts(
+  value: unknown,
+): Record<string, unknown> | null {
+  const strategy = asRecord(value);
+  if (!strategy) return null;
+
+  const normalized = { ...strategy };
+  const usesComponentCosts = [
+    normalized.fee_bps,
+    normalized.spread_bps,
+    normalized.slippage_bps,
+  ].some(
+    (cost) => typeof cost === "number" && Number.isFinite(cost) && cost > 0,
+  );
+  const hasExplicitCommission =
+    typeof normalized.commission === "number" &&
+    Number.isFinite(normalized.commission) &&
+    normalized.commission > 0;
+
+  if (usesComponentCosts && hasExplicitCommission) {
+    // Campaign validation perturbs component costs independently. Keep those
+    // components as the sole source of truth for effective commission.
+    normalized.commission = 0;
+  }
+
+  return normalized;
+}
+
+function cloneCampaignOptimizationTemplate(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = { ...value };
+  for (const key of ["strategy", "base_strategy"]) {
+    const strategy = normalizeCampaignStrategyCosts(value[key]);
+    if (strategy) normalized[key] = strategy;
+  }
+  return normalized;
+}
+
 async function refreshSavedRunCount(): Promise<void> {
   try {
     const rows = (await invokeCommand("list_run_artifacts")) as unknown;
     patchAnalysisStore({
       aggregateSummarySavedRuns: String(Array.isArray(rows) ? rows.length : 0),
     });
-  } catch {
-
-  }
+  } catch {}
 }
 
 export function refreshBatchDatasetView(): void {
@@ -2755,10 +3620,12 @@ export async function runBatch(
   options: MetaBatchRunOptions = {},
 ): Promise<void> {
   let offCampaignProgress: (() => void) | null = null;
+  let pendingCampaignSummaryPath = "";
   try {
     if (BATCH_RUNNING) return;
 
-    let req = normalizeRequestPayload(options.request);
+    const explicitRequest = normalizeRequestPayload(options.request);
+    let req = explicitRequest;
     if (!req) {
       try {
         req = tryBuildAutoMetaBatchRequest();
@@ -2824,13 +3691,17 @@ export async function runBatch(
         req?.holdout_tag ?? readStoreTextInputValue("batchHoldoutTag"),
       ) || "holdout";
     const executionMode = normalizeBatchExecutionMode(
-      req?.execution_mode ?? readStoreTextInputValue("batchExecutionMode"),
+      req?.execution_mode ??
+        (explicitRequest
+          ? "full"
+          : readStoreTextInputValue("batchExecutionMode")),
     );
     const preloadPolicy = normalizeBatchPreloadPolicy(
       req?.preload_policy ?? readStoreTextInputValue("batchPreloadPolicy"),
     );
     const autoMeta =
       executionMode !== "optimize_only" &&
+      executionMode !== "evaluate_candidates" &&
       normalizeBoolean(
         req?.auto_meta ?? readStoreCheckboxValue("batchAutoMeta"),
       );
@@ -2862,8 +3733,18 @@ export async function runBatch(
       analysisStore.batchAutoMeta = autoMeta;
       analysisStore.batchAutoStage5 = autoStage5;
       analysisStore.batchSkipDone = skipDone;
-      if (!normalizeText(analysisStore.metaRequiredTag))
+      if (
+        executionMode === "evaluate_candidates" &&
+        normalizeText(analysisStore.metaRequiredTag) &&
+        !isCampaignCohortTag(analysisStore.metaRequiredTag)
+      ) {
+        analysisStore.metaRequiredTag = "";
+      } else if (
+        executionMode !== "evaluate_candidates" &&
+        !normalizeText(analysisStore.metaRequiredTag)
+      ) {
         analysisStore.metaRequiredTag = primaryTag;
+      }
       analysisStore.updatedAtUnixMs = Date.now();
     }
 
@@ -2900,7 +3781,6 @@ export async function runBatch(
 
     BATCH_RUNNING = true;
     syncBatchButtons();
-    setBatchSummaryState(null, "");
     const n = normalizedSelected.length;
     const split = splitHoldoutPaths(
       normalizedSelected,
@@ -2922,8 +3802,7 @@ export async function runBatch(
           const summaryPath = normalizePath(
             row?.summaryJsonPath ?? row?.summary_json_path,
           );
-          if (summaryPath)
-            writeStorageString(LAST_BATCH_SUMMARY_KEY, summaryPath);
+          if (summaryPath) pendingCampaignSummaryPath = summaryPath;
         },
       );
     } catch {
@@ -2961,6 +3840,10 @@ export async function runBatch(
           source_mtime_utc_ms: normalizeMaybeInteger(
             entry?.source_mtime_utc_ms ?? requestDataset?.source_mtime_utc_ms,
           ),
+          // Do not round-trip source_change_marker through JavaScript: the
+          // Windows FILETIME value can exceed Number.MAX_SAFE_INTEGER. The
+          // backend refreshes and seals the authoritative marker before it
+          // builds or compares the campaign manifest.
           source_content_fingerprint:
             normalizeText(entry?.source_content_fingerprint) ||
             normalizeText(requestDataset?.source_content_fingerprint) ||
@@ -2969,20 +3852,157 @@ export async function runBatch(
       })
       .filter((entry) => normalizePath(entry.csv_path).length > 0);
 
-    const optimizationTemplate =
+    const optimizationTemplateSource =
       asRecord(req?.optimization_template) ??
       (await buildOptimizationRequestFromVueStores());
+    const optimizationTemplate = cloneCampaignOptimizationTemplate(
+      optimizationTemplateSource,
+    );
     const validationConfig =
       asRecord(req?.validation_config) ??
       buildValidationCampaignConfig(optimizationTemplate);
+
+    if (executionMode === "evaluate_candidates") {
+      if (strategyKind !== "Vcet") {
+        throw new Error(
+          "Candidate-universe campaign replay is currently VCET-only. Select VCET in Optimization before running this mode.",
+        );
+      }
+
+      let maxCandidates = Math.max(
+        1,
+        Math.floor(Number(validationConfig.max_candidates || 32)),
+      );
+      const hasFixedCandidateField = Object.prototype.hasOwnProperty.call(
+        validationConfig,
+        "fixed_candidates",
+      );
+      const explicitCandidates = Array.isArray(
+        validationConfig.fixed_candidates,
+      )
+        ? validationConfig.fixed_candidates
+        : null;
+      if (
+        hasFixedCandidateField &&
+        validationConfig.fixed_candidates != null &&
+        !explicitCandidates
+      ) {
+        throw new Error("validation_config.fixed_candidates must be an array.");
+      }
+      const hasExplicitCandidates =
+        explicitCandidates != null && explicitCandidates.length > 0;
+      const hasSearchField = Object.prototype.hasOwnProperty.call(
+        validationConfig,
+        "vcet_search",
+      );
+      const explicitSearch = asRecord(validationConfig.vcet_search);
+      if (
+        hasSearchField &&
+        validationConfig.vcet_search != null &&
+        !explicitSearch
+      ) {
+        throw new Error("validation_config.vcet_search must be an object.");
+      }
+      if (hasExplicitCandidates && explicitSearch) {
+        throw new Error(
+          "VCET candidate design accepts either fixed_candidates or vcet_search, not both.",
+        );
+      }
+      if (explicitSearch) {
+        const analyzedSearch = analyzeVcetSearchConfigRequest(explicitSearch);
+        const hasExplicitCandidateCap = Object.prototype.hasOwnProperty.call(
+          validationConfig,
+          "max_candidates",
+        );
+        if (
+          hasExplicitCandidateCap &&
+          maxCandidates < analyzedSearch.effectiveBudget
+        ) {
+          throw new Error(
+            `VCET multidimensional design resolves to ${analyzedSearch.effectiveBudget} candidates, exceeding validation_config.max_candidates=${maxCandidates}; the request will not be truncated.`,
+          );
+        }
+        maxCandidates = hasExplicitCandidateCap
+          ? maxCandidates
+          : analyzedSearch.config.budget;
+        validationConfig.vcet_search = analyzedSearch.config;
+        delete validationConfig.fixed_candidates;
+      } else if (hasExplicitCandidates) {
+        validationConfig.fixed_candidates = explicitCandidates;
+        delete validationConfig.vcet_search;
+      } else if (
+        normalizeVcetCandidateDesignMode(
+          analysisStore?.batchVcetCandidateDesignMode,
+        ) === "halton"
+      ) {
+        const analyzedSearch = buildVcetSearchConfigFromDraft(
+          analysisStore?.batchVcetSearchDraft ?? createDefaultVcetSearchDraft(),
+        );
+        maxCandidates = analyzedSearch.config.budget;
+        validationConfig.vcet_search = analyzedSearch.config;
+        delete validationConfig.fixed_candidates;
+      } else {
+        validationConfig.fixed_candidates = buildVcetFixedCandidateManifest(
+          optimizationTemplate,
+          maxCandidates,
+        );
+        delete validationConfig.vcet_search;
+      }
+      validationConfig.max_candidates = maxCandidates;
+      validationConfig.cross_universe_admission = {
+        ...DEFAULT_VCET_CROSS_UNIVERSE_ADMISSION,
+        min_profitable_share_requested: finiteStoreNumber(
+          "batchAdmissionMinProfitableShare",
+          DEFAULT_VCET_CROSS_UNIVERSE_ADMISSION.min_profitable_share_requested,
+        ),
+        min_hard_gate_pass_share_requested: finiteStoreNumber(
+          "batchAdmissionMinHardGateShare",
+          DEFAULT_VCET_CROSS_UNIVERSE_ADMISSION.min_hard_gate_pass_share_requested,
+        ),
+        min_pnl_p10: finiteStoreNumber(
+          "batchAdmissionMinPnlP10",
+          DEFAULT_VCET_CROSS_UNIVERSE_ADMISSION.min_pnl_p10,
+        ),
+        min_sharpe_p10: finiteStoreNumber(
+          "batchAdmissionMinSharpeP10",
+          DEFAULT_VCET_CROSS_UNIVERSE_ADMISSION.min_sharpe_p10,
+        ),
+        ...(asRecord(validationConfig.cross_universe_admission) ?? {}),
+      };
+      validationConfig.require_gpu_kernel = true;
+      for (const auxiliaryStage of [
+        "walk_forward",
+        "reopt_walk_forward",
+        "perturb",
+        "trade_bootstrap",
+        "monte_carlo",
+        "cross_ticker",
+        "cscv_pbo",
+        "spa",
+      ]) {
+        validationConfig[auxiliaryStage] = null;
+      }
+
+      const requestedBackend = asRecord(optimizationTemplate.backend);
+      const deviceId = Math.max(
+        0,
+        Math.floor(Number(requestedBackend?.device_id || 0)),
+      );
+      optimizationTemplate.backend = {
+        backend: "GpuKernel",
+        device_id: deviceId,
+      };
+    }
 
     if (analysisStore) {
       analysisStore.metaStrategyKind = strategyKind;
       if (expectedTimeframe && !normalizeText(analysisStore.metaTimeframe)) {
         analysisStore.metaTimeframe = expectedTimeframe;
       }
-      analysisStore.metaRequiredTag =
-        primaryTag || analysisStore.metaRequiredTag;
+      if (executionMode !== "evaluate_candidates") {
+        analysisStore.metaRequiredTag =
+          primaryTag || analysisStore.metaRequiredTag;
+      }
       analysisStore.metaHoldoutTag = holdoutTag;
       analysisStore.metaEvalHoldout = holdoutSet.size > 0;
     }
@@ -3032,7 +4052,8 @@ export async function runBatch(
       })) as unknown,
     );
     const summary = asRecord(response?.summary);
-    const summaryPath = normalizePath(response?.summary_json_path);
+    const summaryPath =
+      normalizePath(response?.summary_json_path) || pendingCampaignSummaryPath;
     if (!summary) {
       setStatusLine("Campaign completed, but no summary payload was returned.");
       return;
@@ -3046,6 +4067,20 @@ export async function runBatch(
     const msg = cancelled
       ? `Campaign cancelled: validated=${ok}/${n}${skipped ? ` • skipped=${skipped}` : ""}${failed ? ` • failed=${failed}` : ""}`
       : `Campaign done: validated=${ok}/${n}${skipped ? ` • skipped=${skipped}` : ""}${failed ? ` • failed=${failed}` : ""}`;
+
+    if (
+      analysisStore &&
+      executionMode === "evaluate_candidates" &&
+      !cancelled &&
+      META_CAMPAIGN_COMPLETED_STATES.has(
+        normalizeText(summary.state).toLowerCase(),
+      )
+    ) {
+      const cohortTag = campaignManifestCohortTag(
+        asRecord(summary.manifest)?.manifest_hash,
+      );
+      if (cohortTag) analysisStore.metaRequiredTag = cohortTag;
+    }
 
     setBatchSummaryState(summary, summaryPath);
     await refreshSavedRunCount();
@@ -3154,6 +4189,11 @@ export async function batchRetryFailed(): Promise<void> {
     }
     if (batchFailedCount() <= 0) {
       setStatusLine("No failures to retry.");
+      return;
+    }
+    const blockedReason = batchSummaryResumeBlockedReason(summary);
+    if (blockedReason) {
+      setStatusLine(blockedReason);
       return;
     }
 
@@ -3381,7 +4421,6 @@ export async function deleteSaved(): Promise<void> {
     setErrorStatus(error);
   }
 }
-
 
 export async function saveStage5SavedTags(): Promise<void> {
   try {
@@ -3877,9 +4916,32 @@ export async function runMeta(options: MetaRunOptions = {}): Promise<void> {
       return;
     }
 
-    const payload = (await invokeCommand("run_meta_selection", {
+    const campaignSummary = await loadLastBatchSummaryFromDisk();
+    const campaignSummaryPath = compatibleMetaCampaignSummaryPath(
       req,
-    })) as unknown;
+      campaignSummary,
+    );
+    const requiredTag = normalizeText(req.required_tag ?? req.requiredTag);
+    const analysisStore = getAnalysisStore();
+    if (
+      !campaignSummaryPath &&
+      (isCampaignCohortTag(requiredTag) ||
+        normalizeBatchExecutionMode(analysisStore?.batchExecutionMode) ===
+          "evaluate_candidates")
+    ) {
+      setStatusLine(
+        "Meta stopped: VCET candidate replay requires a compatible terminal campaign summary with admitted training candidates.",
+      );
+      return;
+    }
+    const invokeArgs: Record<string, unknown> = { req };
+    if (campaignSummaryPath) {
+      invokeArgs.campaignSummaryPath = campaignSummaryPath;
+    }
+    const payload = (await invokeCommand(
+      "run_meta_selection",
+      invokeArgs,
+    )) as unknown;
     const response = asRecord(payload);
     if (!response) {
       setStatusLine("Meta run returned an invalid response.");

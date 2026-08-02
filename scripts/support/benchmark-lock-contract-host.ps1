@@ -317,10 +317,16 @@ try {
           throw "Could not remove the benchmark-lock ACL-denial contract rule."
         }
       }
+      Exit-BenchmarkLock -Handle $activeHandle
+      $activeHandle = $null
+      $afterFailureEnvironment = Get-ContractEnvironment
+      $recovery = Invoke-ContractChild -ChildMode "direct"
       Write-ContractResult -Value ([ordered]@{
           ok = $true
           probe_code = $probeCode
           child = $child
+          after_failure_environment = $afterFailureEnvironment
+          recovery = $recovery
         })
     }
 

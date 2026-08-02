@@ -1450,6 +1450,41 @@ describe("optimizeService", () => {
     expect(artifacts.currentRun?.artifactPath).toBe("");
   });
 
+  it("keeps a committed artifact usable while surfacing retention cleanup warnings", async () => {
+    const artifacts = useWorkflowArtifactsStore(pinia);
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return {
+          path: "runs/vectorgrid_run_retention_warning.json",
+          bytes: 128,
+          retention_warning: "a protected campaign summary could not be classified",
+        };
+      }
+      if (command === "get_gpu_status") return {};
+      return {};
+    });
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-retention-warning" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.progressMeta || "")).toContain(
+      "artifact=retention warning",
+    );
+    expect(artifacts.currentRun?.artifactPath).toBe(
+      "runs/vectorgrid_run_retention_warning.json",
+    );
+  });
+
   it.each([
     [
       "strategy_kind",
@@ -2464,6 +2499,7 @@ describe("optimizeService", () => {
       mode: "CoarseToFine",
       topK: "20",
       includeAll: "false",
+      heatmapBins: "64",
     };
     (pinia.state.value as Record<string, unknown>).strategy = {
       compositeSignalMode: "hard_gate",
@@ -2531,6 +2567,7 @@ describe("optimizeService", () => {
     expect(req.strategy_kind).toBe("Vcc");
     expect(req.backend).toEqual({ backend: "GpuKernel", device_id: 0 });
     expect(req.mode).toBe("Grid");
+    expect(req.heatmap_bins).toBe(64);
     expect(req.vcc).toMatchObject({
       map_fast_to_squeeze_period: false,
       map_fast_to_momentum_period: false,

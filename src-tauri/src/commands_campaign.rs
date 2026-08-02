@@ -17,12 +17,12 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 #[cfg(test)]
 use std::fs;
 #[cfg(test)]
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +60,7 @@ pub enum ResearchCampaignExecutionMode {
     Full,
     OptimizeOnly,
     ValidateOnly,
+    EvaluateCandidates,
 }
 
 impl Default for ResearchCampaignExecutionMode {
@@ -79,6 +80,8 @@ pub struct ResearchCampaignDatasetInput {
     pub source_size_bytes: Option<u64>,
     #[serde(default)]
     pub source_mtime_utc_ms: Option<i64>,
+    #[serde(default)]
+    pub source_change_marker: Option<i64>,
     #[serde(default)]
     pub source_content_fingerprint: Option<String>,
 }
@@ -117,6 +120,41 @@ pub struct ResearchCampaignValidationConfig {
     pub min_cscv_oos_metric: Option<f64>,
     #[serde(default)]
     pub max_pbo: Option<f64>,
+    #[serde(default)]
+    pub fixed_candidates: Vec<ResearchCampaignVcetFixedCandidate>,
+    /// Optional bounded multidimensional design for VCET. This is mutually
+    /// exclusive with the legacy Fast/Slow fixed-candidate list.
+    #[serde(default)]
+    pub vcet_search: Option<ta_app_core::vcet_search::VcetSearchConfig>,
+    #[serde(default)]
+    pub require_gpu_kernel: bool,
+    #[serde(default)]
+    pub cross_universe_admission: ResearchCampaignCrossUniverseAdmissionPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+pub struct ResearchCampaignCrossUniverseAdmissionPolicy {
+    pub min_profitable_share_requested: f64,
+    pub min_hard_gate_pass_share_requested: f64,
+    pub min_pnl_p10: f64,
+    pub min_sharpe_p10: f64,
+}
+
+impl Default for ResearchCampaignCrossUniverseAdmissionPolicy {
+    fn default() -> Self {
+        Self {
+            min_profitable_share_requested: 0.55,
+            min_hard_gate_pass_share_requested: 0.50,
+            min_pnl_p10: 0.0,
+            min_sharpe_p10: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResearchCampaignVcetFixedCandidate {
+    pub fast_len: u16,
+    pub slow_len: u16,
 }
 
 fn default_validation_max_candidates() -> usize {
@@ -240,6 +278,8 @@ pub struct ResearchCampaignDatasetIdentitySummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_mtime_utc_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_change_marker: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_content_fingerprint: Option<String>,
 }
 
@@ -250,6 +290,8 @@ pub struct ResearchCampaignManifestV2 {
     pub dataset_universe_hash: String,
     pub optimization_template_hash: String,
     pub validation_config_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_manifest_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta_request_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +305,12 @@ pub struct ResearchCampaignManifestV2 {
     pub holdout_pct: u32,
     pub preload_policy: ResearchCampaignPreloadPolicy,
     pub strict_identity_required: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchCampaignRetentionSummary {
+    pub class: String,
+    pub cohort_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -285,11 +333,84 @@ pub struct ResearchCampaignItemSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub report_xlsx_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<ResearchCampaignItemDiagnostics>,
+    #[serde(skip)]
+    fixed_candidate_result: Option<CampaignFixedCandidateDatasetResult>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchCampaignFixedCandidateAggregate {
+    pub candidate_id: String,
+    pub fast_len: u16,
+    pub slow_len: u16,
+    pub requested_datasets: usize,
+    pub evaluated_datasets: usize,
+    pub missing_or_failed_datasets: usize,
+    pub profitable_datasets: usize,
+    pub hard_gate_pass_datasets: usize,
+    pub profitable_share_requested: f64,
+    pub hard_gate_pass_share_requested: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pnl_p10: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pnl_median: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sharpe_p10: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sharpe_median: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_drawdown_p90: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trades_median: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ResearchCampaignFixedCandidateCohortAggregate {
+    pub requested_datasets: usize,
+    pub evaluated_datasets: usize,
+    pub gpu_kernel_datasets: usize,
+    pub missing_or_failed_datasets: usize,
+    pub candidates: Vec<ResearchCampaignFixedCandidateAggregate>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchCampaignFixedCandidateEvaluationSummary {
+    pub schema_version: u32,
+    pub candidate_manifest_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_manifest: Option<ta_app_core::vcet_search::VcetSearchManifest>,
+    pub require_gpu_kernel: bool,
+    /// Compatibility counts for the complete requested universe.
+    pub requested_datasets: usize,
+    pub evaluated_datasets: usize,
+    pub gpu_kernel_datasets: usize,
+    pub missing_or_failed_datasets: usize,
+    /// Selection-safe rows. In schema v2 these are training-only.
+    pub candidates: Vec<ResearchCampaignFixedCandidateAggregate>,
+    #[serde(default)]
+    pub selection_cohort: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_candidate_id: Option<String>,
+    #[serde(default)]
+    pub cross_universe_admission: ResearchCampaignCrossUniverseAdmissionPolicy,
+    #[serde(default)]
+    pub admitted_candidate_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitted_candidate_ids: Vec<String>,
+    #[serde(default)]
+    pub selection_status: String,
+    #[serde(default)]
+    pub all_universe: ResearchCampaignFixedCandidateCohortAggregate,
+    #[serde(default)]
+    pub training: ResearchCampaignFixedCandidateCohortAggregate,
+    #[serde(default)]
+    pub holdout: ResearchCampaignFixedCandidateCohortAggregate,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -298,6 +419,8 @@ pub struct ResearchCampaignSummary {
     pub kind: String,
     pub ts: String,
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<ResearchCampaignRetentionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<ResearchCampaignManifestV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,6 +437,8 @@ pub struct ResearchCampaignSummary {
     pub request: Value,
     pub counts: ResearchCampaignCounts,
     pub items: Vec<ResearchCampaignItemSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_candidate_evaluation: Option<ResearchCampaignFixedCandidateEvaluationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta_json_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -382,6 +507,62 @@ enum CampaignOptimizationResult {
     CompositeMoArtifact(Value),
 }
 
+#[derive(Clone, Debug)]
+struct CampaignVcetFixedCandidatePlan {
+    candidates: Vec<Value>,
+    candidate_identities: Vec<CampaignVcetFixedCandidateIdentity>,
+    candidate_manifest_hash: String,
+    search_manifest: Option<ta_app_core::vcet_search::VcetSearchManifest>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CampaignVcetFixedCandidateIdentity {
+    vidya_short_period: u16,
+    vidya_long_period: u16,
+    vidya_alpha_bits: u64,
+    ce_period: u16,
+    ce_mult_bits: u64,
+    ce_use_close: bool,
+    require_vidya_slope: bool,
+    max_trade_bars: u16,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CampaignVcetFixedCandidateArtifactContract {
+    plan: CampaignVcetFixedCandidatePlan,
+    require_gpu_kernel: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct VcetTemporalCampaignCandidateSourceV1 {
+    pub(super) request: ResearchCampaignRequest,
+    pub(super) optimization_request: DoubleMaRequest,
+    pub(super) sealed_candidate_manifest:
+        super::commands_vcet_temporal::VcetTemporalSealedCandidateManifestV1,
+    pub(super) cross_universe_admission: ResearchCampaignCrossUniverseAdmissionPolicy,
+}
+
+#[derive(Clone, Debug)]
+struct CampaignFixedCandidateObservation {
+    identity: CampaignVcetFixedCandidateIdentity,
+    pnl: f64,
+    sharpe: f64,
+    max_drawdown: f64,
+    trades: u32,
+    hard_gate_passed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CampaignFixedCandidateDatasetResult {
+    gpu_kernel_used: bool,
+    candidates: Vec<CampaignFixedCandidateObservation>,
+}
+
+enum CampaignFixedCandidateArtifactReuse {
+    Reuse(CampaignFixedCandidateDatasetResult),
+    Rerun { warning: String },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CampaignArtifactMatchDecision {
     Exact,
@@ -410,6 +591,83 @@ impl CampaignArtifactMatchDecision {
 struct CampaignExistingArtifactMatch<'a> {
     summary: &'a run_artifacts::RunArtifactSummary,
     decision: CampaignArtifactMatchDecision,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+enum CampaignArtifactSourceIdentityKey {
+    ContentFingerprint(String),
+    SizeAndMtime(u64, i64),
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct CampaignArtifactReuseKey {
+    strategy_kind: String,
+    config_fingerprint: String,
+    csv_path: String,
+    timeframe: String,
+    cohort_tags: Vec<String>,
+    source_identity: CampaignArtifactSourceIdentityKey,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct CampaignArtifactReuseCoarseKey {
+    strategy_kind: String,
+    config_fingerprint: String,
+    csv_path: String,
+    cohort_tags: Vec<String>,
+}
+
+struct CampaignArtifactReuseIndex<'a> {
+    artifacts: &'a [run_artifacts::RunArtifactSummary],
+    exact: HashMap<CampaignArtifactReuseKey, Vec<usize>>,
+    coarse: HashMap<CampaignArtifactReuseCoarseKey, Vec<usize>>,
+}
+
+struct CampaignRunArtifactPruneGuard {
+    app: Option<tauri::AppHandle>,
+}
+
+impl CampaignRunArtifactPruneGuard {
+    fn new(app: Option<tauri::AppHandle>) -> Self {
+        Self { app }
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        let Some(app) = self.app.take() else {
+            return Ok(());
+        };
+        run_artifacts::prune_run_artifacts_to_retention_blocking(&app)
+    }
+}
+
+impl Drop for CampaignRunArtifactPruneGuard {
+    fn drop(&mut self) {
+        if self.app.take().is_some() {
+            log::warn!(
+                "deferred campaign run-artifact retention was not finalized because no final campaign summary was published; leaving artifacts intact for recovery"
+            );
+        }
+    }
+}
+
+fn campaign_defers_run_artifact_pruning(
+    strategy_kind: &str,
+    _execution_mode: ResearchCampaignExecutionMode,
+) -> bool {
+    normalize_strategy_kind(strategy_kind) == "Vcet"
+}
+
+#[cfg(test)]
+fn planned_campaign_run_artifact_prunes(
+    strategy_kind: &str,
+    execution_mode: ResearchCampaignExecutionMode,
+    artifact_saves: usize,
+) -> usize {
+    if campaign_defers_run_artifact_pruning(strategy_kind, execution_mode) {
+        1
+    } else {
+        artifact_saves
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -453,12 +711,12 @@ struct CampaignValidationAdmissionSelection {
     provenance: ValidationAdmissionProvenance,
 }
 
-struct PreparedCampaignDataset {
-    input: ResearchCampaignDatasetInput,
-    candles: vector_ta::utilities::data_loader::Candles,
-    dataset_meta: Value,
-    timeframe: String,
-    label: String,
+pub(super) struct PreparedCampaignDataset {
+    pub(super) input: ResearchCampaignDatasetInput,
+    pub(super) candles: vector_ta::utilities::data_loader::Candles,
+    pub(super) dataset_meta: Value,
+    pub(super) timeframe: String,
+    pub(super) label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -871,6 +1129,336 @@ fn optimization_family_for_kind(kind: &str) -> CampaignOptimizationFamily {
     }
 }
 
+fn vcet_fixed_candidate_identity(
+    candidate: &Value,
+) -> Result<CampaignVcetFixedCandidateIdentity, String> {
+    let typed: ta_app_core::CompositeParams = serde_json::from_value(candidate.clone())
+        .map_err(|error| format!("invalid expanded VCET fixed candidate: {error}"))?;
+    let vcet = typed
+        .vcet
+        .as_ref()
+        .ok_or_else(|| "expanded VCET fixed candidate is missing its VCET controls".to_string())?;
+    let resolved =
+        ta_app_core::vcet::resolve_vcet_periods_checked(vcet, typed.fast_len, typed.slow_len)?;
+    Ok(CampaignVcetFixedCandidateIdentity {
+        vidya_short_period: resolved.vidya_short,
+        vidya_long_period: resolved.vidya_long,
+        vidya_alpha_bits: vcet.vidya_alpha.to_bits(),
+        ce_period: resolved.ce,
+        ce_mult_bits: vcet.ce_mult.to_bits(),
+        ce_use_close: vcet.ce_use_close,
+        require_vidya_slope: vcet.require_vidya_slope,
+        max_trade_bars: vcet.max_trade_bars,
+    })
+}
+
+fn vcet_fixed_candidate_id(identity: CampaignVcetFixedCandidateIdentity) -> String {
+    let hash = sha256_json_hash(&json!({
+        "identity_schema_version": 1,
+        "strategy_kind": "Vcet",
+        "vidya_short_period": identity.vidya_short_period,
+        "vidya_long_period": identity.vidya_long_period,
+        "vidya_alpha": f64::from_bits(identity.vidya_alpha_bits),
+        "ce_period": identity.ce_period,
+        "ce_mult": f64::from_bits(identity.ce_mult_bits),
+        "ce_use_close": identity.ce_use_close,
+        "require_vidya_slope": identity.require_vidya_slope,
+        "max_trade_bars": identity.max_trade_bars,
+    }));
+    format!("vcet_candidate_{}", hash.trim_start_matches("sha256:"))
+}
+
+fn build_vcet_fixed_candidate_plan(
+    req: &ResearchCampaignRequest,
+    strategy_kind: &str,
+    execution_mode: ResearchCampaignExecutionMode,
+) -> Result<Option<CampaignVcetFixedCandidatePlan>, String> {
+    if execution_mode != ResearchCampaignExecutionMode::EvaluateCandidates {
+        if !req.validation_config.fixed_candidates.is_empty()
+            || req.validation_config.vcet_search.is_some()
+            || req.validation_config.require_gpu_kernel
+            || req.validation_config.cross_universe_admission
+                != ResearchCampaignCrossUniverseAdmissionPolicy::default()
+        {
+            return Err(
+                "validation_config.fixed_candidates, vcet_search, require_gpu_kernel, and non-default cross_universe_admission are only valid with execution_mode=evaluate_candidates"
+                    .to_string(),
+            );
+        }
+        return Ok(None);
+    }
+    if normalize_strategy_kind(strategy_kind) != "Vcet" {
+        return Err(
+            "execution_mode=evaluate_candidates currently supports only strategy_kind=Vcet"
+                .to_string(),
+        );
+    }
+    if req.validation_config.max_candidates == 0 {
+        return Err(
+            "evaluate_candidates requires validation_config.max_candidates to be greater than zero"
+                .to_string(),
+        );
+    }
+    validate_cross_universe_admission_policy(&req.validation_config.cross_universe_admission)?;
+
+    let mut entries = req.validation_config.fixed_candidates.clone();
+    if !entries.is_empty() && req.validation_config.vcet_search.is_some() {
+        return Err(
+            "evaluate_candidates accepts either validation_config.fixed_candidates or validation_config.vcet_search, not both"
+                .to_string(),
+        );
+    }
+    if entries.is_empty() && req.validation_config.vcet_search.is_none() {
+        return Err(
+            "evaluate_candidates requires validation_config.fixed_candidates or validation_config.vcet_search"
+                .to_string(),
+        );
+    }
+    if entries.len() > req.validation_config.max_candidates {
+        return Err(format!(
+            "evaluate_candidates received {} fixed candidates, exceeding validation_config.max_candidates={}; the manifest will not be truncated",
+            entries.len(), req.validation_config.max_candidates
+        ));
+    }
+    entries.sort_unstable();
+    if entries.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("VCET fixed-candidate manifest contains a duplicate period pair".to_string());
+    }
+
+    let template = req
+        .optimization_template
+        .as_object()
+        .ok_or_else(|| "campaign optimization_template must be an object".to_string())?;
+    let one_ma_type = |key: &str| -> Result<String, String> {
+        let values = template
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("VCET evaluate_candidates requires {key} to be an array"))?;
+        if values.len() != 1 {
+            return Err(format!(
+                "VCET evaluate_candidates requires exactly one {key} entry"
+            ));
+        }
+        values[0]
+            .as_str()
+            .map(normalize_text)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("VCET evaluate_candidates requires a non-empty {key} entry"))
+    };
+    let fast_ma_type = one_ma_type("fast_ma_types")?;
+    let slow_ma_type = one_ma_type("slow_ma_types")?;
+
+    for key in [
+        "asr", "vcc", "vemr", "rocb", "mkcs", "kqsr", "carm", "kvdf", "cdmc",
+    ] {
+        if template.get(key).is_some_and(|value| !value.is_null()) {
+            return Err(format!(
+                "VCET evaluate_candidates optimization_template must not include the '{key}' strategy payload"
+            ));
+        }
+    }
+    if template.get("halftrend").is_none_or(Value::is_null) {
+        return Err(
+            "VCET evaluate_candidates optimization_template requires a halftrend configuration"
+                .to_string(),
+        );
+    }
+    let vcet_value = template
+        .get("vcet")
+        .filter(|value| !value.is_null())
+        .ok_or_else(|| {
+            "VCET evaluate_candidates optimization_template requires a vcet configuration"
+                .to_string()
+        })?;
+    let vcet: ta_app_core::VcetStrategyParams = serde_json::from_value(vcet_value.clone())
+        .map_err(|error| format!("invalid VCET strategy configuration: {error}"))?;
+    ta_app_core::vcet::validate_vcet_params(&vcet)?;
+
+    if req.validation_config.require_gpu_kernel {
+        let backend = normalize_backend_value(template.get("backend"), strategy_kind);
+        if backend.get("backend").and_then(Value::as_str) != Some("GpuKernel") {
+            return Err(
+                "require_gpu_kernel=true requires optimization_template.backend=GpuKernel for VCET fixed-candidate evaluation"
+                    .to_string(),
+            );
+        }
+
+        let mut non_gpu_resident_stages = Vec::new();
+        if req.validation_config.walk_forward.is_some() {
+            non_gpu_resident_stages.push("walk_forward");
+        }
+        if req.validation_config.reopt_walk_forward.is_some() {
+            non_gpu_resident_stages.push("reopt_walk_forward");
+        }
+        if req.validation_config.spa.is_some() {
+            non_gpu_resident_stages.push("spa");
+        }
+        if req.validation_config.perturb.is_some() {
+            non_gpu_resident_stages.push("perturb");
+        }
+        if req.validation_config.trade_bootstrap.is_some() {
+            non_gpu_resident_stages.push("trade_bootstrap");
+        }
+        if req.validation_config.monte_carlo.is_some() {
+            non_gpu_resident_stages.push("monte_carlo");
+        }
+        if req.validation_config.cross_ticker.is_some() {
+            non_gpu_resident_stages.push("cross_ticker");
+        }
+        if req.validation_config.cscv_pbo.is_some() {
+            non_gpu_resident_stages.push("cscv_pbo");
+        }
+        if !non_gpu_resident_stages.is_empty() {
+            return Err(format!(
+                "require_gpu_kernel=true does not permit auxiliary validation stages that are not proven fully GPU-resident; set these validation_config fields to null: {}",
+                non_gpu_resident_stages.join(", ")
+            ));
+        }
+    }
+
+    let mut search_manifest = req
+        .validation_config
+        .vcet_search
+        .as_ref()
+        .map(ta_app_core::vcet_search::generate_vcet_search_manifest)
+        .transpose()?;
+    if let Some(manifest) = search_manifest.as_ref() {
+        if manifest.effective_budget > req.validation_config.max_candidates {
+            return Err(format!(
+                "VCET search generated {} candidates, exceeding validation_config.max_candidates={}; the manifest will not be truncated",
+                manifest.effective_budget, req.validation_config.max_candidates
+            ));
+        }
+    }
+
+    let params = serde_json::Map::new();
+    let planned_count = search_manifest
+        .as_ref()
+        .map(|manifest| manifest.candidates.len())
+        .unwrap_or(entries.len());
+    let mut candidates = Vec::with_capacity(planned_count);
+    let mut candidate_identities = Vec::with_capacity(planned_count);
+    let mut seen_identities = BTreeSet::new();
+    let mut append_candidate = |fast_len: u16,
+                                slow_len: u16,
+                                vcet_override: Option<Value>|
+     -> Result<(), String> {
+        let mut candidate = build_composite_candidate_value(
+            strategy_kind,
+            &req.optimization_template,
+            &params,
+            fast_ma_type.clone(),
+            slow_ma_type.clone(),
+            u64::from(fast_len),
+            u64::from(slow_len),
+        );
+        if let Some(vcet_override) = vcet_override {
+            candidate["vcet"] = vcet_override;
+        }
+        let typed: ta_app_core::CompositeParams = serde_json::from_value(candidate)
+            .map_err(|error| format!("invalid expanded VCET fixed candidate: {error}"))?;
+        let candidate = serde_json::to_value(typed)
+            .map_err(|error| format!("failed to encode VCET fixed candidate: {error}"))?;
+        let identity = vcet_fixed_candidate_identity(&candidate)?;
+        if !seen_identities.insert(identity) {
+            return Err(format!(
+                "VCET fixed-candidate manifest contains a duplicate effective strategy identity after resolving candidate ({}, {}): {}",
+                fast_len,
+                slow_len,
+                vcet_fixed_candidate_id(identity),
+            ));
+        }
+        candidates.push(candidate);
+        candidate_identities.push(identity);
+        Ok(())
+    };
+
+    if let Some(manifest) = search_manifest.as_ref() {
+        for sampled in &manifest.candidates {
+            let effective = &sampled.effective;
+            append_candidate(
+                effective.vidya_short_period,
+                effective.vidya_long_period,
+                Some(json!({
+                    "map_fast_to_vidya_short_period": false,
+                    "map_slow_to_vidya_long_period": false,
+                    "map_slow_to_ce_period": false,
+                    "vidya_short_period": effective.vidya_short_period,
+                    "vidya_long_period": effective.vidya_long_period,
+                    "vidya_alpha": effective.vidya_alpha,
+                    "ce_period": effective.ce_period,
+                    "ce_mult": effective.ce_mult,
+                    "ce_use_close": effective.ce_use_close,
+                    "require_vidya_slope": effective.require_vidya_slope,
+                    "max_trade_bars": effective.max_trade_bars,
+                })),
+            )?;
+        }
+    } else {
+        for entry in entries {
+            append_candidate(entry.fast_len, entry.slow_len, None)?;
+        }
+    }
+    if let Some(manifest) = search_manifest.as_mut() {
+        if manifest.candidates.len() != candidate_identities.len() {
+            return Err(
+                "VCET search manifest and expanded candidate identity table differ in length"
+                    .to_string(),
+            );
+        }
+        for (sampled, identity) in manifest
+            .candidates
+            .iter_mut()
+            .zip(candidate_identities.iter().copied())
+        {
+            sampled.evaluation_candidate_id = Some(vcet_fixed_candidate_id(identity));
+        }
+    }
+    let candidate_manifest_hash = sha256_json_hash(&json!({
+        "schema_version": 1,
+        "strategy_kind": "Vcet",
+        "candidates": candidates,
+    }));
+    Ok(Some(CampaignVcetFixedCandidatePlan {
+        candidates,
+        candidate_identities,
+        candidate_manifest_hash,
+        search_manifest,
+    }))
+}
+
+fn validate_cross_universe_admission_policy(
+    policy: &ResearchCampaignCrossUniverseAdmissionPolicy,
+) -> Result<(), String> {
+    for (name, value) in [
+        (
+            "min_profitable_share_requested",
+            policy.min_profitable_share_requested,
+        ),
+        (
+            "min_hard_gate_pass_share_requested",
+            policy.min_hard_gate_pass_share_requested,
+        ),
+    ] {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(format!(
+                "validation_config.cross_universe_admission.{name} must be finite and between 0 and 1"
+            ));
+        }
+    }
+    for (name, value) in [
+        ("min_pnl_p10", policy.min_pnl_p10),
+        ("min_sharpe_p10", policy.min_sharpe_p10),
+    ] {
+        if !value.is_finite() {
+            return Err(format!(
+                "validation_config.cross_universe_admission.{name} must be finite"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn normalize_path_key(raw: &str) -> String {
     raw.trim().replace('/', "\\").to_ascii_lowercase()
 }
@@ -1015,6 +1603,11 @@ fn dataset_identity_summary(
             .get("source_mtime_utc_ms")
             .and_then(Value::as_i64)
             .or(prepared.input.source_mtime_utc_ms),
+        source_change_marker: prepared
+            .dataset_meta
+            .get("source_change_marker")
+            .and_then(Value::as_i64)
+            .or(prepared.input.source_change_marker),
         source_content_fingerprint: value_string(
             &prepared.dataset_meta,
             "source_content_fingerprint",
@@ -1037,10 +1630,39 @@ fn normalize_campaign_datasets(
     datasets: Vec<ResearchCampaignDatasetInput>,
 ) -> Result<Vec<ResearchCampaignDatasetInput>, String> {
     let mut normalized = Vec::with_capacity(datasets.len());
+    let mut seen_paths = HashSet::with_capacity(datasets.len());
+    let mut seen_fingerprints: HashMap<String, String> = HashMap::with_capacity(datasets.len());
     for dataset in datasets {
         let csv_path = normalize_text(&dataset.csv_path);
         if csv_path.is_empty() {
             return Err("campaign dataset csv_path is empty".to_string());
+        }
+        let mut lexical_path = PathBuf::new();
+        for component in Path::new(&csv_path).components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir if lexical_path.pop() => {}
+                Component::ParentDir => lexical_path.push(component.as_os_str()),
+                _ => lexical_path.push(component.as_os_str()),
+            }
+        }
+        let path_identity = normalize_path_key(lexical_path.to_string_lossy().as_ref());
+        if !seen_paths.insert(path_identity) {
+            return Err(format!(
+                "campaign datasets contain a duplicate normalized csv_path: {csv_path}"
+            ));
+        }
+        let source_content_fingerprint =
+            normalize_optional_text(dataset.source_content_fingerprint);
+        if let Some(fingerprint) = source_content_fingerprint.as_deref() {
+            let fingerprint_identity = fingerprint.to_ascii_lowercase();
+            if let Some(previous_path) =
+                seen_fingerprints.insert(fingerprint_identity, csv_path.clone())
+            {
+                return Err(format!(
+                    "campaign datasets '{previous_path}' and '{csv_path}' declare the same source_content_fingerprint; duplicate source content cannot be counted twice"
+                ));
+            }
         }
         normalized.push(ResearchCampaignDatasetInput {
             csv_path,
@@ -1050,10 +1672,79 @@ fn normalize_campaign_datasets(
                 .filter(|value| !value.is_empty()),
             source_size_bytes: dataset.source_size_bytes,
             source_mtime_utc_ms: dataset.source_mtime_utc_ms,
-            source_content_fingerprint: normalize_optional_text(dataset.source_content_fingerprint),
+            source_change_marker: dataset.source_change_marker,
+            source_content_fingerprint,
         });
     }
     Ok(normalized)
+}
+
+fn refresh_campaign_dataset_source_identities(
+    datasets: &mut [ResearchCampaignDatasetInput],
+) -> Result<(), String> {
+    for dataset in datasets {
+        let csv_path = normalize_text(&dataset.csv_path);
+        let source_identity = data_cache::identity_for_source(Path::new(&csv_path)).map_err(|error| {
+            format!(
+                "failed to seal the campaign source identity for '{csv_path}' before creating its manifest: {error}"
+            )
+        })?;
+        if let Some(expected_size) = dataset.source_size_bytes {
+            if expected_size != source_identity.size {
+                return Err(format!(
+                    "campaign dataset source_size_bytes is stale for '{csv_path}': expected {expected_size}, observed {}; refresh dataset discovery before running the campaign",
+                    source_identity.size
+                ));
+            }
+        }
+        if let Some(expected_mtime) = dataset.source_mtime_utc_ms {
+            if expected_mtime != source_identity.mtime_utc_ms {
+                return Err(format!(
+                    "campaign dataset source_mtime_utc_ms is stale for '{csv_path}': expected {expected_mtime}, observed {}; refresh dataset discovery before running the campaign",
+                    source_identity.mtime_utc_ms
+                ));
+            }
+        }
+        if let Some(expected_change_marker) = dataset.source_change_marker {
+            if expected_change_marker != source_identity.change_marker {
+                return Err(format!(
+                    "campaign dataset source_change_marker is stale for '{csv_path}': expected {expected_change_marker}, observed {}; refresh dataset discovery before running the campaign",
+                    source_identity.change_marker
+                ));
+            }
+        }
+        dataset.source_size_bytes = Some(source_identity.size);
+        dataset.source_mtime_utc_ms = Some(source_identity.mtime_utc_ms);
+        dataset.source_change_marker = Some(source_identity.change_marker);
+    }
+    Ok(())
+}
+
+fn record_unique_prepared_campaign_source(
+    prepared: &PreparedCampaignDataset,
+    seen_fingerprints: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    let Some(fingerprint) = value_string(&prepared.dataset_meta, "source_content_fingerprint")
+        .or_else(|| {
+            prepared
+                .input
+                .source_content_fingerprint
+                .as_deref()
+                .map(normalize_text)
+                .filter(|value| !value.is_empty())
+        })
+    else {
+        return Ok(());
+    };
+    let csv_path = normalize_text(&prepared.input.csv_path);
+    if let Some(previous_path) =
+        seen_fingerprints.insert(fingerprint.to_ascii_lowercase(), csv_path.clone())
+    {
+        return Err(format!(
+            "campaign datasets '{previous_path}' and '{csv_path}' resolve to the same source content identity '{fingerprint}'; duplicate source content cannot be counted twice"
+        ));
+    }
+    Ok(())
 }
 
 fn should_load_existing_artifacts(
@@ -1101,9 +1792,11 @@ fn failed_item(
         resume_state: Some(CampaignResumeState::Resumable),
         reuse_decision: None,
         artifact_path,
+        artifact_sha256: None,
         report_xlsx_path: None,
         error: Some(format!("{stage}: {}", error.into())),
         diagnostics: None,
+        fixed_candidate_result: None,
     }
 }
 
@@ -1233,6 +1926,40 @@ fn dedup_tags(tags: Vec<String>) -> Vec<String> {
     out
 }
 
+fn validate_holdout_tag_isolation(
+    campaign_tags: &[String],
+    datasets: &[ResearchCampaignDatasetInput],
+    holdout_pct: u32,
+    holdout_tag: Option<&str>,
+) -> Result<(), String> {
+    if holdout_pct == 0 {
+        return Ok(());
+    }
+    let holdout_tag = holdout_tag.map(normalize_text).unwrap_or_default();
+    if holdout_tag.is_empty() {
+        return Err(
+            "campaign holdout_tag must be non-empty when holdout_pct is positive".to_string(),
+        );
+    }
+    if campaign_tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case(&holdout_tag))
+    {
+        return Err(format!(
+            "campaign holdout_tag '{holdout_tag}' must not also appear in base campaign tags; training and holdout artifact cohorts require disjoint tags"
+        ));
+    }
+    if datasets
+        .iter()
+        .any(|dataset| dataset_label_from_input(dataset).eq_ignore_ascii_case(&holdout_tag))
+    {
+        return Err(format!(
+            "campaign holdout_tag '{holdout_tag}' must not match a dataset label; legacy tag-based readers could misclassify a training artifact as holdout"
+        ));
+    }
+    Ok(())
+}
+
 fn hash_fnv1a32(text: &str) -> u32 {
     let mut hash: u32 = 2166136261;
     for ch in text.chars() {
@@ -1305,8 +2032,8 @@ fn emit_campaign_progress(
     );
 }
 
-fn prepare_campaign_dataset(
-    input: ResearchCampaignDatasetInput,
+pub(super) fn prepare_campaign_dataset(
+    mut input: ResearchCampaignDatasetInput,
     timeframe_override: Option<&str>,
     app_cache_dir: &Path,
 ) -> Result<PreparedCampaignDataset, String> {
@@ -1318,8 +2045,50 @@ fn prepare_campaign_dataset(
     let LoadOutcome {
         mut candles,
         source_identity,
+        source_content_fingerprint,
         ..
     } = data_cache::load_or_build(Path::new(&csv_path), app_cache_dir)?;
+
+    if let Some(expected_size) = input.source_size_bytes {
+        if expected_size != source_identity.size {
+            return Err(format!(
+                "campaign dataset source_size_bytes is stale for '{csv_path}': expected {expected_size}, observed {}; refresh dataset discovery before running the campaign",
+                source_identity.size
+            ));
+        }
+    }
+    if let Some(expected_mtime_utc_ms) = input.source_mtime_utc_ms {
+        if expected_mtime_utc_ms != source_identity.mtime_utc_ms {
+            return Err(format!(
+                "campaign dataset source_mtime_utc_ms is stale for '{csv_path}': expected {expected_mtime_utc_ms}, observed {}; refresh dataset discovery before running the campaign",
+                source_identity.mtime_utc_ms
+            ));
+        }
+    }
+    if let Some(expected_change_marker) = input.source_change_marker {
+        if expected_change_marker != source_identity.change_marker {
+            return Err(format!(
+                "campaign dataset source_change_marker is stale for '{csv_path}': expected {expected_change_marker}, observed {}; refresh dataset discovery before running the campaign",
+                source_identity.change_marker
+            ));
+        }
+    }
+    if let Some(expected_fingerprint) = input
+        .source_content_fingerprint
+        .as_deref()
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+    {
+        if expected_fingerprint != source_content_fingerprint {
+            return Err(format!(
+                "campaign dataset source_content_fingerprint is stale for '{csv_path}': expected '{expected_fingerprint}', observed '{source_content_fingerprint}'; refresh dataset discovery before running the campaign"
+            ));
+        }
+    }
+    input.source_size_bytes = Some(source_identity.size);
+    input.source_mtime_utc_ms = Some(source_identity.mtime_utc_ms);
+    input.source_change_marker = Some(source_identity.change_marker);
+    input.source_content_fingerprint = Some(source_content_fingerprint.clone());
 
     let base_timeframe = input
         .timeframe
@@ -1355,15 +2124,9 @@ fn prepare_campaign_dataset(
         "resample_applied": !base_timeframe.is_empty() && !effective_timeframe.is_empty() && base_timeframe != effective_timeframe,
         "source_size_bytes": source_identity.size,
         "source_mtime_utc_ms": source_identity.mtime_utc_ms,
+        "source_change_marker": source_identity.change_marker,
     });
-    if let Some(fp) = input
-        .source_content_fingerprint
-        .as_deref()
-        .map(normalize_text)
-        .filter(|value| !value.is_empty())
-    {
-        dataset_meta["source_content_fingerprint"] = Value::String(fp);
-    }
+    dataset_meta["source_content_fingerprint"] = Value::String(source_content_fingerprint);
 
     Ok(PreparedCampaignDataset {
         input,
@@ -1453,7 +2216,10 @@ fn normalize_backend_value(raw: Option<&Value>, strategy_kind: &str) -> Value {
         .unwrap_or("")
         .trim();
 
-    if !is_double_like_kind(strategy_kind) && backend_name != "CpuOnly" {
+    let preserve_vcet_gpu_kernel =
+        normalize_strategy_kind(strategy_kind) == "Vcet" && backend_name == "GpuKernel";
+    if !is_double_like_kind(strategy_kind) && backend_name != "CpuOnly" && !preserve_vcet_gpu_kernel
+    {
         return json!({ "backend": "Auto", "device_id": device_id });
     }
 
@@ -2112,7 +2878,15 @@ fn build_composite_candidate_value(
         "slow_len": slow_len,
         "fast_ma_params": params.get("fast_ma_params").cloned().unwrap_or(Value::Null),
         "slow_ma_params": params.get("slow_ma_params").cloned().unwrap_or(Value::Null),
-        "strategy": run_req.get("strategy").cloned().or_else(|| run_req.get("base_strategy").cloned()).unwrap_or_else(|| json!({})),
+        "strategy": run_req
+            .get("strategy")
+            .cloned()
+            .or_else(|| run_req.get("base_strategy").cloned())
+            .unwrap_or_else(|| {
+                serde_json::to_value(ta_strategies::double_ma::StrategyConfig::default())
+                    .unwrap_or_else(|_| json!({}))
+            }),
+        "halftrend": run_req.get("halftrend").cloned().unwrap_or(Value::Null),
     });
     match normalize_strategy_kind(strategy_kind).as_str() {
         "Asr" => merge_json(
@@ -2288,6 +3062,752 @@ fn build_validation_request_value(
     }))
 }
 
+fn build_vcet_fixed_candidate_validation_request_value(
+    data_id: &str,
+    run_req: &Value,
+    dataset_meta: &Value,
+    validation_cfg: &ResearchCampaignValidationConfig,
+    plan: &CampaignVcetFixedCandidatePlan,
+) -> Value {
+    let dataset = dataset_meta.as_object();
+    let csv_path = dataset
+        .and_then(|row| row.get("csv_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let timeframe = dataset
+        .and_then(|row| row.get("timeframe"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let label = dataset
+        .and_then(|row| row.get("symbol").or_else(|| row.get("label")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    json!({
+        "data_id": data_id,
+        "backend": normalize_backend_value(run_req.get("backend"), "Vcet"),
+        "ma_source": run_req.get("ma_source").cloned().unwrap_or_else(|| Value::String("close".to_string())),
+        "fast_ma_params": run_req.get("fast_ma_params").cloned().unwrap_or(Value::Null),
+        "slow_ma_params": run_req.get("slow_ma_params").cloned().unwrap_or(Value::Null),
+        "candidates": plan.candidates,
+        "walk_forward": validation_cfg.walk_forward,
+        "reopt_walk_forward": validation_cfg.reopt_walk_forward,
+        "spa": validation_cfg.spa,
+        "perturb": validation_cfg.perturb,
+        "trade_bootstrap": validation_cfg.trade_bootstrap,
+        "monte_carlo": validation_cfg.monte_carlo,
+        "cross_ticker": validation_cfg.cross_ticker,
+        "cscv_pbo": cscv_pbo_to_value(validation_cfg.cscv_pbo.as_ref()),
+        "seed": validation_cfg.seed,
+        "max_candidates": plan.candidates.len(),
+        "min_psr": validation_cfg.min_psr,
+        "min_dsr": validation_cfg.min_dsr,
+        "min_cscv_oos_rank_frac": validation_cfg.min_cscv_oos_rank_frac,
+        "min_cscv_oos_metric": validation_cfg.min_cscv_oos_metric,
+        "max_pbo": validation_cfg.max_pbo,
+        "evaluation_mode": "evaluate_candidates",
+        "candidate_manifest_hash": plan.candidate_manifest_hash,
+        "candidate_search_id": plan.search_manifest.as_ref().map(|manifest| manifest.search_id.as_str()),
+        "candidate_search_schema_version": plan.search_manifest.as_ref().map(|manifest| manifest.schema_version),
+        "require_gpu_kernel": validation_cfg.require_gpu_kernel,
+        "validation_context": ValidationArtifactContext {
+            strategy_kind: "Vcet".to_string(),
+            csv_path,
+            timeframe,
+            label,
+            optimization_trials: None,
+            search_distribution: None,
+            data_realism: None,
+        }
+    })
+}
+
+fn vcet_fixed_candidate_run_result_value(plan: &CampaignVcetFixedCandidatePlan) -> Value {
+    json!({
+        "evaluation_mode": "evaluate_candidates",
+        "candidate_manifest_hash": plan.candidate_manifest_hash,
+        "candidate_search_id": plan.search_manifest.as_ref().map(|manifest| manifest.search_id.as_str()),
+        "candidate_search_schema_version": plan.search_manifest.as_ref().map(|manifest| manifest.schema_version),
+        "num_combos": plan.candidates.len(),
+    })
+}
+
+fn parse_vcet_fixed_candidate_dataset_result(
+    validation_res: &Value,
+    plan: &CampaignVcetFixedCandidatePlan,
+    require_gpu_kernel: bool,
+) -> Result<CampaignFixedCandidateDatasetResult, String> {
+    let backend_used = validation_res
+        .get("backend_used")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let backend_route = validation_res
+        .get("backend_route")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let requested_backend = validation_res
+        .get("requested_backend")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let fallback_reason = validation_res
+        .get("backend_fallback_reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let validation_residency_tier = validation_res
+        .get("validation_residency_tier")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let gpu_kernel_used = backend_used == "Gpu"
+        && backend_route.contains("GpuKernel")
+        && fallback_reason.is_none()
+        && validation_residency_tier == "gpu_kernel";
+    let exact_gpu_kernel_route =
+        requested_backend == "GpuKernel" && backend_route == "GpuKernel" && gpu_kernel_used;
+    if require_gpu_kernel && !exact_gpu_kernel_route {
+        return Err(format!(
+            "VCET fixed-candidate validation required the exact GpuKernel route but used requested_backend='{requested_backend}', backend_used='{backend_used}', backend_route='{backend_route}', validation_residency_tier='{validation_residency_tier}', fallback_reason='{}'",
+            fallback_reason.unwrap_or("none")
+        ));
+    }
+
+    if plan.candidate_identities.len() != plan.candidates.len() {
+        return Err("VCET fixed-candidate plan contained an invalid identity table".to_string());
+    }
+    let expected_by_identity: std::collections::BTreeMap<
+        CampaignVcetFixedCandidateIdentity,
+        &Value,
+    > = plan
+        .candidate_identities
+        .iter()
+        .copied()
+        .zip(plan.candidates.iter())
+        .collect();
+    if expected_by_identity.len() != plan.candidates.len() {
+        return Err(
+            "VCET fixed-candidate plan contained a duplicate effective strategy identity"
+                .to_string(),
+        );
+    }
+    let rows = validation_res
+        .get("candidates")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "VCET fixed-candidate validation result is missing candidates".to_string()
+        })?;
+    if rows.len() != plan.candidates.len() {
+        return Err(format!(
+            "VCET fixed-candidate validation returned {} candidates for a {}-candidate manifest",
+            rows.len(),
+            plan.candidates.len()
+        ));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut candidates = Vec::with_capacity(rows.len());
+    let mut strict_pareto_points: Vec<(f64, f64, f64, bool)> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let params = row.get("params").ok_or_else(|| {
+            "VCET fixed-candidate validation result contains a candidate without params".to_string()
+        })?;
+        let fast_len = params
+            .get("fast_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or_else(|| "VCET fixed-candidate result has an invalid fast_len".to_string())?;
+        let slow_len = params
+            .get("slow_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or_else(|| "VCET fixed-candidate result has an invalid slow_len".to_string())?;
+        let identity = vcet_fixed_candidate_identity(params).map_err(|error| {
+            format!(
+                "VCET fixed-candidate result has an invalid effective identity for ({fast_len}, {slow_len}): {error}"
+            )
+        })?;
+        let expected = expected_by_identity.get(&identity).ok_or_else(|| {
+            format!(
+                "VCET fixed-candidate validation returned unexpected effective strategy identity for ({fast_len}, {slow_len})"
+            )
+        })?;
+        if canonical_json(params) != canonical_json(expected) {
+            return Err(format!(
+                "VCET fixed-candidate validation returned parameters that do not match the manifest for ({fast_len}, {slow_len})"
+            ));
+        }
+        if !seen.insert(identity) {
+            return Err(format!(
+                "VCET fixed-candidate validation returned duplicate effective strategy identity for ({fast_len}, {slow_len})"
+            ));
+        }
+        let metrics = row.get("in_sample").ok_or_else(|| {
+            "VCET fixed-candidate validation result is missing in_sample metrics".to_string()
+        })?;
+        let typed_metrics: ta_strategies::double_ma::Metrics =
+            serde_json::from_value(metrics.clone()).map_err(|error| {
+                format!(
+                    "VCET fixed-candidate validation contains an invalid typed in_sample metric surface: {error}"
+                )
+            })?;
+        let metric = |name: &str| -> Result<f64, String> {
+            metrics.get(name).and_then(Value::as_f64).ok_or_else(|| {
+                format!("VCET fixed-candidate validation metric '{name}' is missing or invalid")
+            })
+        };
+        let trades = metrics
+            .get("trades")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                "VCET fixed-candidate validation metric 'trades' is missing or invalid".to_string()
+            })?;
+        let hard_gate_passed = row
+            .pointer("/validation_verdict/passed")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                "VCET fixed-candidate validation result is missing its hard-gate verdict"
+                    .to_string()
+            })?;
+        let robust_score = row
+            .get("robust_score")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                "VCET fixed-candidate validation result is missing a finite robust_score"
+                    .to_string()
+            })?;
+        let robust_pareto = row
+            .get("robust_pareto")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                "VCET fixed-candidate validation result is missing robust_pareto".to_string()
+            })?;
+        for field in ["psr", "dsr"] {
+            if row.get(field).is_some_and(|value| {
+                !value.is_null()
+                    && value
+                        .as_f64()
+                        .is_none_or(|number| !number.is_finite() || !(0.0..=1.0).contains(&number))
+            }) {
+                return Err(format!(
+                    "VCET fixed-candidate validation result contains an invalid {field} probability"
+                ));
+            }
+        }
+        if require_gpu_kernel {
+            for field in [
+                "iterative_in_sample",
+                "iterative_delta",
+                "walk_forward",
+                "perturb",
+                "trade_bootstrap",
+                "monte_carlo",
+                "cross_ticker",
+                "cross_ticker_pareto",
+                "cscv_pbo",
+            ] {
+                if row.get(field).is_some_and(|value| !value.is_null()) {
+                    return Err(format!(
+                        "strict GPU VCET fixed-candidate validation unexpectedly contains auxiliary field '{field}'"
+                    ));
+                }
+            }
+            let expected_robust_score =
+                ta_app_core::validation_pipeline::robust_score_from_metrics(&typed_metrics, None);
+            if (robust_score - expected_robust_score).abs() > 1.0e-12 {
+                return Err(
+                    "VCET fixed-candidate validation robust_score does not match its in_sample metrics"
+                        .to_string(),
+                );
+            }
+            strict_pareto_points.push((
+                expected_robust_score,
+                typed_metrics.ulcer_index,
+                typed_metrics.max_dd,
+                robust_pareto,
+            ));
+        }
+        candidates.push(CampaignFixedCandidateObservation {
+            identity,
+            pnl: metric("pnl")?,
+            sharpe: metric("sharpe")?,
+            max_drawdown: metric("max_dd")?,
+            trades,
+            hard_gate_passed,
+        });
+    }
+    if require_gpu_kernel {
+        for (index, (score, ulcer, dd, actual_pareto)) in
+            strict_pareto_points.iter().copied().enumerate()
+        {
+            let dominated = strict_pareto_points.iter().enumerate().any(
+                |(other_index, (other_score, other_ulcer, other_dd, _))| {
+                    other_index != index
+                        && *other_score >= score
+                        && *other_ulcer <= ulcer
+                        && *other_dd <= dd
+                        && (*other_score > score || *other_ulcer < ulcer || *other_dd < dd)
+                },
+            );
+            if actual_pareto == dominated {
+                return Err(
+                    "VCET fixed-candidate validation robust_pareto does not match its candidate metric frontier"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    candidates.sort_by_key(|candidate| candidate.identity);
+    Ok(CampaignFixedCandidateDatasetResult {
+        gpu_kernel_used,
+        candidates,
+    })
+}
+
+fn parse_vcet_fixed_candidate_artifact_result(
+    artifact: &Value,
+    plan: &CampaignVcetFixedCandidatePlan,
+    require_gpu_kernel: bool,
+) -> Result<CampaignFixedCandidateDatasetResult, String> {
+    let manifest_hash = artifact
+        .pointer("/validation/req/candidate_manifest_hash")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if manifest_hash != plan.candidate_manifest_hash {
+        return Err(
+            "existing VCET fixed-candidate artifact does not match the candidate manifest hash"
+                .to_string(),
+        );
+    }
+    let expected_search_id = plan
+        .search_manifest
+        .as_ref()
+        .map(|manifest| manifest.search_id.as_str());
+    let expected_search_schema = plan
+        .search_manifest
+        .as_ref()
+        .map(|manifest| u64::from(manifest.schema_version));
+    for (surface, id_pointer, schema_pointer) in [
+        (
+            "validation request",
+            "/validation/req/candidate_search_id",
+            "/validation/req/candidate_search_schema_version",
+        ),
+        (
+            "run result",
+            "/run/res/candidate_search_id",
+            "/run/res/candidate_search_schema_version",
+        ),
+    ] {
+        let actual_search_id = match artifact.pointer(id_pointer) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+            Some(_) => {
+                return Err(format!(
+                    "existing VCET fixed-candidate artifact {surface} has an invalid candidate_search_id type or value"
+                ))
+            }
+        };
+        let actual_search_schema = match artifact.pointer(schema_pointer) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_u64().ok_or_else(|| {
+                format!(
+                    "existing VCET fixed-candidate artifact {surface} has an invalid candidate_search_schema_version type or value"
+                )
+            })?),
+        };
+        if actual_search_id != expected_search_id || actual_search_schema != expected_search_schema
+        {
+            return Err(format!(
+                "existing VCET fixed-candidate artifact {surface} does not match the sealed candidate search lineage"
+            ));
+        }
+    }
+    let validation_res = artifact.pointer("/validation/res").ok_or_else(|| {
+        "existing VCET fixed-candidate artifact is missing validation.res".to_string()
+    })?;
+    parse_vcet_fixed_candidate_dataset_result(validation_res, plan, require_gpu_kernel)
+}
+
+pub(super) fn build_vcet_fixed_candidate_artifact_contract(
+    summary: &ResearchCampaignSummary,
+) -> Result<CampaignVcetFixedCandidateArtifactContract, String> {
+    let req: ResearchCampaignRequest = serde_json::from_value(summary.request.clone())
+        .map_err(|error| format!("campaign summary request is not replayable: {error}"))?;
+    let strategy_kind = resolve_campaign_strategy_kind(&req.strategy_kind)?;
+    let plan = build_vcet_fixed_candidate_plan(&req, &strategy_kind, req.execution_mode)?
+        .ok_or_else(|| {
+            "campaign summary does not define a VCET evaluate_candidates manifest".to_string()
+        })?;
+    Ok(CampaignVcetFixedCandidateArtifactContract {
+        plan,
+        require_gpu_kernel: req.validation_config.require_gpu_kernel,
+    })
+}
+
+fn vcet_temporal_identity_micros(label: &str, value: f64) -> Result<i64, String> {
+    if !value.is_finite() {
+        return Err(format!(
+            "campaign VCET {label} is non-finite and cannot be promoted into an exact temporal identity"
+        ));
+    }
+    let scaled = value * 1_000_000.0;
+    if scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
+        return Err(format!(
+            "campaign VCET {label} is outside the temporal identity range"
+        ));
+    }
+    let rounded = scaled.round();
+    let tolerance = 1.0e-7_f64.max(scaled.abs() * f64::EPSILON * 8.0);
+    if (scaled - rounded).abs() > tolerance {
+        return Err(format!(
+            "campaign VCET {label} must align to 0.000001 precision before temporal promotion"
+        ));
+    }
+    Ok(if rounded == 0.0 { 0 } else { rounded as i64 })
+}
+
+fn vcet_temporal_identity_from_campaign_identity(
+    identity: CampaignVcetFixedCandidateIdentity,
+) -> Result<ta_app_core::vcet_search::VcetCandidateIdentityInputs, String> {
+    Ok(ta_app_core::vcet_search::VcetCandidateIdentityInputs {
+        vidya_short_period: identity.vidya_short_period,
+        vidya_long_period: identity.vidya_long_period,
+        vidya_alpha_micros: vcet_temporal_identity_micros(
+            "vidya_alpha",
+            f64::from_bits(identity.vidya_alpha_bits),
+        )?,
+        ce_period: identity.ce_period,
+        ce_mult_micros: vcet_temporal_identity_micros(
+            "ce_mult",
+            f64::from_bits(identity.ce_mult_bits),
+        )?,
+        ce_use_close: identity.ce_use_close,
+        require_vidya_slope: identity.require_vidya_slope,
+        max_trade_bars: identity.max_trade_bars,
+    })
+}
+
+/// Replays the sealed terminal campaign request and promotes only its admitted
+/// VCET candidates into the exact integer identity contract used by temporal
+/// validation. No candidate is re-sampled or reconstructed from display text.
+pub(super) fn build_vcet_temporal_campaign_candidate_source(
+    summary: &ResearchCampaignSummary,
+) -> Result<VcetTemporalCampaignCandidateSourceV1, String> {
+    if !matches!(
+        summary.state.trim(),
+        "completed" | "completed_with_failures" | "completed_with_warnings"
+    ) || summary.counts.cancelled
+    {
+        return Err(
+            "VCET temporal promotion requires a terminal, non-cancelled campaign summary"
+                .to_string(),
+        );
+    }
+    let request: ResearchCampaignRequest = serde_json::from_value(summary.request.clone())
+        .map_err(|error| format!("campaign summary request is not replayable: {error}"))?;
+    if request.execution_mode != ResearchCampaignExecutionMode::EvaluateCandidates
+        || normalize_strategy_kind(&request.strategy_kind) != "Vcet"
+    {
+        return Err(
+            "VCET temporal promotion requires a VCET evaluate_candidates campaign".to_string(),
+        );
+    }
+    let manifest = summary
+        .manifest
+        .as_ref()
+        .ok_or_else(|| "VCET temporal promotion requires a v2 campaign manifest".to_string())?;
+    let aggregate = summary.fixed_candidate_evaluation.as_ref().ok_or_else(|| {
+        "VCET temporal promotion requires fixed-candidate admission evidence".to_string()
+    })?;
+    if aggregate.schema_version != 4 {
+        return Err(
+            "VCET temporal promotion requires sealed cross-universe admission schema v4"
+                .to_string(),
+        );
+    }
+    if aggregate.admitted_candidate_ids.is_empty()
+        || aggregate.admitted_candidate_count != aggregate.admitted_candidate_ids.len()
+    {
+        return Err(
+            "VCET temporal promotion requires at least one consistently admitted candidate"
+                .to_string(),
+        );
+    }
+    let admitted = aggregate
+        .admitted_candidate_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if admitted.len() != aggregate.admitted_candidate_ids.len() {
+        return Err(
+            "VCET temporal promotion rejected duplicate admitted candidate IDs".to_string(),
+        );
+    }
+
+    let strategy_kind = resolve_campaign_strategy_kind(&request.strategy_kind)?;
+    let plan = build_vcet_fixed_candidate_plan(
+        &request,
+        &strategy_kind,
+        ResearchCampaignExecutionMode::EvaluateCandidates,
+    )?
+    .ok_or_else(|| "campaign did not replay an evaluate_candidates plan".to_string())?;
+    if aggregate.candidate_manifest_hash != plan.candidate_manifest_hash
+        || manifest.candidate_manifest_hash.as_deref()
+            != Some(plan.candidate_manifest_hash.as_str())
+    {
+        return Err(
+            "VCET temporal promotion rejected mismatched campaign candidate lineage".to_string(),
+        );
+    }
+    let mut optimization_template = request.optimization_template.clone();
+    let optimization_object = optimization_template.as_object_mut().ok_or_else(|| {
+        "VCET temporal promotion requires an object optimization_template".to_string()
+    })?;
+    // Campaign evaluate-candidates templates historically use the UI-only
+    // `Exact` mode. Temporal promotion needs only the backend/source/strategy
+    // contract, so normalize the otherwise-unused optimizer mode before
+    // decoding the shared request shape.
+    optimization_object.insert("mode".to_string(), Value::String("Grid".to_string()));
+    let optimization_request: DoubleMaRequest =
+        serde_json::from_value(optimization_template).map_err(|error| {
+            format!(
+                "VCET temporal promotion could not replay optimization_template as DoubleMaRequest: {error}"
+            )
+        })?;
+
+    let mut admitted_identities = Vec::with_capacity(admitted.len());
+    let mut observed_admitted_ids = BTreeSet::new();
+    for (ordinal, campaign_identity) in plan.candidate_identities.iter().copied().enumerate() {
+        let evaluation_candidate_id = vcet_fixed_candidate_id(campaign_identity);
+        if !admitted.contains(&evaluation_candidate_id) {
+            continue;
+        }
+        let identity = if let Some(search_manifest) = plan.search_manifest.as_ref() {
+            let sampled = search_manifest.candidates.get(ordinal).ok_or_else(|| {
+                "VCET search manifest is shorter than its expanded campaign plan".to_string()
+            })?;
+            if sampled.evaluation_candidate_id.as_deref() != Some(evaluation_candidate_id.as_str())
+            {
+                return Err(
+                    "VCET temporal promotion rejected a search/evaluation candidate identity mismatch"
+                        .to_string(),
+                );
+            }
+            let reconstructed = vcet_temporal_identity_from_campaign_identity(campaign_identity)?;
+            if sampled.identity_inputs != reconstructed {
+                return Err(
+                    "VCET temporal promotion rejected drift between exact search identity and expanded campaign identity"
+                        .to_string(),
+                );
+            }
+            sampled.identity_inputs.clone()
+        } else {
+            vcet_temporal_identity_from_campaign_identity(campaign_identity)?
+        };
+        let campaign_candidate: ta_app_core::CompositeParams =
+            serde_json::from_value(plan.candidates.get(ordinal).cloned().ok_or_else(|| {
+                "VCET expanded candidate table is shorter than its identity table".to_string()
+            })?)
+            .map_err(|error| format!("decode admitted VCET campaign candidate: {error}"))?;
+        let temporal_candidate =
+            super::commands_vcet_temporal_execute::candidate_params_from_manifest(
+                &identity,
+                &optimization_request.strategy,
+            );
+        let campaign_strategy_bytes = serde_json::to_vec(&campaign_candidate.strategy)
+            .map_err(|error| format!("encode admitted VCET execution strategy: {error}"))?;
+        let temporal_strategy_bytes = serde_json::to_vec(&temporal_candidate.strategy)
+            .map_err(|error| format!("encode promoted VCET execution strategy: {error}"))?;
+        // campaign_identity above is computed from the fully resolved VCET
+        // periods/controls (including any legacy fast/slow mapping flags) and
+        // is the exact input sealed into the temporal manifest. The strict
+        // window executor additionally consumes StrategyConfig. MA types,
+        // HalfTrend, MACZ/OTT, signal mode, and raw mapping placeholders are
+        // intentionally canonicalized and are not VCET execution inputs.
+        if campaign_strategy_bytes != temporal_strategy_bytes
+            || campaign_candidate.asr.is_some()
+            || campaign_candidate.vcc.is_some()
+            || campaign_candidate.vemr.is_some()
+            || campaign_candidate.rocb.is_some()
+            || campaign_candidate.mkcs.is_some()
+            || campaign_candidate.kqsr.is_some()
+            || campaign_candidate.carm.is_some()
+            || campaign_candidate.kvdf.is_some()
+            || campaign_candidate.cdmc.is_some()
+        {
+            return Err(format!(
+                "VCET temporal promotion rejected admitted candidate '{evaluation_candidate_id}' because its standalone family or execution strategy differs from the temporal executor contract"
+            ));
+        }
+        observed_admitted_ids.insert(evaluation_candidate_id);
+        admitted_identities.push(identity);
+    }
+    if observed_admitted_ids != admitted {
+        return Err(
+            "VCET temporal promotion could not resolve every admitted campaign candidate"
+                .to_string(),
+        );
+    }
+
+    let source_campaign_manifest_hash = manifest.manifest_hash.clone();
+    let source_candidate_manifest_hash = plan.candidate_manifest_hash.clone();
+    let source_search_id = plan
+        .search_manifest
+        .as_ref()
+        .map(|search| search.search_id.clone());
+    let sealed_candidate_manifest =
+        super::commands_vcet_temporal::seal_vcet_temporal_candidate_manifest(
+            source_campaign_manifest_hash,
+            source_candidate_manifest_hash,
+            source_search_id,
+            admitted_identities,
+        )?;
+    Ok(VcetTemporalCampaignCandidateSourceV1 {
+        cross_universe_admission: request.validation_config.cross_universe_admission,
+        request,
+        optimization_request,
+        sealed_candidate_manifest,
+    })
+}
+
+pub(super) fn validate_vcet_fixed_candidate_artifact_contract(
+    artifact: &Value,
+    contract: &CampaignVcetFixedCandidateArtifactContract,
+) -> Result<(), String> {
+    parse_vcet_fixed_candidate_artifact_result(
+        artifact,
+        &contract.plan,
+        contract.require_gpu_kernel,
+    )
+    .map(|_| ())
+}
+
+pub(super) fn validate_vcet_fixed_candidate_artifact_request_contract(
+    artifact: &Value,
+    contract: &CampaignVcetFixedCandidateArtifactContract,
+) -> Result<(), String> {
+    let validation_req = artifact.pointer("/validation/req").ok_or_else(|| {
+        "existing VCET fixed-candidate artifact is missing validation.req".to_string()
+    })?;
+    let run_res = artifact
+        .pointer("/run/res")
+        .ok_or_else(|| "existing VCET fixed-candidate artifact is missing run.res".to_string())?;
+    let expected_candidates = Value::Array(contract.plan.candidates.clone());
+    if validation_req
+        .get("evaluation_mode")
+        .and_then(Value::as_str)
+        != Some("evaluate_candidates")
+        || run_res.get("evaluation_mode").and_then(Value::as_str) != Some("evaluate_candidates")
+        || validation_req
+            .get("require_gpu_kernel")
+            .and_then(Value::as_bool)
+            != Some(contract.require_gpu_kernel)
+        || validation_req.get("candidates") != Some(&expected_candidates)
+        || validation_req.get("max_candidates").and_then(Value::as_u64)
+            != u64::try_from(contract.plan.candidates.len()).ok()
+        || run_res
+            .get("candidate_manifest_hash")
+            .and_then(Value::as_str)
+            != Some(contract.plan.candidate_manifest_hash.as_str())
+        || run_res.get("num_combos").and_then(Value::as_u64)
+            != u64::try_from(contract.plan.candidates.len()).ok()
+    {
+        return Err(
+            "existing VCET fixed-candidate artifact request/result envelope differs from the sealed evaluate-candidates contract"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn validate_vcet_fixed_candidate_training_evidence<'a>(
+    summary: &ResearchCampaignSummary,
+    training_artifacts: impl IntoIterator<Item = &'a Value>,
+) -> Result<(), String> {
+    let req: ResearchCampaignRequest = serde_json::from_value(summary.request.clone())
+        .map_err(|error| format!("campaign summary request is not replayable: {error}"))?;
+    let strategy_kind = resolve_campaign_strategy_kind(&req.strategy_kind)?;
+    let plan = build_vcet_fixed_candidate_plan(&req, &strategy_kind, req.execution_mode)?
+        .ok_or_else(|| {
+            "campaign summary does not define a VCET evaluate_candidates manifest".to_string()
+        })?;
+    let aggregate = summary.fixed_candidate_evaluation.as_ref().ok_or_else(|| {
+        "campaign summary is missing its VCET fixed-candidate aggregate".to_string()
+    })?;
+    if aggregate.schema_version != 4 {
+        return Err(
+            "campaign-bound Meta requires sealed VCET fixed-candidate admission schema v4"
+                .to_string(),
+        );
+    }
+
+    let parsed_results: Vec<CampaignFixedCandidateDatasetResult> = training_artifacts
+        .into_iter()
+        .map(|artifact| {
+            parse_vcet_fixed_candidate_artifact_result(
+                artifact,
+                &plan,
+                req.validation_config.require_gpu_kernel,
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let parsed_refs: Vec<&CampaignFixedCandidateDatasetResult> = parsed_results.iter().collect();
+    let observed = build_fixed_candidate_cohort_aggregate_from_results(
+        &plan,
+        aggregate.training.requested_datasets,
+        &parsed_refs,
+    )
+    .ok_or_else(|| "failed to aggregate exact VCET training artifacts".to_string())?;
+    if serde_json::to_value(&observed).ok() != serde_json::to_value(&aggregate.training).ok() {
+        return Err(
+            "campaign-bound Meta rejected the summary because its VCET training aggregate does not match the exact referenced artifacts"
+                .to_string(),
+        );
+    }
+
+    let policy = &req.validation_config.cross_universe_admission;
+    let admitted_candidate_ids: Vec<String> = observed
+        .candidates
+        .iter()
+        .filter(|row| fixed_candidate_meets_cross_universe_admission(row, policy))
+        .map(|row| row.candidate_id.clone())
+        .collect();
+    let selected_candidate_id = select_fixed_candidate_id(&observed.candidates, policy);
+    if aggregate.admitted_candidate_ids != admitted_candidate_ids
+        || aggregate.admitted_candidate_count != admitted_candidate_ids.len()
+        || aggregate.selected_candidate_id != selected_candidate_id
+    {
+        return Err(
+            "campaign-bound Meta rejected inconsistent VCET admission evidence".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn evaluate_vcet_fixed_candidate_artifact_reuse(
+    existing_path: &str,
+    loaded_artifact: Result<Value, String>,
+    plan: &CampaignVcetFixedCandidatePlan,
+    require_gpu_kernel: bool,
+) -> CampaignFixedCandidateArtifactReuse {
+    match loaded_artifact.and_then(|artifact| {
+        parse_vcet_fixed_candidate_artifact_result(&artifact, plan, require_gpu_kernel)
+    }) {
+        Ok(result) => CampaignFixedCandidateArtifactReuse::Reuse(result),
+        Err(error) => CampaignFixedCandidateArtifactReuse::Rerun {
+            warning: format!(
+                "Rejected incompatible fixed-candidate validation artifact '{existing_path}' and reran the dataset: {error}"
+            ),
+        },
+    }
+}
+
 fn cscv_pbo_to_value(value: Option<&CscvPboConfig>) -> Value {
     match value {
         Some(cfg) => json!({
@@ -2317,6 +3837,10 @@ fn validation_config_summary_value(cfg: &ResearchCampaignValidationConfig) -> Va
         "min_cscv_oos_rank_frac": cfg.min_cscv_oos_rank_frac,
         "min_cscv_oos_metric": cfg.min_cscv_oos_metric,
         "max_pbo": cfg.max_pbo,
+        "fixed_candidates": cfg.fixed_candidates,
+        "vcet_search": cfg.vcet_search,
+        "require_gpu_kernel": cfg.require_gpu_kernel,
+        "cross_universe_admission": cfg.cross_universe_admission,
     })
 }
 
@@ -2356,7 +3880,7 @@ fn build_campaign_manifest(
         .map(|(index, dataset)| {
             let csv_path = normalize_text(&dataset.csv_path);
             let timeframe = dataset_timeframe_hint(dataset, timeframe);
-            json!({
+            let mut row = json!({
                 "index": index,
                 "csv_path": csv_path,
                 "csv_path_key": normalize_path_key(&csv_path),
@@ -2366,7 +3890,18 @@ fn build_campaign_manifest(
                 "source_size_bytes": dataset.source_size_bytes,
                 "source_mtime_utc_ms": dataset.source_mtime_utc_ms,
                 "source_content_fingerprint": dataset.source_content_fingerprint,
-            })
+            });
+            let has_content_fingerprint = dataset
+                .source_content_fingerprint
+                .as_deref()
+                .map(normalize_text)
+                .is_some_and(|value| !value.is_empty());
+            if !has_content_fingerprint {
+                if let Some(change_marker) = dataset.source_change_marker {
+                    row["source_change_marker"] = Value::from(change_marker);
+                }
+            }
+            row
         })
         .collect();
     let strict_identity_required = req.datasets.iter().all(|dataset| {
@@ -2384,6 +3919,11 @@ fn build_campaign_manifest(
     let optimization_template_hash = sha256_json_hash(&optimization_template_manifest_value(req));
     let validation_config_hash =
         sha256_json_hash(&validation_config_summary_value(&req.validation_config));
+    let candidate_manifest_hash =
+        build_vcet_fixed_candidate_plan(req, strategy_kind, execution_mode)
+            .ok()
+            .flatten()
+            .map(|plan| plan.candidate_manifest_hash);
     let meta_request_hash = req
         .meta_request
         .as_ref()
@@ -2409,6 +3949,7 @@ fn build_campaign_manifest(
         dataset_universe_hash,
         optimization_template_hash,
         validation_config_hash,
+        candidate_manifest_hash,
         meta_request_hash,
         stage5_request_hash,
         holdout_split_hash,
@@ -2425,6 +3966,7 @@ fn build_campaign_manifest(
         "dataset_universe_hash": &manifest.dataset_universe_hash,
         "optimization_template_hash": &manifest.optimization_template_hash,
         "validation_config_hash": &manifest.validation_config_hash,
+        "candidate_manifest_hash": &manifest.candidate_manifest_hash,
         "meta_request_hash": &manifest.meta_request_hash,
         "stage5_request_hash": &manifest.stage5_request_hash,
         "holdout_split_hash": &manifest.holdout_split_hash,
@@ -2632,6 +4174,7 @@ fn build_request_summary_value(
                 "timeframe": dataset.timeframe,
                 "source_size_bytes": dataset.source_size_bytes,
                 "source_mtime_utc_ms": dataset.source_mtime_utc_ms,
+                "source_change_marker": dataset.source_change_marker,
                 "source_content_fingerprint": dataset.source_content_fingerprint,
             })
         }).collect::<Vec<_>>(),
@@ -2647,6 +4190,282 @@ fn build_request_summary_value(
         "meta_request": req.meta_request,
         "stage5_request": req.stage5_request,
         "preload_policy": req.preload_policy,
+    })
+}
+
+fn finite_percentile(mut values: Vec<f64>, percentile: f64) -> Option<f64> {
+    values.retain(|value| value.is_finite());
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    if values.len() == 1 {
+        return values.first().copied();
+    }
+    let position = percentile.clamp(0.0, 1.0) * (values.len() - 1) as f64;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    if lower == upper {
+        return values.get(lower).copied();
+    }
+    let weight = position - lower as f64;
+    Some(values[lower] * (1.0 - weight) + values[upper] * weight)
+}
+
+/// Computes a percentile against the complete requested cohort. Missing or
+/// failed observations occupy the lowest ranks, below every finite value. If
+/// the percentile position itself lands inside that missing mass, the result is
+/// unavailable so admission fails closed. At the first finite rank and above,
+/// the usual linearly interpolated percentile is evaluated after subtracting
+/// the missing-rank offset.
+fn finite_percentile_over_requested(
+    mut values: Vec<f64>,
+    requested_datasets: usize,
+    percentile: f64,
+) -> Option<f64> {
+    values.retain(|value| value.is_finite());
+    if requested_datasets == 0 || values.is_empty() || values.len() > requested_datasets {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let missing = requested_datasets.saturating_sub(values.len());
+    let global_position = percentile.clamp(0.0, 1.0) * (requested_datasets - 1) as f64;
+    if global_position < missing as f64 {
+        return None;
+    }
+    let observed_position = global_position - missing as f64;
+    let lower = observed_position.floor() as usize;
+    let upper = observed_position.ceil() as usize;
+    let lower_value = *values.get(lower)?;
+    let upper_value = *values.get(upper)?;
+    if lower == upper {
+        return Some(lower_value);
+    }
+    let weight = observed_position - lower as f64;
+    Some(lower_value * (1.0 - weight) + upper_value * weight)
+}
+
+fn build_fixed_candidate_cohort_aggregate<'a>(
+    plan: &CampaignVcetFixedCandidatePlan,
+    cohort_items: impl Iterator<Item = &'a ResearchCampaignItemSummary>,
+) -> Option<ResearchCampaignFixedCandidateCohortAggregate> {
+    let cohort_items: Vec<&ResearchCampaignItemSummary> = cohort_items.collect();
+    let requested_datasets = cohort_items.len();
+    let dataset_results: Vec<&CampaignFixedCandidateDatasetResult> = cohort_items
+        .iter()
+        .filter_map(|item| item.fixed_candidate_result.as_ref())
+        .collect();
+    build_fixed_candidate_cohort_aggregate_from_results(plan, requested_datasets, &dataset_results)
+}
+
+fn build_fixed_candidate_cohort_aggregate_from_results(
+    plan: &CampaignVcetFixedCandidatePlan,
+    requested_datasets: usize,
+    dataset_results: &[&CampaignFixedCandidateDatasetResult],
+) -> Option<ResearchCampaignFixedCandidateCohortAggregate> {
+    if plan.candidate_identities.len() != plan.candidates.len() {
+        return None;
+    }
+    let evaluated_datasets = dataset_results.len();
+    let gpu_kernel_datasets = dataset_results
+        .iter()
+        .filter(|result| result.gpu_kernel_used)
+        .count();
+    let requested_denominator = requested_datasets as f64;
+
+    let mut candidates = Vec::with_capacity(plan.candidates.len());
+    for (candidate_index, (candidate, identity)) in plan
+        .candidates
+        .iter()
+        .zip(plan.candidate_identities.iter().copied())
+        .enumerate()
+    {
+        let fast_len = candidate
+            .get("fast_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())?;
+        let slow_len = candidate
+            .get("slow_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())?;
+        let observations: Vec<&CampaignFixedCandidateObservation> = dataset_results
+            .iter()
+            .filter_map(|result| {
+                result
+                    .candidates
+                    .iter()
+                    .find(|row| row.identity == identity)
+            })
+            .collect();
+        let expected_search_evaluation_id = plan.search_manifest.as_ref().and_then(|manifest| {
+            manifest
+                .candidates
+                .get(candidate_index)
+                .and_then(|sampled| sampled.evaluation_candidate_id.as_deref())
+        });
+        if expected_search_evaluation_id
+            .is_some_and(|candidate_id| candidate_id != vcet_fixed_candidate_id(identity))
+        {
+            return None;
+        }
+        let evaluated = observations.len();
+        let profitable = observations.iter().filter(|row| row.pnl > 0.0).count();
+        let passed = observations
+            .iter()
+            .filter(|row| row.hard_gate_passed)
+            .count();
+        let pnl: Vec<f64> = observations.iter().map(|row| row.pnl).collect();
+        let sharpe: Vec<f64> = observations.iter().map(|row| row.sharpe).collect();
+        let max_drawdown: Vec<f64> = observations.iter().map(|row| row.max_drawdown).collect();
+        let trades: Vec<f64> = observations
+            .iter()
+            .map(|row| f64::from(row.trades))
+            .collect();
+        candidates.push(ResearchCampaignFixedCandidateAggregate {
+            candidate_id: vcet_fixed_candidate_id(identity),
+            fast_len,
+            slow_len,
+            requested_datasets,
+            evaluated_datasets: evaluated,
+            missing_or_failed_datasets: requested_datasets.saturating_sub(evaluated),
+            profitable_datasets: profitable,
+            hard_gate_pass_datasets: passed,
+            profitable_share_requested: if requested_datasets == 0 {
+                0.0
+            } else {
+                profitable as f64 / requested_denominator
+            },
+            hard_gate_pass_share_requested: if requested_datasets == 0 {
+                0.0
+            } else {
+                passed as f64 / requested_denominator
+            },
+            pnl_p10: finite_percentile_over_requested(pnl.clone(), requested_datasets, 0.10),
+            pnl_median: finite_percentile(pnl, 0.50),
+            sharpe_p10: finite_percentile_over_requested(sharpe.clone(), requested_datasets, 0.10),
+            sharpe_median: finite_percentile(sharpe, 0.50),
+            max_drawdown_p90: finite_percentile(max_drawdown, 0.90),
+            trades_median: finite_percentile(trades, 0.50),
+        });
+    }
+
+    Some(ResearchCampaignFixedCandidateCohortAggregate {
+        requested_datasets,
+        evaluated_datasets,
+        gpu_kernel_datasets,
+        missing_or_failed_datasets: requested_datasets.saturating_sub(evaluated_datasets),
+        candidates,
+    })
+}
+
+fn compare_fixed_candidate_rank(
+    left: &ResearchCampaignFixedCandidateAggregate,
+    right: &ResearchCampaignFixedCandidateAggregate,
+) -> std::cmp::Ordering {
+    left.profitable_share_requested
+        .total_cmp(&right.profitable_share_requested)
+        .then_with(|| {
+            left.hard_gate_pass_share_requested
+                .total_cmp(&right.hard_gate_pass_share_requested)
+        })
+        .then_with(|| {
+            left.sharpe_p10
+                .unwrap_or(f64::NEG_INFINITY)
+                .total_cmp(&right.sharpe_p10.unwrap_or(f64::NEG_INFINITY))
+        })
+        .then_with(|| {
+            left.pnl_p10
+                .unwrap_or(f64::NEG_INFINITY)
+                .total_cmp(&right.pnl_p10.unwrap_or(f64::NEG_INFINITY))
+        })
+        .then_with(|| right.candidate_id.cmp(&left.candidate_id))
+}
+
+fn fixed_candidate_meets_cross_universe_admission(
+    row: &ResearchCampaignFixedCandidateAggregate,
+    policy: &ResearchCampaignCrossUniverseAdmissionPolicy,
+) -> bool {
+    row.evaluated_datasets > 0
+        && row.profitable_share_requested >= policy.min_profitable_share_requested
+        && row.hard_gate_pass_share_requested >= policy.min_hard_gate_pass_share_requested
+        && row.pnl_p10.is_some_and(|value| value >= policy.min_pnl_p10)
+        && row
+            .sharpe_p10
+            .is_some_and(|value| value >= policy.min_sharpe_p10)
+}
+
+fn select_fixed_candidate_id_legacy(
+    candidates: &[ResearchCampaignFixedCandidateAggregate],
+) -> Option<String> {
+    candidates
+        .iter()
+        .filter(|row| row.evaluated_datasets > 0)
+        .max_by(|left, right| compare_fixed_candidate_rank(left, right))
+        .map(|row| row.candidate_id.clone())
+}
+
+fn select_fixed_candidate_id(
+    candidates: &[ResearchCampaignFixedCandidateAggregate],
+    policy: &ResearchCampaignCrossUniverseAdmissionPolicy,
+) -> Option<String> {
+    candidates
+        .iter()
+        .filter(|row| fixed_candidate_meets_cross_universe_admission(row, policy))
+        .max_by(|left, right| compare_fixed_candidate_rank(left, right))
+        .map(|row| row.candidate_id.clone())
+}
+
+fn build_fixed_candidate_evaluation_summary(
+    req: &ResearchCampaignRequest,
+    execution_mode: ResearchCampaignExecutionMode,
+    items: &[ResearchCampaignItemSummary],
+) -> Option<ResearchCampaignFixedCandidateEvaluationSummary> {
+    let plan = build_vcet_fixed_candidate_plan(req, &req.strategy_kind, execution_mode)
+        .ok()
+        .flatten()?;
+    let all_universe = build_fixed_candidate_cohort_aggregate(&plan, items.iter())?;
+    let training = build_fixed_candidate_cohort_aggregate(
+        &plan,
+        items.iter().filter(|item| !item.is_holdout),
+    )?;
+    let holdout =
+        build_fixed_candidate_cohort_aggregate(&plan, items.iter().filter(|item| item.is_holdout))?;
+    let candidates = training.candidates.clone();
+    let cross_universe_admission = req.validation_config.cross_universe_admission;
+    let admitted_candidate_ids: Vec<String> = candidates
+        .iter()
+        .filter(|row| {
+            fixed_candidate_meets_cross_universe_admission(row, &cross_universe_admission)
+        })
+        .map(|row| row.candidate_id.clone())
+        .collect();
+    let admitted_candidate_count = admitted_candidate_ids.len();
+    let selected_candidate_id = select_fixed_candidate_id(&candidates, &cross_universe_admission);
+    let selection_status = if selected_candidate_id.is_some() {
+        "selected"
+    } else {
+        "no_candidate_met_admission"
+    }
+    .to_string();
+    Some(ResearchCampaignFixedCandidateEvaluationSummary {
+        schema_version: 4,
+        candidate_manifest_hash: plan.candidate_manifest_hash.clone(),
+        search_manifest: plan.search_manifest.clone(),
+        require_gpu_kernel: req.validation_config.require_gpu_kernel,
+        requested_datasets: all_universe.requested_datasets,
+        evaluated_datasets: all_universe.evaluated_datasets,
+        gpu_kernel_datasets: all_universe.gpu_kernel_datasets,
+        missing_or_failed_datasets: all_universe.missing_or_failed_datasets,
+        candidates,
+        selection_cohort: "training".to_string(),
+        selected_candidate_id,
+        cross_universe_admission,
+        admitted_candidate_count,
+        admitted_candidate_ids,
+        selection_status,
+        all_universe,
+        training,
+        holdout,
     })
 }
 
@@ -2674,11 +4493,16 @@ fn build_campaign_summary(
         holdout_tag.as_deref(),
         execution_mode,
     );
+    let cohort_id = manifest.manifest_hash.clone();
     ResearchCampaignSummary {
         version: 2,
         kind: "vectorgrid_campaign_summary".to_string(),
         ts: ts.to_string(),
         state: state.to_string(),
+        retention: Some(ResearchCampaignRetentionSummary {
+            class: "campaign_summary".to_string(),
+            cohort_id,
+        }),
         manifest: Some(manifest),
         evidence_state: Some(campaign_summary_evidence_state(counts, items)),
         resume_state: Some(campaign_summary_resume_state(counts, items)),
@@ -2689,7 +4513,24 @@ fn build_campaign_summary(
         holdout_pct: req.holdout_pct.min(50),
         request: build_request_summary_value(req, tags, execution_mode),
         counts: counts.clone(),
-        items: items.to_vec(),
+        // Per-dataset candidate metrics are needed transiently to build the
+        // aggregate above, but are intentionally not serialized on each item.
+        // Clear them before cloning the checkpoint/response projection so a
+        // large campaign does not retain a second hidden copy of the complete
+        // candidate matrix for every summary checkpoint.
+        items: items
+            .iter()
+            .cloned()
+            .map(|mut item| {
+                item.fixed_candidate_result = None;
+                item
+            })
+            .collect(),
+        fixed_candidate_evaluation: build_fixed_candidate_evaluation_summary(
+            req,
+            execution_mode,
+            items,
+        ),
         meta_json_path: meta_response.map(|value| value.meta_json_path.clone()),
         stage5_json_path: stage5_response.map(|value| value.stage5_json_path.clone()),
         warnings: warnings.to_vec(),
@@ -2702,6 +4543,75 @@ fn is_campaign_summary_kind(kind: &str) -> bool {
         kind.trim(),
         "vectorgrid_campaign_summary" | "vectorbt_campaign_summary"
     )
+}
+
+fn fixed_candidate_rows_are_consistent(
+    rows: &[ResearchCampaignFixedCandidateAggregate],
+    plan: &CampaignVcetFixedCandidatePlan,
+    requested_datasets: usize,
+) -> bool {
+    if rows.len() != plan.candidates.len()
+        || plan.candidate_identities.len() != plan.candidates.len()
+    {
+        return false;
+    }
+    rows.iter().enumerate().all(|(index, row)| {
+        let expected = &plan.candidates[index];
+        let identity = plan.candidate_identities[index];
+        let Some(fast_len) = expected
+            .get("fast_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+        else {
+            return false;
+        };
+        let Some(slow_len) = expected
+            .get("slow_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+        else {
+            return false;
+        };
+        let denominator = requested_datasets as f64;
+        let profitable_share = if requested_datasets == 0 {
+            0.0
+        } else {
+            row.profitable_datasets as f64 / denominator
+        };
+        let hard_gate_share = if requested_datasets == 0 {
+            0.0
+        } else {
+            row.hard_gate_pass_datasets as f64 / denominator
+        };
+        row.fast_len == fast_len
+            && row.slow_len == slow_len
+            && row.candidate_id == vcet_fixed_candidate_id(identity)
+            && row.requested_datasets == requested_datasets
+            && row.evaluated_datasets <= row.requested_datasets
+            && row.missing_or_failed_datasets
+                == row
+                    .requested_datasets
+                    .saturating_sub(row.evaluated_datasets)
+            && row.profitable_datasets <= row.evaluated_datasets
+            && row.hard_gate_pass_datasets <= row.evaluated_datasets
+            && (row.profitable_share_requested - profitable_share).abs() <= 1e-12
+            && (row.hard_gate_pass_share_requested - hard_gate_share).abs() <= 1e-12
+    })
+}
+
+fn fixed_candidate_cohort_is_consistent(
+    cohort: &ResearchCampaignFixedCandidateCohortAggregate,
+    plan: &CampaignVcetFixedCandidatePlan,
+    expected_requested_datasets: usize,
+) -> bool {
+    cohort.requested_datasets == expected_requested_datasets
+        && cohort.evaluated_datasets <= cohort.requested_datasets
+        && cohort.gpu_kernel_datasets <= cohort.evaluated_datasets
+        && cohort.missing_or_failed_datasets
+            == cohort
+                .requested_datasets
+                .saturating_sub(cohort.evaluated_datasets)
+        && fixed_candidate_rows_are_consistent(&cohort.candidates, plan, cohort.requested_datasets)
 }
 
 pub(super) fn validate_campaign_summary_artifact_value(value: &Value) -> Result<(), String> {
@@ -2731,11 +4641,43 @@ pub(super) fn validate_campaign_summary_artifact_value(value: &Value) -> Result<
         .manifest
         .as_ref()
         .ok_or_else(|| "campaign summary v2 is missing its integrity manifest".to_string())?;
+    if summary.retention.as_ref().is_some_and(|retention| {
+        retention.class != "campaign_summary" || retention.cohort_id != manifest.manifest_hash
+    }) {
+        return Err(
+            "campaign summary retention cohort does not match its integrity manifest".to_string(),
+        );
+    }
+    for item in &summary.items {
+        let output_complete = item.status.trim().eq_ignore_ascii_case("ok")
+            || item.evidence_state == Some(CampaignEvidenceState::Complete)
+            || item.resume_state == Some(CampaignResumeState::Complete);
+        if output_complete
+            && item
+                .artifact_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .is_none()
+        {
+            return Err(format!(
+                "campaign summary item '{}' is marked complete but has no run-artifact path",
+                item.label
+            ));
+        }
+    }
     let req: ResearchCampaignRequest = serde_json::from_value(summary.request.clone())
         .map_err(|error| format!("campaign summary request is not resumable: {error}"))?;
+    let request_declares_cross_universe_admission = summary
+        .request
+        .pointer("/validation_config/cross_universe_admission")
+        .is_some();
 
     let strategy_kind = resolve_campaign_strategy_kind(&req.strategy_kind)
         .map_err(|error| format!("campaign summary request is not resumable: {error}"))?;
+    let fixed_candidate_plan =
+        build_vcet_fixed_candidate_plan(&req, &strategy_kind, req.execution_mode)
+            .map_err(|error| format!("campaign summary request is not resumable: {error}"))?;
     if normalize_strategy_kind(&summary.strategy_kind) != strategy_kind {
         return Err(
             "campaign summary strategy does not match its resumable request; restart the campaign"
@@ -2784,6 +4726,150 @@ pub(super) fn validate_campaign_summary_artifact_value(value: &Value) -> Result<
             "campaign summary integrity manifest does not match its resumable request; the summary is corrupt or was modified"
                 .to_string(),
         );
+    }
+
+    match (
+        fixed_candidate_plan.as_ref(),
+        summary.fixed_candidate_evaluation.as_ref(),
+    ) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            return Err(
+                "campaign summary contains fixed-candidate results outside evaluate_candidates mode"
+                    .to_string(),
+            );
+        }
+        (Some(_), None) => {
+            return Err(
+                "evaluate_candidates campaign summary is missing its fixed-candidate aggregate"
+                    .to_string(),
+            );
+        }
+        (Some(plan), Some(aggregate)) => {
+            let supported_aggregate_schema = if request_declares_cross_universe_admission {
+                aggregate.schema_version == 4
+            } else {
+                matches!(aggregate.schema_version, 1 | 2)
+            };
+            if !supported_aggregate_schema
+                || aggregate.candidate_manifest_hash != plan.candidate_manifest_hash
+                || aggregate.search_manifest != plan.search_manifest
+                || manifest.candidate_manifest_hash.as_deref()
+                    != Some(plan.candidate_manifest_hash.as_str())
+                || aggregate.require_gpu_kernel != req.validation_config.require_gpu_kernel
+                || aggregate.requested_datasets != req.datasets.len()
+                || aggregate.evaluated_datasets > aggregate.requested_datasets
+                || aggregate.gpu_kernel_datasets > aggregate.evaluated_datasets
+                || aggregate.missing_or_failed_datasets
+                    != aggregate
+                        .requested_datasets
+                        .saturating_sub(aggregate.evaluated_datasets)
+            {
+                return Err(
+                    "campaign fixed-candidate aggregate does not match its resumable manifest"
+                        .to_string(),
+                );
+            }
+            let cohorts_consistent = if aggregate.schema_version == 1 {
+                fixed_candidate_rows_are_consistent(
+                    &aggregate.candidates,
+                    plan,
+                    aggregate.requested_datasets,
+                )
+            } else {
+                let training_requested =
+                    summary.items.iter().filter(|item| !item.is_holdout).count();
+                let holdout_requested = summary.items.iter().filter(|item| item.is_holdout).count();
+                summary.retention.is_some()
+                    && aggregate.selection_cohort == "training"
+                    && aggregate.requested_datasets == aggregate.all_universe.requested_datasets
+                    && aggregate.evaluated_datasets == aggregate.all_universe.evaluated_datasets
+                    && aggregate.gpu_kernel_datasets == aggregate.all_universe.gpu_kernel_datasets
+                    && aggregate.missing_or_failed_datasets
+                        == aggregate.all_universe.missing_or_failed_datasets
+                    && serde_json::to_value(&aggregate.candidates).ok()
+                        == serde_json::to_value(&aggregate.training.candidates).ok()
+                    && if aggregate.schema_version == 2 {
+                        aggregate.selected_candidate_id
+                            == select_fixed_candidate_id_legacy(&aggregate.training.candidates)
+                    } else {
+                        let policy = &req.validation_config.cross_universe_admission;
+                        let admitted_candidate_count = aggregate
+                            .training
+                            .candidates
+                            .iter()
+                            .filter(|row| {
+                                fixed_candidate_meets_cross_universe_admission(row, policy)
+                            })
+                            .count();
+                        let admitted_candidate_ids: Vec<String> = aggregate
+                            .training
+                            .candidates
+                            .iter()
+                            .filter(|row| {
+                                fixed_candidate_meets_cross_universe_admission(row, policy)
+                            })
+                            .map(|row| row.candidate_id.clone())
+                            .collect();
+                        let selected_candidate_id =
+                            select_fixed_candidate_id(&aggregate.training.candidates, policy);
+                        aggregate.cross_universe_admission == *policy
+                            && aggregate.admitted_candidate_count == admitted_candidate_count
+                            && aggregate.admitted_candidate_ids == admitted_candidate_ids
+                            && aggregate.selected_candidate_id == selected_candidate_id
+                            && aggregate.selection_status
+                                == if selected_candidate_id.is_some() {
+                                    "selected"
+                                } else {
+                                    "no_candidate_met_admission"
+                                }
+                    }
+                    && fixed_candidate_cohort_is_consistent(
+                        &aggregate.all_universe,
+                        plan,
+                        req.datasets.len(),
+                    )
+                    && fixed_candidate_cohort_is_consistent(
+                        &aggregate.training,
+                        plan,
+                        training_requested,
+                    )
+                    && fixed_candidate_cohort_is_consistent(
+                        &aggregate.holdout,
+                        plan,
+                        holdout_requested,
+                    )
+            };
+            if !cohorts_consistent {
+                return Err(
+                    "campaign fixed-candidate aggregate contains inconsistent candidate counts or cohort separation"
+                        .to_string(),
+                );
+            }
+            let terminal = matches!(
+                summary.state.trim(),
+                "completed" | "completed_with_failures" | "completed_with_warnings"
+            );
+            if aggregate.schema_version >= 4 && terminal {
+                for item in &summary.items {
+                    if item.artifact_path.is_some()
+                        && item
+                            .artifact_sha256
+                            .as_deref()
+                            .map(str::trim)
+                            .is_none_or(|sha256| {
+                                sha256.len() != 64
+                                    || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                            })
+                    {
+                        return Err(format!(
+                            "terminal VCET campaign summary item '{}' is missing its sealed raw run-artifact SHA-256",
+                            item.label
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     if summary.counts.total != req.datasets.len() || summary.items.len() != req.datasets.len() {
@@ -3076,11 +5162,37 @@ fn save_campaign_summary_blocking<R: tauri::Runtime>(
     } else {
         run_artifacts::publish_new_artifact_file_atomically(&path, &bytes)?;
     }
-    run_artifacts::prune_old_campaign_summary_artifacts_under_process_lock(
-        app,
-        run_artifacts::artifact_retention_policy_for_app(app).campaign_summary_keep_newest,
-    );
+    if !replace_existing {
+        run_artifacts::prune_old_campaign_summary_artifacts_under_process_lock(
+            app,
+            run_artifacts::artifact_retention_policy_for_app(app).campaign_summary_keep_newest,
+        );
+    }
     Ok((path.to_string_lossy().to_string(), bytes.len()))
+}
+
+const MAX_INTERMEDIATE_FULL_SUMMARY_CHECKPOINTS: usize = 100;
+
+fn campaign_checkpoint_stride(dataset_total: usize) -> usize {
+    dataset_total
+        .max(1)
+        .div_ceil(MAX_INTERMEDIATE_FULL_SUMMARY_CHECKPOINTS)
+}
+
+fn should_persist_campaign_item_checkpoint(item_index: usize, dataset_total: usize) -> bool {
+    let completed = item_index.saturating_add(1);
+    completed == dataset_total
+        || completed.is_multiple_of(campaign_checkpoint_stride(dataset_total))
+}
+
+#[cfg(test)]
+fn planned_campaign_full_summary_builds(dataset_total: usize) -> usize {
+    let intermediate = (0..dataset_total)
+        .filter(|&index| should_persist_campaign_item_checkpoint(index, dataset_total))
+        .count();
+    // One immutable initial snapshot and one forced final snapshot bracket the
+    // bounded item checkpoints.
+    intermediate.saturating_add(2)
 }
 
 fn artifact_stub(run_req: &Value, validation_req: Option<&Value>) -> Value {
@@ -3090,11 +5202,185 @@ fn artifact_stub(run_req: &Value, validation_req: Option<&Value>) -> Value {
     })
 }
 
+fn normalized_campaign_artifact_tags(tags: &[String]) -> Vec<String> {
+    let mut normalized: Vec<String> = tags
+        .iter()
+        .map(|tag| normalize_text(tag).to_ascii_lowercase())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn campaign_artifact_tags(
+    campaign_tags: &[String],
+    label: &str,
+    is_holdout: bool,
+    holdout_tag: Option<&str>,
+) -> Vec<String> {
+    let mut tags = campaign_tags.to_vec();
+    tags.push(label.to_string());
+    if is_holdout {
+        if let Some(tag) = holdout_tag {
+            tags.push(tag.to_string());
+        }
+    }
+    dedup_tags(tags)
+}
+
+fn campaign_manifest_cohort_tag(manifest_hash: &str) -> String {
+    format!(
+        "campaign-cohort:{}",
+        manifest_hash.trim().trim_start_matches("sha256:")
+    )
+}
+
+fn campaign_artifact_config_fingerprint(
+    base_config_fingerprint: &str,
+    cohort_tags: &[String],
+    is_holdout: bool,
+    holdout_tag: Option<&str>,
+) -> String {
+    sha256_json_hash(&json!({
+        "schema_version": 2,
+        "base_config_fingerprint": base_config_fingerprint.trim(),
+        "cohort_role": if is_holdout { "holdout" } else { "training" },
+        "cohort_tag": is_holdout.then(|| holdout_tag.map(normalize_text).unwrap_or_default()),
+        "cohort_tags": normalized_campaign_artifact_tags(cohort_tags),
+    }))
+}
+
+fn prepared_artifact_source_identity(
+    prepared: &PreparedCampaignDataset,
+) -> Option<CampaignArtifactSourceIdentityKey> {
+    if let Some(fingerprint) = prepared
+        .dataset_meta
+        .get("source_content_fingerprint")
+        .and_then(Value::as_str)
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(CampaignArtifactSourceIdentityKey::ContentFingerprint(
+            fingerprint,
+        ));
+    }
+    prepared
+        .dataset_meta
+        .get("source_size_bytes")
+        .and_then(Value::as_u64)
+        .zip(
+            prepared
+                .dataset_meta
+                .get("source_mtime_utc_ms")
+                .and_then(Value::as_i64),
+        )
+        .map(|(size, mtime)| CampaignArtifactSourceIdentityKey::SizeAndMtime(size, mtime))
+}
+
+fn artifact_source_identities(
+    row: &run_artifacts::RunArtifactSummary,
+) -> Vec<CampaignArtifactSourceIdentityKey> {
+    let mut identities = Vec::with_capacity(2);
+    if let Some(fingerprint) = row
+        .source_content_fingerprint
+        .as_deref()
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+    {
+        identities.push(CampaignArtifactSourceIdentityKey::ContentFingerprint(
+            fingerprint,
+        ));
+    }
+    if let (Some(size), Some(mtime)) = (row.source_size_bytes, row.source_mtime_utc_ms) {
+        identities.push(CampaignArtifactSourceIdentityKey::SizeAndMtime(size, mtime));
+    }
+    identities
+}
+
+impl<'a> CampaignArtifactReuseIndex<'a> {
+    fn new(artifacts: &'a [run_artifacts::RunArtifactSummary]) -> Self {
+        let mut exact = HashMap::<CampaignArtifactReuseKey, Vec<usize>>::new();
+        let mut coarse = HashMap::<CampaignArtifactReuseCoarseKey, Vec<usize>>::new();
+        for (index, row) in artifacts.iter().enumerate() {
+            let strategy_kind = normalize_strategy_kind(&row.strategy_kind);
+            let config_fingerprint = row.config_fingerprint.trim().to_string();
+            let csv_path = normalize_path_key(&row.csv_path);
+            let timeframe = normalize_timeframe_label(&row.timeframe);
+            let cohort_tags = normalized_campaign_artifact_tags(&row.tags);
+            coarse
+                .entry(CampaignArtifactReuseCoarseKey {
+                    strategy_kind: strategy_kind.clone(),
+                    config_fingerprint: config_fingerprint.clone(),
+                    csv_path: csv_path.clone(),
+                    cohort_tags: cohort_tags.clone(),
+                })
+                .or_default()
+                .push(index);
+            for source_identity in artifact_source_identities(row) {
+                exact
+                    .entry(CampaignArtifactReuseKey {
+                        strategy_kind: strategy_kind.clone(),
+                        config_fingerprint: config_fingerprint.clone(),
+                        csv_path: csv_path.clone(),
+                        timeframe: timeframe.clone(),
+                        cohort_tags: cohort_tags.clone(),
+                        source_identity,
+                    })
+                    .or_default()
+                    .push(index);
+            }
+        }
+        Self {
+            artifacts,
+            exact,
+            coarse,
+        }
+    }
+
+    fn exact_candidate_indices(
+        &self,
+        strategy_kind: &str,
+        config_fingerprint: &str,
+        expected_tags: &[String],
+        prepared: &PreparedCampaignDataset,
+    ) -> &[usize] {
+        let Some(source_identity) = prepared_artifact_source_identity(prepared) else {
+            return &[];
+        };
+        let key = CampaignArtifactReuseKey {
+            strategy_kind: normalize_strategy_kind(strategy_kind),
+            config_fingerprint: config_fingerprint.trim().to_string(),
+            csv_path: normalize_path_key(&prepared.input.csv_path),
+            timeframe: normalize_timeframe_label(&prepared.timeframe),
+            cohort_tags: normalized_campaign_artifact_tags(expected_tags),
+            source_identity,
+        };
+        self.exact.get(&key).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn coarse_candidate_indices(
+        &self,
+        strategy_kind: &str,
+        config_fingerprint: &str,
+        expected_tags: &[String],
+        prepared: &PreparedCampaignDataset,
+    ) -> &[usize] {
+        let key = CampaignArtifactReuseCoarseKey {
+            strategy_kind: normalize_strategy_kind(strategy_kind),
+            config_fingerprint: config_fingerprint.trim().to_string(),
+            csv_path: normalize_path_key(&prepared.input.csv_path),
+            cohort_tags: normalized_campaign_artifact_tags(expected_tags),
+        };
+        self.coarse.get(&key).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
 fn classify_run_artifact_for_campaign(
     row: &run_artifacts::RunArtifactSummary,
     strategy_kind: &str,
     config_fingerprint: &str,
-    primary_tag: &str,
+    expected_tags: &[String],
     prepared: &PreparedCampaignDataset,
 ) -> CampaignArtifactMatchDecision {
     let dataset_tf = normalize_timeframe_label(&prepared.timeframe);
@@ -3119,10 +5405,8 @@ fn classify_run_artifact_for_campaign(
     if row.config_fingerprint.trim() != config_fingerprint.trim() {
         return CampaignArtifactMatchDecision::Mismatch;
     }
-    if !row
-        .tags
-        .iter()
-        .any(|tag| tag.eq_ignore_ascii_case(primary_tag))
+    if normalized_campaign_artifact_tags(&row.tags)
+        != normalized_campaign_artifact_tags(expected_tags)
     {
         return CampaignArtifactMatchDecision::Mismatch;
     }
@@ -3175,6 +5459,102 @@ fn push_reuse_decision_warning(
     );
 }
 
+fn existing_validation_match_indexed<'a>(
+    existing: &CampaignArtifactReuseIndex<'a>,
+    strategy_kind: &str,
+    config_fingerprint: &str,
+    expected_tags: &[String],
+    prepared: &PreparedCampaignDataset,
+    warnings: &mut Vec<String>,
+) -> Option<CampaignExistingArtifactMatch<'a>> {
+    for &index in
+        existing.exact_candidate_indices(strategy_kind, config_fingerprint, expected_tags, prepared)
+    {
+        let row = &existing.artifacts[index];
+        if !row.has_validation {
+            continue;
+        }
+        let decision = classify_run_artifact_for_campaign(
+            row,
+            strategy_kind,
+            config_fingerprint,
+            expected_tags,
+            prepared,
+        );
+        if decision == CampaignArtifactMatchDecision::Exact {
+            return Some(CampaignExistingArtifactMatch {
+                summary: row,
+                decision,
+            });
+        }
+    }
+    for &index in existing.coarse_candidate_indices(
+        strategy_kind,
+        config_fingerprint,
+        expected_tags,
+        prepared,
+    ) {
+        let row = &existing.artifacts[index];
+        if row.has_validation {
+            let decision = classify_run_artifact_for_campaign(
+                row,
+                strategy_kind,
+                config_fingerprint,
+                expected_tags,
+                prepared,
+            );
+            push_reuse_decision_warning(warnings, decision, row, prepared);
+        }
+    }
+    None
+}
+
+fn existing_optimization_match_indexed<'a>(
+    existing: &CampaignArtifactReuseIndex<'a>,
+    strategy_kind: &str,
+    config_fingerprint: &str,
+    expected_tags: &[String],
+    prepared: &PreparedCampaignDataset,
+    warnings: &mut Vec<String>,
+) -> Option<CampaignExistingArtifactMatch<'a>> {
+    for &index in
+        existing.exact_candidate_indices(strategy_kind, config_fingerprint, expected_tags, prepared)
+    {
+        let row = &existing.artifacts[index];
+        let decision = classify_run_artifact_for_campaign(
+            row,
+            strategy_kind,
+            config_fingerprint,
+            expected_tags,
+            prepared,
+        );
+        if decision == CampaignArtifactMatchDecision::Exact {
+            return Some(CampaignExistingArtifactMatch {
+                summary: row,
+                decision,
+            });
+        }
+    }
+    for &index in existing.coarse_candidate_indices(
+        strategy_kind,
+        config_fingerprint,
+        expected_tags,
+        prepared,
+    ) {
+        let row = &existing.artifacts[index];
+        let decision = classify_run_artifact_for_campaign(
+            row,
+            strategy_kind,
+            config_fingerprint,
+            expected_tags,
+            prepared,
+        );
+        push_reuse_decision_warning(warnings, decision, row, prepared);
+    }
+    None
+}
+
+#[cfg(test)]
 fn existing_validation_match<'a>(
     existing: &'a [run_artifacts::RunArtifactSummary],
     strategy_kind: &str,
@@ -3183,25 +5563,18 @@ fn existing_validation_match<'a>(
     prepared: &PreparedCampaignDataset,
     warnings: &mut Vec<String>,
 ) -> Option<CampaignExistingArtifactMatch<'a>> {
-    for row in existing.iter().filter(|row| row.has_validation) {
-        let decision = classify_run_artifact_for_campaign(
-            row,
-            strategy_kind,
-            config_fingerprint,
-            primary_tag,
-            prepared,
-        );
-        if decision == CampaignArtifactMatchDecision::Exact {
-            return Some(CampaignExistingArtifactMatch {
-                summary: row,
-                decision,
-            });
-        }
-        push_reuse_decision_warning(warnings, decision, row, prepared);
-    }
-    None
+    let index = CampaignArtifactReuseIndex::new(existing);
+    existing_validation_match_indexed(
+        &index,
+        strategy_kind,
+        config_fingerprint,
+        &[primary_tag.to_string()],
+        prepared,
+        warnings,
+    )
 }
 
+#[cfg(test)]
 fn existing_optimization_match<'a>(
     existing: &'a [run_artifacts::RunArtifactSummary],
     strategy_kind: &str,
@@ -3210,23 +5583,15 @@ fn existing_optimization_match<'a>(
     prepared: &PreparedCampaignDataset,
     warnings: &mut Vec<String>,
 ) -> Option<CampaignExistingArtifactMatch<'a>> {
-    for row in existing {
-        let decision = classify_run_artifact_for_campaign(
-            row,
-            strategy_kind,
-            config_fingerprint,
-            primary_tag,
-            prepared,
-        );
-        if decision == CampaignArtifactMatchDecision::Exact {
-            return Some(CampaignExistingArtifactMatch {
-                summary: row,
-                decision,
-            });
-        }
-        push_reuse_decision_warning(warnings, decision, row, prepared);
-    }
-    None
+    let index = CampaignArtifactReuseIndex::new(existing);
+    existing_optimization_match_indexed(
+        &index,
+        strategy_kind,
+        config_fingerprint,
+        &[primary_tag.to_string()],
+        prepared,
+        warnings,
+    )
 }
 
 fn record_checkpoint_save_ms(
@@ -3258,7 +5623,7 @@ fn save_campaign_summary_checkpoint_blocking<R: tauri::Runtime>(
     existing_path: Option<&str>,
 ) -> Result<(String, usize), String> {
     let started = std::time::Instant::now();
-    let mut saved = save_campaign_summary_blocking(summary, app, existing_path)?;
+    let saved = save_campaign_summary_blocking(summary, app, existing_path)?;
     let checkpoint_save_ms = started.elapsed().as_secs_f64() * 1000.0;
     if let Some(item_index) = item_index {
         let has_diagnostics = items
@@ -3267,10 +5632,69 @@ fn save_campaign_summary_checkpoint_blocking<R: tauri::Runtime>(
             .is_some();
         if has_diagnostics {
             record_checkpoint_save_ms(items, summary, item_index, checkpoint_save_ms);
-            saved = save_campaign_summary_blocking(summary, app, existing_path)?;
         }
     }
     Ok(saved)
+}
+
+fn seal_vcet_campaign_artifact_hashes<R: tauri::Runtime>(
+    items: &mut [ResearchCampaignItemSummary],
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let paths: Vec<PathBuf> = items
+        .iter()
+        .filter_map(|item| {
+            item.artifact_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+        })
+        .collect();
+    let hashes = run_artifacts::hash_artifact_files_checked_bulk_blocking(&paths, app)
+        .map_err(|error| format!("failed to seal VCET campaign run-artifact hashes: {error}"))?;
+    let mut hash_by_path = HashMap::with_capacity(hashes.len());
+    for (path, sha256) in hashes {
+        let key = normalize_path_key(path.to_string_lossy().as_ref());
+        if hash_by_path.insert(key, sha256).is_some() {
+            return Err(
+                "failed to seal VCET campaign run-artifact hashes: duplicate artifact path"
+                    .to_string(),
+            );
+        }
+    }
+    for item in items {
+        let Some(path) = item
+            .artifact_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        else {
+            item.artifact_sha256 = None;
+            continue;
+        };
+        item.artifact_sha256 = Some(hash_by_path.remove(&normalize_path_key(path)).ok_or_else(
+            || {
+                format!(
+                    "failed to seal VCET campaign run-artifact hash for '{}'",
+                    item.label
+                )
+            },
+        )?);
+    }
+    if !hash_by_path.is_empty() {
+        return Err(
+            "failed to seal VCET campaign run-artifact hashes: unclaimed artifact hash".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn should_seal_vcet_campaign_artifacts(
+    execution_mode: ResearchCampaignExecutionMode,
+    cancelled: bool,
+) -> bool {
+    execution_mode == ResearchCampaignExecutionMode::EvaluateCandidates && !cancelled
 }
 
 fn can_reuse_optimization_artifact_for_validation(family: CampaignOptimizationFamily) -> bool {
@@ -3325,6 +5749,9 @@ fn optimization_request_from_artifact_value(artifact: &Value) -> Result<Value, S
 fn build_run_artifact_value(
     ts: &str,
     config_fingerprint: &str,
+    campaign_cohort_id: &str,
+    is_holdout: bool,
+    holdout_tag: Option<&str>,
     csv_path: &str,
     dataset_meta: &Value,
     tags: &[String],
@@ -3344,7 +5771,36 @@ fn build_run_artifact_value(
         "data": { "csv_path": csv_path },
         "dataset_meta": dataset_meta,
         "tags": tags,
+        "retention": {
+            "class": "campaign_cohort",
+            "cohort_id": campaign_cohort_id,
+        },
+        "campaign": {
+            "manifest_hash": campaign_cohort_id,
+            "cohort_id": campaign_cohort_id,
+            "cohort_tag": campaign_manifest_cohort_tag(campaign_cohort_id),
+            "cohort_role": if is_holdout { "holdout" } else { "training" },
+            "holdout_tag": holdout_tag,
+        },
     })
+}
+
+fn save_campaign_run_artifact_blocking<R: tauri::Runtime>(
+    artifact: Value,
+    app: tauri::AppHandle<R>,
+    existing_path: Option<String>,
+    strategy_kind: &str,
+    execution_mode: ResearchCampaignExecutionMode,
+) -> Result<run_artifacts::SaveRunArtifactResponse, String> {
+    if campaign_defers_run_artifact_pruning(strategy_kind, execution_mode) {
+        run_artifacts::save_run_artifact_without_retention_prune_blocking(
+            artifact,
+            app,
+            existing_path,
+        )
+    } else {
+        run_artifacts::save_run_artifact_blocking(artifact, app, existing_path)
+    }
 }
 
 fn latch_campaign_cancellation(cancel: &AtomicBool, counts: &mut ResearchCampaignCounts) {
@@ -3361,6 +5817,15 @@ fn run_research_campaign_blocking_with_mode(
     mut preloaded_pack: Option<HeadlessPreparedResearchCampaignDatasetPack>,
 ) -> Result<RunResearchCampaignResponse, String> {
     req.datasets = normalize_campaign_datasets(req.datasets)?;
+    // Seal the O(1) filesystem identity into the request before the manifest and
+    // cohort tag are derived. This keeps manifest identity source-bound even
+    // when discovery did not supply hints, without adding a second full-file
+    // content scan ahead of the normal dataset load.
+    refresh_campaign_dataset_source_identities(&mut req.datasets)?;
+    req.execution_mode = execution_mode;
+    if execution_mode == ResearchCampaignExecutionMode::EvaluateCandidates {
+        req.validation_config.fixed_candidates.sort_unstable();
+    }
     let started = std::time::Instant::now();
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let app_cache_dir = data_cache::app_data_cache_dir(&base);
@@ -3368,6 +5833,8 @@ fn run_research_campaign_blocking_with_mode(
     if req.datasets.is_empty() {
         return Err("campaign requires at least one dataset".to_string());
     }
+    let fixed_candidate_plan =
+        build_vcet_fixed_candidate_plan(&req, &strategy_kind, execution_mode)?;
 
     let family = optimization_family_for_kind(&strategy_kind);
     let ts = chrono::Utc::now().to_rfc3339();
@@ -3382,6 +5849,12 @@ fn run_research_campaign_blocking_with_mode(
         .map(normalize_text)
         .filter(|value| !value.is_empty())
         .or_else(|| (req.holdout_pct > 0).then_some("holdout".to_string()));
+    validate_holdout_tag_isolation(
+        &tags,
+        &req.datasets,
+        req.holdout_pct,
+        holdout_tag.as_deref(),
+    )?;
     let timeframe_override = req
         .timeframe_override
         .as_deref()
@@ -3433,10 +5906,15 @@ fn run_research_campaign_blocking_with_mode(
         );
     }
     let manifest_hash = initial_manifest.manifest_hash.clone();
+    let campaign_cohort_tag = campaign_manifest_cohort_tag(&manifest_hash);
 
     let existing = load_existing_campaign_artifacts(req.skip_existing, execution_mode, || {
         run_artifacts::list_run_artifacts_blocking(app.clone())
     })?;
+    let existing_reuse_index = CampaignArtifactReuseIndex::new(&existing);
+    let mut deferred_run_artifact_prune = CampaignRunArtifactPruneGuard::new(
+        campaign_defers_run_artifact_pruning(&strategy_kind, execution_mode).then(|| app.clone()),
+    );
 
     let dataset_total = req.datasets.len();
     let using_preloaded_pack = preloaded_pack.is_some();
@@ -3467,6 +5945,8 @@ fn run_research_campaign_blocking_with_mode(
     let sink = TauriProgressSink { app: app.clone() };
     let mut learned_doublema_vram_device: Option<u32> = None;
     let mut doublema_vram_prefetch_disabled = false;
+    let mut seen_prepared_source_fingerprints: HashMap<String, String> =
+        HashMap::with_capacity(dataset_total);
     let mut items: Vec<ResearchCampaignItemSummary> = req
         .datasets
         .iter()
@@ -3491,9 +5971,11 @@ fn run_research_campaign_blocking_with_mode(
                 resume_state: Some(CampaignResumeState::Resumable),
                 reuse_decision: None,
                 artifact_path: None,
+                artifact_sha256: None,
                 report_xlsx_path: None,
                 error: None,
                 diagnostics: None,
+                fixed_candidate_result: None,
             }
         })
         .collect();
@@ -3515,6 +5997,41 @@ fn run_research_campaign_blocking_with_mode(
     );
     let (summary_json_path, _) =
         save_campaign_summary_checkpoint_blocking(&mut summary, &mut items, None, &app, None)?;
+    // Full summaries contain the immutable request/manifest plus every item and,
+    // for VCET replay, cross-dataset aggregates. Rebuild and serialize them at a
+    // bounded cadence so a 10k-dataset campaign performs at most 100 intermediate
+    // full snapshots. A crash can lose at most stride-1 item checkpoints; each
+    // already-published run artifact remains reusable on resume.
+    macro_rules! persist_bounded_item_checkpoint {
+        ($item_index:expr) => {{
+            let item_index = $item_index;
+            if should_persist_campaign_item_checkpoint(item_index, dataset_total) {
+                summary = build_campaign_summary(
+                    &ts,
+                    "running",
+                    &strategy_kind,
+                    timeframe_override.clone(),
+                    &req,
+                    execution_mode,
+                    &tags,
+                    holdout_tag.clone(),
+                    &counts,
+                    &items,
+                    None,
+                    None,
+                    &warnings,
+                    started.elapsed().as_millis() as u64,
+                );
+                let _ = save_campaign_summary_checkpoint_blocking(
+                    &mut summary,
+                    &mut items,
+                    Some(item_index),
+                    &app,
+                    Some(&summary_json_path),
+                )?;
+            }
+        }};
+    }
     emit_campaign_progress(
         &app,
         "checkpoint",
@@ -3615,29 +6132,7 @@ fn run_research_campaign_blocking_with_mode(
                     Some(CampaignResumeState::Resumable),
                     None,
                 );
-                summary = build_campaign_summary(
-                    &ts,
-                    "running",
-                    &strategy_kind,
-                    timeframe_override.clone(),
-                    &req,
-                    execution_mode,
-                    &tags,
-                    holdout_tag.clone(),
-                    &counts,
-                    &items,
-                    None,
-                    None,
-                    &warnings,
-                    started.elapsed().as_millis() as u64,
-                );
-                let _ = save_campaign_summary_checkpoint_blocking(
-                    &mut summary,
-                    &mut items,
-                    Some(index),
-                    &app,
-                    Some(&summary_json_path),
-                )?;
+                persist_bounded_item_checkpoint!(index);
                 continue;
             }
         };
@@ -3667,6 +6162,8 @@ fn run_research_campaign_blocking_with_mode(
             }
         }
 
+        record_unique_prepared_campaign_source(&prepared, &mut seen_prepared_source_fingerprints)?;
+
         let label = prepared.label.clone();
         let prepared_identity = Some(dataset_identity_summary(&prepared));
         emit_campaign_progress(
@@ -3689,27 +6186,269 @@ fn run_research_campaign_blocking_with_mode(
         } else {
             None
         };
-        let run_only_fingerprint = run_artifacts::compute_config_fingerprint_from_artifact(
+        let mut per_run_tags =
+            campaign_artifact_tags(&tags, &label, is_holdout, holdout_tag.as_deref());
+        per_run_tags.push(campaign_cohort_tag.clone());
+        let per_run_tags = dedup_tags(per_run_tags);
+        let run_only_base_fingerprint = run_artifacts::compute_config_fingerprint_from_artifact(
             &artifact_stub(&run_req_value, None),
         );
-        let per_run_tags = {
-            let mut next = tags.clone();
-            next.push(label.clone());
-            if is_holdout {
-                if let Some(tag) = holdout_tag.as_ref() {
-                    next.push(tag.clone());
+        let run_only_fingerprint = campaign_artifact_config_fingerprint(
+            &run_only_base_fingerprint,
+            &per_run_tags,
+            is_holdout,
+            holdout_tag.as_deref(),
+        );
+
+        if let Some(plan) = fixed_candidate_plan.as_ref() {
+            let validation_req_value = build_vcet_fixed_candidate_validation_request_value(
+                &data_id,
+                &run_req_value,
+                &prepared.dataset_meta,
+                &req.validation_config,
+                plan,
+            );
+            let validation_base_fingerprint =
+                run_artifacts::compute_config_fingerprint_from_artifact(&artifact_stub(
+                    &run_req_value,
+                    Some(&validation_req_value),
+                ));
+            let validation_fingerprint = campaign_artifact_config_fingerprint(
+                &validation_base_fingerprint,
+                &per_run_tags,
+                is_holdout,
+                holdout_tag.as_deref(),
+            );
+            if req.skip_existing {
+                if let Some(existing_validation) = existing_validation_match_indexed(
+                    &existing_reuse_index,
+                    &strategy_kind,
+                    &validation_fingerprint,
+                    &per_run_tags,
+                    &prepared,
+                    &mut warnings,
+                ) {
+                    let existing_path = existing_validation.summary.path.clone();
+                    let reuse = evaluate_vcet_fixed_candidate_artifact_reuse(
+                        &existing_path,
+                        run_artifacts::load_run_artifact_blocking(
+                            existing_path.clone(),
+                            app.clone(),
+                        ),
+                        plan,
+                        req.validation_config.require_gpu_kernel,
+                    );
+                    match reuse {
+                        CampaignFixedCandidateArtifactReuse::Reuse(fixed_candidate_result) => {
+                            counts.skipped = counts.skipped.saturating_add(1);
+                            items[index] = ResearchCampaignItemSummary {
+                                item_id: item_id.clone(),
+                                csv_path: prepared.input.csv_path.clone(),
+                                label,
+                                timeframe: prepared.timeframe.clone(),
+                                is_holdout,
+                                status: "skipped".to_string(),
+                                dataset_identity: prepared_identity.clone(),
+                                evidence_state: Some(CampaignEvidenceState::Complete),
+                                resume_state: Some(CampaignResumeState::Complete),
+                                reuse_decision: Some(format!(
+                                    "{}_fixed_candidate_validation_artifact",
+                                    existing_validation.decision.as_str()
+                                )),
+                                artifact_path: Some(existing_path),
+                                artifact_sha256: None,
+                                report_xlsx_path: None,
+                                error: None,
+                                diagnostics: Some(build_item_diagnostics(
+                                    prepare_source,
+                                    prepare_wait_ms,
+                                    &prefetch_diagnostics,
+                                    None,
+                                    None,
+                                    None,
+                                )),
+                                fixed_candidate_result: Some(fixed_candidate_result),
+                            };
+                            persist_bounded_item_checkpoint!(index);
+                            continue;
+                        }
+                        CampaignFixedCandidateArtifactReuse::Rerun { warning } => {
+                            push_unique_warning(&mut warnings, warning);
+                        }
+                    }
                 }
             }
-            dedup_tags(next)
-        };
+
+            emit_campaign_progress(
+                &app,
+                "validate",
+                index + 1,
+                dataset_total,
+                &prepared.label,
+                "evaluating fixed VCET candidate manifest",
+                Some(&summary_json_path),
+                &counts,
+            );
+            let validation_req: CompositeValidationRequest =
+                match serde_json::from_value(validation_req_value.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        counts.failed = counts.failed.saturating_add(1);
+                        items[index] = failed_item(
+                            prepared.input.csv_path.clone(),
+                            prepared.label.clone(),
+                            prepared.timeframe.clone(),
+                            is_holdout,
+                            None,
+                            "fixed-candidate validation request decode",
+                            error.to_string(),
+                        )
+                        .with_campaign_metadata(
+                            item_id.clone(),
+                            prepared_identity.clone(),
+                            Some(CampaignEvidenceState::Partial),
+                            Some(CampaignResumeState::Resumable),
+                            None,
+                        );
+                        persist_bounded_item_checkpoint!(index);
+                        continue;
+                    }
+                };
+            let validation_res_value =
+                match ta_app_core::run_composite_validation_blocking_with_candles(
+                    validation_req,
+                    &prepared.candles,
+                    cancel.as_ref(),
+                    Some(&sink),
+                ) {
+                    Ok(result) => match serde_json::to_value(result) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            counts.failed = counts.failed.saturating_add(1);
+                            items[index] = failed_item(
+                                prepared.input.csv_path.clone(),
+                                prepared.label.clone(),
+                                prepared.timeframe.clone(),
+                                is_holdout,
+                                None,
+                                "fixed-candidate validation encode",
+                                error.to_string(),
+                            );
+                            persist_bounded_item_checkpoint!(index);
+                            continue;
+                        }
+                    },
+                    Err(error) => {
+                        counts.failed = counts.failed.saturating_add(1);
+                        items[index] = failed_item(
+                            prepared.input.csv_path.clone(),
+                            prepared.label.clone(),
+                            prepared.timeframe.clone(),
+                            is_holdout,
+                            None,
+                            "fixed-candidate validation",
+                            error,
+                        );
+                        persist_bounded_item_checkpoint!(index);
+                        continue;
+                    }
+                };
+            let fixed_candidate_result = match parse_vcet_fixed_candidate_dataset_result(
+                &validation_res_value,
+                plan,
+                req.validation_config.require_gpu_kernel,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        prepared.label.clone(),
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        None,
+                        "fixed-candidate route/result policy",
+                        error,
+                    );
+                    persist_bounded_item_checkpoint!(index);
+                    continue;
+                }
+            };
+            let run_res_value = vcet_fixed_candidate_run_result_value(plan);
+            let validation_artifact = build_run_artifact_value(
+                &run_ts,
+                &validation_fingerprint,
+                &manifest_hash,
+                is_holdout,
+                holdout_tag.as_deref(),
+                &prepared.input.csv_path,
+                &prepared.dataset_meta,
+                &per_run_tags,
+                &run_req_value,
+                &run_res_value,
+                Some(&validation_req_value),
+                Some(&validation_res_value),
+            );
+            let artifact_path = match save_campaign_run_artifact_blocking(
+                validation_artifact,
+                app.clone(),
+                None,
+                &strategy_kind,
+                execution_mode,
+            ) {
+                Ok(saved) => saved.path,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        prepared.label.clone(),
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        None,
+                        "fixed-candidate validation artifact",
+                        error,
+                    );
+                    persist_bounded_item_checkpoint!(index);
+                    continue;
+                }
+            };
+            counts.validated = counts.validated.saturating_add(1);
+            items[index] = ResearchCampaignItemSummary {
+                item_id: item_id.clone(),
+                csv_path: prepared.input.csv_path.clone(),
+                label,
+                timeframe: prepared.timeframe.clone(),
+                is_holdout,
+                status: "ok".to_string(),
+                dataset_identity: prepared_identity.clone(),
+                evidence_state: Some(CampaignEvidenceState::Complete),
+                resume_state: Some(CampaignResumeState::Complete),
+                reuse_decision: None,
+                artifact_path: Some(artifact_path),
+                artifact_sha256: None,
+                report_xlsx_path: None,
+                error: None,
+                diagnostics: Some(build_item_diagnostics(
+                    prepare_source,
+                    prepare_wait_ms,
+                    &prefetch_diagnostics,
+                    None,
+                    None,
+                    None,
+                )),
+                fixed_candidate_result: Some(fixed_candidate_result),
+            };
+            persist_bounded_item_checkpoint!(index);
+            continue;
+        }
 
         let mut existing_optimize_path: Option<String> = None;
         let optimize_result = if execution_mode == ResearchCampaignExecutionMode::ValidateOnly {
-            let Some(existing_run) = existing_optimization_match(
-                &existing,
+            let Some(existing_run) = existing_optimization_match_indexed(
+                &existing_reuse_index,
                 &strategy_kind,
                 &run_only_fingerprint,
-                &primary_tag,
+                &per_run_tags,
                 &prepared,
                 &mut warnings,
             ) else {
@@ -3726,6 +6465,7 @@ fn run_research_campaign_blocking_with_mode(
                     resume_state: Some(CampaignResumeState::RestartOnly),
                     reuse_decision: Some("no_exact_optimization_artifact".to_string()),
                     artifact_path: None,
+                    artifact_sha256: None,
                     report_xlsx_path: None,
                     error: Some(
                         "no matching optimization artifact was found for validate_only mode"
@@ -3739,30 +6479,9 @@ fn run_research_campaign_blocking_with_mode(
                         None,
                         None,
                     )),
+                    fixed_candidate_result: None,
                 };
-                summary = build_campaign_summary(
-                    &ts,
-                    "running",
-                    &strategy_kind,
-                    timeframe_override.clone(),
-                    &req,
-                    execution_mode,
-                    &tags,
-                    holdout_tag.clone(),
-                    &counts,
-                    &items,
-                    None,
-                    None,
-                    &warnings,
-                    started.elapsed().as_millis() as u64,
-                );
-                let _ = save_campaign_summary_checkpoint_blocking(
-                    &mut summary,
-                    &mut items,
-                    Some(index),
-                    &app,
-                    Some(&summary_json_path),
-                )?;
+                persist_bounded_item_checkpoint!(index);
                 continue;
             };
             existing_optimize_path = Some(existing_run.summary.path.clone());
@@ -3792,29 +6511,7 @@ fn run_research_campaign_blocking_with_mode(
                         "load optimization artifact",
                         error,
                     );
-                    summary = build_campaign_summary(
-                        &ts,
-                        "running",
-                        &strategy_kind,
-                        timeframe_override.clone(),
-                        &req,
-                        execution_mode,
-                        &tags,
-                        holdout_tag.clone(),
-                        &counts,
-                        &items,
-                        None,
-                        None,
-                        &warnings,
-                        started.elapsed().as_millis() as u64,
-                    );
-                    let _ = save_campaign_summary_checkpoint_blocking(
-                        &mut summary,
-                        &mut items,
-                        Some(index),
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    persist_bounded_item_checkpoint!(index);
                     continue;
                 }
             };
@@ -3831,29 +6528,7 @@ fn run_research_campaign_blocking_with_mode(
                         "decode optimization request",
                         error,
                     );
-                    summary = build_campaign_summary(
-                        &ts,
-                        "running",
-                        &strategy_kind,
-                        timeframe_override.clone(),
-                        &req,
-                        execution_mode,
-                        &tags,
-                        holdout_tag.clone(),
-                        &counts,
-                        &items,
-                        None,
-                        None,
-                        &warnings,
-                        started.elapsed().as_millis() as u64,
-                    );
-                    let _ = save_campaign_summary_checkpoint_blocking(
-                        &mut summary,
-                        &mut items,
-                        Some(index),
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    persist_bounded_item_checkpoint!(index);
                     continue;
                 }
             };
@@ -3870,38 +6545,16 @@ fn run_research_campaign_blocking_with_mode(
                         "decode optimization artifact",
                         error,
                     );
-                    summary = build_campaign_summary(
-                        &ts,
-                        "running",
-                        &strategy_kind,
-                        timeframe_override.clone(),
-                        &req,
-                        execution_mode,
-                        &tags,
-                        holdout_tag.clone(),
-                        &counts,
-                        &items,
-                        None,
-                        None,
-                        &warnings,
-                        started.elapsed().as_millis() as u64,
-                    );
-                    let _ = save_campaign_summary_checkpoint_blocking(
-                        &mut summary,
-                        &mut items,
-                        Some(index),
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    persist_bounded_item_checkpoint!(index);
                     continue;
                 }
             }
         } else if req.skip_existing {
-            if let Some(existing_run) = existing_optimization_match(
-                &existing,
+            if let Some(existing_run) = existing_optimization_match_indexed(
+                &existing_reuse_index,
                 &strategy_kind,
                 &run_only_fingerprint,
-                &primary_tag,
+                &per_run_tags,
                 &prepared,
                 &mut warnings,
             ) {
@@ -3923,6 +6576,7 @@ fn run_research_campaign_blocking_with_mode(
                             existing_run.decision.as_str()
                         )),
                         artifact_path: existing_optimize_path.clone(),
+                        artifact_sha256: None,
                         report_xlsx_path: None,
                         error: None,
                         diagnostics: Some(build_item_diagnostics(
@@ -3933,30 +6587,9 @@ fn run_research_campaign_blocking_with_mode(
                             None,
                             None,
                         )),
+                        fixed_candidate_result: None,
                     };
-                    summary = build_campaign_summary(
-                        &ts,
-                        "running",
-                        &strategy_kind,
-                        timeframe_override.clone(),
-                        &req,
-                        execution_mode,
-                        &tags,
-                        holdout_tag.clone(),
-                        &counts,
-                        &items,
-                        None,
-                        None,
-                        &warnings,
-                        started.elapsed().as_millis() as u64,
-                    );
-                    let _ = save_campaign_summary_checkpoint_blocking(
-                        &mut summary,
-                        &mut items,
-                        Some(index),
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    persist_bounded_item_checkpoint!(index);
                     continue;
                 }
 
@@ -4033,29 +6666,7 @@ fn run_research_campaign_blocking_with_mode(
                                 "optimization",
                                 error,
                             );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                execution_mode,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_checkpoint_blocking(
-                                &mut summary,
-                                &mut items,
-                                Some(index),
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
+                            persist_bounded_item_checkpoint!(index);
                             continue;
                         }
                     };
@@ -4097,29 +6708,7 @@ fn run_research_campaign_blocking_with_mode(
                                 "load optimization artifact",
                                 error,
                             );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                execution_mode,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_checkpoint_blocking(
-                                &mut summary,
-                                &mut items,
-                                Some(index),
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
+                            persist_bounded_item_checkpoint!(index);
                             continue;
                         }
                     };
@@ -4136,29 +6725,7 @@ fn run_research_campaign_blocking_with_mode(
                                 "decode optimization request",
                                 error,
                             );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                execution_mode,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_checkpoint_blocking(
-                                &mut summary,
-                                &mut items,
-                                Some(index),
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
+                            persist_bounded_item_checkpoint!(index);
                             continue;
                         }
                     };
@@ -4175,29 +6742,7 @@ fn run_research_campaign_blocking_with_mode(
                                 "decode optimization artifact",
                                 error,
                             );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                execution_mode,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_checkpoint_blocking(
-                                &mut summary,
-                                &mut items,
-                                Some(index),
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
+                            persist_bounded_item_checkpoint!(index);
                             continue;
                         }
                     }
@@ -4270,29 +6815,7 @@ fn run_research_campaign_blocking_with_mode(
                             "optimization",
                             error,
                         );
-                        summary = build_campaign_summary(
-                            &ts,
-                            "running",
-                            &strategy_kind,
-                            timeframe_override.clone(),
-                            &req,
-                            execution_mode,
-                            &tags,
-                            holdout_tag.clone(),
-                            &counts,
-                            &items,
-                            None,
-                            None,
-                            &warnings,
-                            started.elapsed().as_millis() as u64,
-                        );
-                        let _ = save_campaign_summary_checkpoint_blocking(
-                            &mut summary,
-                            &mut items,
-                            Some(index),
-                            &app,
-                            Some(&summary_json_path),
-                        )?;
+                        persist_bounded_item_checkpoint!(index);
                         continue;
                     }
                 };
@@ -4372,29 +6895,7 @@ fn run_research_campaign_blocking_with_mode(
                         "optimization",
                         error,
                     );
-                    summary = build_campaign_summary(
-                        &ts,
-                        "running",
-                        &strategy_kind,
-                        timeframe_override.clone(),
-                        &req,
-                        execution_mode,
-                        &tags,
-                        holdout_tag.clone(),
-                        &counts,
-                        &items,
-                        None,
-                        None,
-                        &warnings,
-                        started.elapsed().as_millis() as u64,
-                    );
-                    let _ = save_campaign_summary_checkpoint_blocking(
-                        &mut summary,
-                        &mut items,
-                        Some(index),
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    persist_bounded_item_checkpoint!(index);
                     continue;
                 }
             };
@@ -4436,6 +6937,9 @@ fn run_research_campaign_blocking_with_mode(
             let optimize_artifact = build_run_artifact_value(
                 &run_ts,
                 &run_only_fingerprint,
+                &manifest_hash,
+                is_holdout,
+                holdout_tag.as_deref(),
                 &prepared.input.csv_path,
                 &prepared.dataset_meta,
                 &per_run_tags,
@@ -4445,7 +6949,13 @@ fn run_research_campaign_blocking_with_mode(
                 None,
             );
             let save_started = std::time::Instant::now();
-            match run_artifacts::save_run_artifact_blocking(optimize_artifact, app.clone(), None) {
+            match save_campaign_run_artifact_blocking(
+                optimize_artifact,
+                app.clone(),
+                None,
+                &strategy_kind,
+                execution_mode,
+            ) {
                 Ok(saved) => {
                     optimize_artifact_save_ms = Some(save_started.elapsed().as_secs_f64() * 1000.0);
                     saved.path
@@ -4461,29 +6971,7 @@ fn run_research_campaign_blocking_with_mode(
                         "optimization artifact",
                         error,
                     );
-                    summary = build_campaign_summary(
-                        &ts,
-                        "running",
-                        &strategy_kind,
-                        timeframe_override.clone(),
-                        &req,
-                        execution_mode,
-                        &tags,
-                        holdout_tag.clone(),
-                        &counts,
-                        &items,
-                        None,
-                        None,
-                        &warnings,
-                        started.elapsed().as_millis() as u64,
-                    );
-                    let _ = save_campaign_summary_checkpoint_blocking(
-                        &mut summary,
-                        &mut items,
-                        Some(index),
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    persist_bounded_item_checkpoint!(index);
                     continue;
                 }
             }
@@ -4502,6 +6990,7 @@ fn run_research_campaign_blocking_with_mode(
                 resume_state: Some(CampaignResumeState::Complete),
                 reuse_decision: None,
                 artifact_path: Some(artifact_path),
+                artifact_sha256: None,
                 report_xlsx_path: None,
                 error: None,
                 diagnostics: Some(build_item_diagnostics(
@@ -4512,30 +7001,9 @@ fn run_research_campaign_blocking_with_mode(
                     optimize_artifact_save_ms,
                     None,
                 )),
+                fixed_candidate_result: None,
             };
-            summary = build_campaign_summary(
-                &ts,
-                "running",
-                &strategy_kind,
-                timeframe_override.clone(),
-                &req,
-                execution_mode,
-                &tags,
-                holdout_tag.clone(),
-                &counts,
-                &items,
-                None,
-                None,
-                &warnings,
-                started.elapsed().as_millis() as u64,
-            );
-            let _ = save_campaign_summary_checkpoint_blocking(
-                &mut summary,
-                &mut items,
-                Some(index),
-                &app,
-                Some(&summary_json_path),
-            )?;
+            persist_bounded_item_checkpoint!(index);
             emit_campaign_progress(
                 &app,
                 "checkpoint",
@@ -4570,41 +7038,25 @@ fn run_research_campaign_blocking_with_mode(
                     "validation request",
                     error,
                 );
-                summary = build_campaign_summary(
-                    &ts,
-                    "running",
-                    &strategy_kind,
-                    timeframe_override.clone(),
-                    &req,
-                    execution_mode,
-                    &tags,
-                    holdout_tag.clone(),
-                    &counts,
-                    &items,
-                    None,
-                    None,
-                    &warnings,
-                    started.elapsed().as_millis() as u64,
-                );
-                let _ = save_campaign_summary_checkpoint_blocking(
-                    &mut summary,
-                    &mut items,
-                    Some(index),
-                    &app,
-                    Some(&summary_json_path),
-                )?;
+                persist_bounded_item_checkpoint!(index);
                 continue;
             }
         };
-        let validation_fingerprint = run_artifacts::compute_config_fingerprint_from_artifact(
+        let validation_base_fingerprint = run_artifacts::compute_config_fingerprint_from_artifact(
             &artifact_stub(&run_req_value, Some(&validation_req_value)),
         );
+        let validation_fingerprint = campaign_artifact_config_fingerprint(
+            &validation_base_fingerprint,
+            &per_run_tags,
+            is_holdout,
+            holdout_tag.as_deref(),
+        );
         let existing_validation = if req.skip_existing {
-            existing_validation_match(
-                &existing,
+            existing_validation_match_indexed(
+                &existing_reuse_index,
                 &strategy_kind,
                 &validation_fingerprint,
-                &primary_tag,
+                &per_run_tags,
                 &prepared,
                 &mut warnings,
             )
@@ -4628,6 +7080,7 @@ fn run_research_campaign_blocking_with_mode(
                     existing_validation.decision.as_str()
                 )),
                 artifact_path: Some(existing_validation.summary.path.clone()),
+                artifact_sha256: None,
                 report_xlsx_path: None,
                 error: None,
                 diagnostics: Some(build_item_diagnostics(
@@ -4638,30 +7091,9 @@ fn run_research_campaign_blocking_with_mode(
                     optimize_artifact_save_ms,
                     None,
                 )),
+                fixed_candidate_result: None,
             };
-            summary = build_campaign_summary(
-                &ts,
-                "running",
-                &strategy_kind,
-                timeframe_override.clone(),
-                &req,
-                execution_mode,
-                &tags,
-                holdout_tag.clone(),
-                &counts,
-                &items,
-                None,
-                None,
-                &warnings,
-                started.elapsed().as_millis() as u64,
-            );
-            let _ = save_campaign_summary_checkpoint_blocking(
-                &mut summary,
-                &mut items,
-                Some(index),
-                &app,
-                Some(&summary_json_path),
-            )?;
+            persist_bounded_item_checkpoint!(index);
             continue;
         }
 
@@ -4693,29 +7125,7 @@ fn run_research_campaign_blocking_with_mode(
                                 "validation request decode",
                                 error,
                             );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                execution_mode,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_checkpoint_blocking(
-                                &mut summary,
-                                &mut items,
-                                Some(index),
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
+                            persist_bounded_item_checkpoint!(index);
                             continue;
                         }
                     };
@@ -4739,29 +7149,7 @@ fn run_research_campaign_blocking_with_mode(
                                     "validation encode",
                                     error,
                                 );
-                                summary = build_campaign_summary(
-                                    &ts,
-                                    "running",
-                                    &strategy_kind,
-                                    timeframe_override.clone(),
-                                    &req,
-                                    execution_mode,
-                                    &tags,
-                                    holdout_tag.clone(),
-                                    &counts,
-                                    &items,
-                                    None,
-                                    None,
-                                    &warnings,
-                                    started.elapsed().as_millis() as u64,
-                                );
-                                let _ = save_campaign_summary_checkpoint_blocking(
-                                    &mut summary,
-                                    &mut items,
-                                    Some(index),
-                                    &app,
-                                    Some(&summary_json_path),
-                                )?;
+                                persist_bounded_item_checkpoint!(index);
                                 continue;
                             }
                         }
@@ -4777,29 +7165,7 @@ fn run_research_campaign_blocking_with_mode(
                             "validation",
                             error,
                         );
-                        summary = build_campaign_summary(
-                            &ts,
-                            "running",
-                            &strategy_kind,
-                            timeframe_override.clone(),
-                            &req,
-                            execution_mode,
-                            &tags,
-                            holdout_tag.clone(),
-                            &counts,
-                            &items,
-                            None,
-                            None,
-                            &warnings,
-                            started.elapsed().as_millis() as u64,
-                        );
-                        let _ = save_campaign_summary_checkpoint_blocking(
-                            &mut summary,
-                            &mut items,
-                            Some(index),
-                            &app,
-                            Some(&summary_json_path),
-                        )?;
+                        persist_bounded_item_checkpoint!(index);
                         continue;
                     }
                 }
@@ -4821,29 +7187,7 @@ fn run_research_campaign_blocking_with_mode(
                                 "validation request decode",
                                 error,
                             );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                execution_mode,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_checkpoint_blocking(
-                                &mut summary,
-                                &mut items,
-                                Some(index),
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
+                            persist_bounded_item_checkpoint!(index);
                             continue;
                         }
                     };
@@ -4867,29 +7211,7 @@ fn run_research_campaign_blocking_with_mode(
                                     "validation encode",
                                     error,
                                 );
-                                summary = build_campaign_summary(
-                                    &ts,
-                                    "running",
-                                    &strategy_kind,
-                                    timeframe_override.clone(),
-                                    &req,
-                                    execution_mode,
-                                    &tags,
-                                    holdout_tag.clone(),
-                                    &counts,
-                                    &items,
-                                    None,
-                                    None,
-                                    &warnings,
-                                    started.elapsed().as_millis() as u64,
-                                );
-                                let _ = save_campaign_summary_checkpoint_blocking(
-                                    &mut summary,
-                                    &mut items,
-                                    Some(index),
-                                    &app,
-                                    Some(&summary_json_path),
-                                )?;
+                                persist_bounded_item_checkpoint!(index);
                                 continue;
                             }
                         }
@@ -4905,29 +7227,7 @@ fn run_research_campaign_blocking_with_mode(
                             "validation",
                             error,
                         );
-                        summary = build_campaign_summary(
-                            &ts,
-                            "running",
-                            &strategy_kind,
-                            timeframe_override.clone(),
-                            &req,
-                            execution_mode,
-                            &tags,
-                            holdout_tag.clone(),
-                            &counts,
-                            &items,
-                            None,
-                            None,
-                            &warnings,
-                            started.elapsed().as_millis() as u64,
-                        );
-                        let _ = save_campaign_summary_checkpoint_blocking(
-                            &mut summary,
-                            &mut items,
-                            Some(index),
-                            &app,
-                            Some(&summary_json_path),
-                        )?;
+                        persist_bounded_item_checkpoint!(index);
                         continue;
                     }
                 }
@@ -4937,6 +7237,9 @@ fn run_research_campaign_blocking_with_mode(
         let validation_artifact = build_run_artifact_value(
             &run_ts,
             &validation_fingerprint,
+            &manifest_hash,
+            is_holdout,
+            holdout_tag.as_deref(),
             &prepared.input.csv_path,
             &prepared.dataset_meta,
             &per_run_tags,
@@ -4945,47 +7248,29 @@ fn run_research_campaign_blocking_with_mode(
             Some(&validation_req_value),
             Some(&validation_res_value),
         );
-        artifact_path =
-            match run_artifacts::save_run_artifact_blocking(validation_artifact, app.clone(), None)
-            {
-                Ok(saved) => saved.path,
-                Err(error) => {
-                    counts.failed = counts.failed.saturating_add(1);
-                    items[index] = failed_item(
-                        prepared.input.csv_path.clone(),
-                        prepared.label.clone(),
-                        prepared.timeframe.clone(),
-                        is_holdout,
-                        Some(artifact_path.clone()),
-                        "validation artifact",
-                        error,
-                    );
-                    summary = build_campaign_summary(
-                        &ts,
-                        "running",
-                        &strategy_kind,
-                        timeframe_override.clone(),
-                        &req,
-                        execution_mode,
-                        &tags,
-                        holdout_tag.clone(),
-                        &counts,
-                        &items,
-                        None,
-                        None,
-                        &warnings,
-                        started.elapsed().as_millis() as u64,
-                    );
-                    let _ = save_campaign_summary_checkpoint_blocking(
-                        &mut summary,
-                        &mut items,
-                        Some(index),
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
-                    continue;
-                }
-            };
+        artifact_path = match save_campaign_run_artifact_blocking(
+            validation_artifact,
+            app.clone(),
+            None,
+            &strategy_kind,
+            execution_mode,
+        ) {
+            Ok(saved) => saved.path,
+            Err(error) => {
+                counts.failed = counts.failed.saturating_add(1);
+                items[index] = failed_item(
+                    prepared.input.csv_path.clone(),
+                    prepared.label.clone(),
+                    prepared.timeframe.clone(),
+                    is_holdout,
+                    Some(artifact_path.clone()),
+                    "validation artifact",
+                    error,
+                );
+                persist_bounded_item_checkpoint!(index);
+                continue;
+            }
+        };
         items[index] = ResearchCampaignItemSummary {
             item_id: item_id.clone(),
             csv_path: prepared.input.csv_path.clone(),
@@ -4999,6 +7284,7 @@ fn run_research_campaign_blocking_with_mode(
             reuse_decision: reused_optimization_artifact
                 .then(|| "exact_optimization_artifact_for_validation".to_string()),
             artifact_path: Some(artifact_path),
+            artifact_sha256: None,
             report_xlsx_path: None,
             error: None,
             diagnostics: Some(build_item_diagnostics(
@@ -5009,35 +7295,17 @@ fn run_research_campaign_blocking_with_mode(
                 optimize_artifact_save_ms,
                 None,
             )),
+            fixed_candidate_result: None,
         };
-        summary = build_campaign_summary(
-            &ts,
-            "running",
-            &strategy_kind,
-            timeframe_override.clone(),
-            &req,
-            execution_mode,
-            &tags,
-            holdout_tag.clone(),
-            &counts,
-            &items,
-            None,
-            None,
-            &warnings,
-            started.elapsed().as_millis() as u64,
-        );
-        let _ = save_campaign_summary_checkpoint_blocking(
-            &mut summary,
-            &mut items,
-            Some(index),
-            &app,
-            Some(&summary_json_path),
-        )?;
+        persist_bounded_item_checkpoint!(index);
     }
 
     // The final (or only) dataset may observe cancellation inside its optimizer
     // and return before there is another dataset boundary to latch the flag.
     latch_campaign_cancellation(cancel.as_ref(), &mut counts);
+    if should_seal_vcet_campaign_artifacts(execution_mode, counts.cancelled) {
+        seal_vcet_campaign_artifact_hashes(&mut items, &app)?;
+    }
 
     let mut meta_response = None;
     let mut stage5_response = None;
@@ -5048,13 +7316,20 @@ fn run_research_campaign_blocking_with_mode(
                     .to_string(),
             );
         }
+    } else if execution_mode == ResearchCampaignExecutionMode::EvaluateCandidates {
+        if req.auto_meta || req.auto_stage5 {
+            warnings.push(
+                "execution_mode=evaluate_candidates defers Meta and Stage 5 until its terminal campaign summary is saved; run Meta from the completed campaign cohort."
+                    .to_string(),
+            );
+        }
     } else if !counts.cancelled && req.auto_meta {
         if let Some(meta_req) = req.meta_request.clone() {
             match normalize_campaign_auto_meta_request(
                 meta_req,
                 &strategy_kind,
                 timeframe_override.as_deref(),
-                &primary_tag,
+                &campaign_cohort_tag,
                 holdout_tag.as_deref(),
                 !holdout_paths.is_empty(),
                 &mut warnings,
@@ -5070,7 +7345,7 @@ fn run_research_campaign_blocking_with_mode(
                         Some(&summary_json_path),
                         &counts,
                     );
-                    match run_meta_selection_blocking(meta_req, app.clone(), cancel.clone()) {
+                    match run_meta_selection_blocking(meta_req, None, app.clone(), cancel.clone()) {
                         Ok(response) => {
                             if req.auto_stage5 {
                                 if let Some(mut stage5_req) = req.stage5_request.clone() {
@@ -5145,13 +7420,35 @@ fn run_research_campaign_blocking_with_mode(
         &warnings,
         started.elapsed().as_millis() as u64,
     );
-    let (_, summary_json_bytes) = save_campaign_summary_checkpoint_blocking(
+    let (_, mut summary_json_bytes) = save_campaign_summary_checkpoint_blocking(
         &mut summary,
         &mut items,
         None,
         &app,
         Some(&summary_json_path),
     )?;
+    if let Err(error) = deferred_run_artifact_prune.finish() {
+        let warning = format!("campaign run-artifact retention finalization failed: {error}");
+        push_unique_warning(&mut warnings, warning.clone());
+        push_unique_warning(&mut summary.warnings, warning.clone());
+        if summary.state == "completed" {
+            summary.state = "completed_with_warnings".to_string();
+        }
+        log::warn!("{warning}");
+        let (_, persisted_bytes) = save_campaign_summary_checkpoint_blocking(
+            &mut summary,
+            &mut items,
+            None,
+            &app,
+            Some(&summary_json_path),
+        )
+        .map_err(|persist_error| {
+            format!(
+                "{warning}; additionally failed to persist that retention warning to the campaign summary: {persist_error}"
+            )
+        })?;
+        summary_json_bytes = persisted_bytes;
+    }
     Ok(RunResearchCampaignResponse {
         ts,
         summary_json_path,
@@ -5209,12 +7506,15 @@ pub fn preload_research_campaign_dataset_pack_headless(
         .map(normalize_timeframe_label)
         .filter(|value| !value.is_empty());
     let mut prepared = VecDeque::with_capacity(normalized_datasets.len());
+    let mut seen_prepared_source_fingerprints = HashMap::with_capacity(normalized_datasets.len());
     for dataset in normalized_datasets {
-        prepared.push_back(prepare_campaign_dataset(
-            dataset,
-            timeframe_override.as_deref(),
-            &app_cache_dir,
-        )?);
+        let prepared_dataset =
+            prepare_campaign_dataset(dataset, timeframe_override.as_deref(), &app_cache_dir)?;
+        record_unique_prepared_campaign_source(
+            &prepared_dataset,
+            &mut seen_prepared_source_fingerprints,
+        )?;
+        prepared.push_back(prepared_dataset);
     }
     Ok(HeadlessPreparedResearchCampaignDatasetPack { datasets: prepared })
 }
@@ -5248,32 +7548,53 @@ pub async fn run_research_campaign(
 }
 
 #[cfg(test)]
+#[path = "commands_campaign_vcet_test_support.rs"]
+pub(crate) mod vcet_test_support;
+
+#[cfg(test)]
 mod tests {
+    use super::super::commands_meta::load_meta_campaign_cohort_expectation;
     use super::{
         build_campaign_manifest, build_campaign_summary, build_composite_candidate_value,
-        build_doublema_vram_prefetch_config, build_item_diagnostics, build_request_summary_value,
-        campaign_item_id, can_reuse_optimization_artifact_for_validation,
-        candidate_selection_from_optimization, candidate_values_from_optimization,
-        classify_run_artifact_for_campaign, dataset_identity_summary, existing_optimization_match,
-        existing_validation_match, is_double_like_kind, latch_campaign_cancellation,
-        load_existing_campaign_artifacts, normalize_backend_value, normalize_campaign_datasets,
-        optimization_family_for_kind, optimization_result_from_artifact_value,
-        optimization_trials_from_result, push_unique_warning, record_prefetch_feedback,
+        build_doublema_vram_prefetch_config, build_fixed_candidate_evaluation_summary,
+        build_item_diagnostics, build_request_summary_value, build_run_artifact_value,
+        build_vcet_fixed_candidate_plan, build_vcet_fixed_candidate_validation_request_value,
+        build_vcet_temporal_campaign_candidate_source, campaign_artifact_config_fingerprint,
+        campaign_artifact_tags, campaign_checkpoint_stride, campaign_item_id,
+        can_reuse_optimization_artifact_for_validation, candidate_selection_from_optimization,
+        candidate_values_from_optimization, classify_run_artifact_for_campaign,
+        dataset_identity_summary, evaluate_vcet_fixed_candidate_artifact_reuse,
+        existing_optimization_match, existing_validation_match, is_double_like_kind,
+        latch_campaign_cancellation, load_existing_campaign_artifacts, normalize_backend_value,
+        normalize_campaign_datasets, optimization_family_for_kind,
+        optimization_result_from_artifact_value, optimization_trials_from_result,
+        parse_vcet_fixed_candidate_artifact_result, parse_vcet_fixed_candidate_dataset_result,
+        planned_campaign_full_summary_builds, planned_campaign_run_artifact_prunes,
+        prepare_campaign_dataset, push_unique_warning, record_prefetch_feedback,
+        record_unique_prepared_campaign_source, refresh_campaign_dataset_source_identities,
         requested_gpu_device_id, resolve_campaign_strategy_kind,
-        save_campaign_summary_checkpoint_blocking, search_distribution_from_result,
-        should_load_existing_artifacts, validate_campaign_summary_artifact_value,
-        write_campaign_summary_bytes_atomically, write_campaign_summary_bytes_with_publish,
-        Backend, CampaignArtifactMatchDecision, CampaignDoubleMaVramPrefetchConfig,
-        CampaignEvidenceState, CampaignOptimizationFamily, CampaignOptimizationResult,
+        save_campaign_summary_checkpoint_blocking, seal_vcet_campaign_artifact_hashes,
+        search_distribution_from_result, should_load_existing_artifacts, split_holdout_paths,
+        validate_campaign_summary_artifact_value, validate_holdout_tag_isolation,
+        validate_vcet_fixed_candidate_artifact_contract,
+        validate_vcet_fixed_candidate_artifact_request_contract,
+        validate_vcet_fixed_candidate_training_evidence, vcet_fixed_candidate_id,
+        vcet_fixed_candidate_run_result_value, write_campaign_summary_bytes_atomically,
+        write_campaign_summary_bytes_with_publish, Backend, CampaignArtifactMatchDecision,
+        CampaignArtifactReuseIndex, CampaignDoubleMaVramPrefetchConfig, CampaignEvidenceState,
+        CampaignFixedCandidateArtifactReuse, CampaignFixedCandidateDatasetResult,
+        CampaignFixedCandidateObservation, CampaignOptimizationFamily, CampaignOptimizationResult,
         CampaignPrefetchDiagnostics, CampaignResumeState, DatasetPreloadJob, DatasetPrepareSource,
-        DoubleMaRequest, PreparedCampaignDataset, ResearchCampaignCounts,
+        DoubleMaRequest, MetaSelectionRequest, PreparedCampaignDataset, ResearchCampaignCounts,
+        ResearchCampaignCrossUniverseAdmissionPolicy, ResearchCampaignDatasetIdentitySummary,
         ResearchCampaignDatasetInput, ResearchCampaignExecutionMode,
         ResearchCampaignItemDiagnostics, ResearchCampaignItemSummary,
         ResearchCampaignPreloadPolicy, ResearchCampaignRequest, ResearchCampaignSummary,
-        ResearchCampaignValidationConfig,
+        ResearchCampaignValidationConfig, ResearchCampaignVcetFixedCandidate,
     };
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
@@ -5328,6 +7649,125 @@ mod tests {
         path
     }
 
+    fn vcet_fixed_campaign_request(
+        fixed_candidates: &[(u16, u16)],
+        dataset_count: usize,
+    ) -> ResearchCampaignRequest {
+        ResearchCampaignRequest {
+            strategy_kind: "Vcet".to_string(),
+            datasets: (0..dataset_count)
+                .map(|index| ResearchCampaignDatasetInput {
+                    csv_path: format!("C:/data/VCET_{index}.csv"),
+                    label: Some(format!("VCET_{index}")),
+                    timeframe: Some("1m".to_string()),
+                    source_size_bytes: Some(1_024 + index as u64),
+                    source_mtime_utc_ms: Some(1_720_000_000_000 + index as i64),
+                    source_change_marker: Some(2_720_000_000_000 + index as i64),
+                    source_content_fingerprint: Some(format!("sha256:vcet-{index}")),
+                })
+                .collect(),
+            timeframe_override: Some("1m".to_string()),
+            tags: vec!["vcet-fixed-campaign".to_string()],
+            holdout_pct: 0,
+            holdout_tag: None,
+            skip_existing: true,
+            auto_meta: false,
+            auto_stage5: false,
+            execution_mode: ResearchCampaignExecutionMode::EvaluateCandidates,
+            optimization_template: json!({
+                "strategy_kind": "Vcet",
+                "data_id": "vcet-fixed-template",
+                "backend": { "backend": "GpuKernel", "device_id": 0 },
+                "fast_range": [4, 32, 1],
+                "slow_range": [8, 96, 1],
+                "fast_ma_types": ["vidya"],
+                "slow_ma_types": ["vidya"],
+                "ma_source": "close",
+                "fast_ma_params": null,
+                "slow_ma_params": null,
+                "strategy": StrategyConfig::default(),
+                "halftrend": {
+                    "amplitude": 2,
+                    "channel_deviation": 2.0,
+                    "atr_period": 100
+                },
+                "vcet": {},
+                "objective": "Sharpe",
+                "mode": "Exact",
+                "top_k": 32,
+                "include_all": false,
+                "heatmap_bins": 32
+            }),
+            validation_config: ResearchCampaignValidationConfig {
+                max_candidates: 32,
+                fixed_candidates: fixed_candidates
+                    .iter()
+                    .map(|&(fast_len, slow_len)| ResearchCampaignVcetFixedCandidate {
+                        fast_len,
+                        slow_len,
+                    })
+                    .collect(),
+                require_gpu_kernel: true,
+                ..ResearchCampaignValidationConfig::default()
+            },
+            meta_request: None,
+            stage5_request: None,
+            preload_policy: ResearchCampaignPreloadPolicy::HostOnly,
+        }
+    }
+
+    fn vcet_fixed_validation_result_value(
+        plan: &super::CampaignVcetFixedCandidatePlan,
+        requested_backend: &str,
+        backend_used: &str,
+        backend_route: &str,
+        pnls: &[f64],
+    ) -> Value {
+        let robust_scores: Vec<f64> = (0..plan.candidates.len())
+            .map(|index| pnls.get(index).copied().unwrap_or_default() / 10.0 - 0.20)
+            .collect();
+        let max_robust_score = robust_scores
+            .iter()
+            .copied()
+            .max_by(f64::total_cmp)
+            .unwrap_or_default();
+        let candidates: Vec<Value> = plan
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, params)| {
+                let pnl = pnls.get(index).copied().unwrap_or_default();
+                let robust_score = robust_scores[index];
+                json!({
+                    "params": params,
+                    "in_sample": {
+                        "pnl": pnl,
+                        "sharpe": pnl / 10.0,
+                        "max_dd": 0.10,
+                        "trades": 20 + index as u32,
+                        "exposure": 0.5,
+                        "net_exposure": 0.5,
+                    },
+                    "validation_verdict": { "passed": pnl > 0.0 },
+                    "robust_score": robust_score,
+                    "robust_pareto": robust_score == max_robust_score,
+                })
+            })
+            .collect();
+        json!({
+            "requested_backend": requested_backend,
+            "backend_used": backend_used,
+            "backend_route": backend_route,
+            "backend_fallback_reason": null,
+            "validation_residency_tier": if backend_used == "Gpu" && backend_route.contains("GpuKernel") {
+                "gpu_kernel"
+            } else {
+                "cpu_fallback"
+            },
+            "candidates": candidates,
+        })
+    }
+
     fn prepared_dataset_for_matching() -> PreparedCampaignDataset {
         PreparedCampaignDataset {
             input: ResearchCampaignDatasetInput {
@@ -5336,6 +7776,7 @@ mod tests {
                 timeframe: Some("15m".to_string()),
                 source_size_bytes: Some(10),
                 source_mtime_utc_ms: Some(20),
+                source_change_marker: Some(30),
                 source_content_fingerprint: Some("stale-request-hint".to_string()),
             },
             candles: vector_ta::utilities::data_loader::Candles::new(
@@ -5351,6 +7792,7 @@ mod tests {
                 "timeframe": "15m",
                 "source_size_bytes": 2048,
                 "source_mtime_utc_ms": 1712000000000i64,
+                "source_change_marker": 1712000000001i64,
                 "source_content_fingerprint": "sha256:prepared"
             }),
             timeframe: "15m".to_string(),
@@ -5431,6 +7873,7 @@ mod tests {
                 timeframe: Some("15m".to_string()),
                 source_size_bytes: Some(source_size_bytes),
                 source_mtime_utc_ms: Some(source_mtime_utc_ms),
+                source_change_marker: Some(source_mtime_utc_ms.saturating_add(1)),
                 source_content_fingerprint: Some(source_content_fingerprint.to_string()),
             },
             candles: vector_ta::utilities::data_loader::Candles::new(
@@ -5479,9 +7922,11 @@ mod tests {
                 resume_state: Some(CampaignResumeState::Resumable),
                 reuse_decision: None,
                 artifact_path: None,
+                artifact_sha256: None,
                 report_xlsx_path: None,
                 error: None,
                 diagnostics: None,
+                fixed_candidate_result: None,
             })
             .collect()
     }
@@ -5538,6 +7983,7 @@ mod tests {
                 timeframe: Some("15m".to_string()),
                 source_size_bytes: Some(2_048),
                 source_mtime_utc_ms: Some(1_712_000_000_000),
+                source_change_marker: Some(1_712_000_000_001),
                 source_content_fingerprint: Some("fnv1a64-full-aabbccdd".to_string()),
             }],
             timeframe_override: Some("15m".to_string()),
@@ -5582,9 +8028,11 @@ mod tests {
             resume_state: Some(CampaignResumeState::Resumable),
             reuse_decision: None,
             artifact_path: None,
+            artifact_sha256: None,
             report_xlsx_path: None,
             error: None,
             diagnostics: None,
+            fixed_candidate_result: None,
         }];
         let counts = ResearchCampaignCounts {
             total: 1,
@@ -5629,6 +8077,22 @@ mod tests {
 
         assert!(counts.cancelled);
         assert_eq!(counts.failed, 1);
+    }
+
+    #[test]
+    fn vcet_artifact_sealing_policy_skips_cancelled_checkpoints_only() {
+        assert!(!super::should_seal_vcet_campaign_artifacts(
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            true,
+        ));
+        assert!(super::should_seal_vcet_campaign_artifacts(
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            false,
+        ));
+        assert!(!super::should_seal_vcet_campaign_artifacts(
+            ResearchCampaignExecutionMode::Full,
+            false,
+        ));
     }
 
     #[test]
@@ -5877,7 +8341,6 @@ mod tests {
             "Vcc",
             "Vemr",
             "Rocb",
-            "Vcet",
             "Mkcs",
             "Kqsr",
             "Carm",
@@ -5901,6 +8364,1753 @@ mod tests {
                 "expected {kind} to preserve CpuOnly requests"
             );
         }
+
+        assert_eq!(
+            normalize_backend_value(Some(&gpu_kernel), "Vcet"),
+            gpu_kernel,
+            "VCET fixed-candidate validation must preserve its explicit GpuKernel route"
+        );
+        assert_eq!(
+            normalize_backend_value(Some(&gpu_hybrid), "Vcet"),
+            json!({ "backend": "Auto", "device_id": 5 }),
+            "VCET does not expose a hybrid fixed-candidate route"
+        );
+    }
+
+    #[test]
+    fn vcet_evaluate_candidates_builds_canonical_typed_manifest_and_distinct_fingerprint() {
+        let req = vcet_fixed_campaign_request(&[(12, 48), (6, 24)], 1);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid fixed-candidate plan")
+        .expect("evaluate mode plan");
+        assert_eq!(plan.candidates.len(), 2);
+        assert_eq!(
+            plan.candidates[0].get("fast_len").and_then(Value::as_u64),
+            Some(6)
+        );
+        assert_eq!(
+            plan.candidates[1].get("slow_len").and_then(Value::as_u64),
+            Some(48)
+        );
+        for candidate in &plan.candidates {
+            let decoded: ta_app_core::CompositeParams =
+                serde_json::from_value(candidate.clone()).expect("typed CompositeParams candidate");
+            assert_eq!(decoded.halftrend.amplitude, 2);
+            assert!(decoded.vcet.is_some());
+        }
+
+        let manifest = build_campaign_manifest(
+            &req,
+            "Vcet",
+            Some("1m"),
+            &req.tags,
+            None,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        );
+        assert_eq!(
+            manifest.candidate_manifest_hash.as_deref(),
+            Some(plan.candidate_manifest_hash.as_str())
+        );
+        let validation_req = build_vcet_fixed_candidate_validation_request_value(
+            "vcet-data-1",
+            &req.optimization_template,
+            &json!({
+                "csv_path": "C:/data/VCET_0.csv",
+                "timeframe": "1m",
+                "label": "VCET_0"
+            }),
+            &req.validation_config,
+            &plan,
+        );
+        assert_eq!(
+            validation_req
+                .pointer("/backend/backend")
+                .and_then(Value::as_str),
+            Some("GpuKernel")
+        );
+        assert_eq!(
+            validation_req
+                .get("candidate_manifest_hash")
+                .and_then(Value::as_str),
+            Some(plan.candidate_manifest_hash.as_str())
+        );
+        let decoded_validation: ta_app_core::CompositeValidationRequest =
+            serde_json::from_value(validation_req.clone())
+                .expect("fixed-candidate request must decode for composite validation");
+        assert_eq!(decoded_validation.candidates.len(), 2);
+        let fingerprint = super::run_artifacts::compute_config_fingerprint_from_artifact(
+            &super::artifact_stub(&req.optimization_template, Some(&validation_req)),
+        );
+
+        let changed_req = vcet_fixed_campaign_request(&[(6, 24), (12, 49)], 1);
+        let changed_plan = build_vcet_fixed_candidate_plan(
+            &changed_req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("changed fixed-candidate plan")
+        .expect("changed evaluate mode plan");
+        let changed_validation_req = build_vcet_fixed_candidate_validation_request_value(
+            "vcet-data-1",
+            &changed_req.optimization_template,
+            &json!({
+                "csv_path": "C:/data/VCET_0.csv",
+                "timeframe": "1m",
+                "label": "VCET_0"
+            }),
+            &changed_req.validation_config,
+            &changed_plan,
+        );
+        let changed_fingerprint =
+            super::run_artifacts::compute_config_fingerprint_from_artifact(&super::artifact_stub(
+                &changed_req.optimization_template,
+                Some(&changed_validation_req),
+            ));
+        assert_ne!(
+            plan.candidate_manifest_hash,
+            changed_plan.candidate_manifest_hash
+        );
+        assert_ne!(fingerprint, changed_fingerprint);
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_identity_rejects_semantic_period_aliases() {
+        let mut req = vcet_fixed_campaign_request(&[(6, 24), (12, 48)], 1);
+        req.optimization_template["vcet"] = json!({
+            "map_fast_to_vidya_short_period": false,
+            "map_slow_to_vidya_long_period": false,
+            "map_slow_to_ce_period": false,
+            "vidya_short_period": 7,
+            "vidya_long_period": 31,
+            "vidya_alpha": 0.25,
+            "ce_period": 19,
+            "ce_mult": 2.75,
+            "ce_use_close": true,
+            "require_vidya_slope": true,
+            "max_trade_bars": 90
+        });
+
+        let error = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect_err("different period pairs resolving to one VCET strategy must be rejected");
+        assert!(error.contains("duplicate effective strategy identity"));
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_identity_hashes_every_effective_vcet_control() {
+        let base = json!({
+            "map_fast_to_vidya_short_period": false,
+            "map_slow_to_vidya_long_period": false,
+            "map_slow_to_ce_period": false,
+            "vidya_short_period": 6,
+            "vidya_long_period": 24,
+            "vidya_alpha": 0.2,
+            "ce_period": 22,
+            "ce_mult": 3.0,
+            "ce_use_close": true,
+            "require_vidya_slope": true,
+            "max_trade_bars": 120
+        });
+        let candidate_id_for = |vcet: Value| {
+            let mut req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+            req.optimization_template["vcet"] = vcet;
+            let plan = build_vcet_fixed_candidate_plan(
+                &req,
+                "Vcet",
+                ResearchCampaignExecutionMode::EvaluateCandidates,
+            )
+            .expect("valid fixed-candidate plan")
+            .expect("evaluate mode plan");
+            vcet_fixed_candidate_id(plan.candidate_identities[0])
+        };
+        let base_id = candidate_id_for(base.clone());
+
+        let mut variants = Vec::new();
+        for (field, value) in [
+            ("vidya_short_period", json!(7)),
+            ("vidya_long_period", json!(25)),
+            ("vidya_alpha", json!(0.3)),
+            ("ce_period", json!(23)),
+            ("ce_mult", json!(3.5)),
+            ("ce_use_close", json!(false)),
+            ("require_vidya_slope", json!(false)),
+            ("max_trade_bars", json!(121)),
+        ] {
+            let mut variant = base.clone();
+            variant[field] = value;
+            variants.push((field, variant));
+        }
+        for (field, variant) in variants {
+            assert_ne!(
+                candidate_id_for(variant),
+                base_id,
+                "changing effective VCET control '{field}' must change candidate identity"
+            );
+        }
+
+        let mut equivalent_mapping = base;
+        equivalent_mapping["map_fast_to_vidya_short_period"] = Value::Bool(true);
+        equivalent_mapping["map_slow_to_vidya_long_period"] = Value::Bool(true);
+        assert_eq!(
+            candidate_id_for(equivalent_mapping),
+            base_id,
+            "mapping mechanics must not change identity when the resolved strategy is unchanged"
+        );
+    }
+
+    #[test]
+    fn vcet_qmc_search_expands_to_a_sealed_multidimensional_candidate_manifest() {
+        let mut req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        req.validation_config.fixed_candidates.clear();
+        req.validation_config.max_candidates = 12;
+        req.validation_config.vcet_search = Some(ta_app_core::vcet_search::VcetSearchConfig {
+            budget: 12,
+            seed: 42,
+            vidya_short_period: ta_app_core::vcet_search::VcetU16Range {
+                min: 4,
+                max: 8,
+                step: 2,
+            },
+            vidya_long_period: ta_app_core::vcet_search::VcetU16Range {
+                min: 16,
+                max: 24,
+                step: 4,
+            },
+            vidya_alpha: ta_app_core::vcet_search::VcetQuantizedFloatRange {
+                min: 0.1,
+                max: 0.3,
+                quantum: 0.1,
+            },
+            ce_period: ta_app_core::vcet_search::VcetU16Range {
+                min: 12,
+                max: 20,
+                step: 4,
+            },
+            ce_mult: ta_app_core::vcet_search::VcetQuantizedFloatRange {
+                min: 2.0,
+                max: 3.0,
+                quantum: 0.5,
+            },
+            ce_use_close: ta_app_core::vcet_search::VcetBoolChoices::both(),
+            require_vidya_slope: ta_app_core::vcet_search::VcetBoolChoices::both(),
+            max_trade_bars: ta_app_core::vcet_search::VcetU16Range {
+                min: 60,
+                max: 120,
+                step: 30,
+            },
+        });
+
+        let first = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid bounded VCET search")
+        .expect("evaluate-candidate plan");
+        let second = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("deterministic bounded VCET search")
+        .expect("evaluate-candidate plan");
+
+        assert_eq!(first.candidates.len(), 12);
+        assert_eq!(first.candidate_identities.len(), 12);
+        assert_eq!(
+            first.candidate_manifest_hash,
+            second.candidate_manifest_hash
+        );
+        assert_eq!(first.search_manifest, second.search_manifest);
+        let search = first
+            .search_manifest
+            .as_ref()
+            .expect("sealed search manifest");
+        assert_eq!(search.requested_budget, 12);
+        assert_eq!(search.effective_budget, 12);
+        assert!(search
+            .candidates
+            .iter()
+            .zip(first.candidate_identities.iter().copied())
+            .all(
+                |(sampled, identity)| sampled.evaluation_candidate_id.as_deref()
+                    == Some(vcet_fixed_candidate_id(identity).as_str())
+            ));
+        assert!(first.candidates.iter().all(|candidate| {
+            candidate
+                .pointer("/vcet/map_fast_to_vidya_short_period")
+                .and_then(Value::as_bool)
+                == Some(false)
+                && candidate
+                    .pointer("/vcet/map_slow_to_vidya_long_period")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+                && candidate
+                    .pointer("/vcet/map_slow_to_ce_period")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+        }));
+
+        let validation_res = vcet_fixed_validation_result_value(
+            &first,
+            "GpuKernel",
+            "Gpu",
+            "GpuKernel",
+            &vec![1.0; first.candidates.len()],
+        );
+        let mut artifact = json!({
+            "run": { "res": vcet_fixed_candidate_run_result_value(&first) },
+            "validation": {
+                "req": {
+                    "candidate_manifest_hash": first.candidate_manifest_hash,
+                    "candidate_search_id": search.search_id.as_str(),
+                    "candidate_search_schema_version": search.schema_version,
+                },
+                "res": validation_res,
+            },
+        });
+        parse_vcet_fixed_candidate_artifact_result(&artifact, &first, true)
+            .expect("exact search lineage is replayable");
+        artifact["validation"]["req"]["candidate_search_id"] =
+            Value::String("vcet_search_v1_tampered".to_string());
+        assert!(
+            parse_vcet_fixed_candidate_artifact_result(&artifact, &first, true)
+                .expect_err("candidate-equivalent artifact with different search lineage must fail")
+                .contains("search lineage")
+        );
+        artifact["validation"]["req"]["candidate_search_id"] =
+            Value::String(search.search_id.clone());
+        artifact["run"]["res"]["candidate_search_schema_version"] = Value::from(99_u64);
+        assert!(
+            parse_vcet_fixed_candidate_artifact_result(&artifact, &first, true)
+                .expect_err("run-result search lineage must also be sealed")
+                .contains("search lineage")
+        );
+    }
+
+    #[test]
+    fn vcet_qmc_aggregation_keeps_same_period_pairs_with_different_controls_distinct() {
+        let mut req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        req.validation_config.fixed_candidates.clear();
+        req.validation_config.max_candidates = 2;
+        let mut search = ta_app_core::vcet_search::VcetSearchConfig::default();
+        search.budget = 2;
+        search.vidya_short_period = ta_app_core::vcet_search::VcetU16Range {
+            min: 6,
+            max: 6,
+            step: 1,
+        };
+        search.vidya_long_period = ta_app_core::vcet_search::VcetU16Range {
+            min: 24,
+            max: 24,
+            step: 1,
+        };
+        search.vidya_alpha = ta_app_core::vcet_search::VcetQuantizedFloatRange {
+            min: 0.2,
+            max: 0.3,
+            quantum: 0.1,
+        };
+        search.ce_period = ta_app_core::vcet_search::VcetU16Range {
+            min: 20,
+            max: 20,
+            step: 1,
+        };
+        search.ce_mult = ta_app_core::vcet_search::VcetQuantizedFloatRange {
+            min: 3.0,
+            max: 3.0,
+            quantum: 0.5,
+        };
+        search.ce_use_close = ta_app_core::vcet_search::VcetBoolChoices::fixed(true);
+        search.require_vidya_slope = ta_app_core::vcet_search::VcetBoolChoices::fixed(true);
+        search.max_trade_bars = ta_app_core::vcet_search::VcetU16Range {
+            min: 120,
+            max: 120,
+            step: 1,
+        };
+        req.validation_config.vcet_search = Some(search);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid search")
+        .expect("candidate plan");
+        assert_eq!(plan.candidate_identities.len(), 2);
+        assert_eq!(
+            (
+                plan.candidate_identities[0].vidya_short_period,
+                plan.candidate_identities[0].vidya_long_period
+            ),
+            (
+                plan.candidate_identities[1].vidya_short_period,
+                plan.candidate_identities[1].vidya_long_period
+            )
+        );
+        assert_ne!(plan.candidate_identities[0], plan.candidate_identities[1]);
+
+        let result = CampaignFixedCandidateDatasetResult {
+            gpu_kernel_used: true,
+            candidates: vec![
+                CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[0],
+                    pnl: -7.0,
+                    sharpe: -0.7,
+                    max_drawdown: 0.4,
+                    trades: 3,
+                    hard_gate_passed: false,
+                },
+                CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[1],
+                    pnl: 11.0,
+                    sharpe: 1.1,
+                    max_drawdown: 0.1,
+                    trades: 30,
+                    hard_gate_passed: true,
+                },
+            ],
+        };
+        let aggregate =
+            super::build_fixed_candidate_cohort_aggregate_from_results(&plan, 1, &[&result])
+                .expect("identity-safe aggregate");
+        assert_eq!(aggregate.candidates[0].pnl_median, Some(-7.0));
+        assert_eq!(aggregate.candidates[0].hard_gate_pass_datasets, 0);
+        assert_eq!(aggregate.candidates[1].pnl_median, Some(11.0));
+        assert_eq!(aggregate.candidates[1].hard_gate_pass_datasets, 1);
+    }
+
+    #[test]
+    fn vcet_qmc_search_is_mutually_exclusive_with_legacy_period_pairs_and_respects_cap() {
+        let mut req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        let mut search = ta_app_core::vcet_search::VcetSearchConfig::default();
+        search.budget = 4;
+        req.validation_config.vcet_search = Some(search.clone());
+        let error = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect_err("two candidate-design contracts must be rejected");
+        assert!(error.contains("either validation_config.fixed_candidates"));
+
+        req.validation_config.fixed_candidates.clear();
+        req.validation_config.max_candidates = 3;
+        let error = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect_err("search manifest must not be silently truncated");
+        assert!(error.contains("generated 4 candidates"));
+        assert!(error.contains("max_candidates=3"));
+    }
+
+    #[test]
+    fn vcet_frontend_like_evaluate_candidates_request_decodes_complete_builder_contract() {
+        let request_value = json!({
+            "strategy_kind": "Vcet",
+            "datasets": [{
+                "csv_path": "C:/data/VCET_FRONTEND.csv",
+                "label": "VCET_FRONTEND",
+                "timeframe": "1m",
+                "source_size_bytes": 1234,
+                "source_mtime_utc_ms": 1720000000000_i64,
+                "source_content_fingerprint": "sha256:frontend-vcet"
+            }],
+            "timeframe_override": "1m",
+            "tags": ["vcet-frontend-contract"],
+            "holdout_pct": 20,
+            "holdout_tag": "vcet-holdout",
+            "skip_existing": true,
+            "auto_meta": false,
+            "auto_stage5": false,
+            "execution_mode": "evaluate_candidates",
+            "optimization_template": {
+                "strategy_kind": "Vcet",
+                "data_id": "frontend-vcet-template",
+                "backend": { "backend": "GpuKernel", "device_id": 0 },
+                "fast_range": [4, 32, 1],
+                "slow_range": [8, 96, 1],
+                "fast_ma_types": ["vidya"],
+                "slow_ma_types": ["vidya"],
+                "ma_source": "close",
+                "fast_ma_params": null,
+                "slow_ma_params": null,
+                "strategy": StrategyConfig::default(),
+                "halftrend": {
+                    "amplitude": 2,
+                    "channel_deviation": 2.0,
+                    "atr_period": 100
+                },
+                "vcet": {},
+                "objective": "Sharpe",
+                "mode": "Exact",
+                "top_k": 32,
+                "include_all": false,
+                "heatmap_bins": 32
+            },
+            "validation_config": {
+                "max_candidates": 2,
+                "seed": 7,
+                "admission_policy": "legacy_topk",
+                "fixed_candidates": [
+                    { "fast_len": 6, "slow_len": 24 },
+                    { "fast_len": 12, "slow_len": 48 }
+                ],
+                "require_gpu_kernel": true
+            },
+            "preload_policy": "host_only"
+        });
+
+        let req: ResearchCampaignRequest =
+            serde_json::from_value(request_value).expect("decode frontend campaign request");
+        validate_holdout_tag_isolation(
+            &req.tags,
+            &req.datasets,
+            req.holdout_pct,
+            req.holdout_tag.as_deref(),
+        )
+        .expect("frontend cohort tags remain disjoint");
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("validate frontend VCET request")
+        .expect("fixed candidate plan");
+        assert_eq!(plan.candidates.len(), 2);
+        for candidate in plan.candidates {
+            let decoded: ta_app_core::CompositeParams =
+                serde_json::from_value(candidate).expect("canonical typed VCET candidate");
+            assert!(decoded.vcet.is_some());
+            assert_eq!(decoded.halftrend.amplitude, 2);
+        }
+    }
+
+    #[test]
+    fn vcet_evaluate_candidates_rejects_ambiguous_or_truncated_manifests() {
+        let duplicate = vcet_fixed_campaign_request(&[(6, 24), (6, 24)], 1);
+        assert!(build_vcet_fixed_candidate_plan(
+            &duplicate,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect_err("duplicate manifest must fail")
+        .contains("duplicate"));
+
+        let invalid_mapped_short = vcet_fixed_campaign_request(&[(1, 24)], 1);
+        assert!(build_vcet_fixed_candidate_plan(
+            &invalid_mapped_short,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect_err("mapped Fast=1 must fail the effective VIDYA contract")
+        .contains("effective vidya_short_period must be >= 2"));
+
+        let mut over_cap = vcet_fixed_campaign_request(&[(6, 24), (12, 48)], 1);
+        over_cap.validation_config.max_candidates = 1;
+        assert!(build_vcet_fixed_candidate_plan(
+            &over_cap,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect_err("over-cap manifest must fail instead of truncating")
+        .contains("will not be truncated"));
+
+        let mut wrong_backend = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        wrong_backend.optimization_template["backend"] =
+            json!({ "backend": "Auto", "device_id": 0 });
+        assert!(build_vcet_fixed_candidate_plan(
+            &wrong_backend,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect_err("strict route requires explicit GpuKernel")
+        .contains("require_gpu_kernel=true"));
+
+        let decoded: ResearchCampaignExecutionMode =
+            serde_json::from_str("\"evaluate_candidates\"").expect("deserialize mode");
+        assert_eq!(decoded, ResearchCampaignExecutionMode::EvaluateCandidates);
+    }
+
+    #[test]
+    fn vcet_strict_gpu_evaluate_candidates_rejects_auxiliary_cpu_stages() {
+        let stages: [(&str, fn(&mut ResearchCampaignValidationConfig)); 8] = [
+            ("walk_forward", |cfg| {
+                cfg.walk_forward = Some(
+                    serde_json::from_value(json!({})).expect("walk-forward defaults deserialize"),
+                );
+            }),
+            ("reopt_walk_forward", |cfg| {
+                cfg.reopt_walk_forward = Some(
+                    serde_json::from_value(json!({}))
+                        .expect("reopt walk-forward defaults deserialize"),
+                );
+            }),
+            ("spa", |cfg| {
+                cfg.spa =
+                    Some(serde_json::from_value(json!({})).expect("SPA defaults deserialize"));
+            }),
+            ("perturb", |cfg| {
+                cfg.perturb =
+                    Some(serde_json::from_value(json!({})).expect("perturb defaults deserialize"));
+            }),
+            ("trade_bootstrap", |cfg| {
+                cfg.trade_bootstrap = Some(
+                    serde_json::from_value(json!({}))
+                        .expect("trade bootstrap defaults deserialize"),
+                );
+            }),
+            ("monte_carlo", |cfg| {
+                cfg.monte_carlo = Some(
+                    serde_json::from_value(json!({})).expect("Monte Carlo defaults deserialize"),
+                );
+            }),
+            ("cross_ticker", |cfg| {
+                cfg.cross_ticker = Some(
+                    serde_json::from_value(json!({})).expect("cross-ticker defaults deserialize"),
+                );
+            }),
+            ("cscv_pbo", |cfg| {
+                cfg.cscv_pbo =
+                    Some(serde_json::from_value(json!({})).expect("CSCV defaults deserialize"));
+            }),
+        ];
+
+        for (stage, enable_stage) in stages {
+            let mut req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+            enable_stage(&mut req.validation_config);
+            let error = build_vcet_fixed_candidate_plan(
+                &req,
+                "Vcet",
+                ResearchCampaignExecutionMode::EvaluateCandidates,
+            )
+            .expect_err("strict GPU fixed-candidate evaluation must reject CPU auxiliary work");
+            assert!(error.contains("not proven fully GPU-resident"));
+            assert!(error.contains(stage), "missing stage '{stage}' in: {error}");
+        }
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_result_policy_fails_closed_on_non_kernel_route() {
+        let req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let gpu =
+            vcet_fixed_validation_result_value(&plan, "GpuKernel", "Gpu", "GpuKernel", &[1.25]);
+        let accepted = parse_vcet_fixed_candidate_dataset_result(&gpu, &plan, true)
+            .expect("exact GPU kernel route");
+        assert!(accepted.gpu_kernel_used);
+
+        let auto_gpu =
+            vcet_fixed_validation_result_value(&plan, "Auto", "Gpu", "Auto->GpuKernel", &[1.25]);
+        let advisory = parse_vcet_fixed_candidate_dataset_result(&auto_gpu, &plan, false)
+            .expect("non-strict mode may use Auto->GpuKernel");
+        assert!(advisory.gpu_kernel_used);
+        assert!(parse_vcet_fixed_candidate_dataset_result(&auto_gpu, &plan, true).is_err());
+
+        let fallback = vcet_fixed_validation_result_value(
+            &plan,
+            "GpuKernel",
+            "Cpu",
+            "GpuKernel->Cpu",
+            &[1.25],
+        );
+        let error = parse_vcet_fixed_candidate_dataset_result(&fallback, &plan, true)
+            .expect_err("strict fixed-candidate route must reject CPU fallback");
+        assert!(error.contains("required the exact GpuKernel route"));
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_reuse_errors_fall_through_to_fresh_evaluation() {
+        let req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let validation_res =
+            vcet_fixed_validation_result_value(&plan, "GpuKernel", "Gpu", "GpuKernel", &[1.0]);
+        let valid_artifact = json!({
+            "validation": {
+                "req": { "candidate_manifest_hash": plan.candidate_manifest_hash },
+                "res": validation_res,
+            }
+        });
+        assert!(matches!(
+            evaluate_vcet_fixed_candidate_artifact_reuse(
+                "C:/runs/valid.json",
+                Ok(valid_artifact.clone()),
+                &plan,
+                true,
+            ),
+            CampaignFixedCandidateArtifactReuse::Reuse(_)
+        ));
+
+        for (path, loaded) in [
+            (
+                "C:/runs/corrupt.json",
+                Err("artifact JSON was corrupt".to_string()),
+            ),
+            (
+                "C:/runs/incompatible.json",
+                Ok({
+                    let mut artifact = valid_artifact.clone();
+                    artifact["validation"]["req"]["candidate_manifest_hash"] =
+                        Value::String("sha256:other-manifest".to_string());
+                    artifact
+                }),
+            ),
+            (
+                "C:/runs/cpu-fallback.json",
+                Ok({
+                    let mut artifact = valid_artifact.clone();
+                    artifact["validation"]["res"] = vcet_fixed_validation_result_value(
+                        &plan,
+                        "GpuKernel",
+                        "Cpu",
+                        "GpuKernel->Cpu",
+                        &[1.0],
+                    );
+                    artifact
+                }),
+            ),
+        ] {
+            match evaluate_vcet_fixed_candidate_artifact_reuse(path, loaded, &plan, true) {
+                CampaignFixedCandidateArtifactReuse::Rerun { warning } => {
+                    assert!(warning.contains(path));
+                    assert!(warning.contains("reran the dataset"));
+                }
+                CampaignFixedCandidateArtifactReuse::Reuse(_) => {
+                    panic!("invalid artifact '{path}' must not suppress fresh evaluation")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_artifact_contract_rejects_tampered_result_rows() {
+        let req = vcet_fixed_campaign_request(&[(6, 24), (12, 48)], 1);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let contract = super::CampaignVcetFixedCandidateArtifactContract {
+            plan: plan.clone(),
+            require_gpu_kernel: true,
+        };
+        let valid = json!({
+            "validation": {
+                "req": { "candidate_manifest_hash": plan.candidate_manifest_hash },
+                "res": vcet_fixed_validation_result_value(
+                    &plan,
+                    "GpuKernel",
+                    "Gpu",
+                    "GpuKernel",
+                    &[1.0, 2.0],
+                ),
+            }
+        });
+        validate_vcet_fixed_candidate_artifact_contract(&valid, &contract)
+            .expect("untampered artifact satisfies fixed-candidate contract");
+
+        let mut cases: Vec<(&str, Value)> = Vec::new();
+
+        let mut missing_row = valid.clone();
+        missing_row
+            .pointer_mut("/validation/res/candidates")
+            .and_then(Value::as_array_mut)
+            .expect("candidate rows")
+            .pop();
+        cases.push(("missing row", missing_row));
+
+        let mut extra_row = valid.clone();
+        let rows = extra_row
+            .pointer_mut("/validation/res/candidates")
+            .and_then(Value::as_array_mut)
+            .expect("candidate rows");
+        rows.push(rows[0].clone());
+        cases.push(("extra row", extra_row));
+
+        let mut duplicate_row = valid.clone();
+        let rows = duplicate_row
+            .pointer_mut("/validation/res/candidates")
+            .and_then(Value::as_array_mut)
+            .expect("candidate rows");
+        rows[1] = rows[0].clone();
+        cases.push(("duplicate row", duplicate_row));
+
+        let mut unexpected_periods = valid.clone();
+        unexpected_periods["validation"]["res"]["candidates"][0]["params"]["fast_len"] =
+            Value::from(7_u64);
+        cases.push(("unexpected periods", unexpected_periods));
+
+        let mut altered_params = valid.clone();
+        altered_params["validation"]["res"]["candidates"][0]["params"]
+            .as_object_mut()
+            .expect("candidate params")
+            .insert("tampered".to_string(), Value::Bool(true));
+        cases.push(("altered params", altered_params));
+
+        let mut missing_metric = valid.clone();
+        missing_metric["validation"]["res"]["candidates"][0]["in_sample"]
+            .as_object_mut()
+            .expect("in-sample metrics")
+            .remove("sharpe");
+        cases.push(("missing metric", missing_metric));
+
+        let mut missing_verdict = valid.clone();
+        missing_verdict["validation"]["res"]["candidates"][0]["validation_verdict"] = Value::Null;
+        cases.push(("missing verdict", missing_verdict));
+
+        let mut altered_robust_score = valid.clone();
+        altered_robust_score["validation"]["res"]["candidates"][0]["robust_score"] =
+            Value::from(999.0);
+        cases.push(("altered robust score", altered_robust_score));
+
+        let mut altered_pareto = valid.clone();
+        let pareto = altered_pareto["validation"]["res"]["candidates"][0]["robust_pareto"]
+            .as_bool()
+            .expect("robust pareto");
+        altered_pareto["validation"]["res"]["candidates"][0]["robust_pareto"] =
+            Value::Bool(!pareto);
+        cases.push(("altered robust pareto", altered_pareto));
+
+        let mut missing_exposure = valid.clone();
+        missing_exposure["validation"]["res"]["candidates"][0]["in_sample"]
+            .as_object_mut()
+            .expect("in-sample metrics")
+            .remove("exposure");
+        cases.push(("missing exposure", missing_exposure));
+
+        let mut invalid_psr = valid.clone();
+        invalid_psr["validation"]["res"]["candidates"][0]["psr"] = Value::from(1.5);
+        cases.push(("invalid PSR probability", invalid_psr));
+
+        let mut wrong_type_search_id = valid.clone();
+        wrong_type_search_id["validation"]["req"]["candidate_search_id"] = Value::from(7_u64);
+        cases.push(("legacy wrong-type search id", wrong_type_search_id));
+
+        let mut partial_search_lineage = valid.clone();
+        partial_search_lineage["validation"]["req"]["candidate_search_schema_version"] =
+            Value::from(1_u64);
+        cases.push(("legacy partial search lineage", partial_search_lineage));
+
+        let mut injected_walk_forward = valid.clone();
+        injected_walk_forward["validation"]["res"]["candidates"][0]["walk_forward"] =
+            json!({ "sharpe_median": 100.0 });
+        cases.push(("injected walk forward", injected_walk_forward));
+
+        let mut wrong_route = valid.clone();
+        wrong_route["validation"]["res"]["backend_route"] =
+            Value::String("GpuKernel->Cpu".to_string());
+        wrong_route["validation"]["res"]["backend_used"] = Value::String("Cpu".to_string());
+        cases.push(("wrong route", wrong_route));
+
+        let mut wrong_hash = valid;
+        wrong_hash["validation"]["req"]["candidate_manifest_hash"] =
+            Value::String("sha256:other".to_string());
+        cases.push(("wrong hash", wrong_hash));
+
+        for (label, artifact) in cases {
+            assert!(
+                validate_vcet_fixed_candidate_artifact_contract(&artifact, &contract).is_err(),
+                "{label} must fail the exact campaign-to-Meta candidate contract"
+            );
+        }
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_request_envelope_is_exactly_bound() {
+        let req = vcet_fixed_campaign_request(&[(6, 24), (12, 48)], 1);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let contract = super::CampaignVcetFixedCandidateArtifactContract {
+            plan: plan.clone(),
+            require_gpu_kernel: true,
+        };
+        let valid = json!({
+            "run": {
+                "res": {
+                    "evaluation_mode": "evaluate_candidates",
+                    "candidate_manifest_hash": plan.candidate_manifest_hash,
+                    "num_combos": plan.candidates.len(),
+                }
+            },
+            "validation": {
+                "req": {
+                    "evaluation_mode": "evaluate_candidates",
+                    "candidate_manifest_hash": plan.candidate_manifest_hash,
+                    "require_gpu_kernel": true,
+                    "candidates": plan.candidates,
+                    "max_candidates": plan.candidates.len(),
+                }
+            }
+        });
+        validate_vcet_fixed_candidate_artifact_request_contract(&valid, &contract)
+            .expect("exact request envelope");
+
+        for tampered in [
+            {
+                let mut value = valid.clone();
+                value["validation"]["req"]["require_gpu_kernel"] = Value::Bool(false);
+                value
+            },
+            {
+                let mut value = valid.clone();
+                value["validation"]["req"]["candidates"] = json!([]);
+                value
+            },
+            {
+                let mut value = valid.clone();
+                value["run"]["res"]["candidate_manifest_hash"] =
+                    Value::String("sha256:foreign".to_string());
+                value
+            },
+        ] {
+            assert!(
+                validate_vcet_fixed_candidate_artifact_request_contract(&tampered, &contract)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn campaign_bound_meta_recomputes_admission_from_exact_training_artifacts() {
+        let req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let item = ResearchCampaignItemSummary {
+            item_id: Some("training-item".to_string()),
+            csv_path: req.datasets[0].csv_path.clone(),
+            label: "VCET_0".to_string(),
+            timeframe: "1m".to_string(),
+            is_holdout: false,
+            status: "ok".to_string(),
+            dataset_identity: None,
+            evidence_state: Some(CampaignEvidenceState::Complete),
+            resume_state: Some(CampaignResumeState::Complete),
+            reuse_decision: None,
+            artifact_path: Some("C:/runs/vcet-training.json".to_string()),
+            artifact_sha256: Some("a".repeat(64)),
+            report_xlsx_path: None,
+            error: None,
+            diagnostics: None,
+            fixed_candidate_result: Some(CampaignFixedCandidateDatasetResult {
+                gpu_kernel_used: true,
+                candidates: vec![CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[0],
+                    pnl: 1.0,
+                    sharpe: 0.1,
+                    max_drawdown: 0.1,
+                    trades: 20,
+                    hard_gate_passed: true,
+                }],
+            }),
+        };
+        let counts = ResearchCampaignCounts {
+            total: 1,
+            optimized: 0,
+            validated: 1,
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        };
+        let summary = build_campaign_summary(
+            "2026-07-31T12:00:00Z",
+            "completed",
+            "Vcet",
+            Some("1m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &req.tags,
+            None,
+            &counts,
+            &[item],
+            None,
+            None,
+            &[],
+            1,
+        );
+        assert!(
+            summary.items[0].fixed_candidate_result.is_none(),
+            "persisted summary projections must not retain the hidden per-dataset candidate matrix"
+        );
+        assert!(summary.fixed_candidate_evaluation.is_some());
+        let artifact = json!({
+            "validation": {
+                "req": { "candidate_manifest_hash": plan.candidate_manifest_hash },
+                "res": vcet_fixed_validation_result_value(
+                    &plan,
+                    "GpuKernel",
+                    "Gpu",
+                    "GpuKernel",
+                    &[1.0],
+                ),
+            }
+        });
+        validate_vcet_fixed_candidate_training_evidence(&summary, std::iter::once(&artifact))
+            .expect("exact training artifact reproduces the campaign admission aggregate");
+        let promoted = build_vcet_temporal_campaign_candidate_source(&summary)
+            .expect("admitted campaign candidates promote into exact temporal identities");
+        assert_eq!(
+            promoted.sealed_candidate_manifest.payload.candidates.len(),
+            summary
+                .fixed_candidate_evaluation
+                .as_ref()
+                .expect("fixed candidate aggregate")
+                .admitted_candidate_count
+        );
+
+        let mut contradicted = artifact;
+        contradicted["validation"]["res"]["candidates"][0]["in_sample"]["pnl"] = Value::from(-5.0);
+        contradicted["validation"]["res"]["candidates"][0]["in_sample"]["sharpe"] =
+            Value::from(-0.5);
+        contradicted["validation"]["res"]["candidates"][0]["robust_score"] = Value::from(-0.7);
+        contradicted["validation"]["res"]["candidates"][0]["validation_verdict"]["passed"] =
+            Value::Bool(false);
+        assert!(validate_vcet_fixed_candidate_training_evidence(
+            &summary,
+            std::iter::once(&contradicted),
+        )
+        .expect_err("Meta must reject artifact evidence that contradicts the summary")
+        .contains("does not match the exact referenced artifacts"));
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_summary_uses_all_requested_datasets_as_denominator() {
+        let req = vcet_fixed_campaign_request(&[(6, 24), (12, 48)], 3);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let make_result = |first_pnl: f64, second_pnl: f64| CampaignFixedCandidateDatasetResult {
+            gpu_kernel_used: true,
+            candidates: vec![
+                CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[0],
+                    pnl: first_pnl,
+                    sharpe: first_pnl / 10.0,
+                    max_drawdown: 0.10,
+                    trades: 20,
+                    hard_gate_passed: first_pnl > 0.0,
+                },
+                CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[1],
+                    pnl: second_pnl,
+                    sharpe: second_pnl / 10.0,
+                    max_drawdown: 0.20,
+                    trades: 10,
+                    hard_gate_passed: second_pnl > 0.0,
+                },
+            ],
+        };
+        let items: Vec<ResearchCampaignItemSummary> = req
+            .datasets
+            .iter()
+            .enumerate()
+            .map(|(index, dataset)| ResearchCampaignItemSummary {
+                item_id: Some(format!("item-{index}")),
+                csv_path: dataset.csv_path.clone(),
+                label: dataset.label.clone().unwrap_or_default(),
+                timeframe: "1m".to_string(),
+                is_holdout: false,
+                status: if index < 2 { "ok" } else { "failed" }.to_string(),
+                dataset_identity: None,
+                evidence_state: Some(if index < 2 {
+                    CampaignEvidenceState::Complete
+                } else {
+                    CampaignEvidenceState::Partial
+                }),
+                resume_state: Some(CampaignResumeState::Complete),
+                reuse_decision: None,
+                artifact_path: None,
+                artifact_sha256: None,
+                report_xlsx_path: None,
+                error: None,
+                diagnostics: None,
+                fixed_candidate_result: match index {
+                    0 => Some(make_result(1.0, -1.0)),
+                    1 => Some(make_result(3.0, 2.0)),
+                    _ => None,
+                },
+            })
+            .collect();
+        let aggregate = build_fixed_candidate_evaluation_summary(
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &items,
+        )
+        .expect("fixed-candidate aggregate");
+        assert_eq!(aggregate.requested_datasets, 3);
+        assert_eq!(aggregate.evaluated_datasets, 2);
+        assert_eq!(aggregate.missing_or_failed_datasets, 1);
+        assert_eq!(aggregate.gpu_kernel_datasets, 2);
+        assert_eq!(aggregate.schema_version, 4);
+        assert_eq!(aggregate.selection_cohort, "training");
+        assert_eq!(
+            aggregate.cross_universe_admission,
+            ResearchCampaignCrossUniverseAdmissionPolicy::default()
+        );
+        assert_eq!(aggregate.admitted_candidate_count, 0);
+        assert!(aggregate.admitted_candidate_ids.is_empty());
+        assert_eq!(aggregate.selection_status, "no_candidate_met_admission");
+        assert_eq!(aggregate.selected_candidate_id, None);
+        assert_eq!(aggregate.all_universe.requested_datasets, 3);
+        assert_eq!(aggregate.training.requested_datasets, 3);
+        assert_eq!(aggregate.holdout.requested_datasets, 0);
+        assert_eq!(aggregate.candidates[0].profitable_datasets, 2);
+        assert_eq!(aggregate.candidates[0].missing_or_failed_datasets, 1);
+        assert!((aggregate.candidates[0].profitable_share_requested - 2.0 / 3.0).abs() < 1e-12);
+        assert_eq!(aggregate.candidates[0].pnl_p10, None);
+        assert_eq!(aggregate.candidates[0].sharpe_p10, None);
+        assert_eq!(aggregate.candidates[0].pnl_median, Some(2.0));
+        assert_eq!(aggregate.candidates[1].profitable_datasets, 1);
+        assert!((aggregate.candidates[1].profitable_share_requested - 1.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn requested_cohort_percentile_fails_closed_at_missing_mass_boundary() {
+        assert_eq!(
+            super::finite_percentile_over_requested((1..=9).map(f64::from).collect(), 10, 0.10),
+            None,
+            "N=10 with one missing observation leaves p10 inside missing mass"
+        );
+        assert_eq!(
+            super::finite_percentile_over_requested((1..=10).map(f64::from).collect(), 11, 0.10),
+            Some(1.0),
+            "N=11 with one missing observation places p10 at the first finite rank"
+        );
+        let interpolated = super::finite_percentile_over_requested(
+            (1..=19).map(|value| f64::from(value) * 10.0).collect(),
+            20,
+            0.10,
+        )
+        .expect("p10 should land above the missing rank");
+        assert!(
+            (interpolated - 19.0).abs() <= 1e-12,
+            "interpolation must subtract the missing-rank offset"
+        );
+        assert_eq!(
+            super::finite_percentile_over_requested(vec![10.0, 20.0], 2, 0.10),
+            Some(11.0),
+            "a complete cohort preserves ordinary percentile interpolation"
+        );
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_selection_fails_closed_when_relative_best_is_unprofitable() {
+        let req = vcet_fixed_campaign_request(&[(6, 24), (12, 48)], 3);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let items: Vec<ResearchCampaignItemSummary> = req
+            .datasets
+            .iter()
+            .enumerate()
+            .map(|(index, dataset)| ResearchCampaignItemSummary {
+                item_id: Some(format!("item-{index}")),
+                csv_path: dataset.csv_path.clone(),
+                label: dataset.label.clone().unwrap_or_default(),
+                timeframe: "1m".to_string(),
+                is_holdout: false,
+                status: "ok".to_string(),
+                dataset_identity: None,
+                evidence_state: Some(CampaignEvidenceState::Complete),
+                resume_state: Some(CampaignResumeState::Complete),
+                reuse_decision: None,
+                artifact_path: None,
+                artifact_sha256: None,
+                report_xlsx_path: None,
+                error: None,
+                diagnostics: None,
+                fixed_candidate_result: Some(CampaignFixedCandidateDatasetResult {
+                    gpu_kernel_used: true,
+                    candidates: vec![
+                        CampaignFixedCandidateObservation {
+                            identity: plan.candidate_identities[0],
+                            pnl: -0.1 - index as f64,
+                            sharpe: -0.01,
+                            max_drawdown: 0.20,
+                            trades: 20,
+                            hard_gate_passed: false,
+                        },
+                        CampaignFixedCandidateObservation {
+                            identity: plan.candidate_identities[1],
+                            pnl: -10.0 - index as f64,
+                            sharpe: -1.0,
+                            max_drawdown: 0.40,
+                            trades: 10,
+                            hard_gate_passed: false,
+                        },
+                    ],
+                }),
+            })
+            .collect();
+
+        let aggregate = build_fixed_candidate_evaluation_summary(
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &items,
+        )
+        .expect("fixed-candidate aggregate");
+        assert_eq!(aggregate.admitted_candidate_count, 0);
+        assert!(aggregate.admitted_candidate_ids.is_empty());
+        assert_eq!(aggregate.selected_candidate_id, None);
+        assert_eq!(aggregate.selection_status, "no_candidate_met_admission");
+    }
+
+    #[test]
+    fn vcet_cross_universe_admission_is_configurable_and_validated() {
+        for (name, configure) in [
+            (
+                "profitable_share",
+                (|policy: &mut ResearchCampaignCrossUniverseAdmissionPolicy| {
+                    policy.min_profitable_share_requested = 1.01;
+                }) as fn(&mut ResearchCampaignCrossUniverseAdmissionPolicy),
+            ),
+            ("hard_gate_share", |policy| {
+                policy.min_hard_gate_pass_share_requested = -0.01;
+            }),
+            ("pnl_p10", |policy| {
+                policy.min_pnl_p10 = f64::NAN;
+            }),
+            ("sharpe_p10", |policy| {
+                policy.min_sharpe_p10 = f64::INFINITY;
+            }),
+        ] {
+            let mut req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+            configure(&mut req.validation_config.cross_universe_admission);
+            let error = build_vcet_fixed_candidate_plan(
+                &req,
+                "Vcet",
+                ResearchCampaignExecutionMode::EvaluateCandidates,
+            )
+            .expect_err("invalid admission policy must fail before evaluation");
+            assert!(
+                error.contains("cross_universe_admission"),
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_summary_separates_training_selection_from_conflicting_holdout() {
+        let req = vcet_fixed_campaign_request(&[(6, 24), (12, 48)], 3);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let result = |first_pnl: f64, second_pnl: f64| CampaignFixedCandidateDatasetResult {
+            gpu_kernel_used: true,
+            candidates: vec![
+                CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[0],
+                    pnl: first_pnl,
+                    sharpe: first_pnl,
+                    max_drawdown: 0.10,
+                    trades: 10,
+                    hard_gate_passed: first_pnl > 0.0,
+                },
+                CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[1],
+                    pnl: second_pnl,
+                    sharpe: second_pnl,
+                    max_drawdown: 0.10,
+                    trades: 10,
+                    hard_gate_passed: second_pnl > 0.0,
+                },
+            ],
+        };
+        let items: Vec<ResearchCampaignItemSummary> = req
+            .datasets
+            .iter()
+            .enumerate()
+            .map(|(index, dataset)| ResearchCampaignItemSummary {
+                item_id: Some(format!("item-{index}")),
+                csv_path: dataset.csv_path.clone(),
+                label: dataset.label.clone().unwrap_or_default(),
+                timeframe: "1m".to_string(),
+                is_holdout: index > 0,
+                status: "ok".to_string(),
+                dataset_identity: None,
+                evidence_state: Some(CampaignEvidenceState::Complete),
+                resume_state: Some(CampaignResumeState::Complete),
+                reuse_decision: None,
+                artifact_path: None,
+                artifact_sha256: None,
+                report_xlsx_path: None,
+                error: None,
+                diagnostics: None,
+                fixed_candidate_result: Some(if index == 0 {
+                    result(1.0, -1.0)
+                } else {
+                    result(-10.0, 10.0)
+                }),
+            })
+            .collect();
+
+        let aggregate = build_fixed_candidate_evaluation_summary(
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &items,
+        )
+        .expect("cohort-separated fixed-candidate aggregate");
+
+        let training_winner = &aggregate.training.candidates[0];
+        let holdout_winner = &aggregate.holdout.candidates[1];
+        assert_eq!(training_winner.profitable_datasets, 1);
+        assert_eq!(aggregate.training.candidates[1].profitable_datasets, 0);
+        assert_eq!(holdout_winner.profitable_datasets, 2);
+        assert_eq!(aggregate.holdout.candidates[0].profitable_datasets, 0);
+        assert_eq!(aggregate.all_universe.candidates[1].profitable_datasets, 2);
+        assert_eq!(aggregate.candidates[0].requested_datasets, 1);
+        assert_eq!(aggregate.candidates[1].requested_datasets, 1);
+        assert_eq!(
+            aggregate.selected_candidate_id.as_deref(),
+            Some(training_winner.candidate_id.as_str()),
+            "holdout performance must never influence the selected training candidate"
+        );
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_summary_never_selects_without_training_evidence() {
+        let req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        let items = vec![ResearchCampaignItemSummary {
+            item_id: Some("holdout-only".to_string()),
+            csv_path: req.datasets[0].csv_path.clone(),
+            label: "VCET_0".to_string(),
+            timeframe: "1m".to_string(),
+            is_holdout: true,
+            status: "ok".to_string(),
+            dataset_identity: None,
+            evidence_state: Some(CampaignEvidenceState::Complete),
+            resume_state: Some(CampaignResumeState::Complete),
+            reuse_decision: None,
+            artifact_path: None,
+            artifact_sha256: None,
+            report_xlsx_path: None,
+            error: None,
+            diagnostics: None,
+            fixed_candidate_result: Some(CampaignFixedCandidateDatasetResult {
+                gpu_kernel_used: true,
+                candidates: vec![CampaignFixedCandidateObservation {
+                    identity: plan.candidate_identities[0],
+                    pnl: 100.0,
+                    sharpe: 10.0,
+                    max_drawdown: 0.01,
+                    trades: 100,
+                    hard_gate_passed: true,
+                }],
+            }),
+        }];
+
+        let aggregate = build_fixed_candidate_evaluation_summary(
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &items,
+        )
+        .expect("holdout-only fixed-candidate aggregate");
+        assert_eq!(aggregate.training.requested_datasets, 0);
+        assert_eq!(aggregate.training.evaluated_datasets, 0);
+        assert_eq!(aggregate.candidates[0].evaluated_datasets, 0);
+        assert_eq!(aggregate.selected_candidate_id, None);
+    }
+
+    #[test]
+    fn vcet_fixed_candidate_summary_resume_contract_binds_manifest_and_aggregate() {
+        let req = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        let manifest = build_campaign_manifest(
+            &req,
+            "Vcet",
+            Some("1m"),
+            &req.tags,
+            None,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        );
+        let dataset = &req.datasets[0];
+        let items = vec![ResearchCampaignItemSummary {
+            item_id: Some(campaign_item_id(
+                &manifest.manifest_hash,
+                0,
+                &dataset.csv_path,
+                "1m",
+            )),
+            csv_path: dataset.csv_path.clone(),
+            label: dataset.label.clone().unwrap_or_default(),
+            timeframe: "1m".to_string(),
+            is_holdout: false,
+            status: "pending".to_string(),
+            dataset_identity: None,
+            evidence_state: Some(CampaignEvidenceState::None),
+            resume_state: Some(CampaignResumeState::Resumable),
+            reuse_decision: None,
+            artifact_path: None,
+            artifact_sha256: None,
+            report_xlsx_path: None,
+            error: None,
+            diagnostics: None,
+            fixed_candidate_result: None,
+        }];
+        let counts = ResearchCampaignCounts {
+            total: 1,
+            optimized: 0,
+            validated: 0,
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        };
+        let mut summary = serde_json::to_value(build_campaign_summary(
+            "2026-07-31T12:00:00Z",
+            "running",
+            "Vcet",
+            Some("1m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &req.tags,
+            None,
+            &counts,
+            &items,
+            None,
+            None,
+            &[],
+            1,
+        ))
+        .expect("serialize fixed-candidate summary");
+        validate_campaign_summary_artifact_value(&summary)
+            .expect("untampered fixed-candidate summary is resumable");
+
+        let mut cancelled_unsealed = summary.clone();
+        cancelled_unsealed["state"] = Value::String("cancelled".to_string());
+        cancelled_unsealed["counts"]["cancelled"] = Value::Bool(true);
+        validate_campaign_summary_artifact_value(&cancelled_unsealed)
+            .expect("cancelled Meta-ineligible checkpoints may remain unsealed for fast resume");
+
+        let mut missing_terminal_artifact = summary.clone();
+        missing_terminal_artifact["state"] = Value::String("completed".to_string());
+        missing_terminal_artifact["items"][0]["status"] = Value::String("ok".to_string());
+        missing_terminal_artifact["items"][0]["evidence_state"] =
+            Value::String("complete".to_string());
+        missing_terminal_artifact["items"][0]["resume_state"] =
+            Value::String("complete".to_string());
+        assert!(
+            validate_campaign_summary_artifact_value(&missing_terminal_artifact)
+                .expect_err("a successful terminal item must reference its run artifact")
+                .contains("no run-artifact path")
+        );
+
+        let mut unsealed_terminal_artifact = missing_terminal_artifact;
+        unsealed_terminal_artifact["items"][0]["artifact_path"] =
+            Value::String("C:/runs/vcet-unsealed.json".to_string());
+        assert!(
+            validate_campaign_summary_artifact_value(&unsealed_terminal_artifact)
+                .expect_err("a terminal VCET item must seal its exact raw artifact hash")
+                .contains("sealed raw run-artifact SHA-256")
+        );
+
+        let mut tampered_cohort = summary.clone();
+        tampered_cohort["fixed_candidate_evaluation"]["training"]["requested_datasets"] =
+            Value::from(99_u64);
+        assert!(validate_campaign_summary_artifact_value(&tampered_cohort)
+            .expect_err("tampered training cohort must fail")
+            .contains("cohort"));
+
+        let mut tampered_selection = summary.clone();
+        tampered_selection["fixed_candidate_evaluation"]["selected_candidate_id"] =
+            Value::String("arbitrary-without-training-evidence".to_string());
+        assert!(
+            validate_campaign_summary_artifact_value(&tampered_selection)
+                .expect_err("tampered training selection must fail")
+                .contains("cohort")
+        );
+
+        let mut downgraded_admission_schema = summary.clone();
+        downgraded_admission_schema["fixed_candidate_evaluation"]["schema_version"] =
+            Value::from(2_u64);
+        assert!(
+            validate_campaign_summary_artifact_value(&downgraded_admission_schema)
+                .expect_err("an admission-aware request must not downgrade to legacy selection")
+                .contains("aggregate")
+        );
+
+        let mut tampered_retention = summary.clone();
+        tampered_retention["retention"]["cohort_id"] = Value::String("other".to_string());
+        assert!(
+            validate_campaign_summary_artifact_value(&tampered_retention)
+                .expect_err("tampered retention lineage must fail")
+                .contains("retention cohort")
+        );
+
+        summary["fixed_candidate_evaluation"]["candidate_manifest_hash"] =
+            Value::String("sha256:tampered".to_string());
+        assert!(validate_campaign_summary_artifact_value(&summary)
+            .expect_err("tampered fixed-candidate aggregate must fail")
+            .contains("aggregate"));
+    }
+
+    #[test]
+    fn vcet_final_campaign_summary_drives_exact_meta_train_holdout_expectation() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let runs_dir = super::super::run_artifacts::runs_dir(&handle).expect("runs dir");
+        let mut req = vcet_fixed_campaign_request(&[(6, 24)], 2);
+        let plan = build_vcet_fixed_candidate_plan(
+            &req,
+            "Vcet",
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        )
+        .expect("valid plan")
+        .expect("evaluate plan");
+        req.holdout_pct = 50;
+        req.holdout_tag = Some("holdout".to_string());
+        let dataset_paths: Vec<String> = req
+            .datasets
+            .iter()
+            .map(|dataset| dataset.csv_path.clone())
+            .collect();
+        let (_, holdout_paths) = split_holdout_paths(&dataset_paths, 50, &req.tags[0]);
+        assert_eq!(holdout_paths.len(), 1);
+
+        let manifest = build_campaign_manifest(
+            &req,
+            "Vcet",
+            Some("1m"),
+            &req.tags,
+            req.holdout_tag.as_deref(),
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        );
+        let mut items: Vec<ResearchCampaignItemSummary> = req
+            .datasets
+            .iter()
+            .enumerate()
+            .map(|(index, dataset)| {
+                let artifact_path =
+                    runs_dir.join(format!("vectorgrid_run_vcet_meta_lineage_{index}.json"));
+                ResearchCampaignItemSummary {
+                    item_id: Some(campaign_item_id(
+                        &manifest.manifest_hash,
+                        index,
+                        &dataset.csv_path,
+                        "1m",
+                    )),
+                    csv_path: dataset.csv_path.clone(),
+                    label: dataset.label.clone().unwrap_or_default(),
+                    timeframe: "1m".to_string(),
+                    is_holdout: holdout_paths.contains(&dataset.csv_path),
+                    status: "ok".to_string(),
+                    dataset_identity: Some(ResearchCampaignDatasetIdentitySummary {
+                        csv_path: dataset.csv_path.clone(),
+                        label: dataset.label.clone().unwrap_or_default(),
+                        timeframe: "1m".to_string(),
+                        base_timeframe: Some("1m".to_string()),
+                        derived_timeframe: Some("1m".to_string()),
+                        source_size_bytes: dataset.source_size_bytes,
+                        source_mtime_utc_ms: dataset.source_mtime_utc_ms,
+                        source_change_marker: dataset.source_change_marker,
+                        source_content_fingerprint: dataset.source_content_fingerprint.clone(),
+                    }),
+                    evidence_state: Some(CampaignEvidenceState::Complete),
+                    resume_state: Some(CampaignResumeState::Complete),
+                    reuse_decision: None,
+                    artifact_path: Some(artifact_path.to_string_lossy().to_string()),
+                    artifact_sha256: None,
+                    report_xlsx_path: None,
+                    error: None,
+                    diagnostics: None,
+                    fixed_candidate_result: Some(CampaignFixedCandidateDatasetResult {
+                        gpu_kernel_used: true,
+                        candidates: vec![CampaignFixedCandidateObservation {
+                            identity: plan.candidate_identities[0],
+                            pnl: 1.0 + index as f64,
+                            sharpe: 0.5 + index as f64,
+                            max_drawdown: 0.1,
+                            trades: 20,
+                            hard_gate_passed: true,
+                        }],
+                    }),
+                }
+            })
+            .collect();
+        for (index, item) in items.iter().enumerate() {
+            let artifact_path = PathBuf::from(
+                item.artifact_path
+                    .as_deref()
+                    .expect("lineage fixture artifact path"),
+            );
+            std::fs::write(
+                artifact_path,
+                serde_json::to_vec_pretty(&json!({
+                    "kind": "vectorgrid_run_artifact",
+                    "fixture_index": index,
+                }))
+                .expect("encode lineage fixture artifact"),
+            )
+            .expect("write lineage fixture artifact");
+        }
+        seal_vcet_campaign_artifact_hashes(&mut items, &handle)
+            .expect("seal exact raw lineage fixture hashes");
+        assert!(items.iter().all(|item| item
+            .artifact_sha256
+            .as_deref()
+            .is_some_and(|sha256| sha256.len() == 64)));
+        let counts = ResearchCampaignCounts {
+            total: items.len(),
+            optimized: 0,
+            validated: items.len(),
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        };
+        let mut summary = build_campaign_summary(
+            "2026-07-31T12:00:00Z",
+            "completed",
+            "Vcet",
+            Some("1m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &req.tags,
+            req.holdout_tag.clone(),
+            &counts,
+            &items,
+            None,
+            None,
+            &[],
+            1,
+        );
+        let expected_paths: Vec<PathBuf> = items
+            .iter()
+            .filter_map(|item| item.artifact_path.as_deref().map(PathBuf::from))
+            .collect();
+        let (summary_path, _) = save_campaign_summary_checkpoint_blocking(
+            &mut summary,
+            &mut items,
+            None,
+            &handle,
+            None,
+        )
+        .expect("save final campaign summary");
+        let meta_req: MetaSelectionRequest = serde_json::from_value(json!({
+            "strategy_kind": "Vcet",
+            "timeframe": "1m",
+            "required_tag": req.tags[0],
+            "eval_holdout": true,
+            "holdout_tag": "holdout"
+        }))
+        .expect("decode Meta request");
+
+        let expectation =
+            load_meta_campaign_cohort_expectation(Some(&summary_path), &meta_req, &handle)
+                .expect("load campaign-bound Meta expectation")
+                .expect("campaign expectation");
+        assert_eq!(expectation.lineage.expected_train_datasets, 1);
+        assert_eq!(expectation.lineage.expected_holdout_datasets, 1);
+        assert_eq!(expectation.lineage.admitted_candidate_count, 1);
+        assert!(expectation.lineage.selected_candidate_id.is_some());
+        assert_eq!(expectation.referenced_artifact_paths, expected_paths);
+
+        let downgraded_path = runs_dir.join("vectorgrid_campaign_meta_downgraded.json");
+        let mut downgraded_value: Value = serde_json::from_slice(
+            &std::fs::read(&summary_path).expect("read saved campaign summary"),
+        )
+        .expect("decode saved campaign summary");
+        downgraded_value["version"] = Value::from(1_u64);
+        std::fs::write(
+            &downgraded_path,
+            serde_json::to_vec_pretty(&downgraded_value).expect("encode downgraded summary"),
+        )
+        .expect("write downgraded summary fixture");
+        assert!(load_meta_campaign_cohort_expectation(
+            downgraded_path.to_str(),
+            &meta_req,
+            &handle,
+        )
+        .expect_err("campaign-bound Meta must reject a legacy-version downgrade")
+        .contains("integrity version 2"));
+
+        let mut rejected_items = items.clone();
+        for item in rejected_items.iter_mut().filter(|item| !item.is_holdout) {
+            let result = item
+                .fixed_candidate_result
+                .as_mut()
+                .expect("training fixed-candidate result");
+            result.candidates[0].pnl = -1.0;
+            result.candidates[0].sharpe = -0.5;
+            result.candidates[0].hard_gate_passed = false;
+        }
+        let mut rejected_summary = build_campaign_summary(
+            "2026-07-31T12:01:00Z",
+            "completed",
+            "Vcet",
+            Some("1m".to_string()),
+            &req,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+            &req.tags,
+            req.holdout_tag.clone(),
+            &counts,
+            &rejected_items,
+            None,
+            None,
+            &[],
+            1,
+        );
+        let (rejected_summary_path, _) = save_campaign_summary_checkpoint_blocking(
+            &mut rejected_summary,
+            &mut rejected_items,
+            None,
+            &handle,
+            None,
+        )
+        .expect("save no-admission campaign summary");
+        assert!(load_meta_campaign_cohort_expectation(
+            Some(&rejected_summary_path),
+            &meta_req,
+            &handle,
+        )
+        .expect_err("Meta must not bypass a campaign with no admitted VCET candidate")
+        .contains("no VCET candidate met"));
     }
 
     fn make_plain_doublema_request(backend: Backend) -> DoubleMaRequest {
@@ -6343,6 +10553,7 @@ mod tests {
             timeframe: None,
             source_size_bytes: None,
             source_mtime_utc_ms: None,
+            source_change_marker: None,
             source_content_fingerprint: None,
         }])
         .expect_err("blank csv_path should be rejected");
@@ -6354,6 +10565,7 @@ mod tests {
             timeframe: Some(" 15M ".to_string()),
             source_size_bytes: Some(1),
             source_mtime_utc_ms: Some(2),
+            source_change_marker: Some(3),
             source_content_fingerprint: Some("  fp-1  ".to_string()),
         }])
         .expect("normalize datasets");
@@ -6364,6 +10576,400 @@ mod tests {
             normalized[0].source_content_fingerprint.as_deref(),
             Some("fp-1")
         );
+
+        let duplicate_err = normalize_campaign_datasets(vec![
+            ResearchCampaignDatasetInput {
+                csv_path: "C:/data/./AAPL.csv".to_string(),
+                label: Some("AAPL primary".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: None,
+            },
+            ResearchCampaignDatasetInput {
+                csv_path: "c:\\DATA\\nested\\..\\aapl.CSV".to_string(),
+                label: Some("AAPL alias".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: None,
+            },
+        ])
+        .expect_err("alias-equivalent csv paths should be rejected");
+        assert!(duplicate_err.contains("duplicate normalized csv_path"));
+
+        let duplicate_fingerprint_err = normalize_campaign_datasets(vec![
+            ResearchCampaignDatasetInput {
+                csv_path: "C:/data/AAPL-copy-1.csv".to_string(),
+                label: Some("AAPL copy 1".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: Some("FNV1A64-FULL-AABBCCDD".to_string()),
+            },
+            ResearchCampaignDatasetInput {
+                csv_path: "C:/data/AAPL-copy-2.csv".to_string(),
+                label: Some("AAPL copy 2".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: Some("fnv1a64-full-aabbccdd".to_string()),
+            },
+        ])
+        .expect_err("same-content campaign inputs should be rejected before execution");
+        assert!(duplicate_fingerprint_err.contains("same source_content_fingerprint"));
+
+        let distinct_paths_without_fingerprints = normalize_campaign_datasets(vec![
+            ResearchCampaignDatasetInput {
+                csv_path: "C:/data/AAPL.csv".to_string(),
+                label: None,
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: None,
+            },
+            ResearchCampaignDatasetInput {
+                csv_path: "C:/data/MSFT.csv".to_string(),
+                label: None,
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: None,
+            },
+        ])
+        .expect("missing discovery fingerprints are verified after preparation");
+        assert_eq!(distinct_paths_without_fingerprints.len(), 2);
+    }
+
+    #[test]
+    fn prepared_campaign_sources_reject_same_content_at_runtime() {
+        let first = prepared_dataset_for_matching();
+        let mut second = prepared_dataset_for_matching();
+        second.input.csv_path = "C:/data/AAPL-copy.csv".to_string();
+        second.dataset_meta["csv_path"] = Value::String(second.input.csv_path.clone());
+
+        let mut seen = HashMap::new();
+        record_unique_prepared_campaign_source(&first, &mut seen)
+            .expect("first source identity should be recorded");
+        let error = record_unique_prepared_campaign_source(&second, &mut seen)
+            .expect_err("freshly prepared same-content copies must be rejected");
+        assert!(error.contains("same source content identity"));
+        assert!(error.contains("duplicate source content cannot be counted twice"));
+    }
+
+    #[test]
+    fn prepare_campaign_dataset_rejects_stale_discovery_fingerprint_and_persists_current_value() {
+        let temp_dir = make_temp_dir("campaign_dataset_fingerprint");
+        let cache_dir = temp_dir.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        let csv_path = temp_dir.join("AAPL.csv");
+        std::fs::write(
+            &csv_path,
+            concat!(
+                "timestamp,open,high,low,close,volume\n",
+                "1700000000000,100,101,99,100.5,1000\n",
+                "1700000060000,100.5,102,100,101.5,1100\n"
+            ),
+        )
+        .expect("write discovered csv");
+        let discovered_fingerprint = crate::data_cache::content_fingerprint_for_source(&csv_path)
+            .expect("fingerprint discovered csv");
+
+        std::fs::write(
+            &csv_path,
+            concat!(
+                "timestamp,open,high,low,close,volume\n",
+                "1700000000000,110,111,109,110.5,1001\n",
+                "1700000060000,110.5,112,110,111.5,1101\n"
+            ),
+        )
+        .expect("mutate csv after discovery");
+        let current_fingerprint = crate::data_cache::content_fingerprint_for_source(&csv_path)
+            .expect("fingerprint current csv");
+        let current_identity =
+            crate::data_cache::identity_for_source(&csv_path).expect("identity current csv");
+        assert_ne!(discovered_fingerprint, current_fingerprint);
+
+        let stale_error = prepare_campaign_dataset(
+            ResearchCampaignDatasetInput {
+                csv_path: csv_path.to_string_lossy().into_owned(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: Some(discovered_fingerprint.clone()),
+            },
+            None,
+            &cache_dir,
+        )
+        .err()
+        .expect("stale discovery fingerprint must fail closed");
+        assert!(stale_error.contains("source_content_fingerprint is stale"));
+        assert!(stale_error.contains(&discovered_fingerprint));
+        assert!(stale_error.contains(&current_fingerprint));
+
+        let stale_size_error = prepare_campaign_dataset(
+            ResearchCampaignDatasetInput {
+                csv_path: csv_path.to_string_lossy().into_owned(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: Some(current_identity.size.saturating_add(1)),
+                source_mtime_utc_ms: Some(current_identity.mtime_utc_ms),
+                source_change_marker: Some(current_identity.change_marker),
+                source_content_fingerprint: Some(current_fingerprint.clone()),
+            },
+            None,
+            &cache_dir,
+        )
+        .err()
+        .expect("stale discovery size must fail closed");
+        assert!(stale_size_error.contains("source_size_bytes is stale"));
+
+        let stale_mtime_error = prepare_campaign_dataset(
+            ResearchCampaignDatasetInput {
+                csv_path: csv_path.to_string_lossy().into_owned(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: Some(current_identity.size),
+                source_mtime_utc_ms: Some(current_identity.mtime_utc_ms.saturating_add(1)),
+                source_change_marker: Some(current_identity.change_marker),
+                source_content_fingerprint: Some(current_fingerprint.clone()),
+            },
+            None,
+            &cache_dir,
+        )
+        .err()
+        .expect("stale discovery mtime must fail closed");
+        assert!(stale_mtime_error.contains("source_mtime_utc_ms is stale"));
+
+        let prepared = prepare_campaign_dataset(
+            ResearchCampaignDatasetInput {
+                csv_path: csv_path.to_string_lossy().into_owned(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: None,
+            },
+            None,
+            &cache_dir,
+        )
+        .expect("current source should prepare without a stale hint");
+        assert_eq!(
+            prepared
+                .dataset_meta
+                .get("source_content_fingerprint")
+                .and_then(Value::as_str),
+            Some(current_fingerprint.as_str())
+        );
+        assert_eq!(
+            prepared.input.source_content_fingerprint.as_deref(),
+            Some(current_fingerprint.as_str())
+        );
+        assert_eq!(
+            prepared.input.source_size_bytes,
+            Some(current_identity.size)
+        );
+        assert_eq!(
+            prepared.input.source_mtime_utc_ms,
+            Some(current_identity.mtime_utc_ms)
+        );
+        assert_eq!(
+            prepared.input.source_change_marker,
+            Some(current_identity.change_marker)
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn campaign_manifest_refreshes_missing_source_hints_before_hashing() {
+        let temp_dir = make_temp_dir("campaign_manifest_fresh_identity");
+        let csv_path = temp_dir.join("AAPL.csv");
+        std::fs::write(
+            &csv_path,
+            concat!(
+                "timestamp,open,high,low,close,volume\n",
+                "1700000000000,100,101,99,100.5,1000\n"
+            ),
+        )
+        .expect("write initial csv");
+
+        let make_request = || ResearchCampaignRequest {
+            strategy_kind: "DoubleMa".to_string(),
+            datasets: vec![ResearchCampaignDatasetInput {
+                csv_path: csv_path.to_string_lossy().into_owned(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_change_marker: None,
+                source_content_fingerprint: None,
+            }],
+            timeframe_override: Some("1m".to_string()),
+            tags: vec!["fresh-identity".to_string()],
+            holdout_pct: 0,
+            holdout_tag: None,
+            skip_existing: false,
+            auto_meta: false,
+            auto_stage5: false,
+            execution_mode: ResearchCampaignExecutionMode::OptimizeOnly,
+            optimization_template: json!({
+                "strategy_kind": "DoubleMa",
+                "data_id": "fresh-identity"
+            }),
+            validation_config: ResearchCampaignValidationConfig::default(),
+            meta_request: None,
+            stage5_request: None,
+            preload_policy: ResearchCampaignPreloadPolicy::Disabled,
+        };
+
+        let mut first = make_request();
+        refresh_campaign_dataset_source_identities(&mut first.datasets)
+            .expect("refresh initial source identity");
+        assert!(first.datasets[0].source_size_bytes.is_some());
+        assert!(first.datasets[0].source_mtime_utc_ms.is_some());
+        assert!(first.datasets[0].source_change_marker.is_some());
+        let first_manifest = build_campaign_manifest(
+            &first,
+            "DoubleMa",
+            Some("1m"),
+            &first.tags,
+            None,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+        );
+        assert!(first_manifest.strict_identity_required);
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&csv_path)
+            .and_then(|mut file| {
+                use std::io::Write as _;
+                file.write_all(b"1700000060000,100.5,102,100,101.5,1100\n")
+            })
+            .expect("mutate csv after first manifest");
+        let mut second = make_request();
+        refresh_campaign_dataset_source_identities(&mut second.datasets)
+            .expect("refresh changed source identity");
+        let second_manifest = build_campaign_manifest(
+            &second,
+            "DoubleMa",
+            Some("1m"),
+            &second.tags,
+            None,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+        );
+        assert_ne!(
+            first_manifest.dataset_universe_hash, second_manifest.dataset_universe_hash,
+            "a source change discovered without request hints must create a new cohort"
+        );
+        assert_ne!(first_manifest.manifest_hash, second_manifest.manifest_hash);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn campaign_manifest_preserves_fingerprinted_legacy_hash_but_binds_marker_without_fingerprint()
+    {
+        let mut fingerprinted = vcet_fixed_campaign_request(&[(6, 24)], 1);
+        let with_marker = build_campaign_manifest(
+            &fingerprinted,
+            "Vcet",
+            Some("1m"),
+            &fingerprinted.tags,
+            None,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        );
+        fingerprinted.datasets[0].source_change_marker = None;
+        let legacy_without_marker = build_campaign_manifest(
+            &fingerprinted,
+            "Vcet",
+            Some("1m"),
+            &fingerprinted.tags,
+            None,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        );
+        assert_eq!(
+            with_marker.dataset_universe_hash,
+            legacy_without_marker.dataset_universe_hash
+        );
+        assert_eq!(
+            with_marker.manifest_hash,
+            legacy_without_marker.manifest_hash
+        );
+        assert!(legacy_without_marker.strict_identity_required);
+
+        fingerprinted.datasets[0].source_content_fingerprint = None;
+        let marker_absent = build_campaign_manifest(
+            &fingerprinted,
+            "Vcet",
+            Some("1m"),
+            &fingerprinted.tags,
+            None,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        );
+        assert!(
+            marker_absent.strict_identity_required,
+            "pre-marker size+mtime identity remains a valid legacy v2 contract"
+        );
+
+        let mut legacy_summary = resumable_summary_value();
+        legacy_summary["request"]["datasets"][0]
+            .as_object_mut()
+            .expect("legacy request dataset")
+            .remove("source_change_marker");
+        legacy_summary["request"]["datasets"][0]
+            .as_object_mut()
+            .expect("legacy request dataset")
+            .remove("source_content_fingerprint");
+        let legacy_request: ResearchCampaignRequest =
+            serde_json::from_value(legacy_summary["request"].clone())
+                .expect("decode pre-marker size+mtime request");
+        let legacy_manifest = build_campaign_manifest(
+            &legacy_request,
+            "DoubleMa",
+            Some("15m"),
+            &legacy_request.tags,
+            None,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+        );
+        assert!(legacy_manifest.strict_identity_required);
+        let legacy_manifest_hash = legacy_manifest.manifest_hash.clone();
+        legacy_summary["manifest"] =
+            serde_json::to_value(&legacy_manifest).expect("serialize legacy manifest");
+        legacy_summary["retention"]["cohort_id"] = Value::String(legacy_manifest_hash.clone());
+        legacy_summary["items"][0]["item_id"] = Value::String(campaign_item_id(
+            &legacy_manifest_hash,
+            0,
+            "C:/data/AAPL.csv",
+            "15m",
+        ));
+        validate_campaign_summary_artifact_value(&legacy_summary)
+            .expect("pre-marker size+mtime-only v2 summary remains loadable for restart guidance");
+
+        fingerprinted.datasets[0].source_change_marker = Some(42);
+        let marker_bound = build_campaign_manifest(
+            &fingerprinted,
+            "Vcet",
+            Some("1m"),
+            &fingerprinted.tags,
+            None,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        );
+        assert!(marker_bound.strict_identity_required);
+        assert_ne!(
+            marker_absent.dataset_universe_hash,
+            marker_bound.dataset_universe_hash
+        );
+        assert_ne!(marker_absent.manifest_hash, marker_bound.manifest_hash);
     }
 
     #[test]
@@ -6376,6 +10982,7 @@ mod tests {
                 timeframe: Some("1m".to_string()),
                 source_size_bytes: Some(123),
                 source_mtime_utc_ms: Some(456),
+                source_change_marker: Some(789),
                 source_content_fingerprint: Some("sha256:aapl".to_string()),
             }],
             timeframe_override: Some("1m".to_string()),
@@ -6410,6 +11017,12 @@ mod tests {
                 .pointer("/datasets/0/source_mtime_utc_ms")
                 .and_then(Value::as_i64),
             Some(456)
+        );
+        assert_eq!(
+            summary
+                .pointer("/datasets/0/source_change_marker")
+                .and_then(Value::as_i64),
+            Some(789)
         );
         assert_eq!(
             summary
@@ -6464,30 +11077,226 @@ mod tests {
     }
 
     #[test]
+    fn artifact_reuse_fingerprint_and_index_reject_cohort_role_or_tag_changes() {
+        let prepared = prepared_dataset_for_matching();
+        let campaign_tags = vec!["campaign-main".to_string()];
+        let training_tags = campaign_artifact_tags(&campaign_tags, "AAPL", false, Some("holdout"));
+        let holdout_tags = campaign_artifact_tags(&campaign_tags, "AAPL", true, Some("holdout"));
+        let changed_holdout_tags =
+            campaign_artifact_tags(&campaign_tags, "AAPL", true, Some("oos"));
+        let training_fingerprint = campaign_artifact_config_fingerprint(
+            "cfg-base",
+            &training_tags,
+            false,
+            Some("holdout"),
+        );
+        let holdout_fingerprint =
+            campaign_artifact_config_fingerprint("cfg-base", &holdout_tags, true, Some("holdout"));
+        let changed_holdout_fingerprint = campaign_artifact_config_fingerprint(
+            "cfg-base",
+            &changed_holdout_tags,
+            true,
+            Some("oos"),
+        );
+        assert_ne!(training_fingerprint, holdout_fingerprint);
+        assert_ne!(holdout_fingerprint, changed_holdout_fingerprint);
+        let mut first_campaign_tags = training_tags.clone();
+        first_campaign_tags.push(super::campaign_manifest_cohort_tag("sha256:first"));
+        let mut second_campaign_tags = training_tags.clone();
+        second_campaign_tags.push(super::campaign_manifest_cohort_tag("sha256:second"));
+        assert_ne!(
+            campaign_artifact_config_fingerprint(
+                "cfg-base",
+                &first_campaign_tags,
+                false,
+                Some("holdout"),
+            ),
+            campaign_artifact_config_fingerprint(
+                "cfg-base",
+                &second_campaign_tags,
+                false,
+                Some("holdout"),
+            ),
+            "a new manifest cohort must rerun instead of borrowing an artifact owned by an older retained summary"
+        );
+
+        let holdout_artifact = build_run_artifact_value(
+            "2026-07-31T12:00:00Z",
+            &holdout_fingerprint,
+            "campaign-manifest-1",
+            true,
+            Some("holdout"),
+            &prepared.input.csv_path,
+            &prepared.dataset_meta,
+            &holdout_tags,
+            &json!({"strategy_kind": "DoubleMa"}),
+            &json!({}),
+            None,
+            None,
+        );
+        assert_eq!(
+            holdout_artifact
+                .pointer("/campaign/cohort_role")
+                .and_then(Value::as_str),
+            Some("holdout")
+        );
+        assert_eq!(
+            holdout_artifact
+                .pointer("/campaign/manifest_hash")
+                .and_then(Value::as_str),
+            Some("campaign-manifest-1")
+        );
+        assert_eq!(
+            holdout_artifact
+                .pointer("/campaign/cohort_tag")
+                .and_then(Value::as_str),
+            Some(super::campaign_manifest_cohort_tag("campaign-manifest-1").as_str())
+        );
+
+        let mut artifact = run_artifact_summary("C:/runs/train.json", true);
+        artifact.config_fingerprint = training_fingerprint.clone();
+        artifact.tags = training_tags.clone();
+        let artifacts = vec![artifact];
+        let index = CampaignArtifactReuseIndex::new(&artifacts);
+        assert_eq!(
+            index
+                .exact_candidate_indices(
+                    "DoubleMa",
+                    &training_fingerprint,
+                    &training_tags,
+                    &prepared,
+                )
+                .len(),
+            1
+        );
+        assert!(index
+            .exact_candidate_indices("DoubleMa", &holdout_fingerprint, &holdout_tags, &prepared,)
+            .is_empty());
+        assert!(index
+            .exact_candidate_indices(
+                "DoubleMa",
+                &changed_holdout_fingerprint,
+                &changed_holdout_tags,
+                &prepared,
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn campaign_artifact_reuse_index_keeps_ten_thousand_exact_lookups_linear() {
+        const DATASETS: usize = 10_000;
+        let tags = vec!["campaign-scale".to_string()];
+        let prepared: Vec<PreparedCampaignDataset> = (0..DATASETS)
+            .map(|index| {
+                prepared_dataset_for_resume(
+                    &format!("S{index:05}"),
+                    1_000 + index as u64,
+                    1_720_000_000_000 + index as i64,
+                    &format!("sha256:scale-{index}"),
+                )
+            })
+            .collect();
+        let artifacts: Vec<super::run_artifacts::RunArtifactSummary> = prepared
+            .iter()
+            .enumerate()
+            .map(|(index, dataset)| {
+                let mut artifact =
+                    run_artifact_summary(&format!("C:/runs/scale-{index}.json"), true);
+                artifact.config_fingerprint = "cfg-scale".to_string();
+                artifact.csv_path = dataset.input.csv_path.clone();
+                artifact.timeframe = dataset.timeframe.clone();
+                artifact.source_size_bytes = dataset.input.source_size_bytes;
+                artifact.source_mtime_utc_ms = dataset.input.source_mtime_utc_ms;
+                artifact.source_content_fingerprint =
+                    dataset.input.source_content_fingerprint.clone();
+                artifact.tags = tags.clone();
+                artifact
+            })
+            .collect();
+        let index = CampaignArtifactReuseIndex::new(&artifacts);
+        let inspected: usize = prepared
+            .iter()
+            .map(|dataset| {
+                index
+                    .exact_candidate_indices("DoubleMa", "cfg-scale", &tags, dataset)
+                    .len()
+            })
+            .sum();
+        assert_eq!(inspected, DATASETS);
+        assert_eq!(index.coarse.len(), DATASETS);
+    }
+
+    #[test]
+    fn campaign_scale_policies_bound_full_snapshots_and_retention_scans() {
+        const DATASETS: usize = 10_000;
+        assert_eq!(campaign_checkpoint_stride(DATASETS), 100);
+        assert_eq!(planned_campaign_full_summary_builds(DATASETS), 102);
+        assert!(planned_campaign_full_summary_builds(DATASETS) < DATASETS / 50);
+        for mode in [
+            ResearchCampaignExecutionMode::Full,
+            ResearchCampaignExecutionMode::OptimizeOnly,
+            ResearchCampaignExecutionMode::ValidateOnly,
+            ResearchCampaignExecutionMode::EvaluateCandidates,
+        ] {
+            assert_eq!(
+                planned_campaign_run_artifact_prunes("Vcet", mode, DATASETS),
+                1,
+                "every VCET batch mode should pay for one final retention pass"
+            );
+        }
+        assert_eq!(
+            planned_campaign_run_artifact_prunes(
+                "DoubleMa",
+                ResearchCampaignExecutionMode::Full,
+                DATASETS,
+            ),
+            DATASETS,
+            "non-VCET campaign retention behavior remains unchanged"
+        );
+    }
+
+    #[test]
+    fn holdout_tag_must_be_disjoint_from_every_base_tag_and_dataset_label() {
+        let datasets = vec![ResearchCampaignDatasetInput {
+            csv_path: "C:/data/AAPL.csv".to_string(),
+            label: Some("AAPL".to_string()),
+            timeframe: Some("1m".to_string()),
+            ..ResearchCampaignDatasetInput::default()
+        }];
+        let base_tag_error = validate_holdout_tag_isolation(
+            &["primary".to_string(), "HOLDOUT".to_string()],
+            &datasets,
+            20,
+            Some("holdout"),
+        )
+        .expect_err("any base-tag collision must be rejected");
+        assert!(base_tag_error.contains("base campaign tags"));
+
+        let mut colliding_label = datasets;
+        colliding_label[0].label = Some("holdout".to_string());
+        let label_error = validate_holdout_tag_isolation(
+            &["primary".to_string()],
+            &colliding_label,
+            20,
+            Some("HOLDOUT"),
+        )
+        .expect_err("dataset-label collision must be rejected for legacy readers");
+        assert!(label_error.contains("dataset label"));
+    }
+
+    #[test]
     fn artifact_match_classifier_fails_closed_without_exact_source_identity() {
         let prepared = prepared_dataset_for_matching();
         let exact = run_artifact_summary("C:/runs/exact.json", true);
         assert_eq!(
-            classify_run_artifact_for_campaign(
-                &exact,
-                "DoubleMa",
-                "cfg-1",
-                "campaign-main",
-                &prepared,
-            ),
+            classify_run_artifact_for_campaign(&exact, "DoubleMa", "cfg-1", &exact.tags, &prepared,),
             CampaignArtifactMatchDecision::Exact
         );
 
         let mut stale = exact.clone();
         stale.source_content_fingerprint = Some("sha256:other".to_string());
         assert_eq!(
-            classify_run_artifact_for_campaign(
-                &stale,
-                "DoubleMa",
-                "cfg-1",
-                "campaign-main",
-                &prepared,
-            ),
+            classify_run_artifact_for_campaign(&stale, "DoubleMa", "cfg-1", &exact.tags, &prepared,),
             CampaignArtifactMatchDecision::Stale
         );
 
@@ -6500,7 +11309,7 @@ mod tests {
                 &legacy,
                 "DoubleMa",
                 "cfg-1",
-                "campaign-main",
+                &exact.tags,
                 &prepared,
             ),
             CampaignArtifactMatchDecision::LegacyDegraded
@@ -6513,6 +11322,7 @@ mod tests {
                 timeframe: Some("15m".to_string()),
                 source_size_bytes: None,
                 source_mtime_utc_ms: None,
+                source_change_marker: None,
                 source_content_fingerprint: None,
             },
             candles: vector_ta::utilities::data_loader::Candles::new(
@@ -6535,7 +11345,7 @@ mod tests {
                 &exact,
                 "DoubleMa",
                 "cfg-1",
-                "campaign-main",
+                &exact.tags,
                 &unsafe_prepared,
             ),
             CampaignArtifactMatchDecision::Unsafe
@@ -6543,7 +11353,7 @@ mod tests {
     }
 
     #[test]
-    fn save_campaign_summary_checkpoint_persists_checkpoint_timing() {
+    fn save_campaign_summary_checkpoint_records_timing_without_second_full_rewrite() {
         let app = build_mock_app();
         let summary_path = make_temp_dir("campaign_summary_checkpoint").join("summary.json");
         let mut items = vec![ResearchCampaignItemSummary {
@@ -6558,6 +11368,7 @@ mod tests {
             resume_state: Some(CampaignResumeState::Complete),
             reuse_decision: None,
             artifact_path: Some("C:/runs/validated.json".to_string()),
+            artifact_sha256: Some("c".repeat(64)),
             report_xlsx_path: None,
             error: None,
             diagnostics: Some(ResearchCampaignItemDiagnostics {
@@ -6576,12 +11387,14 @@ mod tests {
                 optimize_artifact_save_ms: Some(3.0),
                 checkpoint_save_ms: None,
             }),
+            fixed_candidate_result: None,
         }];
         let mut summary = ResearchCampaignSummary {
             version: 2,
             kind: "vectorgrid_campaign_summary".to_string(),
             ts: "2026-04-15T00:00:00Z".to_string(),
             state: "running".to_string(),
+            retention: None,
             manifest: None,
             evidence_state: Some(CampaignEvidenceState::Complete),
             resume_state: Some(CampaignResumeState::Complete),
@@ -6600,6 +11413,7 @@ mod tests {
                 cancelled: false,
             },
             items: items.clone(),
+            fixed_candidate_evaluation: None,
             meta_json_path: None,
             stage5_json_path: None,
             warnings: Vec::new(),
@@ -6626,12 +11440,12 @@ mod tests {
             &std::fs::read(&summary_path).expect("summary json should exist on disk"),
         )
         .expect("summary json should parse");
-        assert!(
+        assert_eq!(
             saved
                 .pointer("/items/0/diagnostics/checkpoint_save_ms")
-                .and_then(Value::as_f64)
-                .is_some(),
-            "checkpoint timing should be serialized into the saved summary"
+                .and_then(Value::as_f64),
+            None,
+            "the timing observed after publication must wait for the next bounded/final snapshot instead of causing a second full rewrite"
         );
         assert_eq!(
             saved

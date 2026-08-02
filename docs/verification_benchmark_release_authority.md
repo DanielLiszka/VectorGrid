@@ -26,9 +26,9 @@ CPU-only builds must keep working without a CUDA toolchain, NVIDIA driver, or NV
 | Authority class | Meaning | Examples |
 |---|---|---|
 | Broad authoritative gate | Current repo-labeled broad pass/fail gate. | `scripts/run_workflow_gate.ps1`, `scripts/run_cpu_perf_gate.ps1`, `scripts/run_gpu_perf_gate.ps1`, `scripts/run_gpu_ma_perf_gate.ps1`. |
-| Required CPU CI mirror | Merge enforcement that delegates to repo-owned CPU/static/headless gates without becoming package or public-release authority. | `.github/workflows/cpu-quality.yml` / `Required CPU quality`, via `scripts/run_cpu_ci_gate.ps1`. |
+| Required CPU CI mirror | Tracked workflow contract that delegates to repo-owned CPU/static/headless gates without becoming package or public-release authority. Actual merge enforcement depends on remote workflow execution and branch protection. | `.github/workflows/cpu-quality.yml` / `Required CPU quality`, via `scripts/run_cpu_ci_gate.ps1`. |
 | Proposed subsystem authority | Claim-specific authority documented here for subsystem claims. | GPU validation/follow-up gates, options promotion gate, ML Signal quality/native smoke, execution safety, frontend E2E, output parity. |
-| Release authority artifact | Evidence artifact that answers a release-specific question. | `readiness.json`, `provenance.json`, `manifest.json`, `SHA256SUMS.txt`, `packaged-smoke-summary.json`. |
+| Release authority artifact | Evidence artifact that answers a release-specific question. | `readiness.json`, `provenance.json`, `manifest.json`, `SHA256SUMS.txt`, `packaged-smoke-summary.json`, `release-proof-evidence-manifest.json`, `public-release-summary.json`, `cpu-reliability-soak-evidence.json`. |
 | Companion diagnostic evidence | Helps explain mechanism but cannot approve a claim alone. | Nsight, CUPTI, app-path faceoff, campaign prefetch telemetry, memory telemetry. |
 | Non-authority helper | Useful helper that must not be used as proof of unrelated claims. | `scripts/check_output_parity.mjs` for semantic claims, `scripts/export_baseline_samples.mjs`, migration freeze helper, archived workflows under `.github/workflows.disabled/`. |
 
@@ -39,6 +39,7 @@ CPU-only builds must keep working without a CUDA toolchain, NVIDIA driver, or NV
 | Broad repo quality | `powershell -File scripts/run_repo_quality_gate.ps1`; optional `powershell -File scripts/run_workspace_tests_stable.ps1`; required CI mirror `Required CPU quality` | Targeted Rust/web tests for touched surfaces. | Perf/profile scripts. |
 | Warm workflow regression | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate` | Output parity if artifact/report shape changes. | Criterion-only benches. |
 | CPU performance | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` | Workflow gate when product workflow path changes. | GPU gates. |
+| CPU reliability operator authority | `powershell -File scripts/run_cpu_reliability_soak.ps1 -Mode operator -Hours 6 -CargoTargetDir <dedicated-path>` | Fresh operator-mode `cpu-reliability-soak-evidence.json` with a release build, at least six hours, at least 30 measured cycles, maximum sample gap no greater than 15 minutes, and `operator_release_eligible=true`. | Short mode; CPU/GPU performance; native desktop, provider, broker, clean-machine, or public-release behavior. |
 | GPU kernel/CUDA performance | `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate -WorkloadProfile gpu-kernel` | Route diagnostics, CUDA tests, Nsight as companion. | GPU MA-sweep benchmarks or ALMA contract rows alone. |
 | GPU MA-sweep performance | `powershell -File scripts/run_gpu_ma_perf_gate.ps1 -Mode candidate` | CUDA tests and route diagnostics for the `cuda`-only `GpuOnly` path. | The GPU-kernel case registry or baseline. |
 | GPU validation performance/residency | `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate` | Workflow gate; output parity if validation artifacts/reports change. | Generic GPU perf gate alone. |
@@ -55,12 +56,14 @@ CPU-only builds must keep working without a CUDA toolchain, NVIDIA driver, or NV
 | Artifact/report shape | `node scripts/run_output_parity_check.mjs` | Semantic parity checks when semantic claims change. | Release-candidate gate alone; `scripts/check_output_parity.mjs` alone for semantics. |
 | Release readiness | `powershell -File scripts/run_release_doctor.ps1 -Variant <variant>` | `readiness.json`. | Manifest/provenance alone. |
 | Full local release rehearsal | `powershell -File scripts/run_release_candidate_gate.ps1 -Variant <variant>` | Readiness, provenance, manifest, hashes, smoke where configured. Add `-IncludeGpuValidationPerf` to `gpu-kernel` rehearsals for GPU validation/residency claims. Add `-IncludeOptionsGpuPromotion` plus explicit artifact and dataset/import identity for options GPU claims. | Required CPU CI alone or archived workflows. |
+| Public release eligibility | `powershell -File scripts/run_public_release_gate.ps1 -Variant <variant> <required signing args>` | A passing `public-release-summary.json`; exact extracted-bundle runtime with `runtime_executed=true`; the `release-proof` desktop suite and complete current-run journey manifest bound to the same variant and packaged binary; a clean worktree whose initial/final exact Git HEAD, raw NUL-delimited status, and canonical tracked/current-untracked raw-byte manifests match; rejection of nonstandard tracked index flags and multi-link source files; retained deny-write read leases over captured source; zero in-scope events or errors from the run-long source mutation monitor; valid expected-signer and timestamp evidence. | Release-candidate rehearsal alone; static inspection; raw-binary smoke; dirty-worktree or unsigned-beta rehearsal; CI/branch protection alone. |
 
 ## Benchmark Timing Boundaries
 
 | Evidence | Boundary | Product relevance | Exclusions/limitations |
 |---|---|---|---|
 | `scripts/run_workflow_gate.ps1` / `src-tauri/src/bin/ta_workflow_regression.rs` | Warm deterministic backend workflow. | Best current workflow regression authority. | Does not prove full frontend click-to-render latency. |
+| `scripts/run_cpu_reliability_soak.ps1` / `src-tauri/src/bin/ta_cpu_reliability_soak.rs` | One offline native CPU process repeatedly loads, optimizes, validates, persists, hydrates, cleans up, cancels, and samples process/storage state. Short mode is bounded diagnostics; operator mode is six hours or longer. | Long-running CPU lifecycle, cancellation, containment, and bounded growth authority when operator evidence satisfies its fixed thresholds. | Short mode is never operator authority. Neither mode proves throughput, GPU behavior, native UI, provider/broker behavior, clean-machine compatibility, or publication readiness. |
 | `src-tauri/src/bin/ta_app_path_faceoff.rs` | AppState plus blocking optimizer call. | Product-adjacent app-state path. | Not full Tauri command path; not full UI workflow. |
 | `src-tauri/src/bin/ta_campaign_perf.rs` | Headless campaign runner. | Product-adjacent campaign/preload evidence. | Prefetch economics are heuristic telemetry. |
 | `scripts/run_support_perf_gate.ps1` / `src-tauri/src/bin/ta_perf_authority_support.rs` | Release-mode support-surface command timing. | Non-credential timing authority for data/cache-adjacent, options-data, reports, artifacts, portfolio, dynamic/status, and local-paper execution scaffolding. | Provider stream start, credentialed broker/API behavior, or core optimizer/validator throughput. |
@@ -90,7 +93,11 @@ A performance claim is valid only when the benchmark timing boundary includes th
 
 Frontend latency authority separates reproducible local candidate evidence from release publication eligibility. A dirty scoped worktree is not itself a measurement-integrity failure: the production build inputs, distribution bytes, measurement harness, policy, fixture, raw samples, and report are independently hashed and revalidated, while canonical NUL-delimited Git status is also recorded and checked. Such a passing run keeps `authority_eligible=true` for local comparison but is explicitly classified as `dirty-source-local-candidate-rehearsal` with `release_evidence_eligible=false`. Only a clean scoped source state can produce `clean-source-release-evidence-candidate`; that flag is still only an input to release review, never standalone publication approval. `scripts/run_public_release_gate.ps1` remains the final boundary and already makes `-AllowDirtyWorktree -AllowUnsignedBeta` runs rehearsal-only with `public_release_eligible=false`.
 
-In this working tree, `scripts/baselines/` is git-ignored. Baselines generated there are local-machine evidence by default; promoting one to shared authority requires an explicit reviewed change, for example a force-add or an ignore-policy adjustment.
+Canonical files under `scripts/baselines/` are tracked review inputs. A newly
+generated baseline is not authority merely because a gate wrote it: promotion
+still requires an explicit reviewed source change with the machine/workload
+identity and rationale preserved. Run artifacts under `output/` remain
+local-machine evidence unless a release-evidence workflow archives them.
 
 Strict inventory treats every registry case marked `release_required_baseline` as fail-closed. It writes `release_baseline_health.json`, reports every absent path, and never creates or copies a timing file. The bounded active-process snapshot uses native process enumeration in a disposable helper job; a timeout or provider failure aborts the inventory instead of assuming the machine is idle.
 
@@ -115,7 +122,8 @@ The scoped warm mocked-browser interaction-latency authority is deliberately opt
 | What exactly was built? | `provenance.json` first, `provenance.txt` secondary | Includes build identity, toolchain, and environment evidence. |
 | Which assets were staged? | `manifest.json` | Current required resources include CatBoost native DLL and license, bundled synthetic sample CSV, `double_crossover.prebuilt.ptx`, and `options_expression.prebuilt.ptx`. |
 | What are the asset hashes? | `SHA256SUMS.txt`, interpreted against `manifest.json` | Hash file alone is not variant authority. |
-| Did the packaged artifact launch? | `packaged-smoke-summary.json` | Check `smoke_mode`; raw release-binary smoke is not bundle-level packaging proof. |
+| Did the packaged artifact launch? | `packaged-smoke-summary.json` | A launch claim requires `runtime_executed=true`, `binary_origin=extracted-bundle`, and identity matching the exact staged bundle. Static inspection and raw release-binary smoke are not launch authority. |
+| Is this exact package eligible for public release? | `scripts/run_public_release_gate.ps1` and `public-release-summary.json` | Requires the exact-package `release-proof` desktop suite, a complete current-run `release-proof-evidence-manifest.json` bound to one variant and packaged-binary identity, expected-signer/timestamp evidence, final artifact revalidation, and a clean worktree whose exact initial/final Git HEAD, raw NUL-delimited status, and canonical tracked/current-untracked raw-byte manifests match. Nonstandard tracked index flags, multi-link source files, missing retained source read leases, or any run-long source-monitor event/error fail closed. Dirty or unsigned allowances are rehearsal-only and always set `public_release_eligible=false`. |
 | Are artifact/report outputs still compatible? | `node scripts/run_output_parity_check.mjs` | Also runs by default in the release-candidate gate; the direct command remains the fastest focused authority. |
 | Are shipped live-execution controls covered? | `scripts/run_execution_safety_gate.ps1`, authority-eligible `live-safety-summary.json`, and `scripts/public_live_safety_evidence_contract.mjs` | All public compute variants expose Alpaca live execution. The public wrapper requires both authorities; broker connectivity and manual recovery remain separate evidence. |
 
@@ -131,14 +139,17 @@ Current release-candidate caveats:
 - `live-safety-summary.json` is authority evidence only when `status` is `passed` and `authority_eligible` is `true`. `-ContractSimulation` accepts an injected executable solely for deterministic harness testing and always emits `authority_eligible=false`.
 - The harness is unit-contract authority for its enumerated invariants. It does not prove broker connectivity or writes, OS-level network isolation, proxy-bypassing clients, profitability, end-to-end command behavior, or manual disaster recovery.
 - Every public `cpu`, `gpu-ma`, and `gpu-kernel` desktop ships the Alpaca-live command and UI surface. `scripts/run_public_release_gate.ps1` therefore invokes both authorities unconditionally and uses `scripts/public_live_safety_evidence_contract.mjs` to reject missing, stale, diagnostic, custom-Cargo, source-drifted, or incomplete evidence.
+- `scripts/run_public_release_gate.ps1` always requests `-DesktopSuite release-proof`. It rejects static-only smoke, raw-binary origin, incomplete or foreign-run journey evidence, and any journey manifest that is not bound to the current release variant and packaged binary.
+- The public gate starts a recursive fail-closed source mutation monitor before its initial capture, excludes only enumerated generated roots that contain no tracked source, rejects nonstandard tracked index flags and multi-link source files, hashes canonical raw bytes for every tracked and current untracked file, and retains read/share-deny-write handles over those captured files until final revalidation. It then revalidates the manifests plus exact Git HEAD and raw NUL-delimited status after all candidate/signing/evidence work. External hard-link writes, modify-restore, untracked create-remove, watcher overflow/error, or any other in-scope mutation event fails closed.
+- `-AllowDirtyWorktree` and `-AllowUnsignedBeta` exist only for explicit local rehearsal. A passing rehearsal remains non-publishable and cannot set `public_release_eligible=true`.
 
 ## Release Variant Evidence Matrix
 
 | Variant/surface | Required evidence | Notes |
 |---|---|---|
-| CPU-only | CPU build; release doctor; release candidate; provenance/manifest/hash; execution safety gate; authority-eligible live-safety harness. | Must not require CUDA Toolkit, NVCC, NVIDIA GPU, or driver. The package still exposes Alpaca live execution. |
-| GPU MA-sweep | `--features cuda`; release doctor/candidate for `gpu-ma`; `scripts/run_gpu_ma_perf_gate.ps1 -Mode candidate`; NVIDIA driver/runtime evidence; both live-execution safety authorities. | Uses the dedicated `double_ma/gpu_sweep/*` registry and `gpu_ma_perf_baseline.json`; it does not consume the GPU-kernel baseline. |
-| GPU kernel | `--features cuda-backtest-kernel`; `VECTORBT_USE_PREBUILT_PTX=1` for packaged kernel path; manifest PTX evidence; GPU perf; GPU validation perf when validation/residency claims are made; both live-execution safety authorities. | `cuda-backtest-kernel` implies `cuda`; runtime NVIDIA driver still required. |
+| CPU-only | CPU build; release doctor; release candidate; provenance/manifest/hash; execution safety gate; authority-eligible live-safety harness; passing public-release gate for publication. | Must not require CUDA Toolkit, NVCC, NVIDIA GPU, or driver. The package still exposes Alpaca live execution. Public-release policy presence does not claim that a signed package currently passed it. |
+| GPU MA-sweep | `--features cuda`; release doctor/candidate for `gpu-ma`; `scripts/run_gpu_ma_perf_gate.ps1 -Mode candidate`; NVIDIA driver/runtime evidence; both live-execution safety authorities; passing public-release gate for publication. | Uses the dedicated `double_ma/gpu_sweep/*` registry and `gpu_ma_perf_baseline.json`; it does not consume the GPU-kernel baseline. Public-release policy presence does not claim current publication authority. |
+| GPU kernel | `--features cuda-backtest-kernel`; `VECTORBT_USE_PREBUILT_PTX=1` for packaged kernel path; manifest PTX evidence; GPU perf; GPU validation perf when validation/residency claims are made; both live-execution safety authorities; passing public-release gate for publication. | `cuda-backtest-kernel` implies `cuda`; runtime NVIDIA driver still required. Public-release policy presence does not claim current publication authority. |
 | Options GPU scorer | `gpu-kernel` release/public gate with `-IncludeOptionsGpuPromotion`, explicit artifact and dataset/import identity, CPU options tests, exact CPU/GPU parity, promotion checks, and baseline comparison. | The manifest tracks `options_expression.prebuilt.ptx`; that packaging evidence is not enough to promote options GPU scorer claims. |
 | ML Signal native CPU | ML quality gate; native smoke; CatBoost DLL resource in manifest. | Manifest currently requires CatBoost native DLL unless explicitly allowed missing. |
 | Live execution enabled | Execution safety gate; reviewed live-safety harness with authority-eligible evidence; no production credentials. | Public live release still requires manual recovery and emergency-halt posture; the harness does not contact a broker. |
@@ -182,7 +193,9 @@ A recommendation is not implementation-ready until it states:
 - `src-tauri/src/bin/ta_campaign_perf.rs` prefetch economics are heuristic telemetry unless separately promoted.
 - `scripts/run_cuda_graph_timing_probe.ps1` is mechanism-level companion evidence; its host replay-submission duration is not GPU-kernel execution time or a release-performance gate.
 - `scripts/run_cuda_graph_multitile_parity.ps1` is one constrained Double MA correctness regression; it is not broad CUDA parity, performance, or release authority.
-- The active `Required CPU quality` check is merge enforcement for CPU/static/headless scope, not installer, signing, GPU, native-desktop, or clean-machine release authority.
+- A short `scripts/run_cpu_reliability_soak.ps1` run is bounded diagnostic evidence, not six-hour operator authority, performance authority, or public-release evidence.
+- A dirty-worktree or unsigned-beta `scripts/run_public_release_gate.ps1` pass is a non-publishable rehearsal, not public-release eligibility.
+- The tracked `Required CPU quality` workflow defines the CPU/static/headless merge-check contract, but remote enforcement is not proven until the workflow runs on GitHub and branch protection requires it. Even when enforced, it is not installer, signing, GPU, native-desktop, or clean-machine release authority.
 - Archived `.github/workflows.disabled/*` definitions are not active authority and must not be copied back as current workflow contracts.
 - `scripts/run_release_candidate_gate.ps1` records the same tracked output-parity pack as the focused command when the step passes.
 
@@ -210,7 +223,7 @@ A recommendation is not implementation-ready until it states:
 | Release-candidate output parity integration | Implemented | Candidate rehearsal now runs the tracked JSON/CSV/XLSX structural and semantic parity pack by default; public release also requires it. |
 | Machine-readable authority matrix | Implemented | `docs/release_authority_matrix.json` is validated deterministically by `scripts/check_release_authority_matrix.mjs`; repo quality, release doctor, and the required CPU CI chain fail closed on drift. |
 | Live safety harness authority | Implemented | The reviewed harness runs one locked/offline explicit-CPU Cargo process, removes production credential environment variables, traps ordinary external HTTP proxy traffic, hard-pins the complete 107-test `commands_execution` namespace plus supporting execution contracts, verifies pre/post source hashes, separates simulation from authority eligibility, and is protected by positive and negative repo-quality contracts. |
-| Required CPU CI enforcement | Implemented | `.github/workflows/cpu-quality.yml` delegates to `scripts/run_cpu_ci_gate.ps1`; branch protection must require `Required CPU quality`. |
+| Required CPU CI workflow contract | Implemented in source; remote activation pending | `.github/workflows/cpu-quality.yml` delegates to `scripts/run_cpu_ci_gate.ps1`. A pushed successful GitHub run and branch protection requiring `Required CPU quality` remain external repository state. |
 | GPU/native/clean-machine CI lanes | Deferred | Require suitable GPU or desktop runners, foreground ownership, signing/release infrastructure, or clean-VM orchestration; they are intentionally outside required CPU CI. |
 | CUDA Graphs timing boundary | Implemented | Opt-in microsecond instrumentation and a serialized machine-readable probe separate capture, instantiate, immutable-topology update non-applicability, and asynchronous replay submission without changing the default runtime path. |
 | Full frontend click-to-render latency | Research spike | The scoped warm mocked-browser lane covers two representative built-frontend interactions. Full authority still needs native Tauri/WebView2, real backend/provider boundaries, cold paths, complete workflow coverage, and representative device evidence. |
@@ -224,6 +237,7 @@ Use these files as authority anchors before changing this document:
 - `docs/RELEASE.md`
 - `scripts/check_release_authority_matrix.mjs`
 - `scripts/run_release_candidate_gate.ps1`
+- `scripts/run_public_release_gate.ps1`
 - `scripts/run_release_doctor.ps1`
 - `scripts/generate_release_manifest.ps1`
 - `scripts/run_packaged_smoke.ps1`
@@ -236,9 +250,9 @@ Use these files as authority anchors before changing this document:
 - `scripts/run_cuda_graph_multitile_parity.ps1`
 - `scripts/cuda_graph_multitile_parity_contract.test.mjs`
 - `scripts/run_options_expression_gpu_promotion_gate.ps1`
-- `scripts/run_public_release_gate.ps1`
 - `scripts/run_output_parity_check.mjs`
 - `scripts/run_execution_safety_gate.ps1`
+- `scripts/run_cpu_reliability_soak.ps1`
 - `scripts/run_live_execution_safety_harness.ps1`
 - `scripts/live_execution_safety_harness_contract.test.mjs`
 - `scripts/run_frontend_e2e_gate.ps1`

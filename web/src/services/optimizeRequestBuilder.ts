@@ -17,7 +17,6 @@ const MAX_INCLUDE_ALL_ROWS = 2_000_000;
 const MAX_GPU_KERNEL_TOP_K = 256;
 const MAX_EXTRA_SHORTLIST_OBJECTIVES = 3;
 const COMPOSITE_CPU_PRODUCT_MODE = "Grid" as const;
-const COMPOSITE_CPU_PRODUCT_HEATMAP_BINS = 0;
 
 export interface OptimizeBuildContext {
   strategy_kind?: unknown;
@@ -220,6 +219,7 @@ export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuild
   mode?: unknown;
   topK?: unknown;
   includeAll?: unknown;
+  heatmapBins?: unknown;
   extraShortlistObjectives?: unknown;
   shortlistConfidenceMode?: unknown;
   shortlistUnionMode?: unknown;
@@ -2724,6 +2724,12 @@ export function buildCompositeCpuOptimizationRequest(
   ];
   const fastRange = parseU16LikeRange(fast[0], fast[1], fast[2]);
   const slowRange = parseU16LikeRange(slow[0], slow[1], slow[2]);
+  if (
+    kind === "Vcet" &&
+    (!fastRange || fastRange.low < 2 || fastRange.high > 65535)
+  ) {
+    throw new Error("VCET Fast range must be in [2, 65535].");
+  }
   const pairs = countPairsFastLtSlowRanges(fastRange, slowRange);
   if (!pairs)
     throw new Error("No valid parameter combinations (fast must be < slow).");
@@ -2854,6 +2860,13 @@ export function buildCompositeCpuOptimizationRequest(
   );
   const topK = Math.max(0, Math.floor(num(inputs.topK, 0)));
   const includeAll = normalizeIncludeAll(inputs.includeAll);
+  const heatmapBins =
+    kind === "CompositeCpu"
+      ? 0
+      : Math.max(0, Math.floor(num(inputs.heatmapBins, 0)));
+  if (heatmapBins > MAX_HEATMAP_BINS) {
+    throw new Error(`heatmapBins must be <= ${MAX_HEATMAP_BINS}.`);
+  }
   if (includeAll && pairs > MAX_INCLUDE_ALL_ROWS) {
     throw new Error(
       `includeAll=true would return ${pairs} rows; disable it or reduce ranges.`,
@@ -3219,10 +3232,10 @@ export function buildCompositeCpuOptimizationRequest(
 
     if (
       !Number.isFinite(vidyaShortPeriod) ||
-      vidyaShortPeriod < 1 ||
+      vidyaShortPeriod < 2 ||
       vidyaShortPeriod > 65535
     ) {
-      throw new Error("VCET VIDYA short period must be in [1, 65535].");
+      throw new Error("VCET VIDYA short period must be in [2, 65535].");
     }
     if (
       !Number.isFinite(vidyaLongPeriod) ||
@@ -3231,15 +3244,11 @@ export function buildCompositeCpuOptimizationRequest(
     ) {
       throw new Error("VCET VIDYA long period must be in [1, 65535].");
     }
-    if (
-      !mapFastToVidyaShortPeriod &&
-      !mapSlowToVidyaLongPeriod &&
-      vidyaLongPeriod <= vidyaShortPeriod
-    ) {
+    if (vidyaLongPeriod <= vidyaShortPeriod) {
       throw new Error("VCET VIDYA long period must be > short period.");
     }
-    if (!Number.isFinite(vidyaAlpha) || vidyaAlpha <= 0) {
-      throw new Error("VCET VIDYA alpha must be > 0.");
+    if (!Number.isFinite(vidyaAlpha) || vidyaAlpha < 0 || vidyaAlpha > 1) {
+      throw new Error("VCET VIDYA alpha must be in [0, 1].");
     }
     if (!Number.isFinite(cePeriod) || cePeriod < 1 || cePeriod > 65535) {
       throw new Error("VCET Chandelier period must be in [1, 65535].");
@@ -3371,7 +3380,7 @@ export function buildCompositeCpuOptimizationRequest(
             mode: COMPOSITE_CPU_PRODUCT_MODE,
     top_k: topK,
     include_all: includeAll,
-    heatmap_bins: COMPOSITE_CPU_PRODUCT_HEATMAP_BINS,
+    heatmap_bins: heatmapBins,
   };
 }
 

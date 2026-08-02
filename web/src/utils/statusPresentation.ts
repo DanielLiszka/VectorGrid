@@ -9,7 +9,7 @@ import type {
 } from '../stores/taskStore'
 import type { LegacyBootPhase } from '../stores/runtimeStore'
 import { formatCommandLabel } from '../stores/taskStore'
-import { formatUiPercentFromFraction } from './uiFormat'
+import { formatUiPercentValue } from './uiFormat'
 
 type TaskLifecycleValue = TaskStatus | TaskCenterStatus | string | null | undefined
 type TaskLevelValue =
@@ -139,8 +139,8 @@ export function describeTaskToast(toast: TaskToastItem | null | undefined): stri
 export function formatOverallProgressLabel(overall: OverallProgress | null | undefined): string {
   if (!overall) return 'No active progress'
   const label = String(overall.label || '').trim()
-  if (!label) return `${formatUiPercentFromFraction(overall.pct)} complete`
-  return `${formatUiPercentFromFraction(overall.pct)} · ${label}`
+  if (!label) return `${formatUiPercentValue(overall.pct)} complete`
+  return `${formatUiPercentValue(overall.pct)} · ${label}`
 }
 
 export function runtimePhaseTone(phase: LegacyBootPhase | string | null | undefined): LegacyBootPhase {

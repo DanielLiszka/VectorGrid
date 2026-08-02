@@ -23,21 +23,21 @@ import AppVisualIcon from "./AppVisualIcon.vue";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
 import ContextHelpTip from "./ContextHelpTip.vue";
 import ContextActionMenu from "./ContextActionMenu.vue";
+import VcetCampaignSearchControls from "./VcetCampaignSearchControls.vue";
+import VcetTemporalCampaignPanel from "./VcetTemporalCampaignPanel.vue";
+import AppButton from "./ui/AppButton.vue";
 import AppDataTableShell from "./ui/AppDataTableShell.vue";
+import AppEmptyState from "./ui/AppEmptyState.vue";
 import AppMetricCell from "./ui/AppMetricCell.vue";
 import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
+import VcetCampaignEvidenceHeatmap from "./visualizations/VcetCampaignEvidenceHeatmap.vue";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import {
   META_RESULTS_TABLE_DENSITY_KEY,
   META_RESULTS_TABLE_STATE_KEY,
 } from "../utils/core/storageKeys";
-import {
-  artifactBundleIcon,
-  emptyArtifactLibraryIllustration,
-  emptyCompareWorkspaceIllustration,
-  emptyResultsWorkspaceIllustration,
-} from "../utils/appSvgAssets";
+import { artifactBundleIcon } from "../utils/appSvgAssets";
 import { artifactActionIcon, type AppIcon } from "../utils/iconography";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import {
@@ -45,6 +45,11 @@ import {
   resolveMetricCellVisual,
   type MetricCellVisual,
 } from "../visualizations/metricCellVisualModel";
+import { buildVcetSearchConfigFromDraft } from "../services/vcetSearchRequestBuilder";
+import {
+  resolveLatestVcetTemporalCampaignSource,
+  type VcetTemporalCampaignSourceEligibility,
+} from "../services/metaService";
 
 interface OptionItem {
   value: string;
@@ -148,6 +153,12 @@ const {
   batchHoldoutTag,
   batchExecutionMode,
   batchPreloadPolicy,
+  batchAdmissionMinProfitableShare,
+  batchAdmissionMinHardGateShare,
+  batchAdmissionMinPnlP10,
+  batchAdmissionMinSharpeP10,
+  batchVcetCandidateDesignMode,
+  batchVcetSearchDraft,
   batchAutoMeta,
   batchAutoStage5,
   batchSkipDone,
@@ -156,6 +167,7 @@ const {
   batchTotalCount,
   batchMeta,
   batchOutputPreview,
+  batchVcetEvidence,
   canRunBatch,
   canBatchStop,
   canBatchRefresh,
@@ -287,13 +299,24 @@ const savedArtifactFamily = ref<SavedArtifactFamilyKey>("meta");
 const pendingSavedArtifactDeleteFamily = ref<SavedArtifactFamilyKey | null>(
   null,
 );
+const vcetTemporalSource = ref<VcetTemporalCampaignSourceEligibility>({
+  eligible: false,
+  summaryPath: "",
+  identity: null,
+  message:
+    "Complete a structurally eligible VCET candidate-universe replay to unlock temporal preparation.",
+});
+let vcetTemporalSourceRequest = 0;
 
 const visible = computed(
   () => String(resultsTab.value || "").trim() === "meta",
 );
-const activeAggregateTab = computed(
-  () => String(aggregateTab.value || "").trim() || "meta",
-);
+const activeAggregateTab = computed<AggregateTabKey>(() => {
+  const selected = String(aggregateTab.value || "").trim();
+  return aggregateTabItems.some((item) => item.key === selected)
+    ? (selected as AggregateTabKey)
+    : "meta";
+});
 const metaTabActive = computed(() => activeAggregateTab.value === "meta");
 const compareTabActive = computed(() => activeAggregateTab.value === "compare");
 const showMetaTooling = computed(() => metaStage.value !== "no_data");
@@ -326,7 +349,10 @@ const { tableDensity } = usePersistedTableDensity(
   META_RESULTS_TABLE_DENSITY_KEY,
 );
 const { headerGroups, rowModelRows, visibleLeafColumns } =
-  useHeadlessMatrixTable(orderedColumns, renderedRows, { columnVisibility, columnWidths });
+  useHeadlessMatrixTable(orderedColumns, renderedRows, {
+    columnVisibility,
+    columnWidths,
+  });
 const metaMetricVisualRanges = computed(() =>
   buildMetricColumnVisualRanges(orderedColumns.value, renderedRows.value),
 );
@@ -513,6 +539,11 @@ const batchExecutionModeOptions: OptionItem[] = [
   { value: "full", label: "Full campaign", disabled: false },
   { value: "optimize_only", label: "Optimize only", disabled: false },
   { value: "validate_only", label: "Validate only", disabled: false },
+  {
+    value: "evaluate_candidates",
+    label: "VCET candidate-universe replay",
+    disabled: false,
+  },
 ];
 
 const batchRunButtonLabel = computed(() => {
@@ -521,6 +552,8 @@ const batchRunButtonLabel = computed(() => {
       return "Run optimize-only";
     case "validate_only":
       return "Run validate-only";
+    case "evaluate_candidates":
+      return "Replay VCET candidates";
     default:
       return "Run full campaign";
   }
@@ -552,6 +585,11 @@ const batchPreloadPolicyLabel = computed(() =>
 );
 
 const batchAutomationLabel = computed(() => {
+  if (batchExecutionModeDraft.value === "evaluate_candidates") {
+    return batchVcetCandidateDesignMode.value === "halton"
+      ? "Multidimensional replay"
+      : "Fixed replay only";
+  }
   if (!batchAutoMetaDraft.value) return "Manual follow-up";
   if (batchAutoStage5Draft.value) return "Meta + Stage 5";
   return "Meta only";
@@ -570,6 +608,23 @@ const batchHoldoutContractSummary = computed(() => {
   ].join(" • ");
 });
 
+const batchAdmissionContractSummary = computed(() => {
+  const formatShare = (value: unknown, fallback: number) => {
+    const parsed = Number(value);
+    return `${((Number.isFinite(parsed) ? parsed : fallback) * 100).toFixed(0)}%`;
+  };
+  const finiteText = (value: unknown, fallback: string) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? String(parsed) : fallback;
+  };
+  return [
+    `profitable ≥ ${formatShare(batchAdmissionMinProfitableShare.value, 0.55)}`,
+    `hard gate ≥ ${formatShare(batchAdmissionMinHardGateShare.value, 0.5)}`,
+    `PnL p10 ≥ ${finiteText(batchAdmissionMinPnlP10.value, "0")}`,
+    `Sharpe p10 ≥ ${finiteText(batchAdmissionMinSharpeP10.value, "0")}`,
+  ].join(" • ");
+});
+
 const batchRegistryContractSummary = computed(() => {
   const executionMode =
     String(batchExecutionModeDraft.value || "full").trim() || "full";
@@ -578,13 +633,42 @@ const batchRegistryContractSummary = computed(() => {
       ? "meta and Stage 5 disabled"
       : executionMode === "validate_only"
         ? "reuses saved optimization artifacts"
-        : "full campaign with optional follow-up";
+        : executionMode === "evaluate_candidates"
+          ? batchVcetCandidateDesignMode.value === "halton"
+            ? "same sealed multidimensional VCET manifest on every dataset"
+            : "same VCET Fast/Slow manifest on every dataset"
+          : "full campaign with optional follow-up";
   return [
     `tags ${summarizeDraftTags(batchTagsDraft.value)}`,
     "same-tf selection unless Data overrides",
     modeDetail,
   ].join(" • ");
 });
+
+const batchVcetDesignValidation = computed(() => {
+  if (
+    batchExecutionModeDraft.value !== "evaluate_candidates" ||
+    batchVcetCandidateDesignMode.value !== "halton"
+  ) {
+    return { valid: true, message: "" };
+  }
+  try {
+    return {
+      valid: true,
+      message: buildVcetSearchConfigFromDraft(batchVcetSearchDraft.value)
+        .summary,
+    };
+  } catch (error) {
+    return {
+      valid: false,
+      message:
+        error instanceof Error ? error.message : "Invalid VCET search design.",
+    };
+  }
+});
+const canRunBatchWithVcetDesign = computed(
+  () => canRunBatch.value && batchVcetDesignValidation.value.valid,
+);
 
 const batchRecoveryContractSummary = computed(() => {
   const summaryState = canBatchRevealSummary.value
@@ -795,6 +879,11 @@ const stage3HoldoutContractSummary = computed(() => {
     `holdout ${String(holdoutModeDraft.value || "light").trim() || "light"}`,
     `tag ${String(holdoutTagDraft.value || "holdout").trim() || "holdout"}`,
     holdoutSaveRowsDraft.value ? "save rows on" : "save rows off",
+    String(strategyDraft.value || "").trim() === "Vcet"
+      ? String(holdoutModeDraft.value || "light").trim() === "heavy"
+        ? "GPU-preferred base + fallback evidence + CPU stress"
+        : "GPU kernel required"
+      : "CPU reference replay",
   ].join(" • ");
 });
 
@@ -804,7 +893,13 @@ const stage3HoldoutModeDetailSummary = computed(() => {
     return "Holdout is disabled for this request. Unsupported strategies are downgraded by the request builder and holdout rank controls are ignored until holdout evaluation is turned back on.";
   }
   if (mode === "heavy") {
+    if (String(strategyDraft.value || "").trim() === "Vcet") {
+      return "Heavy VCET holdout requests the GPU kernel for base candidate replay but permits backend fallback (require_gpu=false), then adds CPU-resident walk-forward, perturbation, and bootstrap stress stages. The result and workbook expose fully-GPU, hybrid, CPU, failed, and fallback counts/reasons instead of claiming full-GPU residency.";
+    }
     return "Heavy mode emits nested validation config (walk-forward, perturbation, bootstrap, iterative engine). Backend still owns holdout rank fallback and warning text.";
+  }
+  if (String(strategyDraft.value || "").trim() === "Vcet") {
+    return "Light VCET holdout replays every representative with vectorized GPU-kernel metrics. Requested, evaluated, failed, profitable, and route counts remain explicit in the result and workbook.";
   }
   return "Light mode keeps holdout enabled but omits the nested validation payload. Backend still owns holdout rank fallback and warning text.";
 });
@@ -906,8 +1001,9 @@ watch(
       Boolean(metaStage4AutoTrain.value),
       Boolean(metaStage4RequireHealthy.value),
       Boolean(metaStage4FallbackToMeta.value),
-      String(metaStage4TrainingHistoryPolicy.value || "source_excluded").trim() ||
-        "source_excluded",
+      String(
+        metaStage4TrainingHistoryPolicy.value || "source_excluded",
+      ).trim() || "source_excluded",
     ] as const,
   ([
     nextStrategy,
@@ -1081,6 +1177,18 @@ function setSelectValue(id: string, nextValue: string): void {
 
 function setCheckedValue(id: string, nextValue: boolean): void {
   analysisStore.setMetaCheckboxField(id, nextValue);
+}
+
+function setBatchVcetCandidateDesignMode(
+  value: "period_grid" | "halton",
+): void {
+  analysisStore.setBatchVcetCandidateDesignMode(value);
+}
+
+function setBatchVcetSearchDraft(
+  value: typeof batchVcetSearchDraft.value,
+): void {
+  analysisStore.setBatchVcetSearchDraft(value);
 }
 
 function runAction(action: () => void): void {
@@ -1509,7 +1617,9 @@ const resizingMetaColumnKey = ref("");
 let metaResizeStartX = 0;
 let metaResizeStartWidth = 0;
 
-function metaHeaderStyle(header: Header<MetaRow, unknown>): Record<string, string> {
+function metaHeaderStyle(
+  header: Header<MetaRow, unknown>,
+): Record<string, string> {
   return columnWidthStyle(headerMeta(header).columnKey);
 }
 
@@ -1537,10 +1647,16 @@ function finishMetaColumnResize(): void {
 function onMetaColumnResizeMove(event: PointerEvent): void {
   const columnKey = resizingMetaColumnKey.value;
   if (!columnKey) return;
-  setColumnWidth(columnKey, metaResizeStartWidth + event.clientX - metaResizeStartX);
+  setColumnWidth(
+    columnKey,
+    metaResizeStartWidth + event.clientX - metaResizeStartX,
+  );
 }
 
-function startMetaColumnResize(event: PointerEvent, header: Header<MetaRow, unknown>): void {
+function startMetaColumnResize(
+  event: PointerEvent,
+  header: Header<MetaRow, unknown>,
+): void {
   const columnKey = headerMeta(header).columnKey;
   if (!columnKey) return;
   event.preventDefault();
@@ -1558,7 +1674,10 @@ function startMetaColumnResize(event: PointerEvent, header: Header<MetaRow, unkn
   window.addEventListener("pointercancel", finishMetaColumnResize);
 }
 
-function onMetaColumnResizeKeydown(event: KeyboardEvent, header: Header<MetaRow, unknown>): void {
+function onMetaColumnResizeKeydown(
+  event: KeyboardEvent,
+  header: Header<MetaRow, unknown>,
+): void {
   const columnKey = headerMeta(header).columnKey;
   if (!columnKey) return;
   if (event.key === "ArrowLeft") {
@@ -1613,6 +1732,22 @@ function clickAggregateTab(tab: AggregateTabKey): void {
   workflowStore.selectAggregateTab(aggregateTab);
 }
 
+function openRunLibrary(): void {
+  workflowStore.selectWorkspace("library");
+}
+
+function focusMetaSetup(): void {
+  void nextTick(() => {
+    document.querySelector<HTMLElement>("#vueMetaStrategy")?.focus();
+  });
+}
+
+function focusMetaCompareSelector(): void {
+  void nextTick(() => {
+    document.querySelector<HTMLElement>("#vueMetaCompareSelect")?.focus();
+  });
+}
+
 function toggleBatchDatasetByPath(
   pathValue: string,
   nextChecked: boolean,
@@ -1620,6 +1755,25 @@ function toggleBatchDatasetByPath(
   const path = String(pathValue || "").trim();
   if (!path) return;
   analysisStore.toggleBatchDataset(path, nextChecked);
+}
+
+async function refreshVcetTemporalSource(): Promise<void> {
+  const request = ++vcetTemporalSourceRequest;
+  try {
+    const resolved = await resolveLatestVcetTemporalCampaignSource();
+    if (request === vcetTemporalSourceRequest) {
+      vcetTemporalSource.value = resolved;
+    }
+  } catch {
+    if (request === vcetTemporalSourceRequest) {
+      vcetTemporalSource.value = {
+        eligible: false,
+        summaryPath: "",
+        identity: null,
+        message: "The latest saved VCET campaign could not be verified.",
+      };
+    }
+  }
 }
 
 function batchDatasetInputId(index: number): string {
@@ -1633,6 +1787,13 @@ function batchDatasetDescriptionId(index: number): string {
 onMounted(async () => {
   await nextTick();
   scrollToTop();
+  if (activeAggregateTab.value === "batch") {
+    await refreshVcetTemporalSource();
+  }
+});
+
+watch([activeAggregateTab, updatedAtUnixMs, canBatchRevealSummary], ([tab]) => {
+  if (tab === "batch") void refreshVcetTemporalSource();
 });
 
 onBeforeUnmount(() => {
@@ -1669,30 +1830,26 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <section v-if="metaStage === 'no_data'" class="emptyState">
-        <img
-          class="emptyStateIllustration"
-          :src="emptyArtifactLibraryIllustration"
-          alt=""
-          aria-hidden="true"
-          draggable="false"
-        />
-        <div class="emptyTitle">Meta Analysis needs saved runs first.</div>
-        <div class="emptyBody">
-          Build a run library by saving optimizations, then use this workspace
-          to generate meta artifacts, compare groups, and rank robust
-          candidates.
-        </div>
-        <div
-          class="panelStatus mono panelNumeric"
-          role="status"
-          aria-live="polite"
+      <div
+        v-if="metaStage === 'no_data' && activeAggregateTab !== 'batch'"
+        :id="aggregatePanelId(activeAggregateTab)"
+        role="tabpanel"
+        :aria-labelledby="aggregateTabId(activeAggregateTab)"
+      >
+        <AppEmptyState
+          title="Meta Analysis needs saved runs first."
+          body="Build a run library by saving optimizations, then use this workspace to generate meta artifacts, compare groups, and rank robust candidates."
+          hint="Next: open the Run Library to restore a saved run, or save an optimization result first."
         >
-          {{ statusLine }}
-        </div>
-      </section>
+          <template #actions>
+            <AppButton variant="primary" type="button" @click="openRunLibrary">
+              Open Run Library
+            </AppButton>
+          </template>
+        </AppEmptyState>
+      </div>
 
-      <section v-if="showMetaTooling" id="metaAggregateSurface" class="pane">
+      <section id="metaAggregateSurface" class="pane">
         <div
           class="subtabs"
           aria-label="Meta analysis sections"
@@ -1710,7 +1867,11 @@ onBeforeUnmount(() => {
             :aria-selected="activeAggregateTab === item.key"
             :data-aggregate-tab="item.key"
             :data-qa-action="`aggregate.tab.${item.key}`"
-            :aria-controls="aggregatePanelId(item.key)"
+            :aria-controls="
+              activeAggregateTab === item.key
+                ? aggregatePanelId(item.key)
+                : undefined
+            "
             :tabindex="activeAggregateTab === item.key ? 0 : -1"
             @click="clickAggregateTab(item.key)"
           >
@@ -1720,7 +1881,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section
-        v-if="showMetaTooling && activeAggregateTab === 'batch'"
+        v-if="activeAggregateTab === 'batch'"
         :id="aggregatePanelId('batch')"
         class="pane panelProminentPane"
         role="tabpanel"
@@ -1820,7 +1981,10 @@ onBeforeUnmount(() => {
                   ($event.target as HTMLSelectElement).value || 'full',
                 );
                 setSelectValue('batchExecutionMode', batchExecutionModeDraft);
-                if (batchExecutionModeDraft === 'optimize_only') {
+                if (
+                  batchExecutionModeDraft === 'optimize_only' ||
+                  batchExecutionModeDraft === 'evaluate_candidates'
+                ) {
                   batchAutoMetaDraft = false;
                   batchAutoStage5Draft = false;
                   setCheckedValue('batchAutoMeta', false);
@@ -1862,12 +2026,116 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <details
+          v-if="batchExecutionModeDraft === 'evaluate_candidates'"
+          class="panelDetails"
+          open
+        >
+          <summary>VCET candidate design</summary>
+          <div class="panelDetailsBody">
+            <VcetCampaignSearchControls
+              :design-mode="batchVcetCandidateDesignMode"
+              :draft="batchVcetSearchDraft"
+              :disabled="canBatchStop"
+              @update:design-mode="setBatchVcetCandidateDesignMode"
+              @update:draft="setBatchVcetSearchDraft"
+            />
+          </div>
+        </details>
+
+        <details
+          v-if="batchExecutionModeDraft === 'evaluate_candidates'"
+          class="panelDetails"
+          open
+        >
+          <summary>Robust cross-universe admission</summary>
+          <div class="gridFour">
+            <div>
+              <label for="vueBatchAdmissionProfitable">Profitable share</label>
+              <input
+                id="vueBatchAdmissionProfitable"
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                :value="batchAdmissionMinProfitableShare"
+                @input="
+                  setInputValue(
+                    'batchAdmissionMinProfitableShare',
+                    String(($event.target as HTMLInputElement).value || '0.55'),
+                  )
+                "
+              />
+            </div>
+            <div>
+              <label for="vueBatchAdmissionHardGate">Hard-gate share</label>
+              <input
+                id="vueBatchAdmissionHardGate"
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                :value="batchAdmissionMinHardGateShare"
+                @input="
+                  setInputValue(
+                    'batchAdmissionMinHardGateShare',
+                    String(($event.target as HTMLInputElement).value || '0.50'),
+                  )
+                "
+              />
+            </div>
+            <div>
+              <label for="vueBatchAdmissionPnlP10">Minimum PnL p10</label>
+              <input
+                id="vueBatchAdmissionPnlP10"
+                type="number"
+                step="0.01"
+                :value="batchAdmissionMinPnlP10"
+                @input="
+                  setInputValue(
+                    'batchAdmissionMinPnlP10',
+                    String(($event.target as HTMLInputElement).value || '0'),
+                  )
+                "
+              />
+            </div>
+            <div>
+              <label for="vueBatchAdmissionSharpeP10">Minimum Sharpe p10</label>
+              <input
+                id="vueBatchAdmissionSharpeP10"
+                type="number"
+                step="0.05"
+                :value="batchAdmissionMinSharpeP10"
+                @input="
+                  setInputValue(
+                    'batchAdmissionMinSharpeP10',
+                    String(($event.target as HTMLInputElement).value || '0'),
+                  )
+                "
+              />
+            </div>
+          </div>
+          <div class="panelMuted">{{ batchAdmissionContractSummary }}</div>
+          <div class="panelMuted">
+            Coverage shares use the complete requested training-stock
+            denominator. For PnL and Sharpe p10, missing or failed training
+            datasets rank below every finite result; if p10 lands in that
+            missing tail, the metric is unavailable and admission fails. Holdout
+            stocks are audit-only. This fast strict-GPU screen is
+            cross-sectional—not a substitute for later time-based walk-forward
+            or regime validation.
+          </div>
+        </details>
+
         <div class="checks">
           <label>
             <input
               type="checkbox"
               :checked="batchAutoMetaDraft"
-              :disabled="batchExecutionModeDraft === 'optimize_only'"
+              :disabled="
+                batchExecutionModeDraft === 'optimize_only' ||
+                batchExecutionModeDraft === 'evaluate_candidates'
+              "
               @change="
                 batchAutoMetaDraft = ($event.target as HTMLInputElement)
                   .checked;
@@ -1886,6 +2154,7 @@ onBeforeUnmount(() => {
               :checked="batchAutoStage5Draft"
               :disabled="
                 batchExecutionModeDraft === 'optimize_only' ||
+                batchExecutionModeDraft === 'evaluate_candidates' ||
                 !batchAutoMetaDraft
               "
               @change="
@@ -1914,8 +2183,17 @@ onBeforeUnmount(() => {
           experimental and only applies to the plain DoubleMa exact GpuKernel
           route; other paths fall back to host preload. `Optimize only` skips
           meta and Stage 5, while `Validate only` reuses existing optimization
-          artifacts instead of rerunning search. Validation shortlist admission
-          follows the current Validation workspace policy.
+          artifacts instead of rerunning search. `VCET candidate-universe
+          replay` either expands the current VCET Fast/Slow ranges or seals a
+          bounded multidimensional design, runs that identical manifest on every
+          selected dataset, and fails closed if the GPU kernel route is not
+          realized. Smaller spaces are enumerated lexicographically; larger
+          spaces use Halton–Cranley–Patterson sampling. The requested budget
+          becomes the exact validation candidate cap; neither design is silently
+          truncated. CPU-resident auxiliary stages are intentionally omitted
+          from this strict replay; use Heavy VCET holdout afterward for hybrid
+          stress validation. Validation shortlist admission follows the current
+          Validation workspace policy.
         </div>
 
         <div class="summaryGrid" aria-label="Batch generation operating mode">
@@ -1947,7 +2225,7 @@ onBeforeUnmount(() => {
             type="button"
             class="primary"
             data-qa-action="aggregate.batch.run"
-            :disabled="!canRunBatch"
+            :disabled="!canRunBatchWithVcetDesign"
             @click="runAction(() => analysisStore.runBatch())"
           >
             {{ batchRunButtonLabel }}
@@ -2048,6 +2326,18 @@ onBeforeUnmount(() => {
             />
           </label>
         </div>
+
+        <VcetCampaignEvidenceHeatmap
+          v-if="batchVcetEvidence"
+          :model="batchVcetEvidence"
+        />
+
+        <VcetTemporalCampaignPanel
+          :source-campaign-summary-path="vcetTemporalSource.summaryPath"
+          :source-eligible="vcetTemporalSource.eligible"
+          :source-eligibility-identity="vcetTemporalSource.identity"
+          :source-eligibility-message="vcetTemporalSource.message"
+        />
 
         <details class="panelDetails">
           <summary>Batch output preview</summary>
@@ -2241,29 +2531,19 @@ onBeforeUnmount(() => {
         role="tabpanel"
         :aria-labelledby="aggregateTabId('meta')"
       >
-        <section
+        <AppEmptyState
           v-if="metaStage === 'data_loaded_no_run'"
-          class="emptyState"
           aria-label="Meta analysis setup status"
+          title="Saved runs are available, but no meta artifact is active yet."
+          body="Configure the selection criteria below, then run meta analysis to generate grouped recommendations and reports."
+          :hint="`${aggregateSummarySavedRuns} saved runs available · Next: review the Meta Selection setup below.`"
         >
-          <img
-            class="emptyStateIllustration"
-            :src="emptyResultsWorkspaceIllustration"
-            alt=""
-            aria-hidden="true"
-            draggable="false"
-          />
-          <div class="emptyTitle">
-            Saved runs are available, but no meta artifact is active yet.
-          </div>
-          <div class="emptyBody">
-            Configure the selection criteria below, then run meta analysis to
-            generate grouped recommendations and reports.
-          </div>
-          <div class="panelMuted mono panelNumeric">
-            {{ aggregateSummarySavedRuns }} saved runs available
-          </div>
-        </section>
+          <template #actions>
+            <AppButton variant="primary" type="button" @click="focusMetaSetup">
+              Review meta setup
+            </AppButton>
+          </template>
+        </AppEmptyState>
 
         <section class="pane panelProminentPane">
           <div class="panelSectionHeader">
@@ -3285,13 +3565,22 @@ onBeforeUnmount(() => {
             :row-count="renderedRows.length"
             :density="tableDensity"
             :viewport="false"
+            :empty-title="
+              metaStage === 'ready'
+                ? 'No meta selection rows were returned.'
+                : ''
+            "
+            empty-body="Review the meta output details and selection criteria, then rerun meta analysis."
             aria-label="Meta analysis results table shell"
             toolbar-label="Meta result table controls"
             keyboard-hint="Meta rows are virtualized; spacer rows are hidden from assistive technology."
           >
             <template #controls>
               <div class="tableControlBar">
-                <details v-if="renderedColumns.length > 0" class="columnDetails">
+                <details
+                  v-if="renderedColumns.length > 0"
+                  class="columnDetails"
+                >
                   <summary class="columnDetailsSummary">
                     <span>Visible columns</span>
                     <span class="mono panelNumeric">{{
@@ -3310,7 +3599,8 @@ onBeforeUnmount(() => {
                         :key="column.key"
                         class="columnToggle"
                         :class="{
-                          disabled: !canHideColumn(column.key) && column.visible,
+                          disabled:
+                            !canHideColumn(column.key) && column.visible,
                         }"
                         :for="metaColumnToggleId(column.key)"
                       >
@@ -3318,7 +3608,9 @@ onBeforeUnmount(() => {
                           :id="metaColumnToggleId(column.key)"
                           type="checkbox"
                           :checked="column.visible"
-                          :disabled="!canHideColumn(column.key) && column.visible"
+                          :disabled="
+                            !canHideColumn(column.key) && column.visible
+                          "
                           @change="toggleColumnVisibility(column.key)"
                         />
                         <span>{{ column.label }}</span>
@@ -3367,12 +3659,18 @@ onBeforeUnmount(() => {
                         v-if="!header.isPlaceholder"
                         type="button"
                         class="columnResizeHandle"
-                        :class="{ active: resizingMetaColumnKey === headerMeta(header).columnKey }"
+                        :class="{
+                          active:
+                            resizingMetaColumnKey ===
+                            headerMeta(header).columnKey,
+                        }"
                         :aria-label="`Resize ${headerMeta(header).columnLabel} column`"
                         title="Drag to resize. Use Left/Right arrows to adjust, Delete to reset."
                         @click.stop
                         @pointerdown="startMetaColumnResize($event, header)"
-                        @keydown.stop="onMetaColumnResizeKeydown($event, header)"
+                        @keydown.stop="
+                          onMetaColumnResizeKeydown($event, header)
+                        "
                       ></button>
                     </th>
                   </tr>
@@ -3388,7 +3686,10 @@ onBeforeUnmount(() => {
                       :style="{ height: `${virtualTopSpacerPx}px` }"
                     ></td>
                   </tr>
-                  <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
+                  <tr
+                    v-for="virtualRow in virtualRows"
+                    :key="virtualRow.row.id"
+                  >
                     <template
                       v-for="cell in virtualRow.row.getVisibleCells()"
                       :key="cell.id"
@@ -3447,33 +3748,23 @@ onBeforeUnmount(() => {
         role="tabpanel"
         :aria-labelledby="aggregateTabId('compare')"
       >
-        <div
+        <AppEmptyState
           v-if="metaCompareStage === 'results_available_no_selection'"
-          class="emptyState"
           aria-label="Meta compare setup status"
+          title="Select a baseline meta artifact to compare."
+          body="Comparison results appear here once you choose a saved meta artifact from the compare selector."
+          hint="Next: choose a saved Meta baseline using the selector below."
         >
-          <img
-            class="emptyStateIllustration"
-            :src="emptyCompareWorkspaceIllustration"
-            alt=""
-            aria-hidden="true"
-            draggable="false"
-          />
-          <div class="emptyTitle">
-            Select a baseline meta artifact to compare.
-          </div>
-          <div class="emptyBody">
-            Comparison results appear here once you choose a saved meta artifact
-            from the compare selector.
-          </div>
-          <div
-            class="panelStatus mono panelNumeric"
-            role="status"
-            aria-live="polite"
-          >
-            {{ statusLine }}
-          </div>
-        </div>
+          <template #actions>
+            <AppButton
+              variant="primary"
+              type="button"
+              @click="focusMetaCompareSelector"
+            >
+              Choose baseline
+            </AppButton>
+          </template>
+        </AppEmptyState>
 
         <div class="panelSectionHeader">
           <div class="panelHeadCopy">
@@ -3929,13 +4220,6 @@ onBeforeUnmount(() => {
   margin-top: 0.45rem;
   max-height: 220px;
   overflow: auto;
-}
-
-.emptyStateIllustration {
-  width: clamp(88px, 16vw, 124px);
-  height: auto;
-  margin-bottom: 0.2rem;
-  opacity: 0.92;
 }
 
 .mono {

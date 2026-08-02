@@ -89,7 +89,16 @@ try {
   $env:SCCACHE_NO_DAEMON = "1"
 
   if (-not $SkipFormat) {
-    Invoke-Step "Rust format" { cargo fmt --all -- --check }
+    # Preserve the formatting of third-party vendored source while checking all
+    # first-party workspace crates. Vendored forks are still compiled below.
+    Invoke-Step "Rust format" {
+      cargo fmt `
+        -p ta_desktop_demo_app `
+        -p ta_app_core `
+        -p ta_strategies `
+        -p ta_optimizer `
+        -- --check
+    }
   }
 
   Invoke-Step "Backend CLI check" {
@@ -97,6 +106,9 @@ try {
   }
 
   Invoke-Step "Backend Rust checks" {
+    cargo check -p embed-resource --all-targets
+    if ($LASTEXITCODE -ne 0) { throw "embed-resource check failed with exit code $LASTEXITCODE" }
+
     cargo check -p ta_app_core --all-targets --features (Get-AppCoreFeatureList)
     if ($LASTEXITCODE -ne 0) { throw "ta_app_core check failed with exit code $LASTEXITCODE" }
 
@@ -151,6 +163,9 @@ try {
 
   if (-not $SkipWorkspaceTests) {
     Invoke-Step "Backend Rust tests" {
+      cargo test -p embed-resource -j 1 -- --test-threads=1
+      if ($LASTEXITCODE -ne 0) { throw "embed-resource tests failed with exit code $LASTEXITCODE" }
+
       cargo test -p ta_app_core -j 1
       if ($LASTEXITCODE -ne 0) { throw "ta_app_core tests failed with exit code $LASTEXITCODE" }
 

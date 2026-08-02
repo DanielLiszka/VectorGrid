@@ -125,7 +125,7 @@ function installDefaultInvokeCommandMock(): void {
           slice_count: 8,
           bootstrap_samples: 300,
           block_length: 4,
-          benchmark: "buy_hold",
+          benchmark: "buy_and_hold",
           best_candidate_key: "sma(10)/alma(40)",
           best_candidate_mean_diff: 0.02,
           best_candidate_t_stat: 1.4,
@@ -285,7 +285,7 @@ describe("validationService", () => {
       slices: 8,
       bootstrap_samples: 300,
       block_length: 4,
-      benchmark: "buy_hold",
+      benchmark: "buy_and_hold",
     });
     expect(req.reopt_walk_forward).toEqual({
       window_bars: 12000,
@@ -384,6 +384,76 @@ describe("validationService", () => {
       ]),
     );
   });
+
+  it.each([
+    {
+      label: "default stock costs",
+      strategy: {
+        fee_bps: 0.1,
+        spread_bps: 1,
+        slippage_bps: 0.5,
+        commission: 0.00011,
+      },
+    },
+    {
+      label: "non-default custom costs",
+      strategy: {
+        fee_bps: 2.75,
+        spread_bps: 4.5,
+        slippage_bps: 1.25,
+        commission: 0.000625,
+      },
+    },
+  ])(
+    "sends $label through validation with component bps as the sole cost source",
+    async ({ strategy }) => {
+      (pinia.state.value as Record<string, unknown>).validation = {
+        candidates: "8",
+        seed: "1",
+        perturbEnable: true,
+        perturbIters: "8",
+        perturbMin: "0.015",
+        perturbMax: "0.06",
+      };
+      useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+        currentRun: {
+          ts: "2026-07-29T13:31:15Z",
+          req: {
+            strategy_kind: "DoubleMa",
+            data_id: "data-cost-contract",
+            backend: { backend: "CpuOnly" },
+            ma_source: "close",
+            fast_ma_types: ["sma"],
+            slow_ma_types: ["ema"],
+            strategy,
+          },
+          res: {
+            top: [
+              {
+                params: {
+                  fast_ma_type: "sma",
+                  slow_ma_type: "ema",
+                  fast_len: 10,
+                  slow_len: 40,
+                },
+              },
+            ],
+          },
+        },
+        currentValidation: null,
+      });
+
+      await runValidation({ switchTab: false });
+
+      const req = firstValidationRequest();
+      const candidates = req.candidates as Array<Record<string, unknown>>;
+      expect(candidates[0]?.strategy).toEqual({
+        ...strategy,
+        commission: 0,
+      });
+      expect(strategy.commission).not.toBe(0);
+    },
+  );
 
   it("sends additive Monte Carlo config and surfaces top-candidate distribution", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {

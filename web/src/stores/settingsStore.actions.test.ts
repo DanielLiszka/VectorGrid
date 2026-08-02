@@ -469,6 +469,22 @@ describe("settings store actions", () => {
     expect(store.moveExisting).toBe(false);
   });
 
+  it("repairs root theme attributes when the selected preference is unchanged", () => {
+    const store = useSettingsStore();
+    store.setSelectField("settingsThemeSelect", "dark");
+    const updatedAt = store.updatedAtUnixMs;
+
+    harness.dataset.themePref = "system";
+    harness.dataset.theme = "light";
+    store.setSelectField("settingsThemeSelect", "dark");
+
+    expect(store.theme).toBe("dark");
+    expect(harness.dataset.themePref).toBe("dark");
+    expect(harness.dataset.theme).toBe("dark");
+    expect(localStorage.getItem("vta_theme_pref_v1")).toBe("dark");
+    expect(store.updatedAtUnixMs).toBe(updatedAt);
+  });
+
   it("dispatches market-data directory actions via data service", () => {
     const store = useSettingsStore();
     store.browseMarketDataDir();

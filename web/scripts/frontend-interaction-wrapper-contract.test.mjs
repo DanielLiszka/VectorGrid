@@ -3,6 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  normalizeDesktopSmokeEvidence,
+  normalizeUiPerfBudgetEvidence,
+  resolveFrontendQaReportRun,
+} from "./qa-evidence-freshness.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..", "..");
@@ -138,6 +143,298 @@ test("frontend E2E latency opt-in delegates to the locked attested build", () =>
   );
   assert.ok(latencyBlock.includes("run_frontend_interaction_latency.ps1"));
   assert.ok(!latencyBlock.includes("-SkipBuild"));
+  const latencyIndex = latencyBlock.indexOf("run_frontend_interaction_latency.ps1");
+  const refreshedBudgetIndex = latencyBlock.indexOf("check:bundle-budget");
+  assert.ok(latencyIndex >= 0 && latencyIndex < refreshedBudgetIndex);
+});
+
+test("frontend E2E and canonical CPU QA enforce the production bundle budget after build", () => {
+  const e2eGate = read("scripts/run_frontend_e2e_gate.ps1");
+  assert.match(
+    e2eGate,
+    /if \(-not \$SkipBuild\) \{\s*Invoke-Step "Web build" \{ & npm\.cmd --prefix web run build \}\s*Invoke-Step "Production bundle budget" \{ & npm\.cmd --prefix web run check:bundle-budget \}\s*\}/s,
+  );
+  const buildIndex = e2eGate.indexOf("& npm.cmd --prefix web run build");
+  const bundleBudgetIndex = e2eGate.indexOf(
+    "& npm.cmd --prefix web run check:bundle-budget",
+  );
+  const qaIndex = e2eGate.indexOf("if ($IncludeQaStatic)");
+  assert.ok(buildIndex >= 0 && buildIndex < bundleBudgetIndex);
+  assert.ok(bundleBudgetIndex < qaIndex);
+
+  const cpuGate = read("scripts/run_cpu_ci_gate.ps1");
+  const browserQaBlock = cpuGate.slice(
+    cpuGate.indexOf('Invoke-Step "Full headless Chromium QA"'),
+    cpuGate.indexOf('Invoke-Step "Headless JSON/CSV/XLSX output parity"'),
+  );
+  assert.ok(browserQaBlock.includes("run_frontend_e2e_gate.ps1"));
+  assert.ok(browserQaBlock.includes("-IncludeQaReport"));
+  assert.ok(!browserQaBlock.includes("-SkipBuild"));
+});
+
+test("frontend QA reports bundle budget separately from captured UI performance", () => {
+  const bundleChecker = read("web/scripts/check-bundle-budget.mjs");
+  const localSummary = read("web/scripts/write-local-qa-summary.mjs");
+  const dashboard = read("web/scripts/write-frontend-qa-dashboard.mjs");
+
+  assert.ok(bundleChecker.includes("output', 'qa', 'bundle-budget.json"));
+  assert.ok(bundleChecker.includes("status"));
+  assert.ok(bundleChecker.includes("observations"));
+  for (const writer of [localSummary, dashboard]) {
+    assert.ok(writer.includes("output/qa/bundle-budget.json"));
+    assert.ok(writer.includes("bundleBudget: bundleBudget"));
+    assert.ok(writer.includes("perfBudget: perfBudget"));
+    assert.ok(writer.includes("Production Bundle Budget"));
+    assert.ok(writer.includes("UI Performance Capture / Baseline Reference"));
+    assert.ok(
+      writer.includes("Required manifest actions registered with workflow references"),
+    );
+  }
+  assert.ok(dashboard.includes("Required Action Registrations By Priority"));
+  assert.ok(dashboard.includes("required actions registered with workflow references"));
+  assert.ok(!dashboard.includes("Required covered:"));
+});
+
+test("frontend QA evidence freshness distinguishes current lanes from references", () => {
+  const reportRun = resolveFrontendQaReportRun(
+    {
+      VECTORGRID_FRONTEND_QA_RUN_ID: "qa-run-1",
+      VECTORGRID_FRONTEND_QA_RUN_STARTED_AT: "2026-07-28T12:00:00.000Z",
+    },
+    "2026-07-28T12:10:00.000Z",
+  );
+  assert.equal(reportRun.available, true);
+
+  const historicalDesktop = normalizeDesktopSmokeEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-27T12:00:00.000Z",
+      suite: "smoke",
+      runId: "old-smoke",
+      specCount: 7,
+    },
+    reportRun,
+  );
+  assert.equal(historicalDesktop.status, "reference_only");
+  assert.equal(historicalDesktop.sourceStatus, "passed");
+  assert.equal(historicalDesktop.evidenceScope, "historical_reference");
+  assert.equal(historicalDesktop.currentRun, false);
+
+  const noContextDesktop = normalizeDesktopSmokeEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:05:00.000Z",
+      suite: "smoke",
+      runId: "qa-run-1",
+      specCount: 7,
+    },
+    resolveFrontendQaReportRun({}, "2026-07-28T12:10:00.000Z"),
+  );
+  assert.equal(noContextDesktop.status, "reference_only");
+  assert.equal(noContextDesktop.freshnessReason, "current_report_context_unavailable");
+
+  const overlappingDesktop = normalizeDesktopSmokeEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:05:00.000Z",
+      suite: "smoke",
+      runId: "concurrent-foreign-run",
+      specCount: 7,
+    },
+    reportRun,
+  );
+  assert.equal(overlappingDesktop.status, "reference_only");
+  assert.equal(overlappingDesktop.runIdentityMatches, false);
+  assert.equal(overlappingDesktop.freshnessReason, "run_identity_mismatch");
+
+  const currentDesktop = normalizeDesktopSmokeEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:05:00.000Z",
+      suite: "smoke",
+      runId: "qa-run-1",
+      specCount: 7,
+    },
+    reportRun,
+  );
+  assert.equal(currentDesktop.status, "passed");
+  assert.equal(currentDesktop.evidenceScope, "current_run");
+  assert.equal(currentDesktop.currentRun, true);
+
+  const currentDesktopFailure = normalizeDesktopSmokeEvidence(
+    {
+      status: "failed",
+      generatedAt: "2026-07-28T12:05:00.000Z",
+      suite: "smoke",
+      runId: "qa-run-1",
+      specCount: 7,
+    },
+    reportRun,
+  );
+  assert.equal(currentDesktopFailure.status, "failed");
+  assert.equal(currentDesktopFailure.currentRun, true);
+
+  const futureDesktop = normalizeDesktopSmokeEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:11:00.000Z",
+      suite: "smoke",
+      runId: "qa-run-1",
+      specCount: 7,
+    },
+    reportRun,
+  );
+  assert.equal(futureDesktop.status, "reference_only");
+  assert.equal(futureDesktop.freshnessReason, "not_produced_in_current_report");
+
+  const supersededExpanded = normalizeDesktopSmokeEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:04:00.000Z",
+      suite: "smoke-expanded",
+      runId: "qa-run-1",
+      specCount: 10,
+    },
+    reportRun,
+    {
+      generatedAt: "2026-07-28T12:05:00.000Z",
+      runId: "qa-run-1",
+    },
+  );
+  assert.equal(supersededExpanded.status, "reference_only");
+  assert.equal(supersededExpanded.freshnessReason, "superseded_by_primary_desktop_summary");
+
+  const expandedWithForeignPrimary = normalizeDesktopSmokeEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:04:00.000Z",
+      suite: "smoke-expanded",
+      runId: "qa-run-1",
+      specCount: 10,
+    },
+    reportRun,
+    {
+      generatedAt: "2026-07-28T12:05:00.000Z",
+      runId: "concurrent-foreign-run",
+    },
+  );
+  assert.equal(expandedWithForeignPrimary.status, "passed");
+  assert.equal(expandedWithForeignPrimary.primaryIdentityMatches, false);
+  assert.equal(expandedWithForeignPrimary.currentRun, true);
+
+  const baselinePerf = normalizeUiPerfBudgetEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:08:00.000Z",
+      runId: "qa-run-1",
+      source: "scripts/baselines/ui_capture/perf_metrics.json",
+      sourceCapture: {
+        generatedAt: "2026-05-07T23:31:32.217Z",
+        runId: "old-capture",
+        fileModifiedAt: "2026-05-07T23:31:32.300Z",
+        mode: "shell_bootstrap",
+      },
+      budgets: {},
+      observations: {},
+      issues: [],
+    },
+    reportRun,
+  );
+  assert.equal(baselinePerf.status, "reference_only");
+  assert.equal(baselinePerf.sourceStatus, "passed");
+  assert.equal(baselinePerf.evidenceScope, "baseline_reference");
+  assert.equal(baselinePerf.evaluatedInCurrentReport, true);
+  assert.equal(baselinePerf.capturedInCurrentReport, false);
+
+  const overlappingPerf = normalizeUiPerfBudgetEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:08:00.000Z",
+      runId: "qa-run-1",
+      sourceCapture: {
+        generatedAt: "2026-07-28T12:06:00.000Z",
+        runId: "concurrent-foreign-run",
+      },
+      issues: [],
+    },
+    reportRun,
+  );
+  assert.equal(overlappingPerf.status, "reference_only");
+  assert.equal(overlappingPerf.captureRunIdentityMatches, false);
+  assert.equal(overlappingPerf.freshnessReason, "capture_run_identity_mismatch");
+
+  const foreignEvaluation = normalizeUiPerfBudgetEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:08:00.000Z",
+      runId: "concurrent-foreign-run",
+      sourceCapture: {
+        generatedAt: "2026-07-28T12:06:00.000Z",
+        runId: "qa-run-1",
+      },
+      issues: [],
+    },
+    reportRun,
+  );
+  assert.equal(foreignEvaluation.status, "reference_only");
+  assert.equal(foreignEvaluation.evaluationRunIdentityMatches, false);
+  assert.equal(foreignEvaluation.freshnessReason, "evaluation_run_identity_mismatch");
+
+  const currentPerf = normalizeUiPerfBudgetEvidence(
+    {
+      status: "passed",
+      generatedAt: "2026-07-28T12:08:00.000Z",
+      runId: "qa-run-1",
+      sourceCapture: {
+        generatedAt: "2026-07-28T12:06:00.000Z",
+        runId: "qa-run-1",
+      },
+      issues: [],
+    },
+    reportRun,
+  );
+  assert.equal(currentPerf.status, "passed");
+  assert.equal(currentPerf.evidenceScope, "current_run_capture");
+  assert.equal(currentPerf.currentRun, true);
+});
+
+test("frontend QA gate supplies and restores report-run provenance", () => {
+  const gate = read("scripts/run_frontend_e2e_gate.ps1");
+  const perfChecker = read("web/scripts/check-ui-perf-budget.mjs");
+  const localSummary = read("web/scripts/write-local-qa-summary.mjs");
+  const dashboard = read("web/scripts/write-frontend-qa-dashboard.mjs");
+
+  for (const marker of [
+    "VECTORGRID_FRONTEND_QA_RUN_ID",
+    "VECTORGRID_FRONTEND_QA_RUN_STARTED_AT",
+    "VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID",
+    "[guid]::NewGuid()",
+    "[DateTimeOffset]::UtcNow",
+    "Remove-Item Env:VECTORGRID_FRONTEND_QA_RUN_ID",
+    "Remove-Item Env:VECTORGRID_FRONTEND_QA_RUN_STARTED_AT",
+    "Remove-Item Env:VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID",
+  ]) {
+    assert.ok(gate.includes(marker), `missing frontend QA run provenance marker: ${marker}`);
+  }
+  for (const marker of [
+    "status: issues.length > 0 ? 'failed' : 'passed'",
+    "sourceCapture",
+    "VECTORGRID_FRONTEND_QA_RUN_ID",
+    "VECTORGRID_FRONTEND_QA_UI_CAPTURE_RUN_ID",
+    "metrics.generated_at",
+    "metrics.startup_capture_mode",
+    "metrics.note",
+  ]) {
+    assert.ok(perfChecker.includes(marker), `missing UI baseline provenance marker: ${marker}`);
+  }
+  for (const writer of [localSummary, dashboard]) {
+    assert.ok(writer.includes("resolveFrontendQaReportRun"));
+    assert.ok(writer.includes("normalizeUiPerfBudgetEvidence"));
+    assert.ok(writer.includes("baseline reference"));
+  }
+  assert.ok(dashboard.includes("normalizeDesktopSmokeEvidence"));
+  assert.ok(dashboard.includes("not run in this report; latest historical reference"));
+  assert.ok(dashboard.includes("current-report desktop smoke failed"));
 });
 
 test("measurement runner guarantees server cleanup even if browser cleanup fails", () => {

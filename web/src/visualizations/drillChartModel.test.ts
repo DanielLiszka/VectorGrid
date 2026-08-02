@@ -6,6 +6,7 @@ import {
   mapTradeIndexToChartTime,
   type DrillChartPriceBar,
 } from './drillChartModel'
+import { lightweightChartSeriesPalette } from './chartTheme'
 
 const bars: DrillChartPriceBar[] = [
   { time: 1_744_500_000, open: 100, high: 101, low: 99.8, close: 100.6, fromIndex: 1, toIndex: 1, volume: 0 },
@@ -52,16 +53,114 @@ describe('drillChartModel', () => {
     expect(model.candleData).toHaveLength(4)
     expect(model.fastData).toHaveLength(2)
     expect(model.halftrendData).toEqual([
-      { time: 1_744_500_000, value: 1, color: 'rgba(34, 197, 94, 0.38)' },
-      { time: 1_744_500_060, value: -1, color: 'rgba(244, 63, 94, 0.38)' },
+      { time: 1_744_500_000, value: 1 },
+      { time: 1_744_500_060, value: -1 },
     ])
     expect(model.ottData).toHaveLength(2)
     expect(model.maczData).toHaveLength(2)
 
-    const markers = buildDrillTradeMarkers(model, 1)
+    const markers = buildDrillTradeMarkers(model, 1, 'light')
+    const palette = lightweightChartSeriesPalette('light')
     expect(markers.some((marker) => marker.id === 'trade-0-entry' && marker.text === 'L1')).toBe(true)
     expect(markers.some((marker) => marker.id === 'trade-0-exit' && marker.text === 'X1')).toBe(true)
     expect(markers.find((marker) => marker.id === 'trade-1-entry')?.size).toBe(1.4)
+    expect(markers.find((marker) => marker.id === 'trade-1-entry')?.color).toBe(palette.highlight)
+    expect(markers.find((marker) => marker.id === 'trade-0-entry')?.color).toBe(palette.positive)
+  })
+
+  it('attaches native strategy indicators using their own aligned timestamps', () => {
+    const model = buildDrillChartModel({
+      ...curves,
+      strategy_indicator_bundle: {
+        strategy_kind: 'Vemr',
+        aggregation: 'last_finite',
+        bars: [
+          { time: 1_744_400_000, from_index: 0, to_index: 3 },
+          { time: 1_744_400_240, from_index: 4, to_index: 7 },
+        ],
+        series: [
+          {
+            id: 'vemr_bb_upper',
+            label: 'Bollinger upper',
+            kind: 'line',
+            pane_id: 'price',
+            scale_id: 'price',
+            unit: 'price',
+            default_visible: true,
+            values: [102.5, null],
+          },
+          {
+            id: 'vemr_atr',
+            label: 'Average true range',
+            kind: 'line',
+            pane_id: 'vemr_volatility',
+            scale_id: 'vemr_atr',
+            unit: 'price_delta',
+            default_visible: false,
+            values: [null, null],
+          },
+        ],
+      },
+    }, bars)
+
+    expect(model.strategyIndicators).toMatchObject({
+      strategyKind: 'Vemr',
+      aggregation: 'last_finite',
+      bars: [
+        { time: 1_744_400_000, fromIndex: 0, toIndex: 3 },
+        { time: 1_744_400_240, fromIndex: 4, toIndex: 7 },
+      ],
+    })
+    expect(model.strategyIndicators?.series[0]).toMatchObject({
+      id: 'vemr_bb_upper',
+      data: [
+        { time: 1_744_400_000, value: 102.5 },
+        { time: 1_744_400_240 },
+      ],
+      finitePointCount: 1,
+    })
+    expect(model.strategyIndicators?.series[1]).toMatchObject({
+      id: 'vemr_atr',
+      defaultVisible: false,
+      finitePointCount: 0,
+      data: [{ time: 1_744_400_000 }, { time: 1_744_400_240 }],
+    })
+    expect(model.candleData).toHaveLength(4)
+    expect(model.fastData).toHaveLength(2)
+    expect(model.halftrendData).toHaveLength(2)
+    expect(model.trades).toHaveLength(2)
+  })
+
+  it('isolates malformed native indicators from the legacy chart model', () => {
+    const model = buildDrillChartModel({
+      ...curves,
+      strategyIndicatorBundle: {
+        strategyKind: 'Vemr',
+        aggregation: 'last_finite',
+        bars: [{ time: 1_744_400_000, fromIndex: 0, toIndex: 3 }],
+        series: [
+          {
+            id: 'broken',
+            label: 'Broken',
+            kind: 'unsupported',
+            paneId: 'price',
+            scaleId: 'price',
+            unit: 'price',
+            defaultVisible: true,
+            values: [102.5],
+          },
+        ],
+      },
+    }, bars)
+
+    expect(model.strategyIndicators).toBeNull()
+    expect(model.candleData).toHaveLength(4)
+    expect(model.fastData).toHaveLength(2)
+    expect(model.slowData).toHaveLength(2)
+    expect(model.ottData).toHaveLength(2)
+    expect(model.maczData).toHaveLength(2)
+    expect(model.trades).toHaveLength(2)
+    expect(model.tradeStats.closed_trades).toBe(2)
   })
 
   it('builds the trade table model without touching the DOM', () => {

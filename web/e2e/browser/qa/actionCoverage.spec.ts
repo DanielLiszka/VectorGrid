@@ -2,7 +2,12 @@ import { expect, test } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { actionCoverageManifest } from './actionCoverageManifest'
-import { emptyAppScenario, optionsValidationReadyScenario } from '../fixtures'
+import {
+  emptyAppScenario,
+  optionsValidationReadyScenario,
+  vcetTemporalLifecycleReadyScenario,
+  vcetTemporalStaleRecoveryScenario,
+} from '../fixtures'
 import { gotoMockedShellWithScenario } from '../support/workflowRunner'
 import { installQaGuards } from '../support/qaAssertions'
 
@@ -151,5 +156,57 @@ test('options-ready QA actions are represented in the action coverage manifest @
   await collect()
 
   await assertManifestCoverage(discovered, 'action-coverage-options', page, testInfo)
+  await guard.assertClean()
+})
+
+test('VCET temporal lifecycle QA actions are represented in the action coverage manifest @workflow', async ({
+  page,
+  context,
+}, testInfo) => {
+  const guard = installQaGuards(page)
+  await gotoMockedShellWithScenario(page, context, vcetTemporalLifecycleReadyScenario)
+
+  const discovered = new Set<string>()
+  async function collect(): Promise<void> {
+    for (const id of await visibleQaActions(page)) discovered.add(id)
+  }
+
+  await page.locator('[data-qa-action="shell.workspace.aggregate"]').click()
+  await page.locator('[data-qa-action="aggregate.tab.batch"]').click()
+  await expect(page.getByTestId('vcet-temporal-campaign-host')).toBeVisible()
+  await expect(page.locator('[data-source-eligible="true"]')).toBeVisible()
+  await collect()
+
+  await page.locator('[data-qa-action="aggregate.batch.vcetTemporal.prepare"]').click()
+  await expect(page.locator('[data-qa-action="aggregate.batch.vcetTemporal.runSelection"]')).toBeEnabled()
+  await collect()
+
+  await page.locator('[data-qa-action="aggregate.batch.vcetTemporal.runSelection"]').click()
+  await expect(page.locator('[data-qa-action="aggregate.batch.vcetTemporal.openFinalTest"]')).toBeVisible()
+  await collect()
+
+  await page.locator('[data-qa-action="aggregate.batch.vcetTemporal.acceptFinalDisclosure"]').check()
+  await page.locator('[data-qa-action="aggregate.batch.vcetTemporal.confirmWinnerSuffix"]').fill('dddddddd')
+  await page.locator('[data-qa-action="aggregate.batch.vcetTemporal.openFinalTest"]').click()
+  await expect(page.getByText(/Final evidence is complete/i)).toBeVisible()
+  await collect()
+
+  await assertManifestCoverage(discovered, 'action-coverage-vcet-temporal', page, testInfo)
+  await guard.assertClean()
+})
+
+test('VCET temporal stale-recovery QA actions are represented in the action coverage manifest @workflow', async ({
+  page,
+  context,
+}, testInfo) => {
+  const guard = installQaGuards(page)
+  await gotoMockedShellWithScenario(page, context, vcetTemporalStaleRecoveryScenario)
+
+  await page.locator('[data-qa-action="shell.workspace.aggregate"]').click()
+  await page.locator('[data-qa-action="aggregate.tab.batch"]').click()
+  await expect(page.getByText(/Saved preparation needs attention/i)).toBeVisible()
+  const discovered = new Set(await visibleQaActions(page))
+
+  await assertManifestCoverage(discovered, 'action-coverage-vcet-temporal-stale', page, testInfo)
   await guard.assertClean()
 })

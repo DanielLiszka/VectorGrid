@@ -73,6 +73,975 @@ function Read-JsonFile {
   return $null
 }
 
+function Get-BytesSha256 {
+  param(
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [byte[]]$Bytes
+  )
+
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString(
+        $sha256.ComputeHash($Bytes)
+      )).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Assert-PublicReleaseSourceHasSingleLink {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $item = Get-Item -LiteralPath $Path -Force
+  $linkTypeProperty = $item.PSObject.Properties["LinkType"]
+  $targetProperty = $item.PSObject.Properties["Target"]
+  $linkType = if ($null -eq $linkTypeProperty) {
+    ""
+  } else {
+    [string]$linkTypeProperty.Value
+  }
+  $linkTargets = if ($null -eq $targetProperty) {
+    @()
+  } else {
+    @($targetProperty.Value)
+  }
+  if ($linkType -eq "HardLink" -or $linkTargets.Count -gt 0) {
+    throw "Public-release source files must have exactly one filesystem link."
+  }
+}
+
+function Get-FileSha256Identity {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [switch]$RetainReadLease
+  )
+
+  Assert-PublicReleaseSourceHasSingleLink -Path $Path
+  $stream = [System.IO.File]::Open(
+    $Path,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::Read
+  )
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  $leaseRetained = $false
+  try {
+    Assert-PublicReleaseSourceHasSingleLink -Path $Path
+    $identity = [pscustomobject][ordered]@{
+      size_bytes = [int64]$stream.Length
+      sha256 = ([System.BitConverter]::ToString(
+          $sha256.ComputeHash($stream)
+        )).Replace("-", "").ToLowerInvariant()
+      read_lease = $null
+    }
+    Assert-PublicReleaseSourceHasSingleLink -Path $Path
+    if ($RetainReadLease) {
+      $identity.read_lease = $stream
+      $leaseRetained = $true
+    }
+    return $identity
+  } finally {
+    $sha256.Dispose()
+    if (-not $leaseRetained) {
+      $stream.Dispose()
+    }
+  }
+}
+
+function Invoke-PublicReleaseGitQuery {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitExecutablePath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)]
+    [ValidateSet(
+      "head",
+      "status",
+      "tracked-diff",
+      "tracked-index",
+      "untracked-files"
+    )]
+    [string]$Query
+  )
+
+  $arguments = switch ($Query) {
+    "head" { "rev-parse --verify HEAD" }
+    "status" { "status --porcelain=v1 -z --untracked-files=all -- ." }
+    "tracked-diff" {
+      "diff --binary --full-index --no-ext-diff --no-textconv HEAD -- ."
+    }
+    "tracked-index" { "ls-files -v -z --cached -- ." }
+    "untracked-files" { "ls-files -z --others --exclude-standard -- ." }
+  }
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $GitExecutablePath
+  $startInfo.Arguments = $arguments
+  $startInfo.WorkingDirectory = $RepositoryRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $startInfo
+  $stdout = New-Object System.IO.MemoryStream
+  try {
+    if (-not $process.Start()) {
+      throw "Could not start Git source-state query."
+    }
+    $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    if ($process.ExitCode -ne 0) {
+      throw "Git source-state query '$Query' failed with exit code $($process.ExitCode): $($stderr.Trim())"
+    }
+    return [pscustomobject][ordered]@{
+      bytes_base64 = [System.Convert]::ToBase64String($stdout.ToArray())
+      stderr = [string]$stderr
+    }
+  } finally {
+    $stdout.Dispose()
+    $process.Dispose()
+  }
+}
+
+function ConvertFrom-PublicReleaseGitNulList {
+  param(
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [byte[]]$Bytes
+  )
+
+  $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+  try {
+    $text = $strictUtf8.GetString($Bytes)
+  } catch {
+    throw "Git returned a source path list that is not valid UTF-8."
+  }
+  return [pscustomobject][ordered]@{
+    values = @(
+      $text.Split([char]0) |
+        Where-Object { -not [string]::IsNullOrEmpty([string]$_) }
+    )
+  }
+}
+
+function Assert-PublicReleaseManifestPathSafe {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$RelativePath
+  )
+
+  $repositoryPrefix = [System.IO.Path]::GetFullPath(
+    $RepositoryRoot
+  ).TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  ) + [System.IO.Path]::DirectorySeparatorChar
+  if (
+    [System.IO.Path]::IsPathRooted($RelativePath) -or
+    @($RelativePath.Replace("\", "/").Split("/") | Where-Object {
+        $_ -eq ".." -or $_ -eq ""
+      }).Count -gt 0
+  ) {
+    throw "Git returned an unsafe public-release source path."
+  }
+  $fullPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $RepositoryRoot $RelativePath)
+  )
+  if (
+    -not $fullPath.StartsWith(
+      $repositoryPrefix,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    throw "A public-release source path escaped the repository."
+  }
+  return $fullPath
+}
+
+function Assert-PublicReleasePathHasNoReparseAncestor {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$FullPath
+  )
+
+  $resolvedRepositoryRoot = [System.IO.Path]::GetFullPath(
+    $RepositoryRoot
+  ).TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  $cursor = Split-Path -Parent $FullPath
+  while (
+    -not [string]::IsNullOrWhiteSpace($cursor) -and
+    -not [string]::Equals(
+      $cursor,
+      $resolvedRepositoryRoot,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    if (Test-Path -LiteralPath $cursor) {
+      $item = Get-Item -LiteralPath $cursor -Force
+      if (
+        ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+      ) {
+        throw "A public-release source path has a reparse-point ancestor."
+      }
+    }
+    $parent = Split-Path -Parent $cursor
+    if ([string]::Equals(
+        $parent,
+        $cursor,
+        [System.StringComparison]::OrdinalIgnoreCase
+      )) {
+      break
+    }
+    $cursor = $parent
+  }
+}
+
+function Get-PublicReleaseRawFileManifest {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [string[]]$RelativePaths,
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("tracked", "untracked")]
+    [string]$Kind,
+    [switch]$AllowMissing,
+    [switch]$RetainReadLeases
+  )
+
+  $paths = @($RelativePaths)
+  [System.Array]::Sort($paths, [System.StringComparer]::Ordinal)
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' (
+    [System.StringComparer]::Ordinal
+  )
+  $readLeases = @()
+  try {
+    $rows = @(
+      foreach ($relativePathValue in $paths) {
+        $relativePath = [string]$relativePathValue
+        if (-not $seen.Add($relativePath)) {
+          throw "Git returned a duplicate public-release source path."
+        }
+        $fullPath = Assert-PublicReleaseManifestPathSafe `
+          -RepositoryRoot $RepositoryRoot `
+          -RelativePath $relativePath
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+          if ($AllowMissing -and -not (Test-Path -LiteralPath $fullPath)) {
+            [ordered]@{
+              path = $relativePath.Replace("\", "/")
+              state = "missing"
+              size_bytes = $null
+              sha256 = $null
+            }
+            continue
+          }
+          throw "A public-release source was not an ordinary file while snapshotting."
+        }
+        Assert-PublicReleasePathHasNoReparseAncestor `
+          -RepositoryRoot $RepositoryRoot `
+          -FullPath $fullPath
+        $item = Get-Item -LiteralPath $fullPath -Force
+        if (
+          ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        ) {
+          throw "A public-release source may not be a reparse point."
+        }
+        $identity = Get-FileSha256Identity `
+          -Path $fullPath `
+          -RetainReadLease:$RetainReadLeases
+        if ($null -ne $identity.read_lease) {
+          $readLeases += $identity.read_lease
+        }
+        [ordered]@{
+          path = $relativePath.Replace("\", "/")
+          state = "file"
+          size_bytes = [int64]$identity.size_bytes
+          sha256 = [string]$identity.sha256
+        }
+      }
+    )
+    $manifestText = ConvertTo-Json -Compress -InputObject ([object[]]$rows)
+    $manifestBytes = [System.Text.Encoding]::UTF8.GetBytes($manifestText)
+    return [pscustomobject][ordered]@{
+      file_count = [int]$rows.Count
+      size_bytes = [int64]$manifestBytes.Length
+      sha256 = Get-BytesSha256 -Bytes $manifestBytes
+      base64 = [System.Convert]::ToBase64String($manifestBytes)
+      read_leases = [object[]]$readLeases
+    }
+  } catch {
+    foreach ($readLease in $readLeases) {
+      $readLease.Dispose()
+    }
+    throw
+  }
+}
+
+function Get-PublicReleaseTrackedInventory {
+  param(
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [byte[]]$IndexBytes
+  )
+
+  $records = @(
+    (ConvertFrom-PublicReleaseGitNulList -Bytes $IndexBytes).values
+  )
+  $paths = @(
+    foreach ($recordValue in $records) {
+      $record = [string]$recordValue
+      if ($record.Length -lt 3 -or $record[1] -ne " ") {
+        throw "Git returned a malformed tracked-index record."
+      }
+      $tag = [string]$record[0]
+      if ($tag -cne "H") {
+        throw "Public release rejects tracked entries with nonstandard index flags (assume-unchanged, skip-worktree, unmerged, or otherwise non-cached)."
+      }
+      $record.Substring(2)
+    }
+  )
+  return [pscustomobject][ordered]@{
+    file_count = [int]$paths.Count
+    paths = [string[]]$paths
+    size_bytes = [int64]$IndexBytes.Length
+    sha256 = Get-BytesSha256 -Bytes $IndexBytes
+    base64 = [System.Convert]::ToBase64String($IndexBytes)
+  }
+}
+
+function Get-PublicReleaseUntrackedManifest {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [byte[]]$PathListBytes,
+    [switch]$RetainReadLeases
+  )
+
+  $relativePaths = @(
+    (ConvertFrom-PublicReleaseGitNulList -Bytes $PathListBytes).values
+  )
+  return Get-PublicReleaseRawFileManifest `
+    -RepositoryRoot $RepositoryRoot `
+    -RelativePaths $relativePaths `
+    -Kind "untracked" `
+    -RetainReadLeases:$RetainReadLeases
+}
+
+function Get-PublicReleaseSourceSnapshot {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitExecutablePath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [switch]$RetainSourceReadLeases
+  )
+
+  $headResult = Invoke-PublicReleaseGitQuery `
+    -GitExecutablePath $GitExecutablePath `
+    -RepositoryRoot $RepositoryRoot `
+    -Query "head"
+  $headBytes = [System.Convert]::FromBase64String(
+    [string]$headResult.bytes_base64
+  )
+  $head = [System.Text.Encoding]::UTF8.GetString($headBytes).Trim()
+  if ($head -notmatch '^[A-Fa-f0-9]{40,64}$') {
+    throw "Git returned an invalid HEAD identity for public release: $head"
+  }
+
+  $statusResult = Invoke-PublicReleaseGitQuery `
+    -GitExecutablePath $GitExecutablePath `
+    -RepositoryRoot $RepositoryRoot `
+    -Query "status"
+  $statusBytes = [System.Convert]::FromBase64String(
+    [string]$statusResult.bytes_base64
+  )
+  $trackedDiffResult = Invoke-PublicReleaseGitQuery `
+    -GitExecutablePath $GitExecutablePath `
+    -RepositoryRoot $RepositoryRoot `
+    -Query "tracked-diff"
+  $trackedDiffBytes = [System.Convert]::FromBase64String(
+    [string]$trackedDiffResult.bytes_base64
+  )
+  $trackedIndexResult = Invoke-PublicReleaseGitQuery `
+    -GitExecutablePath $GitExecutablePath `
+    -RepositoryRoot $RepositoryRoot `
+    -Query "tracked-index"
+  $trackedIndexBytes = [System.Convert]::FromBase64String(
+    [string]$trackedIndexResult.bytes_base64
+  )
+  $trackedInventory = Get-PublicReleaseTrackedInventory `
+    -IndexBytes $trackedIndexBytes
+  $trackedManifest = Get-PublicReleaseRawFileManifest `
+    -RepositoryRoot $RepositoryRoot `
+    -RelativePaths @($trackedInventory.paths) `
+    -Kind "tracked" `
+    -AllowMissing `
+    -RetainReadLeases:$RetainSourceReadLeases
+  $untrackedFilesResult = Invoke-PublicReleaseGitQuery `
+    -GitExecutablePath $GitExecutablePath `
+    -RepositoryRoot $RepositoryRoot `
+    -Query "untracked-files"
+  $untrackedPathListBytes = [System.Convert]::FromBase64String(
+    [string]$untrackedFilesResult.bytes_base64
+  )
+  try {
+    $untrackedManifest = Get-PublicReleaseUntrackedManifest `
+      -RepositoryRoot $RepositoryRoot `
+      -PathListBytes $untrackedPathListBytes `
+      -RetainReadLeases:$RetainSourceReadLeases
+  } catch {
+    foreach ($readLease in @($trackedManifest.read_leases)) {
+      $readLease.Dispose()
+    }
+    throw
+  }
+  $statusSha256 = Get-BytesSha256 -Bytes $statusBytes
+  $trackedDiffSha256 = Get-BytesSha256 -Bytes $trackedDiffBytes
+  $aggregateText = @(
+    "head`t$($head.ToLowerInvariant())",
+    "status`t$($statusBytes.Length)`t$statusSha256",
+    "tracked_diff`t$($trackedDiffBytes.Length)`t$trackedDiffSha256",
+    "tracked_index`t$($trackedInventory.file_count)`t$($trackedInventory.size_bytes)`t$($trackedInventory.sha256)",
+    "tracked_manifest`t$($trackedManifest.file_count)`t$($trackedManifest.size_bytes)`t$($trackedManifest.sha256)",
+    "untracked_manifest`t$($untrackedManifest.file_count)`t$($untrackedManifest.size_bytes)`t$($untrackedManifest.sha256)"
+  ) -join "`n"
+  $aggregateBytes = [System.Text.Encoding]::UTF8.GetBytes($aggregateText)
+  return [pscustomobject][ordered]@{
+    schema_version = 2
+    head = $head.ToLowerInvariant()
+    status_command = "git status --porcelain=v1 -z --untracked-files=all -- ."
+    status_encoding = "raw-nul-delimited-stdout"
+    status_size_bytes = [int64]$statusBytes.Length
+    status_sha256 = $statusSha256
+    status_base64 = [System.Convert]::ToBase64String($statusBytes)
+    tracked_diff_command = "git diff --binary --full-index --no-ext-diff --no-textconv HEAD -- ."
+    tracked_diff_size_bytes = [int64]$trackedDiffBytes.Length
+    tracked_diff_sha256 = $trackedDiffSha256
+    tracked_diff_base64 = [System.Convert]::ToBase64String($trackedDiffBytes)
+    tracked_index_command = "git ls-files -v -z --cached -- ."
+    tracked_index_file_count = [int]$trackedInventory.file_count
+    tracked_index_size_bytes = [int64]$trackedInventory.size_bytes
+    tracked_index_sha256 = [string]$trackedInventory.sha256
+    tracked_index_base64 = [string]$trackedInventory.base64
+    tracked_manifest_file_count = [int]$trackedManifest.file_count
+    tracked_manifest_size_bytes = [int64]$trackedManifest.size_bytes
+    tracked_manifest_sha256 = [string]$trackedManifest.sha256
+    tracked_manifest_base64 = [string]$trackedManifest.base64
+    untracked_manifest_file_count = [int]$untrackedManifest.file_count
+    untracked_manifest_size_bytes = [int64]$untrackedManifest.size_bytes
+    untracked_manifest_sha256 = [string]$untrackedManifest.sha256
+    untracked_manifest_base64 = [string]$untrackedManifest.base64
+    source_read_lease_count = [int](
+      @($trackedManifest.read_leases).Count +
+      @($untrackedManifest.read_leases).Count
+    )
+    source_read_leases = [object[]]@(
+      @($trackedManifest.read_leases) +
+      @($untrackedManifest.read_leases)
+    )
+    source_state_sha256 = Get-BytesSha256 -Bytes $aggregateBytes
+    dirty = $statusBytes.Length -gt 0
+  }
+}
+
+function Assert-PublicReleaseSourceSnapshotStable {
+  param(
+    [Parameter(Mandatory = $true)]$Initial,
+    [Parameter(Mandatory = $true)]$Final
+  )
+
+  if (
+    [int]$Initial.schema_version -ne 2 -or
+    [int]$Final.schema_version -ne 2 -or
+    [string]$Initial.status_command -ne
+      "git status --porcelain=v1 -z --untracked-files=all -- ." -or
+    [string]$Final.status_command -ne [string]$Initial.status_command -or
+    [string]$Initial.status_encoding -ne "raw-nul-delimited-stdout" -or
+    [string]$Final.status_encoding -ne [string]$Initial.status_encoding -or
+    [string]$Initial.tracked_diff_command -ne
+      "git diff --binary --full-index --no-ext-diff --no-textconv HEAD -- ." -or
+    [string]$Final.tracked_diff_command -ne
+      [string]$Initial.tracked_diff_command -or
+    [string]$Initial.tracked_index_command -ne
+      "git ls-files -v -z --cached -- ." -or
+    [string]$Final.tracked_index_command -ne
+      [string]$Initial.tracked_index_command
+  ) {
+    throw "Public release source-state snapshot schema is invalid."
+  }
+  if ([string]$Final.head -ne [string]$Initial.head) {
+    throw "Public release HEAD changed during the release run."
+  }
+  if (
+    [int64]$Final.status_size_bytes -ne [int64]$Initial.status_size_bytes -or
+    [string]$Final.status_sha256 -ne [string]$Initial.status_sha256 -or
+    [string]$Final.status_base64 -ne [string]$Initial.status_base64
+  ) {
+    throw "Public release worktree status changed during the release run."
+  }
+  if (
+    [int64]$Final.tracked_diff_size_bytes -ne
+      [int64]$Initial.tracked_diff_size_bytes -or
+    [string]$Final.tracked_diff_sha256 -ne
+      [string]$Initial.tracked_diff_sha256 -or
+    [string]$Final.tracked_diff_base64 -ne
+      [string]$Initial.tracked_diff_base64 -or
+    [int]$Final.tracked_index_file_count -ne
+      [int]$Initial.tracked_index_file_count -or
+    [int64]$Final.tracked_index_size_bytes -ne
+      [int64]$Initial.tracked_index_size_bytes -or
+    [string]$Final.tracked_index_sha256 -ne
+      [string]$Initial.tracked_index_sha256 -or
+    [string]$Final.tracked_index_base64 -ne
+      [string]$Initial.tracked_index_base64 -or
+    [int]$Final.tracked_manifest_file_count -ne
+      [int]$Initial.tracked_manifest_file_count -or
+    [int64]$Final.tracked_manifest_size_bytes -ne
+      [int64]$Initial.tracked_manifest_size_bytes -or
+    [string]$Final.tracked_manifest_sha256 -ne
+      [string]$Initial.tracked_manifest_sha256 -or
+    [string]$Final.tracked_manifest_base64 -ne
+      [string]$Initial.tracked_manifest_base64 -or
+    [int]$Final.untracked_manifest_file_count -ne
+      [int]$Initial.untracked_manifest_file_count -or
+    [int64]$Final.untracked_manifest_size_bytes -ne
+      [int64]$Initial.untracked_manifest_size_bytes -or
+    [string]$Final.untracked_manifest_sha256 -ne
+      [string]$Initial.untracked_manifest_sha256 -or
+    [string]$Final.untracked_manifest_base64 -ne
+      [string]$Initial.untracked_manifest_base64 -or
+    [string]$Final.source_state_sha256 -ne
+      [string]$Initial.source_state_sha256
+  ) {
+    throw "Public release source contents changed during the release run."
+  }
+}
+
+function Assert-PublicReleaseSourceReadLeasesActive {
+  param([Parameter(Mandatory = $true)]$SourceSnapshot)
+
+  $leases = @($SourceSnapshot.source_read_leases)
+  if (
+    [int]$SourceSnapshot.source_read_lease_count -le 0 -or
+    $leases.Count -ne [int]$SourceSnapshot.source_read_lease_count
+  ) {
+    throw "Public-release source read leases are missing or incomplete."
+  }
+  foreach ($readLease in $leases) {
+    if (
+      $null -eq $readLease -or
+      -not [bool]$readLease.CanRead -or
+      $readLease.SafeFileHandle.IsClosed -or
+      $readLease.SafeFileHandle.IsInvalid
+    ) {
+      throw "A public-release source read lease was not active for the full release interval."
+    }
+  }
+}
+
+function Close-PublicReleaseSourceReadLeases {
+  param($SourceSnapshot)
+
+  if ($null -eq $SourceSnapshot) {
+    return
+  }
+  foreach ($readLease in @($SourceSnapshot.source_read_leases)) {
+    if ($null -ne $readLease) {
+      $readLease.Dispose()
+    }
+  }
+  $SourceSnapshot.source_read_leases = [object[]]@()
+}
+
+function Test-PublicReleasePathUnderOrEqualRoot {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $resolvedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  $resolvedRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  return (
+    [string]::Equals(
+      $resolvedPath,
+      $resolvedRoot,
+      [System.StringComparison]::OrdinalIgnoreCase
+    ) -or
+    $resolvedPath.StartsWith(
+      $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  )
+}
+
+function Get-PublicReleaseSourceMutationExcludedRoots {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$ReleaseOutputDirectory
+  )
+
+  $relativeGeneratedRoots = @(
+    ".git",
+    "target",
+    "target_check",
+    "target_codex",
+    "target_alt",
+    "output",
+    "dist",
+    "node_modules",
+    "web\node_modules",
+    "web\dist",
+    "web\playwright-report",
+    "web\test-results",
+    "web\.vite",
+    "test-results",
+    "logs",
+    ".playwright-cli",
+    ".codex_tmp",
+    "src-tauri\gen\schemas",
+    "src-tauri\resources\native"
+  )
+  $candidates = @(
+    $relativeGeneratedRoots | ForEach-Object {
+      [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot $_))
+    }
+  )
+  if (-not [string]::IsNullOrWhiteSpace($ReleaseOutputDirectory)) {
+    $candidates += [System.IO.Path]::GetFullPath($ReleaseOutputDirectory)
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$env:CARGO_TARGET_DIR)) {
+    $cargoTarget = [string]$env:CARGO_TARGET_DIR
+    if (-not [System.IO.Path]::IsPathRooted($cargoTarget)) {
+      $cargoTarget = Join-Path $RepositoryRoot $cargoTarget
+    }
+    $candidates += [System.IO.Path]::GetFullPath($cargoTarget)
+  }
+
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' (
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+  $roots = @(
+    foreach ($candidate in $candidates) {
+      $resolved = [System.IO.Path]::GetFullPath([string]$candidate).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+      )
+      if (
+        (Test-PublicReleasePathUnderOrEqualRoot `
+          -Path $resolved `
+          -Root $RepositoryRoot) -and
+        $seen.Add($resolved)
+      ) {
+        $resolved
+      }
+    }
+  )
+  [System.Array]::Sort($roots, [System.StringComparer]::OrdinalIgnoreCase)
+  return [string[]]$roots
+}
+
+function Test-PublicReleaseSourceMutationPathExcluded {
+  param(
+    [Parameter(Mandatory = $true)][string]$FullPath,
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [string[]]$ExcludedRoots
+  )
+
+  foreach ($root in @($ExcludedRoots)) {
+    if (Test-PublicReleasePathUnderOrEqualRoot -Path $FullPath -Root $root) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Assert-PublicReleaseSourceMutationExclusionsSafe {
+  param(
+    [Parameter(Mandatory = $true)]$SourceSnapshot,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [string[]]$ExcludedRoots
+  )
+
+  $trackedIndexBytes = [System.Convert]::FromBase64String(
+    [string]$SourceSnapshot.tracked_index_base64
+  )
+  $trackedInventory = Get-PublicReleaseTrackedInventory `
+    -IndexBytes $trackedIndexBytes
+  foreach ($relativePath in @($trackedInventory.paths)) {
+    $fullPath = Assert-PublicReleaseManifestPathSafe `
+      -RepositoryRoot $RepositoryRoot `
+      -RelativePath ([string]$relativePath)
+    if (Test-PublicReleaseSourceMutationPathExcluded `
+        -FullPath $fullPath `
+        -ExcludedRoots $ExcludedRoots) {
+      throw "A tracked public-release source is inside a generated-root mutation-monitor exclusion."
+    }
+  }
+}
+
+function Get-PublicReleaseSourceMutationRelativePath {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$FullPath
+  )
+
+  $resolvedRoot = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  $resolvedPath = [System.IO.Path]::GetFullPath($FullPath)
+  if (-not (Test-PublicReleasePathUnderOrEqualRoot `
+      -Path $resolvedPath `
+      -Root $resolvedRoot)) {
+    return $null
+  }
+  if ([string]::Equals(
+      $resolvedPath.TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+      ),
+      $resolvedRoot,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+    return "."
+  }
+  return $resolvedPath.Substring(
+    $resolvedRoot.Length + 1
+  ).Replace("\", "/")
+}
+
+function Start-PublicReleaseSourceMutationMonitor {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [string[]]$ExcludedRoots
+  )
+
+  $resolvedRepositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+  if (-not (Test-Path -LiteralPath $resolvedRepositoryRoot -PathType Container)) {
+    throw "Public-release source mutation monitor requires a repository directory."
+  }
+  $watcher = New-Object System.IO.FileSystemWatcher
+  $sourceIdentifiers = @()
+  try {
+    $watcher.Path = $resolvedRepositoryRoot
+    $watcher.Filter = "*"
+    $watcher.IncludeSubdirectories = $true
+    $watcher.InternalBufferSize = 65536
+    $watcher.NotifyFilter = (
+      [System.IO.NotifyFilters]::FileName -bor
+      [System.IO.NotifyFilters]::DirectoryName -bor
+      [System.IO.NotifyFilters]::LastWrite -bor
+      [System.IO.NotifyFilters]::Size -bor
+      [System.IO.NotifyFilters]::CreationTime -bor
+      [System.IO.NotifyFilters]::Security
+    )
+    $monitorId = [guid]::NewGuid().ToString("N")
+    foreach ($eventName in @("Changed", "Created", "Deleted", "Renamed", "Error")) {
+      $sourceIdentifier = "vectorgrid-public-source-$monitorId-$($eventName.ToLowerInvariant())"
+      Register-ObjectEvent `
+        -InputObject $watcher `
+        -EventName $eventName `
+        -SourceIdentifier $sourceIdentifier | Out-Null
+      $sourceIdentifiers += $sourceIdentifier
+    }
+    $watcher.EnableRaisingEvents = $true
+    return [pscustomobject][ordered]@{
+      schema_version = 1
+      repository_root = $resolvedRepositoryRoot
+      excluded_roots = [string[]]@($ExcludedRoots)
+      source_identifiers = [string[]]$sourceIdentifiers
+      watcher = $watcher
+      started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+      completed = $false
+      evidence = $null
+    }
+  } catch {
+    foreach ($sourceIdentifier in $sourceIdentifiers) {
+      Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
+      Remove-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
+    }
+    $watcher.Dispose()
+    throw
+  }
+}
+
+function Complete-PublicReleaseSourceMutationMonitor {
+  param([Parameter(Mandatory = $true)]$Monitor)
+
+  if ([bool]$Monitor.completed) {
+    return $Monitor.evidence
+  }
+  $events = @()
+  $infrastructureErrors = @()
+  try {
+    if ($null -eq $Monitor.watcher -or -not $Monitor.watcher.EnableRaisingEvents) {
+      $infrastructureErrors += "error`tmonitor-not-active"
+    }
+    if (@($Monitor.source_identifiers).Count -ne 5) {
+      $infrastructureErrors += "error`tmonitor-subscription-count"
+    }
+    foreach ($sourceIdentifier in @($Monitor.source_identifiers)) {
+      $subscribers = @(
+        Get-EventSubscriber `
+          -SourceIdentifier $sourceIdentifier `
+          -ErrorAction SilentlyContinue
+      )
+      if ($subscribers.Count -ne 1) {
+        $infrastructureErrors += "error`tmonitor-subscription-missing"
+      }
+    }
+    Start-Sleep -Milliseconds 125
+    $Monitor.watcher.EnableRaisingEvents = $false
+    $Monitor.watcher.Dispose()
+    Start-Sleep -Milliseconds 125
+    foreach ($sourceIdentifier in @($Monitor.source_identifiers)) {
+      $events += @(
+        Get-Event `
+          -SourceIdentifier $sourceIdentifier `
+          -ErrorAction SilentlyContinue
+      )
+    }
+
+    $descriptors = @($infrastructureErrors)
+    $errorCount = [int]$infrastructureErrors.Count
+    foreach ($eventRecord in $events) {
+      $eventName = [string]$eventRecord.SourceIdentifier.Split("-")[-1]
+      if ($eventName -eq "error") {
+        $errorCount += 1
+        $exception = $eventRecord.SourceEventArgs.GetException()
+        $exceptionType = if ($null -eq $exception) {
+          "unknown"
+        } else {
+          [string]$exception.GetType().FullName
+        }
+        $descriptors += "error`t$exceptionType"
+        continue
+      }
+
+      $eventArgs = $eventRecord.SourceEventArgs
+      $fullPath = [string]$eventArgs.FullPath
+      $oldFullPath = if ($eventName -eq "renamed") {
+        [string]$eventArgs.OldFullPath
+      } else {
+        ""
+      }
+      $newExcluded = (
+        -not [string]::IsNullOrWhiteSpace($fullPath) -and
+        (Test-PublicReleaseSourceMutationPathExcluded `
+          -FullPath $fullPath `
+          -ExcludedRoots @($Monitor.excluded_roots))
+      )
+      $oldExcluded = (
+        -not [string]::IsNullOrWhiteSpace($oldFullPath) -and
+        (Test-PublicReleaseSourceMutationPathExcluded `
+          -FullPath $oldFullPath `
+          -ExcludedRoots @($Monitor.excluded_roots))
+      )
+      if (
+        ($eventName -ne "renamed" -and $newExcluded) -or
+        ($eventName -eq "renamed" -and $newExcluded -and $oldExcluded)
+      ) {
+        continue
+      }
+
+      $relativePath = Get-PublicReleaseSourceMutationRelativePath `
+        -RepositoryRoot $Monitor.repository_root `
+        -FullPath $fullPath
+      $oldRelativePath = if ($eventName -eq "renamed") {
+        Get-PublicReleaseSourceMutationRelativePath `
+          -RepositoryRoot $Monitor.repository_root `
+          -FullPath $oldFullPath
+      } else {
+        $null
+      }
+      if (
+        [string]::IsNullOrWhiteSpace([string]$relativePath) -or
+        ($eventName -eq "renamed" -and
+          [string]::IsNullOrWhiteSpace([string]$oldRelativePath))
+      ) {
+        $errorCount += 1
+        $descriptors += "error`tpath-outside-repository"
+        continue
+      }
+      if ($eventName -eq "renamed") {
+        $descriptors += "renamed`t$oldRelativePath`t$relativePath"
+      } else {
+        $descriptors += "$eventName`t$relativePath"
+      }
+    }
+    [System.Array]::Sort($descriptors, [System.StringComparer]::Ordinal)
+    $descriptorBytes = [System.Text.Encoding]::UTF8.GetBytes(
+      ($descriptors -join "`n")
+    )
+    $eventCount = [int]($descriptors.Count - $errorCount)
+    $status = if ($errorCount -gt 0) {
+      "error"
+    } elseif ($eventCount -gt 0) {
+      "mutated"
+    } else {
+      "passed"
+    }
+    $evidence = [pscustomobject][ordered]@{
+      schema_version = 1
+      status = $status
+      started_at_utc = [string]$Monitor.started_at_utc
+      completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+      include_subdirectories = $true
+      internal_buffer_size_bytes = 65536
+      excluded_root_count = [int]@($Monitor.excluded_roots).Count
+      event_count = $eventCount
+      error_count = [int]$errorCount
+      event_sha256 = Get-BytesSha256 -Bytes $descriptorBytes
+    }
+    $Monitor.evidence = $evidence
+    $Monitor.completed = $true
+    return $evidence
+  } finally {
+    foreach ($sourceIdentifier in @($Monitor.source_identifiers)) {
+      Remove-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
+      Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $Monitor.watcher) {
+      $Monitor.watcher.Dispose()
+    }
+  }
+}
+
+function Assert-PublicReleaseSourceMutationMonitorClean {
+  param([Parameter(Mandatory = $true)]$Evidence)
+
+  if (
+    [int]$Evidence.schema_version -ne 1 -or
+    [string]$Evidence.status -eq "error" -or
+    [int]$Evidence.error_count -ne 0
+  ) {
+    throw "Public-release source mutation monitoring failed or overflowed; source stability cannot be proven."
+  }
+  if (
+    [string]$Evidence.status -ne "passed" -or
+    [int]$Evidence.event_count -ne 0
+  ) {
+    throw "An in-scope working-tree mutation event occurred during the public release run."
+  }
+}
+
 function Normalize-Thumbprint {
   param([string]$Value)
   if ([string]::IsNullOrWhiteSpace($Value)) {
@@ -167,18 +1136,95 @@ function Invoke-PublicReleaseStep {
 }
 
 function Assert-CleanWorktree {
+  param([Parameter(Mandatory = $true)]$SourceSnapshot)
+
   if ($AllowDirtyWorktree) {
     Write-Warning "Dirty worktree allowed for this run. Do not publish this output as a final public release."
     return
   }
-  $statusText = (& git -C $repoRoot status --porcelain 2>&1 | Out-String)
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not verify the release worktree state: $($statusText.Trim())"
-  }
-  $status = $statusText.Trim()
-  if (-not [string]::IsNullOrWhiteSpace($status)) {
+  if ([bool]$SourceSnapshot.dirty -or [int64]$SourceSnapshot.status_size_bytes -ne 0) {
     throw "Public release requires a clean git worktree. Commit or stash changes, or pass -AllowDirtyWorktree only for a non-publishable rehearsal."
   }
+}
+
+function Get-PublicReleaseSourceSnapshotEvidence {
+  param($Snapshot)
+
+  if ($null -eq $Snapshot) {
+    return $null
+  }
+  return [ordered]@{
+    schema_version = [int]$Snapshot.schema_version
+    head = [string]$Snapshot.head
+    status_command = [string]$Snapshot.status_command
+    status_encoding = [string]$Snapshot.status_encoding
+    status_size_bytes = [int64]$Snapshot.status_size_bytes
+    status_sha256 = [string]$Snapshot.status_sha256
+    tracked_diff_size_bytes = [int64]$Snapshot.tracked_diff_size_bytes
+    tracked_diff_sha256 = [string]$Snapshot.tracked_diff_sha256
+    tracked_index_file_count = [int]$Snapshot.tracked_index_file_count
+    tracked_index_size_bytes = [int64]$Snapshot.tracked_index_size_bytes
+    tracked_index_sha256 = [string]$Snapshot.tracked_index_sha256
+    tracked_manifest_file_count = [int]$Snapshot.tracked_manifest_file_count
+    tracked_manifest_size_bytes = [int64]$Snapshot.tracked_manifest_size_bytes
+    tracked_manifest_sha256 = [string]$Snapshot.tracked_manifest_sha256
+    untracked_manifest_file_count =
+      [int]$Snapshot.untracked_manifest_file_count
+    untracked_manifest_size_bytes =
+      [int64]$Snapshot.untracked_manifest_size_bytes
+    untracked_manifest_sha256 =
+      [string]$Snapshot.untracked_manifest_sha256
+    source_read_lease_count = [int]$Snapshot.source_read_lease_count
+    source_state_sha256 = [string]$Snapshot.source_state_sha256
+    dirty = [bool]$Snapshot.dirty
+  }
+}
+
+function Get-PublicReleaseSourceMutationMonitorEvidence {
+  param($Evidence)
+
+  if ($null -eq $Evidence) {
+    return $null
+  }
+  return [ordered]@{
+    schema_version = [int]$Evidence.schema_version
+    status = [string]$Evidence.status
+    started_at_utc = [string]$Evidence.started_at_utc
+    completed_at_utc = [string]$Evidence.completed_at_utc
+    include_subdirectories = [bool]$Evidence.include_subdirectories
+    internal_buffer_size_bytes = [int]$Evidence.internal_buffer_size_bytes
+    excluded_root_count = [int]$Evidence.excluded_root_count
+    event_count = [int]$Evidence.event_count
+    error_count = [int]$Evidence.error_count
+    event_sha256 = [string]$Evidence.event_sha256
+  }
+}
+
+function Test-PublicReleaseEligibility {
+  param([Parameter(Mandatory = $true)][string]$Status)
+
+  return (
+    $Status -eq "passed" -and
+    -not [bool]$AllowDirtyWorktree -and
+    -not [bool]$AllowUnsignedBeta -and
+    [bool]$script:SourceStateRevalidated -and
+    [bool]$script:SourceMutationMonitorRevalidated -and
+    [bool]$script:SourceReadLeaseRevalidated -and
+    $null -ne $script:InitialSourceSnapshot -and
+    $null -ne $script:FinalSourceSnapshot -and
+    $null -ne $script:SourceMutationMonitorEvidence -and
+    [string]$script:SourceMutationMonitorEvidence.status -eq "passed" -and
+    [int]$script:SourceMutationMonitorEvidence.event_count -eq 0 -and
+    [int]$script:SourceMutationMonitorEvidence.error_count -eq 0 -and
+    -not [bool]$script:InitialSourceSnapshot.dirty -and
+    -not [bool]$script:FinalSourceSnapshot.dirty -and
+    [string]$script:FinalSourceSnapshot.head -eq
+      [string]$script:InitialSourceSnapshot.head -and
+    [string]$script:FinalSourceSnapshot.status_sha256 -eq
+      [string]$script:InitialSourceSnapshot.status_sha256 -and
+    [string]$script:FinalSourceSnapshot.source_state_sha256 -eq
+      [string]$script:InitialSourceSnapshot.source_state_sha256
+  )
 }
 
 function Assert-PublicReleaseEvidence {
@@ -594,7 +1640,18 @@ function Write-PublicReleaseSummary {
     allow_dirty_worktree = [bool]$AllowDirtyWorktree
     allow_unsigned_beta = [bool]$AllowUnsignedBeta
     include_options_gpu_promotion = [bool]$IncludeOptionsGpuPromotion
-    public_release_eligible = ($Status -eq "passed" -and -not [bool]$AllowDirtyWorktree -and -not [bool]$AllowUnsignedBeta)
+    public_release_eligible = (Test-PublicReleaseEligibility -Status $Status)
+    source_state_revalidated = [bool]$script:SourceStateRevalidated
+    source_mutation_monitor_revalidated =
+      [bool]$script:SourceMutationMonitorRevalidated
+    source_read_lease_revalidated =
+      [bool]$script:SourceReadLeaseRevalidated
+    source_mutation_monitor = Get-PublicReleaseSourceMutationMonitorEvidence `
+      -Evidence $script:SourceMutationMonitorEvidence
+    initial_source_state = Get-PublicReleaseSourceSnapshotEvidence `
+      -Snapshot $script:InitialSourceSnapshot
+    final_source_state = Get-PublicReleaseSourceSnapshotEvidence `
+      -Snapshot $script:FinalSourceSnapshot
     expected_signer_thumbprint = if ([string]::IsNullOrWhiteSpace($resolvedExpectedSignerThumbprint)) { $null } else { $resolvedExpectedSignerThumbprint }
     post_build_sign_script = if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) { $null } else { [System.IO.Path]::GetFullPath($PostBuildSignScript) }
     error = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
@@ -645,7 +1702,13 @@ function Write-PublicReleaseSummary {
     "- Dirty worktree allowed: $([bool]$AllowDirtyWorktree)",
     "- Unsigned beta allowed: $([bool]$AllowUnsignedBeta)",
     "- Include options GPU promotion: $([bool]$IncludeOptionsGpuPromotion)",
-    "- Public release eligible: $($Status -eq 'passed' -and -not [bool]$AllowDirtyWorktree -and -not [bool]$AllowUnsignedBeta)",
+    "- Source state revalidated: $([bool]$script:SourceStateRevalidated)",
+    "- Source mutation monitor revalidated: $([bool]$script:SourceMutationMonitorRevalidated)",
+    "- Source read lease revalidated: $([bool]$script:SourceReadLeaseRevalidated)",
+    "- Source mutation monitor status: $(if ($null -ne $script:SourceMutationMonitorEvidence) { [string]$script:SourceMutationMonitorEvidence.status } else { 'not completed' })",
+    "- Initial source HEAD: $(if ($null -ne $script:InitialSourceSnapshot) { [string]$script:InitialSourceSnapshot.head } else { 'not captured' })",
+    "- Final source HEAD: $(if ($null -ne $script:FinalSourceSnapshot) { [string]$script:FinalSourceSnapshot.head } else { 'not captured' })",
+    "- Public release eligible: $(Test-PublicReleaseEligibility -Status $Status)",
     "- Expected signer thumbprint: $(if ([string]::IsNullOrWhiteSpace($resolvedExpectedSignerThumbprint)) { 'not configured' } else { $resolvedExpectedSignerThumbprint })",
     "- Post-build signing hook: $(if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) { 'env/default or none' } else { [System.IO.Path]::GetFullPath($PostBuildSignScript) })"
   )
@@ -695,6 +1758,18 @@ $script:FinalArtifactHashes = @()
 $script:FinalEmbeddedApplication = $null
 $script:ReleaseProofEvidenceVerification = $null
 $script:LiveSafetyEvidenceVerification = $null
+$script:InitialSourceSnapshot = $null
+$script:FinalSourceSnapshot = $null
+$script:SourceStateRevalidated = $false
+$script:SourceMutationMonitor = $null
+$script:SourceMutationMonitorEvidence = $null
+$script:SourceMutationMonitorRevalidated = $false
+$script:SourceReadLeaseRevalidated = $false
+$script:GitExecutablePath = $null
+$script:SourceMutationExcludedRoots =
+  Get-PublicReleaseSourceMutationExcludedRoots `
+    -RepositoryRoot $repoRoot `
+    -ReleaseOutputDirectory $resolvedOutDir
 $resolvedExpectedSignerThumbprint = Normalize-Thumbprint -Value $(if (-not [string]::IsNullOrWhiteSpace($ExpectedSignerThumbprint)) {
   $ExpectedSignerThumbprint
 } else {
@@ -724,7 +1799,29 @@ try {
   }
 
   Invoke-PublicReleaseStep -Name "Clean worktree check" -CommandText "git -C `"$repoRoot`" status --porcelain" -Action {
-    Assert-CleanWorktree
+    $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction Stop |
+      Select-Object -First 1
+    $script:GitExecutablePath = [System.IO.Path]::GetFullPath(
+      [string]$gitCommand.Source
+    )
+    if (-not (Test-Path -LiteralPath $script:GitExecutablePath -PathType Leaf)) {
+      throw "Git executable was not found: $($script:GitExecutablePath)"
+    }
+    $script:SourceMutationMonitor =
+      Start-PublicReleaseSourceMutationMonitor `
+        -RepositoryRoot $repoRoot `
+        -ExcludedRoots @($script:SourceMutationExcludedRoots)
+    $script:InitialSourceSnapshot = Get-PublicReleaseSourceSnapshot `
+      -GitExecutablePath $script:GitExecutablePath `
+      -RepositoryRoot $repoRoot `
+      -RetainSourceReadLeases
+    Assert-PublicReleaseSourceReadLeasesActive `
+      -SourceSnapshot $script:InitialSourceSnapshot
+    Assert-PublicReleaseSourceMutationExclusionsSafe `
+      -SourceSnapshot $script:InitialSourceSnapshot `
+      -RepositoryRoot $repoRoot `
+      -ExcludedRoots @($script:SourceMutationExcludedRoots)
+    Assert-CleanWorktree -SourceSnapshot $script:InitialSourceSnapshot
   }
 
   $candidateArgs = @(
@@ -788,11 +1885,63 @@ try {
     Assert-PublicReleaseEvidence
   }
 
+  Invoke-PublicReleaseStep -Name "Final source-state revalidation" -CommandText "raw tracked/untracked content plus run-long mutation-monitor comparison" -Action {
+    $script:FinalSourceSnapshot = Get-PublicReleaseSourceSnapshot `
+      -GitExecutablePath $script:GitExecutablePath `
+      -RepositoryRoot $repoRoot
+    $script:SourceMutationMonitorEvidence =
+      Complete-PublicReleaseSourceMutationMonitor `
+        -Monitor $script:SourceMutationMonitor
+    Assert-PublicReleaseSourceMutationMonitorClean `
+      -Evidence $script:SourceMutationMonitorEvidence
+    Assert-PublicReleaseSourceSnapshotStable `
+      -Initial $script:InitialSourceSnapshot `
+      -Final $script:FinalSourceSnapshot
+    Assert-PublicReleaseSourceReadLeasesActive `
+      -SourceSnapshot $script:InitialSourceSnapshot
+    $script:SourceReadLeaseRevalidated = $true
+    $script:SourceMutationMonitorRevalidated = $true
+    $script:SourceStateRevalidated = $true
+    Close-PublicReleaseSourceReadLeases `
+      -SourceSnapshot $script:InitialSourceSnapshot
+  }
+
   $completedStatus = if ($AllowUnsignedBeta) { "rehearsal-passed" } else { "passed" }
   Write-PublicReleaseSummary -Status $completedStatus
   Write-Host "Public release gate completed with status '$completedStatus'."
   Write-Host "Summary written to $summaryJsonPath"
 } catch {
-  Write-PublicReleaseSummary -Status "failed" -ErrorMessage $_.Exception.Message
-  throw
+  $releaseFailure = $_
+  if (
+    $null -ne $script:SourceMutationMonitor -and
+    -not [bool]$script:SourceMutationMonitor.completed
+  ) {
+    try {
+      $script:SourceMutationMonitorEvidence =
+        Complete-PublicReleaseSourceMutationMonitor `
+          -Monitor $script:SourceMutationMonitor
+    } catch {
+      $emptyDigest = Get-BytesSha256 -Bytes ([byte[]]@())
+      $script:SourceMutationMonitorEvidence = [pscustomobject][ordered]@{
+        schema_version = 1
+        status = "error"
+        started_at_utc =
+          [string]$script:SourceMutationMonitor.started_at_utc
+        completed_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        include_subdirectories = $true
+        internal_buffer_size_bytes = 65536
+        excluded_root_count =
+          [int]@($script:SourceMutationExcludedRoots).Count
+        event_count = 0
+        error_count = 1
+        event_sha256 = $emptyDigest
+      }
+    }
+  }
+  Close-PublicReleaseSourceReadLeases `
+    -SourceSnapshot $script:InitialSourceSnapshot
+  Write-PublicReleaseSummary `
+    -Status "failed" `
+    -ErrorMessage $releaseFailure.Exception.Message
+  throw $releaseFailure
 }

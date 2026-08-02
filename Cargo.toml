@@ -4,6 +4,7 @@ members = [
   "crates/app_core",
   "crates/strategies",
   "crates/optimizer",
+  "vendor/embed-resource-3.0.6",
 ]
 resolver = "2"
 
@@ -12,8 +13,14 @@ resolver = "2"
 # 59dc31af77632c5d0ce0b9c89821296e98a5cdb5 in
 # vendor/vector-ta-0.2.4/.cargo_vcs_info.json.
 # Treat vendor/vector-ta-0.2.4 changes as first-party review scope.
+# `embed-resource` is vendored from the upstream 3.0.6 package so the
+# reliability-soak build can opt into an exact, attested Windows resource
+# compiler path. It is a workspace member so normal workspace tests exercise
+# the fork. Builds that do not set the opt-in environment variable keep the
+# upstream discovery behavior.
 [patch.crates-io]
 vector-ta = { path = "vendor/vector-ta-0.2.4" }
+embed-resource = { path = "vendor/embed-resource-3.0.6" }
 
 [profile.test]
 debug = "line-tables-only"

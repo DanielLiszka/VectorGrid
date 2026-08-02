@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import AppRuntimeBanner from './components/AppRuntimeBanner.vue'
 import DesktopTitlebar from './components/DesktopTitlebar.vue'
@@ -7,29 +7,110 @@ import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
 import OptimizeWorkspacePanel from './components/OptimizeWorkspacePanel.vue'
 import ActionStatusBar from './components/ActionStatusBar.vue'
 import StrategyWorkspacePanel from './components/StrategyWorkspacePanel.vue'
+import { createRecoverableAsyncPanel } from './components/ui/createRecoverableAsyncPanel'
 import WorkbenchShell from './components/workbench/WorkbenchShell.vue'
 import { useWorkflowStore } from './stores/workflowStore'
 
-const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/AdvancedWorkspacePanel.vue'))
-const CommandPaletteOverlay = defineAsyncComponent(() => import('./components/CommandPaletteOverlay.vue'))
-const DataWorkspacePanel = defineAsyncComponent(() => import('./components/DataWorkspacePanel.vue'))
-const DebugWorkspacePanel = defineAsyncComponent(() => import('./components/DebugWorkspacePanel.vue'))
-const CandidateDetailWorkspacePanel = defineAsyncComponent(() => import('./components/CandidateDetailWorkspacePanel.vue'))
-const ExecutionWorkspacePanel = defineAsyncComponent(() => import('./components/ExecutionWorkspacePanel.vue'))
-const FinalReviewWorkspacePanel = defineAsyncComponent(() => import('./components/FinalReviewWorkspacePanel.vue'))
-const HeatmapWorkspacePanel = defineAsyncComponent(() => import('./components/HeatmapWorkspacePanel.vue'))
-const HistoryWorkspacePanel = defineAsyncComponent(() => import('./components/HistoryWorkspacePanel.vue'))
-const MetaWorkspacePanel = defineAsyncComponent(() => import('./components/MetaWorkspacePanel.vue'))
-const MlSignalShellPanel = defineAsyncComponent(() => import('./components/MlSignalShellPanel.vue'))
-const OptionsExpressionShellPanel = defineAsyncComponent(() => import('./components/OptionsExpressionShellPanel.vue'))
-const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
-const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/ParetoWorkspacePanel.vue'))
-const PortfolioFeasibilityWorkspacePanel = defineAsyncComponent(() => import('./components/PortfolioFeasibilityWorkspacePanel.vue'))
-const SettingsWorkspacePanel = defineAsyncComponent(() => import('./components/SettingsWorkspacePanel.vue'))
-const TaskCenterOverlay = defineAsyncComponent(() => import('./components/TaskCenterOverlay.vue'))
-const TopWorkspacePanel = defineAsyncComponent(() => import('./components/TopWorkspacePanel.vue'))
-const ValidationWorkspacePanel = defineAsyncComponent(() => import('./components/ValidationWorkspacePanel.vue'))
-const WorkflowQuickSwitch = defineAsyncComponent(() => import('./components/WorkflowQuickSwitch.vue'))
+const AdvancedWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Advanced workspace',
+  recoveryTarget: '#advancedVueShellMount',
+  loader: () => import('./components/AdvancedWorkspacePanel.vue'),
+})
+const CommandPaletteOverlay = createRecoverableAsyncPanel({
+  label: 'Command palette',
+  recoveryTarget: '#shellMainPanel',
+  loader: () => import('./components/CommandPaletteOverlay.vue'),
+})
+const DataWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Data workspace',
+  recoveryTarget: '#dataVueShellMount',
+  loader: () => import('./components/DataWorkspacePanel.vue'),
+})
+const DebugWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Diagnostics workspace',
+  recoveryTarget: '#debugVueShellMount',
+  loader: () => import('./components/DebugWorkspacePanel.vue'),
+})
+const CandidateDetailWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Candidate detail workspace',
+  recoveryTarget: '#drillVueShellMount',
+  loader: () => import('./components/CandidateDetailWorkspacePanel.vue'),
+})
+const ExecutionWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Execution workspace',
+  recoveryTarget: '#executionVueShellMount',
+  loader: () => import('./components/ExecutionWorkspacePanel.vue'),
+})
+const FinalReviewWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Final review workspace',
+  recoveryTarget: '#finalReviewVueShellMount',
+  loader: () => import('./components/FinalReviewWorkspacePanel.vue'),
+})
+const HeatmapWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Heatmap workspace',
+  recoveryTarget: '#heatmapVueShellMount',
+  loader: () => import('./components/HeatmapWorkspacePanel.vue'),
+})
+const HistoryWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'History workspace',
+  recoveryTarget: '#historyVueShellMount',
+  loader: () => import('./components/HistoryWorkspacePanel.vue'),
+})
+const MetaWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Meta-analysis workspace',
+  recoveryTarget: '#metaVueShellMount',
+  loader: () => import('./components/MetaWorkspacePanel.vue'),
+})
+const MlSignalShellPanel = createRecoverableAsyncPanel({
+  label: 'ML signal workspace',
+  recoveryTarget: '#optVueShellMount',
+  loader: () => import('./components/MlSignalShellPanel.vue'),
+})
+const OptionsExpressionShellPanel = createRecoverableAsyncPanel({
+  label: 'Options workspace',
+  recoveryTarget: '#optionsVueShellMount',
+  loader: () => import('./components/OptionsExpressionShellPanel.vue'),
+})
+const OverviewWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Overview workspace',
+  recoveryTarget: '#overviewVueShellMount',
+  loader: () => import('./components/OverviewWorkspacePanel.vue'),
+})
+const ParetoWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Pareto workspace',
+  recoveryTarget: '#paretoVueShellMount',
+  loader: () => import('./components/ParetoWorkspacePanel.vue'),
+})
+const PortfolioFeasibilityWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Portfolio workspace',
+  recoveryTarget: '#portfolioVueShellMount',
+  loader: () => import('./components/PortfolioFeasibilityWorkspacePanel.vue'),
+})
+const SettingsWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Settings workspace',
+  recoveryTarget: '#settingsVueShellMount',
+  loader: () => import('./components/SettingsWorkspacePanel.vue'),
+})
+const TaskCenterOverlay = createRecoverableAsyncPanel({
+  label: 'Task center',
+  recoveryTarget: '#shellMainPanel',
+  loader: () => import('./components/TaskCenterOverlay.vue'),
+})
+const TopWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Top candidates workspace',
+  recoveryTarget: '#topVueShellMount',
+  loader: () => import('./components/TopWorkspacePanel.vue'),
+})
+const ValidationWorkspacePanel = createRecoverableAsyncPanel({
+  label: 'Validation workspace',
+  recoveryTarget: '#validationVueShellMount',
+  loader: () => import('./components/ValidationWorkspacePanel.vue'),
+})
+const WorkflowQuickSwitch = createRecoverableAsyncPanel({
+  label: 'Workflow quick switch',
+  recoveryTarget: '#shellMainPanel',
+  loader: () => import('./components/WorkflowQuickSwitch.vue'),
+})
 
 const workflowStore = useWorkflowStore()
 workflowStore.syncRuntimeState()

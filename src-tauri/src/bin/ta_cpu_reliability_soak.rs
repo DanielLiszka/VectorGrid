@@ -2,7 +2,7 @@ use clap::Parser;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -45,6 +45,8 @@ const MAX_OWNED_STORAGE_DIRECTORY_GROWTH: f64 = 4.0;
 const MAX_OWNED_STORAGE_DIRECTORY_SLOPE_PER_CYCLE: f64 = 0.01;
 const COMPILED_TAURI_CONFIG: Option<&str> = option_env!("TAURI_CONFIG");
 const COMPILED_TAURI_TARGET_TRIPLE: Option<&str> = option_env!("TAURI_ENV_TARGET_TRIPLE");
+const COMPILED_RESOURCE_COMPILER_ATTESTATION: Option<&str> =
+    option_env!("VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION");
 
 #[derive(Parser, Debug)]
 #[command(name = "ta_cpu_reliability_soak")]
@@ -674,7 +676,7 @@ fn metadata_is_reparse(metadata: &fs::Metadata) -> bool {
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
     {
@@ -1343,6 +1345,10 @@ fn validate_source_manifest(contents: &Value) -> Result<(), String> {
     }
     let mut prior_path: Option<&str> = None;
     let mut canonical = String::new();
+    let mut saw_vendored_embed_resource_manifest = false;
+    let mut saw_vendored_embed_resource_patch_notes = false;
+    let mut saw_vendored_embed_resource_source = false;
+    let mut saw_vendored_embed_resource_package = false;
     for (index, file) in files.iter().enumerate() {
         let path = file
             .get("path")
@@ -1360,6 +1366,13 @@ fn validate_source_manifest(contents: &Value) -> Result<(), String> {
             return Err("source manifest file paths must be strictly sorted".to_string());
         }
         prior_path = Some(path);
+        saw_vendored_embed_resource_manifest |=
+            path == "vendor/embed-resource-3.0.6/.cargo_vcs_info.json";
+        saw_vendored_embed_resource_package |= path == "vendor/embed-resource-3.0.6/Cargo.toml";
+        saw_vendored_embed_resource_patch_notes |=
+            path == "vendor/embed-resource-3.0.6/LOCAL_PATCHES.md";
+        saw_vendored_embed_resource_source |=
+            path == "vendor/embed-resource-3.0.6/src/windows_msvc.rs";
         let bytes = file
             .get("bytes")
             .and_then(Value::as_u64)
@@ -1386,6 +1399,15 @@ fn validate_source_manifest(contents: &Value) -> Result<(), String> {
             "source manifest aggregate mismatch: expected {expected_aggregate}, actual {actual_aggregate}"
         ));
     }
+    if !saw_vendored_embed_resource_manifest
+        || !saw_vendored_embed_resource_package
+        || !saw_vendored_embed_resource_patch_notes
+        || !saw_vendored_embed_resource_source
+    {
+        return Err(
+            "source manifest omits the vendored exact resource-compiler implementation".to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -1398,7 +1420,7 @@ fn path_starts_with(candidate: &Path, root: &Path) -> bool {
             .starts_with(
                 &(root
                     .to_string_lossy()
-                    .trim_end_matches(|value| value == '\\' || value == '/')
+                    .trim_end_matches(['\\', '/'])
                     .to_ascii_lowercase()
                     + "\\"),
             )
@@ -1407,6 +1429,22 @@ fn path_starts_with(candidate: &Path, root: &Path) -> bool {
     {
         candidate.starts_with(root)
     }
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn windows_ordinal_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    left.encode_utf16().cmp(right.encode_utf16())
 }
 
 fn validate_cargo_configuration_provenance(contents: &Value) -> Result<(), String> {
@@ -1705,25 +1743,1373 @@ fn validate_toolchain_input_manifest(
     Ok(())
 }
 
+fn existing_native_path_list_directories(
+    value: &str,
+    environment_name: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let mut directories = Vec::<(String, PathBuf)>::new();
+    let mut seen = HashSet::<String>::new();
+    for raw_segment in value.split(';') {
+        let mut segment = raw_segment.trim();
+        if segment.len() >= 2 && segment.starts_with('"') && segment.ends_with('"') {
+            segment = segment[1..segment.len() - 1].trim();
+        }
+        if segment.is_empty() {
+            continue;
+        }
+        if segment
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+            || !Path::new(segment).is_absolute()
+        {
+            return Err(format!(
+                "{environment_name} contains a non-canonical path-list segment: {segment}"
+            ));
+        }
+        let path = absolute_lexical_path(Path::new(segment))?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        ensure_no_reparse_ancestors(&path, &format!("{environment_name} path-list directory"))?;
+        if !metadata.is_dir() || metadata_is_reparse(&metadata) {
+            return Err(format!(
+                "{environment_name} path-list segment is not an ordinary directory: {}",
+                path.display()
+            ));
+        }
+        let key = path.to_string_lossy().to_ascii_lowercase();
+        if seen.insert(key.clone()) {
+            directories.push((key, path));
+        }
+    }
+    directories.sort_by(|left, right| windows_ordinal_cmp(&left.0, &right.0));
+    Ok(directories.into_iter().map(|(_, path)| path).collect())
+}
+
+fn validate_native_input_manifest(
+    contents: &Value,
+    visual_studio_installation: &Path,
+    vc_tools_version: &str,
+    windows_sdk_root: &Path,
+    environment_hashes: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    if contents.get("schema_version").and_then(Value::as_u64) != Some(3)
+        || contents.get("kind").and_then(Value::as_str)
+            != Some("vectorgrid_cpu_reliability_soak_native_inputs")
+        || contents.get("aggregate_algorithm").and_then(Value::as_str)
+            != Some(
+                "sha256(path_environment_tab_name_tab_value_sha256_then_root_tab_label_tab_absolute_path_then_file_tab_root_label_tab_relative_path_tab_bytes_tab_sha256_lf)",
+            )
+    {
+        return Err("native input manifest identity is invalid".to_string());
+    }
+    let allowed_path_environment_names =
+        ["EXTERNAL_INCLUDE", "IFCPATH", "INCLUDE", "LIB", "LIBPATH"];
+    let required_path_environment_names = ["EXTERNAL_INCLUDE", "INCLUDE", "LIB", "LIBPATH"];
+    let path_environment = contents
+        .get("path_environment")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "native input path environment must be an array".to_string())?;
+    if !matches!(path_environment.len(), 4 | 5)
+        || contents
+            .get("path_environment_count")
+            .and_then(Value::as_u64)
+            != Some(path_environment.len() as u64)
+    {
+        return Err("native input path-environment coverage is incomplete".to_string());
+    }
+    let mut path_environment_values = BTreeMap::<String, String>::new();
+    let mut canonical = String::new();
+    let mut prior_path_environment_name: Option<&str> = None;
+    for (index, row) in path_environment.iter().enumerate() {
+        let name = row
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "native input path-environment name is missing".to_string())?;
+        if !allowed_path_environment_names.contains(&name)
+            || prior_path_environment_name.is_some_and(|prior| prior >= name)
+        {
+            return Err("native input path-environment names are not canonical".to_string());
+        }
+        prior_path_environment_name = Some(name);
+        let value = row
+            .get("value")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.trim().is_empty()
+                    && !value
+                        .bytes()
+                        .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+            })
+            .ok_or_else(|| format!("native input path-environment value is invalid: {name}"))?;
+        let value_sha256 = validated_sha256(
+            row.get("value_sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            &format!("native input path-environment SHA-256 for {name}"),
+        )?;
+        let actual_sha256 = format!("{:x}", Sha256::digest(value.as_bytes()));
+        if value_sha256 != actual_sha256
+            || environment_hashes.get(name).map(String::as_str) != Some(value_sha256.as_str())
+        {
+            return Err(format!(
+                "native input path environment does not match pinned environment: {name}"
+            ));
+        }
+        if index > 0 {
+            canonical.push('\n');
+        }
+        canonical.push_str(&format!("path_environment\t{name}\t{value_sha256}"));
+        path_environment_values.insert(name.to_string(), value.to_string());
+    }
+    if required_path_environment_names
+        .iter()
+        .any(|name| !path_environment_values.contains_key(*name))
+    {
+        return Err("native input path-environment coverage is incomplete".to_string());
+    }
+
+    let roots = contents
+        .get("roots")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "native input roots must be an array".to_string())?;
+    if roots.is_empty()
+        || contents.get("root_count").and_then(Value::as_u64) != Some(roots.len() as u64)
+    {
+        return Err("native input root count is invalid".to_string());
+    }
+    let mut root_map = BTreeMap::<String, (PathBuf, String)>::new();
+    let mut prior_label: Option<&str> = None;
+    for root in roots {
+        let label = root
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "native input root label is missing".to_string())?;
+        if prior_label.is_some_and(|prior| prior >= label) {
+            return Err("native input roots must be strictly sorted".to_string());
+        }
+        prior_label = Some(label);
+        let path_text = root
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("native input root path is missing: {label}"))?;
+        if [label, path_text].iter().any(|value| {
+            value
+                .bytes()
+                .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+        }) {
+            return Err("native input root provenance contains control characters".to_string());
+        }
+        if !Path::new(path_text).is_absolute() {
+            return Err(format!(
+                "native input root path is not fully qualified: {label}"
+            ));
+        }
+        let path = absolute_lexical_path(Path::new(path_text))?;
+        ensure_no_reparse_ancestors(&path, &format!("native input root {label}"))?;
+        if !path.is_dir() {
+            return Err(format!("native input root is not a directory: {label}"));
+        }
+        canonical.push('\n');
+        canonical.push_str(&format!("root\t{label}\t{path_text}"));
+        root_map.insert(label.to_string(), (path, path_text.to_string()));
+    }
+
+    let required_roots = [
+        (
+            "vc_auxiliary_build",
+            visual_studio_installation
+                .join("VC")
+                .join("Auxiliary")
+                .join("Build"),
+        ),
+        (
+            "vc_tools",
+            visual_studio_installation
+                .join("VC")
+                .join("Tools")
+                .join("MSVC")
+                .join(vc_tools_version),
+        ),
+        (
+            "vs_common7_tools",
+            visual_studio_installation.join("Common7").join("Tools"),
+        ),
+        ("windows_sdk_bin", windows_sdk_root.join("bin")),
+        ("windows_sdk_include", windows_sdk_root.join("Include")),
+        ("windows_sdk_lib", windows_sdk_root.join("Lib")),
+    ];
+    for (label, expected) in required_roots {
+        let actual = root_map
+            .get(label)
+            .ok_or_else(|| format!("native input root coverage is missing: {label}"))?;
+        if !paths_equal(&actual.0, &expected) {
+            return Err(format!(
+                "native input root does not match the selected VS/SDK: {label}"
+            ));
+        }
+    }
+    let common7_tools = &root_map
+        .get("vs_common7_tools")
+        .ok_or_else(|| "native input root coverage is missing: vs_common7_tools".to_string())?
+        .0;
+    let vs_dev_cmd = common7_tools.join("VsDevCmd.bat");
+    let vs_dev_cmd_tree = common7_tools.join("vsdevcmd");
+    ensure_no_reparse_ancestors(&vs_dev_cmd, "Visual Studio VsDevCmd.bat")?;
+    ensure_no_reparse_ancestors(&vs_dev_cmd_tree, "Visual Studio vsdevcmd tree")?;
+    let vs_dev_cmd_metadata =
+        fs::symlink_metadata(&vs_dev_cmd).map_err(|error| error.to_string())?;
+    let vs_dev_cmd_tree_metadata =
+        fs::symlink_metadata(&vs_dev_cmd_tree).map_err(|error| error.to_string())?;
+    if !vs_dev_cmd_metadata.is_file()
+        || metadata_is_reparse(&vs_dev_cmd_metadata)
+        || !vs_dev_cmd_tree_metadata.is_dir()
+        || metadata_is_reparse(&vs_dev_cmd_tree_metadata)
+    {
+        return Err(
+            "selected Visual Studio Common7 tools omit ordinary VsDevCmd.bat/vsdevcmd inputs"
+                .to_string(),
+        );
+    }
+    for (label, expected) in [
+        (
+            "windows_sdk_references",
+            windows_sdk_root.join("References"),
+        ),
+        (
+            "windows_sdk_union_metadata",
+            windows_sdk_root.join("UnionMetadata"),
+        ),
+    ] {
+        match (expected.is_dir(), root_map.get(label)) {
+            (true, Some(actual)) if paths_equal(&actual.0, &expected) => {}
+            (false, None) => {}
+            _ => {
+                return Err(format!(
+                    "optional native input root does not match selected Windows SDK: {label}"
+                ));
+            }
+        }
+    }
+    match (
+        environment_hashes.get("NETFXSDKDIR"),
+        root_map.get("netfx_sdk"),
+    ) {
+        (None, None) => {}
+        (Some(expected_hash), Some((_, path_text)))
+            if format!("{:x}", Sha256::digest(path_text.as_bytes())) == *expected_hash => {}
+        _ => {
+            return Err(
+                "optional NETFX native input root does not match pinned NETFXSDKDir".to_string(),
+            );
+        }
+    }
+    let allowed_fixed_labels = [
+        "netfx_sdk",
+        "vc_auxiliary_build",
+        "vc_tools",
+        "vs_common7_tools",
+        "windows_sdk_bin",
+        "windows_sdk_include",
+        "windows_sdk_lib",
+        "windows_sdk_references",
+        "windows_sdk_union_metadata",
+    ];
+    let fixed_roots = root_map
+        .iter()
+        .filter(|(label, _)| allowed_fixed_labels.contains(&label.as_str()))
+        .map(|(_, (path, _))| path)
+        .collect::<Vec<_>>();
+    let mut existing_path_directories = Vec::<(String, PathBuf)>::new();
+    let mut seen_path_directories = HashSet::<String>::new();
+    for (name, value) in &path_environment_values {
+        for directory in existing_native_path_list_directories(value, name)? {
+            let key = directory.to_string_lossy().to_ascii_lowercase();
+            if seen_path_directories.insert(key.clone()) {
+                existing_path_directories.push((key, directory));
+            }
+        }
+    }
+    existing_path_directories.sort_by(|left, right| windows_ordinal_cmp(&left.0, &right.0));
+    let uncovered_directories = existing_path_directories
+        .into_iter()
+        .map(|(_, directory)| directory)
+        .filter(|directory| {
+            !fixed_roots
+                .iter()
+                .any(|root| paths_equal(directory, root) || path_starts_with(directory, root))
+        })
+        .collect::<Vec<_>>();
+    for (index, expected_path) in uncovered_directories.iter().enumerate() {
+        let label = format!("environment_path_{index:04}");
+        let actual = root_map
+            .get(&label)
+            .ok_or_else(|| format!("native input root coverage is missing: {label}"))?;
+        if !paths_equal(&actual.0, expected_path) {
+            return Err(format!(
+                "native input environment path root does not match pinned path lists: {label}"
+            ));
+        }
+    }
+    let expected_dynamic_count = uncovered_directories.len();
+    if root_map.keys().any(|label| {
+        if allowed_fixed_labels.contains(&label.as_str()) {
+            return false;
+        }
+        label
+            .strip_prefix("environment_path_")
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+            .is_none_or(|index| {
+                label.len() != "environment_path_0000".len() || index >= expected_dynamic_count
+            })
+    }) {
+        return Err("native input manifest contains an unexpected root label".to_string());
+    }
+
+    let files = contents
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "native input files must be an array".to_string())?;
+    let mut live_files = Vec::<(String, String, PathBuf)>::new();
+    for (root_label, (root_path, _)) in &root_map {
+        for (relative, path) in collect_ordinary_tree_files(root_path)? {
+            live_files.push((root_label.clone(), relative, path));
+        }
+    }
+    live_files.sort_by(|left, right| {
+        windows_ordinal_cmp(&left.0, &right.0).then_with(|| windows_ordinal_cmp(&left.1, &right.1))
+    });
+    if files.is_empty()
+        || files.len() != live_files.len()
+        || contents.get("file_count").and_then(Value::as_u64) != Some(files.len() as u64)
+    {
+        return Err("native input file count is invalid".to_string());
+    }
+    let mut prior_key: Option<String> = None;
+    let mut total_bytes = 0u64;
+    for (file, (live_root_label, live_relative, live_path)) in files.iter().zip(live_files.iter()) {
+        let root_label = file
+            .get("root")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "native input file root label is missing".to_string())?;
+        let root = root_map
+            .get(root_label)
+            .ok_or_else(|| format!("native input file refers to an unknown root: {root_label}"))?;
+        let relative = file
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "native input relative path is missing".to_string())?;
+        if root_label != live_root_label || relative != live_relative {
+            return Err("native input file rows omit or reorder live files".to_string());
+        }
+        let relative_path = Path::new(relative);
+        if relative_path.is_absolute()
+            || relative_path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+            || relative
+                .bytes()
+                .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+        {
+            return Err(format!("native input path must be relative: {relative}"));
+        }
+        let key = format!("{root_label}\t{relative}");
+        if prior_key
+            .as_ref()
+            .is_some_and(|prior| windows_ordinal_cmp(prior, &key).is_ge())
+        {
+            return Err("native input file rows must be strictly sorted".to_string());
+        }
+        prior_key = Some(key);
+        let absolute = native_input_absolute_path(&root.0, relative_path)?;
+        if !paths_equal(&absolute, live_path) {
+            return Err(format!(
+                "native input live file path differs from its attested root: root={}, relative={}, reconstructed={}, live={}",
+                root.0.display(),
+                relative,
+                absolute.display(),
+                live_path.display()
+            ));
+        }
+        ensure_no_reparse_ancestors(&absolute, "native input file")?;
+        let metadata = fs::symlink_metadata(&absolute).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata_is_reparse(&metadata) {
+            return Err(format!(
+                "native input must be an ordinary file: {}",
+                absolute.display()
+            ));
+        }
+        let expected_bytes = file.get("bytes").and_then(Value::as_u64).ok_or_else(|| {
+            format!("native input byte count is invalid: {root_label}/{relative}")
+        })?;
+        if metadata.len() != expected_bytes {
+            return Err(format!(
+                "native input byte count changed: {root_label}/{relative}"
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(expected_bytes);
+        let expected_sha256 = validated_sha256(
+            file.get("sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            &format!("native input SHA-256 for {root_label}/{relative}"),
+        )?;
+        if sha256_file(&absolute)? != expected_sha256 {
+            return Err(format!(
+                "native input SHA-256 changed: {root_label}/{relative}"
+            ));
+        }
+        canonical.push('\n');
+        canonical.push_str(&format!(
+            "file\t{root_label}\t{relative}\t{expected_bytes}\t{expected_sha256}"
+        ));
+    }
+    if contents.get("total_bytes").and_then(Value::as_u64) != Some(total_bytes) {
+        return Err("native input total byte count is invalid".to_string());
+    }
+    let expected_aggregate = validated_sha256(
+        contents
+            .get("aggregate_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "native input aggregate_sha256",
+    )?;
+    let actual_aggregate = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    if actual_aggregate != expected_aggregate {
+        return Err(format!(
+            "native input aggregate mismatch: expected {expected_aggregate}, actual {actual_aggregate}"
+        ));
+    }
+    Ok(actual_aggregate)
+}
+
+fn collect_ordinary_tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if metadata_is_reparse(&metadata) {
+                return Err(format!(
+                    "attested package tree contains a reparse point: {}",
+                    path.display()
+                ));
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if metadata.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| error.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if relative.is_empty()
+                    || relative
+                        .bytes()
+                        .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+                {
+                    return Err("attested package tree path is not canonical".to_string());
+                }
+                files.push((relative, path));
+            } else {
+                return Err(format!(
+                    "attested package tree contains a non-file entry: {}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+fn native_input_absolute_path(root: &Path, relative: &Path) -> Result<PathBuf, String> {
+    absolute_lexical_path(&root.join(relative))
+}
+
+fn validate_registry_package_tree(
+    contents: &Value,
+    cargo_home: &Path,
+    expected_label: &str,
+    expected_directory_name: &str,
+    expected_manifest_path: &Path,
+) -> Result<String, String> {
+    if contents.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || contents.get("kind").and_then(Value::as_str)
+            != Some("vectorgrid_cpu_reliability_soak_registry_package_tree")
+        || contents.get("aggregate_algorithm").and_then(Value::as_str)
+            != Some(
+                "sha256(root_tab_label_tab_absolute_path_then_file_tab_relative_path_tab_bytes_tab_sha256_lf)",
+            )
+        || contents.get("label").and_then(Value::as_str) != Some(expected_label)
+    {
+        return Err(format!(
+            "Cargo registry package-tree identity is invalid: {expected_label}"
+        ));
+    }
+    let root_text = contents
+        .get("root_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("Cargo registry package root is missing: {expected_label}"))?;
+    if [root_text, expected_label].iter().any(|value| {
+        value
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+    }) {
+        return Err(
+            "Cargo registry package-tree provenance contains control characters".to_string(),
+        );
+    }
+    let root = absolute_lexical_path(Path::new(root_text))?;
+    ensure_no_reparse_ancestors(&root, "Cargo registry package root")?;
+    let registry_src = cargo_home.join("registry").join("src");
+    if root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_none_or(|value| value != expected_directory_name)
+        || root
+            .parent()
+            .and_then(Path::parent)
+            .is_none_or(|value| !paths_equal(value, &registry_src))
+        || !root.is_dir()
+        || !paths_equal(&root.join("Cargo.toml"), expected_manifest_path)
+    {
+        return Err(format!(
+            "Cargo registry package root escaped pinned CARGO_HOME: {expected_label}"
+        ));
+    }
+    let live_files = collect_ordinary_tree_files(&root)?;
+    let evidence_files = contents
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("Cargo registry package files are missing: {expected_label}"))?;
+    if live_files.is_empty()
+        || evidence_files.len() != live_files.len()
+        || contents.get("file_count").and_then(Value::as_u64) != Some(live_files.len() as u64)
+    {
+        return Err(format!(
+            "Cargo registry package file coverage is incomplete: {expected_label}"
+        ));
+    }
+    let mut total_bytes = 0u64;
+    let mut canonical = format!("root\t{expected_label}\t{root_text}");
+    for (row, (live_relative, live_path)) in evidence_files.iter().zip(live_files.iter()) {
+        let relative = row
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Cargo registry package relative path is missing".to_string())?;
+        if relative != live_relative {
+            return Err(format!(
+                "Cargo registry package rows are incomplete or unsorted: {expected_label}"
+            ));
+        }
+        let metadata = fs::symlink_metadata(live_path).map_err(|error| error.to_string())?;
+        let bytes = row
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "Cargo registry package byte count is missing".to_string())?;
+        let sha256 = validated_sha256(
+            row.get("sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "Cargo registry package file SHA-256",
+        )?;
+        if !metadata.is_file()
+            || metadata_is_reparse(&metadata)
+            || metadata.len() != bytes
+            || sha256_file(live_path)? != sha256
+        {
+            return Err(format!(
+                "Cargo registry package file changed: {expected_label}/{relative}"
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(bytes);
+        canonical.push_str(&format!("\nfile\t{relative}\t{bytes}\t{sha256}"));
+    }
+    if contents.get("total_bytes").and_then(Value::as_u64) != Some(total_bytes) {
+        return Err(format!(
+            "Cargo registry package total bytes changed: {expected_label}"
+        ));
+    }
+    let actual_aggregate = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    let expected_aggregate = validated_sha256(
+        contents
+            .get("aggregate_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "Cargo registry package-tree aggregate SHA-256",
+    )?;
+    if actual_aggregate != expected_aggregate {
+        return Err(format!(
+            "Cargo registry package-tree aggregate mismatch: {expected_label}"
+        ));
+    }
+    Ok(actual_aggregate)
+}
+
+fn validate_manifest_file(
+    package: &Value,
+    expected_path: &Path,
+    label: &str,
+) -> Result<(String, u64, String), String> {
+    let path_text = package
+        .get("manifest_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} manifest path is missing"))?;
+    let path = absolute_lexical_path(Path::new(path_text))?;
+    ensure_no_reparse_ancestors(&path, &format!("{label} manifest"))?;
+    let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+    let bytes = package
+        .get("manifest_bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{label} manifest byte count is missing"))?;
+    let sha256 = validated_sha256(
+        package
+            .get("manifest_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        &format!("{label} manifest SHA-256"),
+    )?;
+    if !paths_equal(&path, expected_path)
+        || !metadata.is_file()
+        || metadata_is_reparse(&metadata)
+        || metadata.len() != bytes
+        || sha256_file(&path)? != sha256
+    {
+        return Err(format!(
+            "Cargo did not resolve the canonical {label} manifest"
+        ));
+    }
+    Ok((path_text.to_string(), bytes, sha256))
+}
+
+fn validate_build_chain_edge(
+    edge: &Value,
+    from: &str,
+    declared_name: &str,
+    resolved_name: &str,
+    to: &str,
+    kind: &str,
+    requirement: &str,
+    label: &str,
+) -> Result<(), String> {
+    if edge.get("from_package_id").and_then(Value::as_str) != Some(from)
+        || edge.get("declared_dependency_name").and_then(Value::as_str) != Some(declared_name)
+        || edge.get("resolved_dependency_name").and_then(Value::as_str) != Some(resolved_name)
+        || edge.get("to_package_id").and_then(Value::as_str) != Some(to)
+        || edge.get("kind").and_then(Value::as_str) != Some(kind)
+        || !edge.get("target").is_some_and(Value::is_null)
+        || edge.get("declared_requirement").and_then(Value::as_str) != Some(requirement)
+    {
+        return Err(format!("Cargo build-chain edge is invalid: {label}"));
+    }
+    Ok(())
+}
+
+fn expected_path_package_id(
+    package_root: &Path,
+    package_name: &str,
+    package_version: &str,
+) -> Result<String, String> {
+    let package_root = absolute_lexical_path(package_root)?;
+    let file_url = tauri::Url::from_directory_path(&package_root).map_err(|()| {
+        format!(
+            "could not encode Cargo path package root as a file URL: {}",
+            package_root.display()
+        )
+    })?;
+    Ok(format!(
+        "path+{}#{package_name}@{package_version}",
+        file_url.as_str().trim_end_matches('/')
+    ))
+}
+
+fn validate_embed_resource_cargo_resolution(
+    contents: &Value,
+    repo_root: &Path,
+    cargo_home: &Path,
+    host_target_triple: &str,
+    toolchain: &Value,
+) -> Result<String, String> {
+    let count_names = [
+        "root_package_name_match_count",
+        "tauri_build_package_name_match_count",
+        "tauri_winres_package_name_match_count",
+        "embed_resource_package_name_match_count",
+        "root_to_tauri_build_declared_edge_match_count",
+        "root_to_tauri_build_resolved_edge_match_count",
+        "tauri_build_to_winres_declared_edge_match_count",
+        "tauri_build_to_winres_resolved_edge_match_count",
+        "winres_to_embed_declared_edge_match_count",
+        "winres_to_embed_resolved_edge_match_count",
+    ];
+    if contents.get("schema_version").and_then(Value::as_u64) != Some(2)
+        || contents.get("kind").and_then(Value::as_str)
+            != Some("vectorgrid_cpu_reliability_soak_windows_build_dependency_chain")
+        || contents.get("aggregate_algorithm").and_then(Value::as_str)
+            != Some("sha256(canonical_tab_rows_lf)")
+        || contents
+            .get("metadata_format_version")
+            .and_then(Value::as_u64)
+            != Some(1)
+        || count_names
+            .iter()
+            .any(|name| contents.get(name).and_then(Value::as_u64) != Some(1))
+    {
+        return Err("Cargo build-dependency-chain identity is invalid".to_string());
+    }
+    let metadata_output_sha256 = validated_sha256(
+        contents
+            .get("metadata_output_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "Cargo metadata output SHA-256",
+    )?;
+    let metadata_arguments = contents
+        .get("metadata_arguments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Cargo metadata arguments must be an array".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "Cargo metadata arguments must be strings".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected_metadata_arguments = [
+        "metadata",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+        "--filter-platform",
+        host_target_triple,
+        "--no-default-features",
+        "--features",
+        "ta_desktop_demo_app/maintainer-tools",
+    ];
+    if metadata_arguments != expected_metadata_arguments {
+        return Err(
+            "Cargo metadata was not invoked for the exact locked/offline soak build selection"
+                .to_string(),
+        );
+    }
+    let root_features = contents
+        .get("root_resolved_features")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Cargo root resolved features are missing".to_string())?;
+    if root_features.len() != 1 || root_features[0].as_str() != Some("maintainer-tools") {
+        return Err("Cargo root features do not match the no-default maintainer build".to_string());
+    }
+
+    let workspace_root_text = contents
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Cargo metadata workspace root is missing".to_string())?;
+    let workspace_root = absolute_lexical_path(Path::new(workspace_root_text))?;
+    let cargo_home_text = contents
+        .get("cargo_home")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Cargo metadata CARGO_HOME is missing".to_string())?;
+    let declared_cargo_home = absolute_lexical_path(Path::new(cargo_home_text))?;
+    ensure_no_reparse_ancestors(&workspace_root, "Cargo metadata workspace root")?;
+    ensure_no_reparse_ancestors(&declared_cargo_home, "Cargo metadata CARGO_HOME")?;
+    if !paths_equal(&workspace_root, repo_root)
+        || !workspace_root.is_dir()
+        || !paths_equal(&declared_cargo_home, cargo_home)
+        || !declared_cargo_home.is_dir()
+    {
+        return Err("Cargo metadata roots differ from launcher provenance".to_string());
+    }
+    let workspace_member_count = contents
+        .get("workspace_member_count")
+        .and_then(Value::as_u64)
+        .filter(|count| *count >= 5)
+        .ok_or_else(|| "Cargo metadata workspace-member coverage is incomplete".to_string())?;
+
+    let cargo = contents
+        .get("cargo")
+        .ok_or_else(|| "Cargo metadata executable attestation is missing".to_string())?;
+    let cargo_path_text = cargo
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Cargo metadata executable path is missing".to_string())?;
+    let cargo_path = absolute_lexical_path(Path::new(cargo_path_text))?;
+    ensure_no_reparse_ancestors(&cargo_path, "Cargo metadata executable")?;
+    let cargo_metadata = fs::symlink_metadata(&cargo_path).map_err(|error| error.to_string())?;
+    let cargo_bytes = cargo
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "Cargo metadata executable byte count is missing".to_string())?;
+    let cargo_sha256 = validated_sha256(
+        cargo
+            .get("sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "Cargo metadata executable SHA-256",
+    )?;
+    let toolchain_cargo_path = toolchain
+        .get("cargo_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "toolchain cargo_path is missing".to_string())?;
+    let toolchain_cargo_sha256 = validated_sha256(
+        toolchain
+            .get("cargo_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "toolchain Cargo SHA-256",
+    )?;
+    if !cargo_metadata.is_file()
+        || metadata_is_reparse(&cargo_metadata)
+        || cargo_metadata.len() != cargo_bytes
+        || sha256_file(&cargo_path)? != cargo_sha256
+        || !paths_equal(
+            &cargo_path,
+            &absolute_lexical_path(Path::new(toolchain_cargo_path))?,
+        )
+        || cargo_sha256 != toolchain_cargo_sha256
+    {
+        return Err("Cargo metadata did not use the pinned toolchain executable".to_string());
+    }
+
+    let root = contents
+        .get("root_package")
+        .ok_or_else(|| "root Cargo package attestation is missing".to_string())?;
+    let root_package_id = root
+        .get("package_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "root Cargo package ID is missing".to_string())?;
+    let expected_root_package_id =
+        expected_path_package_id(&repo_root.join("src-tauri"), "ta_desktop_demo_app", "0.1.0")?;
+    if root.get("name").and_then(Value::as_str) != Some("ta_desktop_demo_app")
+        || root.get("version").and_then(Value::as_str) != Some("0.1.0")
+        || !root.get("source").is_some_and(Value::is_null)
+        || root.get("workspace_member").and_then(Value::as_bool) != Some(true)
+        || root_package_id != expected_root_package_id
+        || root
+            .get("manifest_repo_relative_path")
+            .and_then(Value::as_str)
+            != Some("src-tauri/Cargo.toml")
+    {
+        return Err("Cargo root package identity is invalid".to_string());
+    }
+    let (root_manifest_path, root_manifest_bytes, root_manifest_sha256) = validate_manifest_file(
+        root,
+        &repo_root.join("src-tauri").join("Cargo.toml"),
+        "root package",
+    )?;
+
+    let registry_source = "registry+https://github.com/rust-lang/crates.io-index";
+    let tauri_build = contents
+        .get("tauri_build")
+        .ok_or_else(|| "tauri-build package attestation is missing".to_string())?;
+    let tauri_build_id = tauri_build
+        .get("package_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "tauri-build package ID is missing".to_string())?;
+    let tauri_build_manifest = tauri_build
+        .get("manifest_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "tauri-build manifest path is missing".to_string())?;
+    if tauri_build.get("name").and_then(Value::as_str) != Some("tauri-build")
+        || tauri_build.get("version").and_then(Value::as_str) != Some("2.5.6")
+        || tauri_build.get("source").and_then(Value::as_str) != Some(registry_source)
+        || tauri_build_id
+            != "registry+https://github.com/rust-lang/crates.io-index#tauri-build@2.5.6"
+    {
+        return Err("Cargo resolved an unexpected tauri-build package".to_string());
+    }
+    let tauri_build_manifest_path = absolute_lexical_path(Path::new(tauri_build_manifest))?;
+    let tauri_build_tree_aggregate = validate_registry_package_tree(
+        tauri_build
+            .get("source_tree")
+            .ok_or_else(|| "tauri-build source-tree attestation is missing".to_string())?,
+        cargo_home,
+        "tauri-build@2.5.6",
+        "tauri-build-2.5.6",
+        &tauri_build_manifest_path,
+    )?;
+
+    let tauri_winres = contents
+        .get("tauri_winres")
+        .ok_or_else(|| "tauri-winres package attestation is missing".to_string())?;
+    let tauri_winres_id = tauri_winres
+        .get("package_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "tauri-winres package ID is missing".to_string())?;
+    let tauri_winres_manifest = tauri_winres
+        .get("manifest_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "tauri-winres manifest path is missing".to_string())?;
+    if tauri_winres.get("name").and_then(Value::as_str) != Some("tauri-winres")
+        || tauri_winres.get("version").and_then(Value::as_str) != Some("0.3.5")
+        || tauri_winres.get("source").and_then(Value::as_str) != Some(registry_source)
+        || tauri_winres_id
+            != "registry+https://github.com/rust-lang/crates.io-index#tauri-winres@0.3.5"
+    {
+        return Err("Cargo resolved an unexpected tauri-winres package".to_string());
+    }
+    let tauri_winres_manifest_path = absolute_lexical_path(Path::new(tauri_winres_manifest))?;
+    let tauri_winres_tree_aggregate = validate_registry_package_tree(
+        tauri_winres
+            .get("source_tree")
+            .ok_or_else(|| "tauri-winres source-tree attestation is missing".to_string())?,
+        cargo_home,
+        "tauri-winres@0.3.5",
+        "tauri-winres-0.3.5",
+        &tauri_winres_manifest_path,
+    )?;
+
+    let embed = contents
+        .get("embed_resource")
+        .ok_or_else(|| "embed-resource package attestation is missing".to_string())?;
+    let embed_id = embed
+        .get("package_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "embed-resource package ID is missing".to_string())?;
+    let expected_embed_id = expected_path_package_id(
+        &repo_root.join("vendor").join("embed-resource-3.0.6"),
+        "embed-resource",
+        "3.0.6",
+    )?;
+    if embed.get("name").and_then(Value::as_str) != Some("embed-resource")
+        || embed.get("version").and_then(Value::as_str) != Some("3.0.6")
+        || !embed.get("source").is_some_and(Value::is_null)
+        || embed.get("workspace_member").and_then(Value::as_bool) != Some(true)
+        || embed_id != expected_embed_id
+        || embed
+            .get("manifest_repo_relative_path")
+            .and_then(Value::as_str)
+            != Some("vendor/embed-resource-3.0.6/Cargo.toml")
+    {
+        return Err("Cargo vendored embed-resource package identity is invalid".to_string());
+    }
+    let (embed_manifest_path, embed_manifest_bytes, embed_manifest_sha256) =
+        validate_manifest_file(
+            embed,
+            &repo_root
+                .join("vendor")
+                .join("embed-resource-3.0.6")
+                .join("Cargo.toml"),
+            "vendored embed-resource",
+        )?;
+
+    let root_to_build = contents
+        .get("root_to_tauri_build_edge")
+        .ok_or_else(|| "root-to-tauri-build edge is missing".to_string())?;
+    validate_build_chain_edge(
+        root_to_build,
+        root_package_id,
+        "tauri-build",
+        "tauri_build",
+        tauri_build_id,
+        "build",
+        "^2",
+        "root -> tauri-build",
+    )?;
+    let build_to_winres = contents
+        .get("tauri_build_to_winres_edge")
+        .ok_or_else(|| "tauri-build-to-winres edge is missing".to_string())?;
+    validate_build_chain_edge(
+        build_to_winres,
+        tauri_build_id,
+        "tauri-winres",
+        "tauri_winres",
+        tauri_winres_id,
+        "normal",
+        "^0.3",
+        "tauri-build -> tauri-winres",
+    )?;
+    let winres_to_embed = contents
+        .get("winres_to_embed_edge")
+        .ok_or_else(|| "winres-to-embed edge is missing".to_string())?;
+    validate_build_chain_edge(
+        winres_to_embed,
+        tauri_winres_id,
+        "embed-resource",
+        "embed_resource",
+        embed_id,
+        "normal",
+        "^3",
+        "tauri-winres -> embed-resource",
+    )?;
+
+    for value in [
+        workspace_root_text,
+        cargo_home_text,
+        cargo_path_text,
+        root_package_id,
+        root_manifest_path.as_str(),
+        tauri_build_id,
+        tauri_build_manifest,
+        tauri_winres_id,
+        tauri_winres_manifest,
+        embed_id,
+        embed_manifest_path.as_str(),
+    ] {
+        if value
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+        {
+            return Err("Cargo build-chain provenance contains control characters".to_string());
+        }
+    }
+
+    let canonical = format!(
+        "metadata_format_version\t1\nmetadata_output_sha256\t{metadata_output_sha256}\nmetadata_arguments\t{}\nworkspace_root\t{workspace_root_text}\ncargo_home\t{cargo_home_text}\nworkspace_member_count\t{workspace_member_count}\nroot_resolved_features\tmaintainer-tools\ncargo\t{cargo_path_text}\t{cargo_bytes}\t{cargo_sha256}\nroot_package_match_count\t1\nroot_package\t{root_package_id}\t0.1.0\tnull\t{root_manifest_path}\tsrc-tauri/Cargo.toml\t{root_manifest_bytes}\t{root_manifest_sha256}\ntauri_build_match_count\t1\ntauri_build\t{tauri_build_id}\t2.5.6\t{registry_source}\t{tauri_build_manifest}\t{tauri_build_tree_aggregate}\ntauri_winres_match_count\t1\ntauri_winres\t{tauri_winres_id}\t0.3.5\t{registry_source}\t{tauri_winres_manifest}\t{tauri_winres_tree_aggregate}\nembed_resource_match_count\t1\nembed_resource\t{embed_id}\t3.0.6\tnull\t{embed_manifest_path}\tvendor/embed-resource-3.0.6/Cargo.toml\t{embed_manifest_bytes}\t{embed_manifest_sha256}\nroot_to_tauri_build_declared_match_count\t1\nroot_to_tauri_build_resolved_match_count\t1\nroot_to_tauri_build_edge\t{root_package_id}\ttauri-build\ttauri_build\t{tauri_build_id}\tbuild\tnull\t^2\ntauri_build_to_winres_declared_match_count\t1\ntauri_build_to_winres_resolved_match_count\t1\ntauri_build_to_winres_edge\t{tauri_build_id}\ttauri-winres\ttauri_winres\t{tauri_winres_id}\tnormal\tnull\t^0.3\nwinres_to_embed_declared_match_count\t1\nwinres_to_embed_resolved_match_count\t1\nwinres_to_embed_edge\t{tauri_winres_id}\tembed-resource\tembed_resource\t{embed_id}\tnormal\tnull\t^3",
+        metadata_arguments.join("\t")
+    );
+    let actual_aggregate = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    let expected_aggregate = validated_sha256(
+        contents
+            .get("aggregate_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "Cargo build-chain aggregate SHA-256",
+    )?;
+    if actual_aggregate != expected_aggregate {
+        return Err(format!(
+            "Cargo build-chain aggregate mismatch: expected {expected_aggregate}, actual {actual_aggregate}"
+        ));
+    }
+    Ok(actual_aggregate)
+}
+
+fn parse_windows_sdk_version(value: &str) -> Result<[i32; 4], String> {
+    let mut parts = value.split('.');
+    let mut parsed = [0i32; 4];
+    for component in &mut parsed {
+        let part = parts
+            .next()
+            .filter(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+            .ok_or_else(|| format!("Windows SDK version is malformed: {value}"))?;
+        *component = part
+            .parse::<i32>()
+            .map_err(|_| format!("Windows SDK version component is out of range: {value}"))?;
+    }
+    if parts.next().is_some() {
+        return Err(format!("Windows SDK version is malformed: {value}"));
+    }
+    Ok(parsed)
+}
+
+fn enumerate_resource_compiler_candidates(
+    windows_sdk_root: &Path,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    let bin_root = windows_sdk_root.join("bin");
+    ensure_no_reparse_ancestors(&bin_root, "Windows SDK bin root")?;
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(&bin_root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if metadata_is_reparse(&metadata) {
+            return Err(format!(
+                "Windows SDK candidate directory is a reparse point: {}",
+                entry.path().display()
+            ));
+        }
+        if !metadata.is_dir() {
+            continue;
+        }
+        let version = entry.file_name().to_string_lossy().to_string();
+        if parse_windows_sdk_version(&version).is_err() {
+            continue;
+        }
+        let rc = entry.path().join("x64").join("rc.exe");
+        let rc_metadata = match fs::symlink_metadata(&rc) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        ensure_no_reparse_ancestors(&rc, "Windows SDK resource compiler candidate")?;
+        if !rc_metadata.is_file() || metadata_is_reparse(&rc_metadata) {
+            return Err(format!(
+                "Windows SDK resource compiler candidate is not ordinary: {}",
+                rc.display()
+            ));
+        }
+        candidates.push((version, absolute_lexical_path(&rc)?));
+    }
+    candidates.sort_by_key(|(version, _)| {
+        parse_windows_sdk_version(version).expect("filtered numeric Windows SDK version")
+    });
+    Ok(candidates)
+}
+
+fn resolve_recorded_path_executable(
+    path_value: &str,
+    executable_name: &str,
+) -> Result<PathBuf, String> {
+    for raw_segment in path_value.split(';') {
+        let mut segment = raw_segment.trim();
+        if segment.len() >= 2 && segment.starts_with('"') && segment.ends_with('"') {
+            segment = segment[1..segment.len() - 1].trim();
+        }
+        if segment.is_empty() {
+            continue;
+        }
+        if segment
+            .bytes()
+            .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+            || !Path::new(segment).is_absolute()
+        {
+            return Err(format!(
+                "recorded PATH contains a non-canonical segment: {segment}"
+            ));
+        }
+        let directory = absolute_lexical_path(Path::new(segment))?;
+        if !directory.is_dir() {
+            continue;
+        }
+        let candidate = directory.join(executable_name);
+        let metadata = match fs::symlink_metadata(&candidate) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        ensure_no_reparse_ancestors(&candidate, "PATH-resolved native tool")?;
+        if !metadata.is_file() || metadata_is_reparse(&metadata) {
+            return Err(format!(
+                "PATH-resolved native tool is not an ordinary file: {}",
+                candidate.display()
+            ));
+        }
+        return absolute_lexical_path(&candidate);
+    }
+    Err(format!(
+        "recorded PATH does not resolve required native tool: {executable_name}"
+    ))
+}
+
+fn validate_path_tool_resolution(
+    contents: &Value,
+    environment_hashes: &BTreeMap<String, String>,
+    attested_tools: &BTreeMap<String, (String, PathBuf, u64, String)>,
+) -> Result<String, String> {
+    if contents.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || contents.get("kind").and_then(Value::as_str)
+            != Some("vectorgrid_cpu_reliability_soak_path_tool_resolution")
+        || contents.get("environment_name").and_then(Value::as_str) != Some("PATH")
+        || contents.get("resolution_policy").and_then(Value::as_str)
+            != Some("first_existing_ordinary_executable_in_recorded_path_order")
+        || contents.get("aggregate_algorithm").and_then(Value::as_str)
+            != Some(
+                "sha256(path_value_sha256_then_name_tab_executable_tab_path_tab_bytes_tab_sha256_lf)",
+            )
+    {
+        return Err("native PATH tool-resolution identity is invalid".to_string());
+    }
+    let path_value = contents
+        .get("value")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.trim().is_empty()
+                && !value
+                    .bytes()
+                    .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+        })
+        .ok_or_else(|| "recorded native PATH is invalid".to_string())?;
+    let value_sha256 = validated_sha256(
+        contents
+            .get("value_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "recorded native PATH SHA-256",
+    )?;
+    if format!("{:x}", Sha256::digest(path_value.as_bytes())) != value_sha256
+        || environment_hashes.get("PATH").map(String::as_str) != Some(value_sha256.as_str())
+    {
+        return Err("recorded native PATH differs from pinned environment".to_string());
+    }
+    let expected_names = ["cl", "lib", "link", "ml64", "mt", "rc"];
+    let tools = contents
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "native PATH tool-resolution rows are missing".to_string())?;
+    if tools.len() != expected_names.len()
+        || contents.get("tool_count").and_then(Value::as_u64) != Some(tools.len() as u64)
+    {
+        return Err("native PATH tool-resolution coverage is incomplete".to_string());
+    }
+    let mut canonical = format!("path_value_sha256\t{value_sha256}");
+    for (row, expected_name) in tools.iter().zip(expected_names.iter()) {
+        let name = row
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "native PATH tool name is missing".to_string())?;
+        let executable_name = row
+            .get("executable_name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("native PATH executable name is missing: {name}"))?;
+        let expected_executable_name = format!("{expected_name}.exe");
+        let path_text = row
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("native PATH tool path is missing: {name}"))?;
+        let path = absolute_lexical_path(Path::new(path_text))?;
+        let resolved = resolve_recorded_path_executable(path_value, &expected_executable_name)?;
+        let attested = attested_tools
+            .get(*expected_name)
+            .ok_or_else(|| format!("attested native tool is missing: {expected_name}"))?;
+        let bytes = row
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("native PATH tool byte count is missing: {name}"))?;
+        let sha256 = validated_sha256(
+            row.get("sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            &format!("native PATH tool SHA-256 for {name}"),
+        )?;
+        if name != *expected_name
+            || executable_name != expected_executable_name
+            || !paths_equal(&path, &resolved)
+            || !paths_equal(&path, &attested.1)
+            || path_text != attested.0
+            || bytes != attested.2
+            || sha256 != attested.3
+        {
+            return Err(format!(
+                "recorded PATH does not first-resolve the exact attested native tool: {name}"
+            ));
+        }
+        canonical.push_str(&format!(
+            "\n{name}\t{executable_name}\t{path_text}\t{bytes}\t{sha256}"
+        ));
+    }
+    let actual_aggregate = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    let expected_aggregate = validated_sha256(
+        contents
+            .get("aggregate_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "native PATH tool-resolution aggregate SHA-256",
+    )?;
+    if actual_aggregate != expected_aggregate {
+        return Err("native PATH tool-resolution aggregate mismatch".to_string());
+    }
+    Ok(actual_aggregate)
+}
+
+fn validate_compiled_resource_compiler_attestation(
+    compiled_value: Option<&str>,
+    expected_marker_value: &str,
+    expected_marker_value_sha256: &str,
+) -> Result<String, String> {
+    let expected_marker_value_sha256 = validated_sha256(
+        expected_marker_value_sha256,
+        "compiled resource-compiler marker SHA-256",
+    )?;
+    let reconstructed_sha256 = format!("{:x}", Sha256::digest(expected_marker_value.as_bytes()));
+    if reconstructed_sha256 != expected_marker_value_sha256 {
+        return Err(
+            "resource compiler invocation marker SHA-256 is internally inconsistent".to_string(),
+        );
+    }
+    let compiled_value = compiled_value.ok_or_else(|| {
+        "fresh soak binary omits the compiled resource-compiler attestation".to_string()
+    })?;
+    if compiled_value != expected_marker_value {
+        return Err(
+            "compiled resource-compiler attestation does not match the exact native invocation"
+                .to_string(),
+        );
+    }
+    let compiled_sha256 = format!("{:x}", Sha256::digest(compiled_value.as_bytes()));
+    if compiled_sha256 != expected_marker_value_sha256 {
+        return Err("compiled resource-compiler attestation SHA-256 mismatch".to_string());
+    }
+    Ok(compiled_sha256)
+}
+
+fn cargo_target_linker_environment_name(target_triple: &str) -> Result<String, String> {
+    if target_triple.is_empty()
+        || !target_triple
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("Cargo target triple cannot form a canonical linker environment name".into());
+    }
+    Ok(format!(
+        "CARGO_TARGET_{}_LINKER",
+        target_triple.replace('-', "_").to_ascii_uppercase()
+    ))
+}
+
 fn validate_native_build_provenance(
     native: &Value,
     config: &ValidatedConfig,
-) -> Result<(), String> {
-    if native.get("schema_version").and_then(Value::as_u64) != Some(1)
+    repo_root: &Path,
+    cargo_home: &Path,
+    toolchain: &Value,
+) -> Result<String, String> {
+    if native.get("schema_version").and_then(Value::as_u64) != Some(6)
         || native.get("kind").and_then(Value::as_str)
             != Some("vectorgrid_cpu_reliability_soak_native_build_provenance")
         || native.get("host_target_triple").and_then(Value::as_str)
             != Some(config.cargo_target_triple.as_str())
         || native.get("selection_policy").and_then(Value::as_str)
-            != Some("vswhere_latest_vc_tools_plus_latest_windows_sdk_with_native_overrides_cleared")
+            != Some(
+                "pinned_cmd_vcvarsall_plus_absolute_target_linker_plus_success_attested_rc_plus_locked_offline_build_chain",
+            )
         || native
-            .get("override_environment_cleared")
+            .get("ambient_override_environment_cleared")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || native
+            .get("pinned_environment_applied")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || native
+            .get("resource_compiler_execution_pinned")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || native
+            .get("resource_compiler_candidate_set_attested")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || native
+            .get("cargo_resolution_attested")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || native
+            .get("resource_compiler_success_attested")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || native
+            .get("resource_compiler_write_delete_lock_required")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || native
+            .get("target_linker_path_pinned")
             .and_then(Value::as_bool)
             != Some(true)
     {
         return Err("native build provenance identity/policy is invalid".to_string());
     }
+    let target_linker_environment_name =
+        cargo_target_linker_environment_name(&config.cargo_target_triple)?;
+    if native
+        .get("target_linker_environment_name")
+        .and_then(Value::as_str)
+        != Some(target_linker_environment_name.as_str())
+    {
+        return Err("native target-linker environment name is invalid".to_string());
+    }
 
+    let system_root = native
+        .get("system_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "native Windows system root is missing".to_string())?;
     let visual_studio_installation = native
         .get("visual_studio_installation")
         .and_then(Value::as_str)
@@ -1742,7 +3128,9 @@ fn validate_native_build_provenance(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "native Windows SDK version is missing".to_string())?;
+    let windows_sdk_version_key = parse_windows_sdk_version(windows_sdk_version)?;
     for (path, label) in [
+        (system_root, "Windows system root"),
         (visual_studio_installation, "Visual Studio installation"),
         (windows_sdk_root, "Windows SDK root"),
     ] {
@@ -1752,8 +3140,33 @@ fn validate_native_build_provenance(
             return Err(format!("native {label} is not a directory"));
         }
     }
+    let system_root_path = absolute_lexical_path(Path::new(system_root))?;
+    let visual_studio_path = absolute_lexical_path(Path::new(visual_studio_installation))?;
+    let windows_sdk_path = absolute_lexical_path(Path::new(windows_sdk_root))?;
+    let vc_bin_path = visual_studio_path
+        .join("VC")
+        .join("Tools")
+        .join("MSVC")
+        .join(vc_tools_version)
+        .join("bin")
+        .join("Hostx64")
+        .join("x64");
+    let sdk_bin_path = windows_sdk_path
+        .join("bin")
+        .join(windows_sdk_version)
+        .join("x64");
 
-    let expected_tool_names = ["cl", "lib", "link", "ml64", "mt", "rc", "vswhere"];
+    let expected_tool_names = [
+        "cl",
+        "cmd",
+        "lib",
+        "link",
+        "ml64",
+        "mt",
+        "rc",
+        "vcvarsall",
+        "vswhere",
+    ];
     let tools = native
         .get("tools")
         .and_then(Value::as_array)
@@ -1762,7 +3175,9 @@ fn validate_native_build_provenance(
         return Err("native build tool coverage is incomplete".to_string());
     }
     let mut tool_canonical = String::new();
-    let mut tool_parent_paths = Vec::new();
+    let mut attested_tools = BTreeMap::<String, (String, PathBuf, u64, String)>::new();
+    let mut command_processor_path_text: Option<String> = None;
+    let mut resource_compiler_tool: Option<(String, PathBuf, u64, String)> = None;
     for (index, (tool, expected_name)) in tools.iter().zip(expected_tool_names.iter()).enumerate() {
         let name = tool
             .get("name")
@@ -1777,6 +3192,32 @@ fn validate_native_build_provenance(
             .ok_or_else(|| format!("native build tool path is missing: {name}"))?;
         let path = absolute_lexical_path(Path::new(path_text))?;
         ensure_no_reparse_ancestors(&path, &format!("native build tool {name}"))?;
+        let expected_path = match name {
+            "cl" => Some(vc_bin_path.join("cl.exe")),
+            "cmd" => Some(system_root_path.join("System32").join("cmd.exe")),
+            "lib" => Some(vc_bin_path.join("lib.exe")),
+            "link" => Some(vc_bin_path.join("link.exe")),
+            "ml64" => Some(vc_bin_path.join("ml64.exe")),
+            "mt" => Some(sdk_bin_path.join("mt.exe")),
+            "rc" => Some(sdk_bin_path.join("rc.exe")),
+            "vcvarsall" => Some(
+                visual_studio_path
+                    .join("VC")
+                    .join("Auxiliary")
+                    .join("Build")
+                    .join("vcvarsall.bat"),
+            ),
+            "vswhere" => None,
+            _ => return Err(format!("unexpected native build tool: {name}")),
+        };
+        if expected_path
+            .as_ref()
+            .is_some_and(|expected| !paths_equal(&path, expected))
+        {
+            return Err(format!(
+                "native build tool escaped the selected Windows/VS/SDK path: {name}"
+            ));
+        }
         let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(format!(
@@ -1805,47 +3246,74 @@ fn validate_native_build_provenance(
         tool_canonical.push_str(&format!(
             "{name}\t{path_text}\t{expected_bytes}\t{expected_sha256}"
         ));
-        if matches!(name, "cl" | "rc") {
-            tool_parent_paths.push(
-                path.parent()
-                    .ok_or_else(|| format!("native build tool has no parent: {name}"))?
-                    .to_path_buf(),
-            );
+        if name == "rc" {
+            resource_compiler_tool = Some((
+                path_text.to_string(),
+                path.clone(),
+                expected_bytes,
+                expected_sha256.clone(),
+            ));
         }
+        if name == "cmd" {
+            command_processor_path_text = Some(path_text.to_string());
+        }
+        attested_tools.insert(
+            name.to_string(),
+            (path_text.to_string(), path, expected_bytes, expected_sha256),
+        );
     }
-    let path_prefixes = native
-        .get("path_prefix_directories")
+    let resource_compiler_tool = resource_compiler_tool
+        .ok_or_else(|| "native rc tool attestation is missing".to_string())?;
+    let command_processor_path_text = command_processor_path_text
+        .ok_or_else(|| "native cmd.exe attestation is missing".to_string())?;
+    if native
+        .get("vcvars_environment_selection_policy")
+        .and_then(Value::as_str)
+        != Some("all_changed_or_added_vcvars_names_plus_explicit_target_linker_and_rc_attestation")
+    {
+        return Err("native vcvars environment-selection policy is invalid".to_string());
+    }
+    let vcvars_environment_names = native
+        .get("vcvars_environment_names")
         .and_then(Value::as_array)
-        .ok_or_else(|| "native path-prefix directories are missing".to_string())?
+        .ok_or_else(|| "native vcvars environment-name set is missing".to_string())?
         .iter()
         .map(|value| {
             value
                 .as_str()
-                .ok_or_else(|| "native path-prefix entries must be strings".to_string())
-                .and_then(|value| absolute_lexical_path(Path::new(value)))
+                .ok_or_else(|| "native vcvars environment names must be strings".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if path_prefixes != tool_parent_paths {
-        return Err(
-            "native tool PATH prefix does not match the attested cl/rc locations".to_string(),
-        );
+    if vcvars_environment_names.is_empty()
+        || native
+            .get("vcvars_environment_name_count")
+            .and_then(Value::as_u64)
+            != Some(vcvars_environment_names.len() as u64)
+        || vcvars_environment_names
+            .windows(2)
+            .any(|window| window[0] >= window[1])
+        || vcvars_environment_names.iter().any(|name| {
+            matches!(
+                *name,
+                "COMSPEC" | "EMBED_RESOURCE_RC_PATH" | "EMBED_RESOURCE_RC_ATTESTATION_NONCE"
+            ) || *name == target_linker_environment_name.as_str()
+                || *name != name.to_ascii_uppercase()
+                || name
+                    .bytes()
+                    .any(|byte| matches!(byte, b'\t' | b'\r' | b'\n'))
+        })
+    {
+        return Err("native vcvars environment-name set is not canonical".to_string());
     }
-
-    let expected_environment_names = [
-        "PATH",
-        "INCLUDE",
-        "LIB",
-        "LIBPATH",
-        "VSINSTALLDIR",
-        "VCINSTALLDIR",
-        "VCToolsInstallDir",
-        "VCToolsVersion",
-        "VisualStudioVersion",
-        "WindowsSdkDir",
-        "WindowsSDKVersion",
-        "UniversalCRTSdkDir",
-        "UCRTVersion",
-    ];
+    let mut expected_environment_names = vcvars_environment_names.clone();
+    expected_environment_names.extend([
+        target_linker_environment_name.as_str(),
+        "COMSPEC",
+        "EMBED_RESOURCE_RC_ATTESTATION_NONCE",
+        "EMBED_RESOURCE_RC_PATH",
+    ]);
+    expected_environment_names.sort_unstable();
+    expected_environment_names.dedup();
     let environment = native
         .get("environment")
         .and_then(Value::as_array)
@@ -1854,6 +3322,39 @@ fn validate_native_build_provenance(
         return Err("native build environment coverage is incomplete".to_string());
     }
     let mut environment_canonical = String::new();
+    let mut environment_hashes = BTreeMap::<String, String>::new();
+    let required_environment_names = [
+        "PATH",
+        "COMSPEC",
+        "EMBED_RESOURCE_RC_ATTESTATION_NONCE",
+        "EMBED_RESOURCE_RC_PATH",
+        "EXTERNAL_INCLUDE",
+        "FRAMEWORK40VERSION",
+        "__DOTNET_ADD_64BIT",
+        "__DOTNET_PREFERRED_BITNESS",
+        "INCLUDE",
+        "LIB",
+        "LIBPATH",
+        "VSINSTALLDIR",
+        "VCINSTALLDIR",
+        "VCTOOLSINSTALLDIR",
+        "VCTOOLSVERSION",
+        "WINDOWSSDKDIR",
+        "WINDOWSSDKVERSION",
+        "UNIVERSALCRTSDKDIR",
+        "UCRTVERSION",
+        "VSCMD_ARG_HOST_ARCH",
+        "VSCMD_ARG_TGT_ARCH",
+        "VSCMD_ARG_VCVARS_VER",
+        "VSCMD_ARG_WINSDK",
+    ];
+    for required in required_environment_names {
+        if !expected_environment_names.contains(&required) {
+            return Err(format!(
+                "required pinned native environment name is missing: {required}"
+            ));
+        }
+    }
     for (index, (row, expected_name)) in environment
         .iter()
         .zip(expected_environment_names.iter())
@@ -1866,28 +3367,27 @@ fn validate_native_build_provenance(
         if name != *expected_name {
             return Err("native build environment names are not canonical".to_string());
         }
-        let current = std::env::var(name).ok();
         let expected_present = row
             .get("present")
             .and_then(Value::as_bool)
             .ok_or_else(|| format!("native build environment presence is missing: {name}"))?;
-        if current.is_some() != expected_present {
-            return Err(format!("native build environment presence changed: {name}"));
+        if !expected_present {
+            return Err(format!(
+                "selected pinned native build environment entry is absent: {name}"
+            ));
         }
-        let current_sha256 = current
-            .as_ref()
-            .map(|value| format!("{:x}", Sha256::digest(value.as_bytes())));
         let expected_sha256 = row.get("value_sha256").and_then(Value::as_str);
-        if current_sha256.as_deref() != expected_sha256 {
-            return Err(format!("native build environment changed: {name}"));
-        }
+        let expected_sha256 = validated_sha256(
+            expected_sha256.unwrap_or_default(),
+            &format!("native build environment SHA-256 for {name}"),
+        )?;
+        environment_hashes.insert(name.to_string(), expected_sha256.clone());
         if index > 0 {
             environment_canonical.push('\n');
         }
         environment_canonical.push_str(&format!(
             "{name}\t{}\t{}",
-            expected_present,
-            expected_sha256.unwrap_or_default()
+            expected_present, expected_sha256
         ));
     }
     let expected_environment_aggregate = validated_sha256(
@@ -1902,16 +3402,341 @@ fn validate_native_build_provenance(
     if actual_environment_aggregate != expected_environment_aggregate {
         return Err("native build environment aggregate mismatch".to_string());
     }
-    let aggregate_canonical = format!(
-        "host_target_triple\t{}\nvisual_studio_installation\t{}\nvc_tools_version\t{}\nwindows_sdk_root\t{}\nwindows_sdk_version\t{}\ntools\t{}\nenvironment\t{}",
+    let expected_comspec_hash = format!(
+        "{:x}",
+        Sha256::digest(command_processor_path_text.as_bytes())
+    );
+    if environment_hashes.get("COMSPEC").map(String::as_str) != Some(expected_comspec_hash.as_str())
+    {
+        return Err("pinned COMSPEC does not match attested system cmd.exe".to_string());
+    }
+    let target_linker = attested_tools
+        .get("link")
+        .ok_or_else(|| "attested native target linker is missing".to_string())?;
+    let expected_target_linker_hash = format!("{:x}", Sha256::digest(target_linker.0.as_bytes()));
+    if environment_hashes
+        .get(&target_linker_environment_name)
+        .map(String::as_str)
+        != Some(expected_target_linker_hash.as_str())
+    {
+        return Err(
+            "absolute Cargo target-linker environment does not match attested link.exe".to_string(),
+        );
+    }
+    let path_tool_resolution_aggregate = validate_path_tool_resolution(
+        native
+            .get("path_tool_resolution")
+            .ok_or_else(|| "native PATH tool-resolution evidence is missing".to_string())?,
+        &environment_hashes,
+        &attested_tools,
+    )?;
+
+    let candidates = native
+        .get("resource_compiler_candidates")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "native resource compiler candidates must be an array".to_string())?;
+    if candidates.is_empty() {
+        return Err("native resource compiler candidate coverage is empty".to_string());
+    }
+    let enumerated_candidates = enumerate_resource_compiler_candidates(&windows_sdk_path)?;
+    if candidates.len() != enumerated_candidates.len() {
+        return Err(
+            "native resource compiler candidate evidence omits an installed SDK candidate"
+                .to_string(),
+        );
+    }
+    let mut candidate_canonical = String::new();
+    let mut prior_version: Option<[i32; 4]> = None;
+    let mut selected_resource_compiler: Option<(String, PathBuf, u64, String)> = None;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let version = candidate
+            .get("version")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "native resource compiler version is missing".to_string())?;
+        let version_key = parse_windows_sdk_version(version)?;
+        if prior_version.is_some_and(|prior| prior >= version_key) {
+            return Err("native resource compiler candidates must be strictly sorted".to_string());
+        }
+        prior_version = Some(version_key);
+        let path_text = candidate
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("resource compiler candidate path is missing: {version}"))?;
+        let path = absolute_lexical_path(Path::new(path_text))?;
+        if enumerated_candidates
+            .get(index)
+            .is_none_or(|(actual_version, actual_path)| {
+                actual_version != version || !paths_equal(actual_path, &path)
+            })
+        {
+            return Err(
+                "native resource compiler candidate set differs from SDK enumeration".to_string(),
+            );
+        }
+        ensure_no_reparse_ancestors(&path, "native resource compiler candidate")?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata_is_reparse(&metadata) {
+            return Err(format!(
+                "native resource compiler candidate must be an ordinary file: {version}"
+            ));
+        }
+        let expected_bytes = candidate
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                format!("native resource compiler candidate byte count is missing: {version}")
+            })?;
+        if metadata.len() != expected_bytes {
+            return Err(format!(
+                "native resource compiler candidate byte count changed: {version}"
+            ));
+        }
+        let expected_sha256 = validated_sha256(
+            candidate
+                .get("sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            &format!("native resource compiler candidate SHA-256 for {version}"),
+        )?;
+        if sha256_file(&path)? != expected_sha256 {
+            return Err(format!(
+                "native resource compiler candidate SHA-256 changed: {version}"
+            ));
+        }
+        if version == windows_sdk_version {
+            if version_key != windows_sdk_version_key || selected_resource_compiler.is_some() {
+                return Err(
+                    "selected Windows SDK resource compiler candidate is ambiguous".to_string(),
+                );
+            }
+            selected_resource_compiler = Some((
+                path_text.to_string(),
+                path,
+                expected_bytes,
+                expected_sha256.clone(),
+            ));
+        }
+        if index > 0 {
+            candidate_canonical.push('\n');
+        }
+        candidate_canonical.push_str(&format!(
+            "{version}\t{path_text}\t{expected_bytes}\t{expected_sha256}"
+        ));
+    }
+    let selected_resource_compiler = selected_resource_compiler.ok_or_else(|| {
+        "selected Windows SDK resource compiler is missing from the candidate set".to_string()
+    })?;
+    let execution = native
+        .get("resource_compiler_execution")
+        .ok_or_else(|| "native resource compiler execution attestation is missing".to_string())?;
+    if execution.get("environment_name").and_then(Value::as_str) != Some("EMBED_RESOURCE_RC_PATH") {
+        return Err("native resource compiler override environment is invalid".to_string());
+    }
+    let execution_path_text = execution
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "native resource compiler execution path is missing".to_string())?;
+    let execution_path = absolute_lexical_path(Path::new(execution_path_text))?;
+    ensure_no_reparse_ancestors(&execution_path, "native resource compiler execution")?;
+    let execution_bytes = execution
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "native resource compiler execution byte count is missing".to_string())?;
+    let execution_sha256 = validated_sha256(
+        execution
+            .get("sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "native resource compiler execution SHA-256",
+    )?;
+    let expected_execution_path = absolute_lexical_path(
+        &Path::new(windows_sdk_root)
+            .join("bin")
+            .join(windows_sdk_version)
+            .join("x64")
+            .join("rc.exe"),
+    )?;
+    if !paths_equal(&execution_path, &expected_execution_path)
+        || !paths_equal(&execution_path, &resource_compiler_tool.1)
+        || !paths_equal(&execution_path, &selected_resource_compiler.1)
+        || execution_path_text != resource_compiler_tool.0
+        || execution_path_text != selected_resource_compiler.0
+        || execution_bytes != resource_compiler_tool.2
+        || execution_bytes != selected_resource_compiler.2
+        || execution_sha256 != resource_compiler_tool.3
+        || execution_sha256 != selected_resource_compiler.3
+    {
+        return Err(
+            "native resource compiler execution does not match the exact selected rc.exe"
+                .to_string(),
+        );
+    }
+    let expected_override_hash = format!("{:x}", Sha256::digest(execution_path_text.as_bytes()));
+    if environment_hashes
+        .get("EMBED_RESOURCE_RC_PATH")
+        .map(String::as_str)
+        != Some(expected_override_hash.as_str())
+    {
+        return Err(
+            "native resource compiler override environment hash does not match its exact path"
+                .to_string(),
+        );
+    }
+    let resource_compiler_execution_canonical = format!(
+        "EMBED_RESOURCE_RC_PATH\t{execution_path_text}\t{execution_bytes}\t{execution_sha256}"
+    );
+    let attestation_nonce = native
+        .get("resource_compiler_attestation_nonce")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            value.len() == 32
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| "resource compiler attestation nonce is invalid".to_string())?;
+    let expected_nonce_hash = format!("{:x}", Sha256::digest(attestation_nonce.as_bytes()));
+    if environment_hashes
+        .get("EMBED_RESOURCE_RC_ATTESTATION_NONCE")
+        .map(String::as_str)
+        != Some(expected_nonce_hash.as_str())
+    {
+        return Err(
+            "resource compiler attestation nonce does not match the pinned environment".to_string(),
+        );
+    }
+    let cargo_resolution = native
+        .get("cargo_resolution")
+        .ok_or_else(|| "Cargo build-chain provenance is missing".to_string())?;
+    let cargo_resolution_aggregate = validate_embed_resource_cargo_resolution(
+        cargo_resolution,
+        repo_root,
+        cargo_home,
+        &config.cargo_target_triple,
+        toolchain,
+    )?;
+    let root_package_id = cargo_resolution
+        .pointer("/root_package/package_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Cargo build-chain root package ID is missing".to_string())?;
+    let native_input_aggregate = validate_native_input_manifest(
+        native
+            .get("native_inputs")
+            .ok_or_else(|| "native input manifest is missing".to_string())?,
+        &visual_studio_path,
+        vc_tools_version,
+        &windows_sdk_path,
+        &environment_hashes,
+    )?;
+    let vcvars_environment_canonical = vcvars_environment_names.join("\t");
+    let pre_execution_canonical = format!(
+        "host_target_triple\t{}\nsystem_root\t{}\nvisual_studio_installation\t{}\nvc_tools_version\t{}\nwindows_sdk_root\t{}\nwindows_sdk_version\t{}\ntools\t{}\npath_tool_resolution\t{}\nresource_compiler_execution\t{}\nresource_compiler_candidates\t{}\ncargo_resolution\t{}\nnative_inputs\t{}\nvcvars_environment_names\t{}\nenvironment\t{}",
         config.cargo_target_triple,
+        system_root,
         visual_studio_installation,
         vc_tools_version,
         windows_sdk_root,
         windows_sdk_version,
         tool_canonical,
+        path_tool_resolution_aggregate,
+        resource_compiler_execution_canonical,
+        candidate_canonical,
+        cargo_resolution_aggregate,
+        native_input_aggregate,
+        vcvars_environment_canonical,
         environment_canonical
     );
+    let actual_pre_execution_aggregate =
+        format!("{:x}", Sha256::digest(pre_execution_canonical.as_bytes()));
+    let expected_pre_execution_aggregate = validated_sha256(
+        native
+            .get("pre_execution_aggregate_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "native pre-execution aggregate SHA-256",
+    )?;
+    if actual_pre_execution_aggregate != expected_pre_execution_aggregate {
+        return Err("native pre-execution aggregate mismatch".to_string());
+    }
+
+    let invocation = native
+        .get("resource_compiler_invocation")
+        .ok_or_else(|| "resource compiler success invocation is missing".to_string())?;
+    let invocation_out_dir_text = invocation
+        .get("build_script_out_dir")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "resource compiler build-script output directory is missing".to_string())?;
+    let invocation_out_dir = absolute_lexical_path(Path::new(invocation_out_dir_text))?;
+    ensure_no_reparse_ancestors(
+        &invocation_out_dir,
+        "resource compiler build-script output directory",
+    )?;
+    if !invocation_out_dir.is_dir()
+        || !path_starts_with(&invocation_out_dir, &config.cargo_target_dir)
+    {
+        return Err(
+            "resource compiler build-script output escaped the attested Cargo target".to_string(),
+        );
+    }
+    let marker_value = format!("{attestation_nonce}|{execution_path_text}");
+    let marker_value_sha256 = format!("{:x}", Sha256::digest(marker_value.as_bytes()));
+    if invocation.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || invocation.get("kind").and_then(Value::as_str)
+            != Some("vectorgrid_cpu_reliability_soak_resource_compiler_invocation")
+        || invocation
+            .get("build_script_event_match_count")
+            .and_then(Value::as_u64)
+            != Some(1)
+        || invocation.get("marker_match_count").and_then(Value::as_u64) != Some(1)
+        || invocation.get("package_id").and_then(Value::as_str) != Some(root_package_id)
+        || invocation.get("package_name").and_then(Value::as_str) != Some("ta_desktop_demo_app")
+        || invocation.get("target_triple").and_then(Value::as_str)
+            != Some(config.cargo_target_triple.as_str())
+        || invocation.get("environment_name").and_then(Value::as_str)
+            != Some("VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION")
+        || invocation.get("nonce").and_then(Value::as_str) != Some(attestation_nonce)
+        || invocation
+            .get("resource_compiler_path")
+            .and_then(Value::as_str)
+            != Some(execution_path_text)
+        || invocation
+            .get("resource_compiler_bytes")
+            .and_then(Value::as_u64)
+            != Some(execution_bytes)
+        || invocation
+            .get("resource_compiler_sha256")
+            .and_then(Value::as_str)
+            != Some(execution_sha256.as_str())
+        || invocation
+            .get("marker_value_sha256")
+            .and_then(Value::as_str)
+            != Some(marker_value_sha256.as_str())
+        || invocation
+            .get("file_lock_held_during_build")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || invocation
+            .get("file_lock_share_mode")
+            .and_then(Value::as_str)
+            != Some("read_access_share_read_only_denies_write_delete")
+    {
+        return Err(
+            "resource compiler success invocation does not match the exact app build".to_string(),
+        );
+    }
+    let compiled_resource_compiler_attestation_sha256 =
+        validate_compiled_resource_compiler_attestation(
+            COMPILED_RESOURCE_COMPILER_ATTESTATION,
+            &marker_value,
+            &marker_value_sha256,
+        )?;
+    let invocation_canonical = format!(
+        "{root_package_id}\tta_desktop_demo_app\t{}\t{invocation_out_dir_text}\tVECTORGRID_EMBED_RESOURCE_RC_ATTESTATION\t{attestation_nonce}\t{execution_path_text}\t{execution_bytes}\t{execution_sha256}\t{marker_value_sha256}\tread_access_share_read_only_denies_write_delete",
+        config.cargo_target_triple
+    );
+    let aggregate_canonical =
+        format!("{pre_execution_canonical}\nresource_compiler_invocation\t{invocation_canonical}");
     let expected_aggregate = validated_sha256(
         native
             .get("aggregate_sha256")
@@ -1923,14 +3748,14 @@ fn validate_native_build_provenance(
     if actual_aggregate != expected_aggregate {
         return Err("native build provenance aggregate mismatch".to_string());
     }
-    Ok(())
+    Ok(compiled_resource_compiler_attestation_sha256)
 }
 
 fn validate_launcher_manifest(
     contents: &Value,
     source_manifest: &Value,
     config: &ValidatedConfig,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     if contents.get("schema_version").and_then(Value::as_u64) != Some(1)
         || contents.get("kind").and_then(Value::as_str)
             != Some("vectorgrid_cpu_reliability_soak_launcher_manifest")
@@ -1954,12 +3779,12 @@ fn validate_launcher_manifest(
         || build
             .get("cargo_target_dir")
             .and_then(Value::as_str)
-            .map(|value| Path::new(value))
+            .map(Path::new)
             != Some(config.cargo_target_dir.as_path())
         || build
             .get("cargo_artifact_path")
             .and_then(Value::as_str)
-            .map(|value| Path::new(value))
+            .map(Path::new)
             != Some(config.cargo_artifact_path.as_path())
         || build
             .get("cargo_target_dir_cli_pinned")
@@ -1993,6 +3818,10 @@ fn validate_launcher_manifest(
             != Some(config.fresh_build)
         || build
             .get("compiler_path_pinned_during_build")
+            .and_then(Value::as_bool)
+            != Some(config.fresh_build)
+        || build
+            .get("target_linker_path_pinned_during_build")
             .and_then(Value::as_bool)
             != Some(config.fresh_build)
         || build
@@ -2119,10 +3948,7 @@ fn validate_launcher_manifest(
         .get("binary")
         .ok_or_else(|| "launcher manifest binary section is missing".to_string())?;
     if binary.get("sha256").and_then(Value::as_str) != Some(config.binary_sha256.as_str())
-        || binary
-            .get("path")
-            .and_then(Value::as_str)
-            .map(|value| Path::new(value))
+        || binary.get("path").and_then(Value::as_str).map(Path::new)
             != Some(config.cargo_artifact_path.as_path())
     {
         return Err("launcher manifest binary SHA-256 is inconsistent".to_string());
@@ -2150,10 +3976,7 @@ fn validate_launcher_manifest(
         .get("source_manifest")
         .ok_or_else(|| "launcher source manifest section is missing".to_string())?;
     if source.get("sha256").and_then(Value::as_str) != Some(config.source_manifest_sha256.as_str())
-        || source
-            .get("path")
-            .and_then(Value::as_str)
-            .map(|value| Path::new(value))
+        || source.get("path").and_then(Value::as_str).map(Path::new)
             != Some(config.source_manifest.as_path())
         || source.get("aggregate_sha256").and_then(Value::as_str)
             != source_manifest
@@ -2164,11 +3987,28 @@ fn validate_launcher_manifest(
     {
         return Err("launcher source-manifest provenance is inconsistent".to_string());
     }
-    validate_cargo_configuration_provenance(
-        contents
-            .get("cargo_configuration")
-            .ok_or_else(|| "launcher Cargo configuration section is missing".to_string())?,
-    )?;
+    let cargo_configuration = contents
+        .get("cargo_configuration")
+        .ok_or_else(|| "launcher Cargo configuration section is missing".to_string())?;
+    validate_cargo_configuration_provenance(cargo_configuration)?;
+    let repo_root = cargo_configuration
+        .get("repo_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "launcher Cargo configuration omits repo_root".to_string())?;
+    let repo_root = absolute_lexical_path(Path::new(repo_root))?;
+    ensure_no_reparse_ancestors(&repo_root, "launcher repository root")?;
+    if !repo_root.is_dir() {
+        return Err("launcher repository root is not a directory".to_string());
+    }
+    let cargo_home = cargo_configuration
+        .get("cargo_home")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "launcher Cargo configuration omits cargo_home".to_string())?;
+    let cargo_home = absolute_lexical_path(Path::new(cargo_home))?;
+    ensure_no_reparse_ancestors(&cargo_home, "launcher Cargo home")?;
+    if !cargo_home.is_dir() {
+        return Err("launcher Cargo home is not a directory".to_string());
+    }
     let toolchain = contents
         .get("toolchain")
         .ok_or_else(|| "launcher toolchain section is missing".to_string())?;
@@ -2274,20 +4114,25 @@ fn validate_launcher_manifest(
         &rustc_sysroot,
         &config.cargo_target_triple,
     )?;
-    if config.fresh_build {
-        validate_native_build_provenance(
+    let compiled_resource_compiler_attestation_sha256 = if config.fresh_build {
+        Some(validate_native_build_provenance(
             contents
                 .get("native_build")
                 .ok_or_else(|| "launcher native build provenance is missing".to_string())?,
             config,
-        )?;
+            &repo_root,
+            &cargo_home,
+            toolchain,
+        )?)
     } else if contents
         .get("native_build")
         .is_some_and(|value| !value.is_null())
     {
         return Err("prebuilt launcher must not claim fresh native build provenance".to_string());
-    }
-    Ok(())
+    } else {
+        None
+    };
+    Ok(compiled_resource_compiler_attestation_sha256)
 }
 
 fn load_execution_provenance(
@@ -2366,13 +4211,16 @@ fn load_execution_provenance(
         fs::read(&config.launcher_manifest).map_err(|error| error.to_string())?;
     let launcher_manifest: Value =
         serde_json::from_slice(&launcher_manifest_bytes).map_err(|error| error.to_string())?;
-    validate_launcher_manifest(&launcher_manifest, &source_manifest, config)?;
+    let compiled_resource_compiler_attestation_sha256 =
+        validate_launcher_manifest(&launcher_manifest, &source_manifest, config)?;
     let retained_binary_path = launcher_manifest
         .pointer("/binary/retained_path")
         .and_then(Value::as_str)
         .ok_or_else(|| "launcher retained binary path is missing".to_string())?;
     let retained_binary_path = absolute_lexical_path(Path::new(retained_binary_path))?;
     let retained_binary_sha256 = sha256_file(&retained_binary_path)?;
+    let compiled_resource_compiler_attestation_matched =
+        compiled_resource_compiler_attestation_sha256.is_some();
 
     Ok(json!({
         "cargo_target_dir": config.cargo_target_dir,
@@ -2385,7 +4233,7 @@ fn load_execution_provenance(
         "fresh_build": config.fresh_build,
         "binary": {
             "path": retained_binary_path,
-            "execution_path": executable,
+            "execution_path": config.cargo_artifact_path,
             "sha256": actual_binary_sha256,
             "expected_sha256": config.binary_sha256,
             "matched_expected": true,
@@ -2405,6 +4253,14 @@ fn load_execution_provenance(
             "expected_sha256": config.launcher_manifest_sha256,
             "matched_expected": true,
             "contents": launcher_manifest,
+        },
+        "compiled_resource_compiler_attestation": {
+            "environment_name": "VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION",
+            "required": config.fresh_build,
+            "present": COMPILED_RESOURCE_COMPILER_ATTESTATION.is_some(),
+            "value_sha256": compiled_resource_compiler_attestation_sha256,
+            "matched_native_invocation":
+                compiled_resource_compiler_attestation_matched,
         },
         "benchmark_lock": {
             "inherited": std::env::var("TA_DESKTOP_DEMO_BENCHMARK_LOCK_HELD").ok().as_deref() == Some("1"),
@@ -2512,6 +4368,7 @@ fn compiler_override_environment_is_clear() -> bool {
         "CARGO_ENCODED_RUSTFLAGS",
         "RUSTUP_TOOLCHAIN",
         "RUSTC_BOOTSTRAP",
+        "RUSTC_STAGE",
     ];
     NAMES.iter().all(|name| {
         std::env::var(name)
@@ -2538,6 +4395,10 @@ fn native_build_override_environment_is_clear() -> bool {
         "NASM",
         "WINDRES",
         "RC",
+        "COMSPEC",
+        "EMBED_RESOURCE_RC_PATH",
+        "EMBED_RESOURCE_RC_ATTESTATION_NONCE",
+        "VECTORGRID_EMBED_RESOURCE_RC_ATTESTATION",
         "CFLAGS",
         "CXXFLAGS",
         "CPPFLAGS",
@@ -2550,27 +4411,93 @@ fn native_build_override_environment_is_clear() -> bool {
         "_LINK_",
         "CRATE_CC_NO_DEFAULTS",
         "CC_ENABLE_DEBUG_OUTPUT",
+        "LIBSQLITE3_SYS_USE_PKG_CONFIG",
+        "LIBSQLITE3_FLAGS",
+        "SQLITE_MAX_VARIABLE_NUMBER",
+        "SQLITE_MAX_EXPR_DEPTH",
+        "SQLITE_MAX_COLUMN",
+        "ZSTD_SYS_USE_PKG_CONFIG",
+        "RING_PREGENERATE_ASM",
+        "PERL_EXECUTABLE",
+        "ICU4X_DATA_DIR",
+        "REMOVE_UNUSED_COMMANDS",
+        "__TAURI_WORKSPACE__",
+        "RUSTC_STAGE",
+        "LZMA_API_STATIC",
+        "STATIC_VCRUNTIME",
+        "CXXSTDLIB",
+        "RANLIBFLAGS",
+        "PKG_CONFIG",
+        "NO_VCPKG",
+        "VSTEL_MSBUILDPROJECTFULLPATH",
+        "VSCMD_ARG_HOST_ARCH",
+        "VSCMD_ARG_TGT_ARCH",
+        "VSCMD_ARG_APP_PLAT",
+        "VSCMD_ARG_VCVARS_VER",
+        "VSCMD_ARG_WINSDK",
+        "VSCMD_ARG_VCVARS_SPECTRE",
+        "VSCMD_VER",
+        "VSCMD_DEBUG",
+        "VSCMD_SKIP_SENDTELEMETRY",
+        "VSCMD_START_DIR",
+        "COMMANDPROMPTTYPE",
+        "PLATFORM",
+        "PREFERREDTOOLARCHITECTURE",
+        "__VSCMD_PREINIT_PATH",
+        "WINDOWSLIBPATH",
+        "NETFXSDKDIR",
         "INCLUDE",
+        "EXTERNAL_INCLUDE",
+        "IFCPATH",
         "LIB",
         "LIBPATH",
         "VSINSTALLDIR",
         "VCINSTALLDIR",
         "VCTOOLSINSTALLDIR",
         "VCTOOLSVERSION",
+        "VCTOOLSREDISTDIR",
+        "VCIDEINSTALLDIR",
+        "VS170COMNTOOLS",
         "VISUALSTUDIOVERSION",
         "WINDOWSSDKDIR",
         "WINDOWSSDKVERSION",
+        "WINDOWSSDK_EXECUTABLEPATH_X64",
+        "WINDOWSSDK_EXECUTABLEPATH_X86",
+        "WINDOWSSDKBINPATH",
+        "WINDOWSSDKLIBVERSION",
+        "WINDOWSSDKVERBINPATH",
         "UNIVERSALCRTSDKDIR",
         "UCRTVERSION",
         "DEVENVDIR",
         "EXTENSIONSDKDIR",
         "FRAMEWORKDIR",
+        "FRAMEWORKDIR64",
         "FRAMEWORKVERSION",
         "FRAMEWORKVERSION64",
+        "FRAMEWORK40VERSION",
+        "__DOTNET_ADD_64BIT",
+        "__DOTNET_PREFERRED_BITNESS",
     ];
     const TOOL_TOKENS: &[&str] = &[
-        "CC", "CXX", "CPP", "AR", "RANLIB", "LD", "LINKER", "ASM", "NASM", "WINDRES", "RC",
-        "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "ARFLAGS", "ASMFLAGS",
+        "CC",
+        "CXX",
+        "CPP",
+        "AR",
+        "RANLIB",
+        "LD",
+        "LINKER",
+        "ASM",
+        "NASM",
+        "WINDRES",
+        "RC",
+        "CFLAGS",
+        "CXXFLAGS",
+        "CPPFLAGS",
+        "LDFLAGS",
+        "ARFLAGS",
+        "ASMFLAGS",
+        "CXXSTDLIB",
+        "RANLIBFLAGS",
     ];
     std::env::vars().all(|(name, value)| {
         if value.trim().is_empty() {
@@ -2580,9 +4507,48 @@ fn native_build_override_environment_is_clear() -> bool {
         if FIXED_NAMES.contains(&upper.as_str()) {
             return false;
         }
-        !TOOL_TOKENS.iter().any(|token| {
-            upper.starts_with(&format!("{token}_")) || upper.ends_with(&format!("_{token}"))
-        })
+        let dependency_override = upper.starts_with("VSCMD_ARG_")
+            || upper.starts_with("__VSCMD")
+            || upper.starts_with("_VSCMD")
+            || upper.starts_with("VSCMD")
+            || upper.starts_with("VC_")
+            || upper.starts_with("_VC_")
+            || upper.starts_with("VCLIB_")
+            || upper.starts_with("__DOTNET_")
+            || upper.starts_with("__VCVARS")
+            || upper.starts_with("VCVARS_")
+            || upper.starts_with("VCINSTALL")
+            || upper.starts_with("VCIDE")
+            || upper.starts_with("VCTOOLS")
+            || upper.starts_with("VISUALSTUDIO")
+            || (upper.starts_with("VS") && upper.ends_with("COMNTOOLS"))
+            || upper.starts_with("WINDOWSSDK")
+            || upper.starts_with("WINDOWS_SDK")
+            || upper.starts_with("UNIVERSALCRT")
+            || upper.starts_with("UCRT")
+            || upper.starts_with("FRAMEWORKDIR")
+            || upper.starts_with("FRAMEWORKVERSION")
+            || upper.starts_with("NETFXSDK")
+            || upper.starts_with("EXTENSIONSDK")
+            || upper.starts_with("DEVENV")
+            || upper.ends_with("_NO_VCPKG")
+            || [
+                "PKG_CONFIG_",
+                "VCPKG_",
+                "VCPKGRS_",
+                "OPENSSL_",
+                "SQLITE3_",
+                "LIBSQLITE3_",
+                "ZSTD_",
+                "RING_",
+                "PERL_",
+            ]
+            .iter()
+            .any(|prefix| upper.starts_with(prefix));
+        !dependency_override
+            && !TOOL_TOKENS.iter().any(|token| {
+                upper.starts_with(&format!("{token}_")) || upper.ends_with(&format!("_{token}"))
+            })
     })
 }
 
@@ -3020,6 +4986,7 @@ fn sample_process(cycle: usize, stage: &str, elapsed_ms: u64) -> Result<ProcessS
     })
 }
 
+#[cfg(test)]
 fn linear_regression_slope(points: &[(f64, f64)]) -> Option<f64> {
     if points.len() < 2 {
         return None;
@@ -3036,6 +5003,7 @@ fn linear_regression_slope(points: &[(f64, f64)]) -> Option<f64> {
     Some((n * sum_xy - sum_x * sum_y) / denominator)
 }
 
+#[cfg(test)]
 fn assess_metric(
     samples: &[(f64, f64)],
     max_growth: f64,
@@ -3179,6 +5147,16 @@ fn main() -> Result<(), String> {
     let benchmark_mutex_contention_verified = verify_inherited_benchmark_mutex_contention()?;
     let _benchmark_guard = benchmark_lock::acquire("CPU reliability soak")?;
     let provenance = load_execution_provenance(&config, benchmark_mutex_contention_verified)?;
+    let compiled_resource_compiler_attestation_matched = provenance
+        .pointer("/compiled_resource_compiler_attestation/matched_native_invocation")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "compiled resource-compiler attestation evidence is missing".to_string())?;
+    if compiled_resource_compiler_attestation_matched != config.fresh_build {
+        return Err(
+            "compiled resource-compiler attestation requirement does not match build mode"
+                .to_string(),
+        );
+    }
     if !credential_environment_is_clear() {
         return Err("provider/broker credential environment must be cleared".to_string());
     }
@@ -3425,7 +5403,6 @@ fn main() -> Result<(), String> {
                 (false, false)
             }
         };
-    drop(app_state);
     drop(app_handle);
     drop(app);
     let cleanup_result = isolation.cleanup();
@@ -3577,6 +5554,9 @@ fn main() -> Result<(), String> {
             "compiler_override_environment_cleared": true,
             "native_build_override_environment_cleared": true,
             "native_build_environment_attested": config.fresh_build,
+            "target_linker_path_pinned_during_build": config.fresh_build,
+            "compiled_resource_compiler_attestation_matched":
+                compiled_resource_compiler_attestation_matched,
             "build_environment_attested": true,
             "tauri_config_environment_cleared": true,
             "tauri_target_environment_cleared": true,
@@ -3683,14 +5663,19 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assess_metric, cleanup_owned_isolation_root, linear_regression_slope,
-        monitoring_assessment, validate_source_manifest, Cli, IsolationGuard, LeakThresholds,
-        MonitoringTracker, OwnedStorageStats, OwnedStorageTracker, ProcessSample, SampleWindow,
-        ValidatedConfig, ISOLATION_PREFIX, MIN_RELIABILITY_ROWS,
+        assess_metric, cargo_target_linker_environment_name, cleanup_owned_isolation_root,
+        collect_ordinary_tree_files, enumerate_resource_compiler_candidates,
+        expected_path_package_id, linear_regression_slope, monitoring_assessment,
+        native_input_absolute_path, parse_windows_sdk_version, paths_equal,
+        resolve_recorded_path_executable, validate_compiled_resource_compiler_attestation,
+        validate_embed_resource_cargo_resolution, validate_source_manifest, Cli, IsolationGuard,
+        LeakThresholds, MonitoringTracker, OwnedStorageStats, OwnedStorageTracker, ProcessSample,
+        SampleWindow, ValidatedConfig, ISOLATION_PREFIX, MIN_RELIABILITY_ROWS,
     };
     use clap::Parser;
-    use serde_json::json;
-    use std::path::PathBuf;
+    use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+    use std::path::{Path, PathBuf};
 
     fn temp_owned_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -3701,6 +5686,121 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn compiled_resource_compiler_attestation_requires_the_exact_marker() {
+        let expected = "0123456789abcdef0123456789abcdef|C:\\Windows Kits\\rc.exe";
+        let expected_sha256 = format!("{:x}", Sha256::digest(expected.as_bytes()));
+        assert_eq!(
+            validate_compiled_resource_compiler_attestation(
+                Some(expected),
+                expected,
+                &expected_sha256,
+            )
+            .expect("exact compiled marker"),
+            expected_sha256
+        );
+        assert!(
+            validate_compiled_resource_compiler_attestation(None, expected, &expected_sha256)
+                .expect_err("missing compiled marker must fail")
+                .contains("omits")
+        );
+        assert!(validate_compiled_resource_compiler_attestation(
+            Some("wrong|C:\\Windows Kits\\rc.exe"),
+            expected,
+            &expected_sha256,
+        )
+        .expect_err("mismatched compiled marker must fail")
+        .contains("does not match"));
+    }
+
+    #[test]
+    fn cargo_target_linker_environment_name_is_canonical() {
+        assert_eq!(
+            cargo_target_linker_environment_name("x86_64-pc-windows-msvc")
+                .expect("canonical target linker name"),
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
+        );
+        assert!(cargo_target_linker_environment_name("bad/target").is_err());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_input_path_reconstructs_manifest_separators_as_native_separators() {
+        let root = temp_owned_root("native-input-separators");
+        let nested = root.join("CppCoreCheck");
+        std::fs::create_dir_all(&nested).expect("native input directory");
+        std::fs::write(nested.join("warnings.h"), b"fixture").expect("native input fixture");
+
+        let files = collect_ordinary_tree_files(&root).expect("collect native input tree");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "CppCoreCheck/warnings.h");
+        let reconstructed =
+            native_input_absolute_path(&root, Path::new(&files[0].0)).expect("reconstruct path");
+        assert!(paths_equal(&reconstructed, &files[0].1));
+
+        std::fs::remove_dir_all(root).expect("remove native input fixture");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn recorded_path_resolution_uses_the_first_existing_executable() {
+        let root = temp_owned_root("path-resolution");
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).expect("first PATH directory");
+        std::fs::create_dir_all(&second).expect("second PATH directory");
+        std::fs::write(second.join("cl.exe"), b"second").expect("second cl fixture");
+        let path_value = format!("{};{}", first.display(), second.display());
+        assert_eq!(
+            resolve_recorded_path_executable(&path_value, "cl.exe")
+                .expect("second directory resolves"),
+            second.join("cl.exe")
+        );
+        std::fs::write(first.join("cl.exe"), b"first").expect("first cl fixture");
+        assert_eq!(
+            resolve_recorded_path_executable(&path_value, "cl.exe").expect("first directory wins"),
+            first.join("cl.exe")
+        );
+        std::fs::remove_dir_all(&root).expect("remove PATH fixture");
+    }
+
+    fn registry_tree_fixture(
+        root: &Path,
+        label: &str,
+        manifest_contents: &[u8],
+    ) -> (Value, String, PathBuf) {
+        std::fs::create_dir_all(root).expect("registry tree fixture");
+        let manifest_path = root.join("Cargo.toml");
+        std::fs::write(&manifest_path, manifest_contents).expect("registry manifest fixture");
+        let root_text = root.to_string_lossy().to_string();
+        let manifest_sha256 = format!("{:x}", Sha256::digest(manifest_contents));
+        let canonical = format!(
+            "root\t{label}\t{root_text}\nfile\tCargo.toml\t{}\t{manifest_sha256}",
+            manifest_contents.len()
+        );
+        let aggregate_sha256 = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+        (
+            json!({
+                "schema_version": 1,
+                "kind": "vectorgrid_cpu_reliability_soak_registry_package_tree",
+                "aggregate_algorithm":
+                    "sha256(root_tab_label_tab_absolute_path_then_file_tab_relative_path_tab_bytes_tab_sha256_lf)",
+                "label": label,
+                "root_path": root_text,
+                "file_count": 1,
+                "total_bytes": manifest_contents.len(),
+                "files": [{
+                    "path": "Cargo.toml",
+                    "bytes": manifest_contents.len(),
+                    "sha256": manifest_sha256,
+                }],
+                "aggregate_sha256": aggregate_sha256,
+            }),
+            aggregate_sha256,
+            manifest_path,
+        )
     }
 
     fn required_cli_args(root: &std::path::Path, out: &std::path::Path) -> Vec<String> {
@@ -3954,6 +6054,257 @@ mod tests {
         });
         let error = validate_source_manifest(&manifest).expect_err("aggregate must fail");
         assert!(error.contains("aggregate mismatch"));
+    }
+
+    #[test]
+    fn windows_sdk_versions_use_numeric_component_ordering() {
+        assert!(
+            parse_windows_sdk_version("10.0.9.0").expect("older SDK")
+                < parse_windows_sdk_version("10.0.10.0").expect("newer SDK")
+        );
+        assert!(parse_windows_sdk_version("10.0.26100").is_err());
+        assert!(parse_windows_sdk_version("10.0.+26100.0").is_err());
+        assert!(parse_windows_sdk_version("10.0.2147483648.0").is_err());
+    }
+
+    #[test]
+    fn cargo_resolution_attestation_binds_the_exact_windows_build_chain() {
+        let root = temp_owned_root("cargo-resolution");
+        let root_package_dir = root.join("src-tauri");
+        let vendor = root.join("vendor").join("embed-resource-3.0.6");
+        std::fs::create_dir_all(&root_package_dir).expect("root package fixture");
+        std::fs::create_dir_all(&vendor).expect("vendor fixture");
+        let cargo_home = root.join("cargo-home");
+        let registry_index = cargo_home
+            .join("registry")
+            .join("src")
+            .join("fixture-index");
+        let cargo_path = root.join("cargo.exe");
+        let cargo_contents = b"pinned cargo fixture";
+        std::fs::write(&cargo_path, cargo_contents).expect("cargo fixture");
+        let root_manifest_path = root_package_dir.join("Cargo.toml");
+        let root_manifest_contents =
+            b"[package]\nname = \"ta_desktop_demo_app\"\nversion = \"0.1.0\"\n";
+        std::fs::write(&root_manifest_path, root_manifest_contents).expect("root manifest fixture");
+        let embed_manifest_path = vendor.join("Cargo.toml");
+        let embed_manifest_contents =
+            b"[package]\nname = \"embed-resource\"\nversion = \"3.0.6\"\n";
+        std::fs::write(&embed_manifest_path, embed_manifest_contents)
+            .expect("embed manifest fixture");
+        let (tauri_build_tree, tauri_build_tree_sha256, tauri_build_manifest_path) =
+            registry_tree_fixture(
+                &registry_index.join("tauri-build-2.5.6"),
+                "tauri-build@2.5.6",
+                b"[package]\nname = \"tauri-build\"\nversion = \"2.5.6\"\n",
+            );
+        let (tauri_winres_tree, tauri_winres_tree_sha256, tauri_winres_manifest_path) =
+            registry_tree_fixture(
+                &registry_index.join("tauri-winres-0.3.5"),
+                "tauri-winres@0.3.5",
+                b"[package]\nname = \"tauri-winres\"\nversion = \"0.3.5\"\n",
+            );
+
+        let root_text = root.to_string_lossy().to_string();
+        let cargo_home_text = cargo_home.to_string_lossy().to_string();
+        let cargo_path_text = cargo_path.to_string_lossy().to_string();
+        let root_manifest_path_text = root_manifest_path.to_string_lossy().to_string();
+        let embed_manifest_path_text = embed_manifest_path.to_string_lossy().to_string();
+        let tauri_build_manifest_path_text =
+            tauri_build_manifest_path.to_string_lossy().to_string();
+        let tauri_winres_manifest_path_text =
+            tauri_winres_manifest_path.to_string_lossy().to_string();
+        let cargo_sha256 = format!("{:x}", Sha256::digest(cargo_contents));
+        let root_manifest_sha256 = format!("{:x}", Sha256::digest(root_manifest_contents));
+        let embed_manifest_sha256 = format!("{:x}", Sha256::digest(embed_manifest_contents));
+        let metadata_output_sha256 = "a".repeat(64);
+        let root_package_id =
+            expected_path_package_id(&root_package_dir, "ta_desktop_demo_app", "0.1.0")
+                .expect("root package ID");
+        let embed_package_id =
+            expected_path_package_id(&vendor, "embed-resource", "3.0.6").expect("embed package ID");
+        let tauri_build_package_id =
+            "registry+https://github.com/rust-lang/crates.io-index#tauri-build@2.5.6";
+        let tauri_winres_package_id =
+            "registry+https://github.com/rust-lang/crates.io-index#tauri-winres@0.3.5";
+        let registry_source = "registry+https://github.com/rust-lang/crates.io-index";
+        let metadata_arguments = [
+            "metadata",
+            "--locked",
+            "--offline",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            "x86_64-pc-windows-msvc",
+            "--no-default-features",
+            "--features",
+            "ta_desktop_demo_app/maintainer-tools",
+        ];
+        let canonical = format!(
+            "metadata_format_version\t1\nmetadata_output_sha256\t{metadata_output_sha256}\nmetadata_arguments\t{}\nworkspace_root\t{root_text}\ncargo_home\t{cargo_home_text}\nworkspace_member_count\t5\nroot_resolved_features\tmaintainer-tools\ncargo\t{cargo_path_text}\t{}\t{cargo_sha256}\nroot_package_match_count\t1\nroot_package\t{root_package_id}\t0.1.0\tnull\t{root_manifest_path_text}\tsrc-tauri/Cargo.toml\t{}\t{root_manifest_sha256}\ntauri_build_match_count\t1\ntauri_build\t{tauri_build_package_id}\t2.5.6\t{registry_source}\t{tauri_build_manifest_path_text}\t{tauri_build_tree_sha256}\ntauri_winres_match_count\t1\ntauri_winres\t{tauri_winres_package_id}\t0.3.5\t{registry_source}\t{tauri_winres_manifest_path_text}\t{tauri_winres_tree_sha256}\nembed_resource_match_count\t1\nembed_resource\t{embed_package_id}\t3.0.6\tnull\t{embed_manifest_path_text}\tvendor/embed-resource-3.0.6/Cargo.toml\t{}\t{embed_manifest_sha256}\nroot_to_tauri_build_declared_match_count\t1\nroot_to_tauri_build_resolved_match_count\t1\nroot_to_tauri_build_edge\t{root_package_id}\ttauri-build\ttauri_build\t{tauri_build_package_id}\tbuild\tnull\t^2\ntauri_build_to_winres_declared_match_count\t1\ntauri_build_to_winres_resolved_match_count\t1\ntauri_build_to_winres_edge\t{tauri_build_package_id}\ttauri-winres\ttauri_winres\t{tauri_winres_package_id}\tnormal\tnull\t^0.3\nwinres_to_embed_declared_match_count\t1\nwinres_to_embed_resolved_match_count\t1\nwinres_to_embed_edge\t{tauri_winres_package_id}\tembed-resource\tembed_resource\t{embed_package_id}\tnormal\tnull\t^3",
+            metadata_arguments.join("\t"),
+            cargo_contents.len(),
+            root_manifest_contents.len(),
+            embed_manifest_contents.len(),
+        );
+        let aggregate_sha256 = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+        let mut resolution = json!({
+            "schema_version": 2,
+            "kind": "vectorgrid_cpu_reliability_soak_windows_build_dependency_chain",
+            "aggregate_algorithm": "sha256(canonical_tab_rows_lf)",
+            "metadata_format_version": 1,
+            "metadata_output_sha256": metadata_output_sha256,
+            "metadata_arguments": metadata_arguments,
+            "workspace_root": root_text,
+            "cargo_home": cargo_home_text,
+            "workspace_member_count": 5,
+            "root_resolved_features": ["maintainer-tools"],
+            "cargo": {
+                "path": cargo_path_text,
+                "bytes": cargo_contents.len(),
+                "sha256": cargo_sha256,
+            },
+            "root_package_name_match_count": 1,
+            "root_package": {
+                "package_id": root_package_id,
+                "name": "ta_desktop_demo_app",
+                "version": "0.1.0",
+                "source": null,
+                "manifest_path": root_manifest_path_text,
+                "manifest_repo_relative_path": "src-tauri/Cargo.toml",
+                "manifest_bytes": root_manifest_contents.len(),
+                "manifest_sha256": root_manifest_sha256,
+                "workspace_member": true,
+            },
+            "tauri_build_package_name_match_count": 1,
+            "tauri_build": {
+                "package_id": tauri_build_package_id,
+                "name": "tauri-build",
+                "version": "2.5.6",
+                "source": registry_source,
+                "manifest_path": tauri_build_manifest_path_text,
+                "source_tree": tauri_build_tree,
+            },
+            "tauri_winres_package_name_match_count": 1,
+            "tauri_winres": {
+                "package_id": tauri_winres_package_id,
+                "name": "tauri-winres",
+                "version": "0.3.5",
+                "source": registry_source,
+                "manifest_path": tauri_winres_manifest_path_text,
+                "source_tree": tauri_winres_tree,
+            },
+            "embed_resource_package_name_match_count": 1,
+            "embed_resource": {
+                "package_id": embed_package_id,
+                "name": "embed-resource",
+                "version": "3.0.6",
+                "source": null,
+                "manifest_path": embed_manifest_path_text,
+                "manifest_repo_relative_path": "vendor/embed-resource-3.0.6/Cargo.toml",
+                "manifest_bytes": embed_manifest_contents.len(),
+                "manifest_sha256": embed_manifest_sha256,
+                "workspace_member": true,
+            },
+            "root_to_tauri_build_declared_edge_match_count": 1,
+            "root_to_tauri_build_resolved_edge_match_count": 1,
+            "root_to_tauri_build_edge": {
+                "from_package_id": root_package_id,
+                "declared_dependency_name": "tauri-build",
+                "resolved_dependency_name": "tauri_build",
+                "to_package_id": tauri_build_package_id,
+                "kind": "build",
+                "target": null,
+                "declared_requirement": "^2",
+            },
+            "tauri_build_to_winres_declared_edge_match_count": 1,
+            "tauri_build_to_winres_resolved_edge_match_count": 1,
+            "tauri_build_to_winres_edge": {
+                "from_package_id": tauri_build_package_id,
+                "declared_dependency_name": "tauri-winres",
+                "resolved_dependency_name": "tauri_winres",
+                "to_package_id": tauri_winres_package_id,
+                "kind": "normal",
+                "target": null,
+                "declared_requirement": "^0.3",
+            },
+            "winres_to_embed_declared_edge_match_count": 1,
+            "winres_to_embed_resolved_edge_match_count": 1,
+            "winres_to_embed_edge": {
+                "from_package_id": tauri_winres_package_id,
+                "declared_dependency_name": "embed-resource",
+                "resolved_dependency_name": "embed_resource",
+                "to_package_id": embed_package_id,
+                "kind": "normal",
+                "target": null,
+                "declared_requirement": "^3",
+            },
+            "aggregate_sha256": aggregate_sha256,
+        });
+        let toolchain = json!({
+            "cargo_path": cargo_path_text,
+            "cargo_sha256": cargo_sha256,
+        });
+        validate_embed_resource_cargo_resolution(
+            &resolution,
+            &root,
+            &cargo_home,
+            "x86_64-pc-windows-msvc",
+            &toolchain,
+        )
+        .expect("exact Windows Cargo build chain must validate");
+
+        let exact_resolution = resolution.clone();
+        resolution["tauri_build_to_winres_edge"]["to_package_id"] =
+            json!("registry+https://github.com/rust-lang/crates.io-index#wrong@0.0.0");
+        assert!(validate_embed_resource_cargo_resolution(
+            &resolution,
+            &root,
+            &cargo_home,
+            "x86_64-pc-windows-msvc",
+            &toolchain,
+        )
+        .expect_err("changed intermediate edge must fail")
+        .contains("Cargo build-chain edge is invalid"));
+
+        let mut tampered_tree = exact_resolution;
+        tampered_tree["tauri_build"]["source_tree"]["files"][0]["sha256"] = json!("0".repeat(64));
+        assert!(validate_embed_resource_cargo_resolution(
+            &tampered_tree,
+            &root,
+            &cargo_home,
+            "x86_64-pc-windows-msvc",
+            &toolchain,
+        )
+        .expect_err("changed registry package file row must fail")
+        .contains("Cargo registry package file changed"));
+        std::fs::remove_dir_all(root).expect("remove Cargo-resolution fixture");
+    }
+
+    #[test]
+    fn resource_compiler_candidate_enumeration_is_complete_and_numeric() {
+        let root = temp_owned_root("resource-compiler-candidates");
+        for version in ["10.0.10.0", "10.0.9.0"] {
+            let x64 = root.join("bin").join(version).join("x64");
+            std::fs::create_dir_all(&x64).expect("SDK candidate fixture");
+            std::fs::write(x64.join("rc.exe"), version.as_bytes()).expect("rc fixture");
+        }
+        std::fs::create_dir_all(root.join("bin").join("not-a-version"))
+            .expect("non-version fixture");
+
+        let candidates =
+            enumerate_resource_compiler_candidates(&root).expect("enumerate SDK candidates");
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|(version, _)| version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["10.0.9.0", "10.0.10.0"]
+        );
+        assert!(candidates
+            .iter()
+            .all(|(_, path)| path.ends_with(Path::new("x64").join("rc.exe"))));
+
+        std::fs::remove_dir_all(root).expect("remove SDK candidate fixture");
     }
 
     #[test]

@@ -1,8 +1,15 @@
 import {
   normalizeCompositeIndicatorBars,
   normalizeMovingAverageIndicatorBars,
+  normalizeStrategyIndicatorBundle,
   type IndexedPriceBar,
+  type StrategyIndicatorBundleModel,
 } from "./priceSeriesModel";
+import {
+  lightweightChartSeriesPalette,
+  resolveLightweightChartTheme,
+  type LightweightChartTheme,
+} from "./chartTheme";
 
 export type DrillChartPriceBar = IndexedPriceBar;
 
@@ -19,9 +26,7 @@ export interface DrillLinePoint {
   value: number;
 }
 
-export interface DrillHistogramPoint extends DrillLinePoint {
-  color?: string;
-}
+export type DrillHistogramPoint = DrillLinePoint;
 
 export interface DrillTradeMarker {
   id: string;
@@ -61,6 +66,7 @@ export interface DrillChartModel {
   halftrendData: DrillHistogramPoint[];
   ottData: DrillLinePoint[];
   maczData: DrillHistogramPoint[];
+  strategyIndicators?: StrategyIndicatorBundleModel | null;
   trades: Record<string, unknown>[];
   tradeStats: Record<string, unknown>;
 }
@@ -117,9 +123,6 @@ export function buildDrillChartModel(
       halftrendData.push({
         time: row.time,
         value: isShortRegime ? -1 : 1,
-        color: isShortRegime
-          ? "rgba(244, 63, 94, 0.38)"
-          : "rgba(34, 197, 94, 0.38)",
       });
     }
     if (Number.isFinite(row.ottLine ?? Number.NaN)) {
@@ -130,8 +133,6 @@ export function buildDrillChartModel(
       maczData.push({
         time: row.time,
         value,
-        color:
-          value >= 0 ? "rgba(34, 197, 94, 0.75)" : "rgba(244, 63, 94, 0.75)",
       });
     }
   }
@@ -150,6 +151,9 @@ export function buildDrillChartModel(
     halftrendData,
     ottData,
     maczData,
+    strategyIndicators: normalizeStrategyIndicatorBundle(
+      curves.strategy_indicator_bundle ?? curves.strategyIndicatorBundle,
+    ),
     trades: Array.isArray(curves.trades)
       ? curves.trades.map((trade) => asRecord(trade))
       : [],
@@ -224,8 +228,10 @@ function createTradeTimeResolver(
 export function buildDrillTradeMarkers(
   chartModel: DrillChartModel,
   selectedTradeIdx = -1,
+  theme: LightweightChartTheme = resolveLightweightChartTheme(),
 ): DrillTradeMarker[] {
   if (!chartModel.trades.length) return [];
+  const palette = lightweightChartSeriesPalette(theme);
   const markers: DrillTradeMarker[] = [];
   const resolveTradeTime = createTradeTimeResolver(chartModel.bars);
   for (let tradeIdx = 0; tradeIdx < chartModel.trades.length; tradeIdx += 1) {
@@ -243,12 +249,10 @@ export function buildDrillTradeMarkers(
         position: isLong ? "belowBar" : "aboveBar",
         shape: isLong ? "arrowUp" : "arrowDown",
         color: selected
-          ? isLong
-            ? "rgba(34, 197, 94, 1)"
-            : "rgba(248, 113, 113, 1)"
+          ? palette.highlight
           : isLong
-            ? "rgba(22, 163, 74, 0.95)"
-            : "rgba(225, 29, 72, 0.95)",
+            ? palette.positive
+            : palette.negative,
         size: selected ? 1.4 : 1,
         text: `${isLong ? "L" : "S"}${tradeIdx + 1}`,
       });
@@ -266,12 +270,12 @@ export function buildDrillTradeMarkers(
         position: "inBar",
         shape: "circle",
         color: selected
-          ? "rgba(250, 204, 21, 0.98)"
+          ? palette.highlight
           : Number.isFinite(pnl)
             ? pnl >= 0
-              ? "rgba(34, 197, 94, 0.9)"
-              : "rgba(244, 63, 94, 0.9)"
-            : "rgba(148, 163, 184, 0.9)",
+              ? palette.positive
+              : palette.negative
+            : palette.neutral,
         size: selected ? 1.2 : 0.8,
         text: `X${tradeIdx + 1}`,
       });

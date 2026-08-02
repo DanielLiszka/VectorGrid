@@ -13,6 +13,7 @@ import { storeErrorText } from "../utils/storeErrorText";
 
 interface SaveRunArtifactResponse {
   path?: unknown;
+  retention_warning?: unknown;
 }
 
 interface MlSignalModelBundleSummary {
@@ -1885,15 +1886,23 @@ async function persistRunArtifact(
   req: Record<string, unknown>,
   res: unknown,
   ts: string,
-): Promise<{ path: string; csvPath: string }> {
+): Promise<{
+  path: string;
+  csvPath: string;
+  artifactPersistenceWarning?: string;
+}> {
   const { artifact, csvPath } = buildRunArtifactPayload(req, res, ts);
   try {
     const saved = (await invokeCommand("save_run_artifact", {
       artifact,
     })) as SaveRunArtifactResponse;
+    const retentionWarning = normalizeText(saved?.retention_warning);
     return {
       path: normalizeText(saved?.path),
       csvPath,
+      artifactPersistenceWarning: retentionWarning
+        ? `Artifact was saved, but retention cleanup needs attention: ${retentionWarning}`
+        : "",
     };
   } catch {
     return { path: "", csvPath };
@@ -1978,6 +1987,10 @@ async function persistValidationArtifact(
       artifact,
     })) as SaveRunArtifactResponse;
     path = normalizeText(saved?.path) || path;
+    const retentionWarning = normalizeText(saved?.retention_warning);
+    if (retentionWarning) {
+      artifactPersistenceWarning = `Artifact was saved, but retention cleanup needs attention: ${retentionWarning}`;
+    }
   } catch (error) {
     artifactPersistenceWarning =
       normalizeText(error) || "save_run_artifact failed";
@@ -2273,13 +2286,16 @@ export async function exportMlSignalDataset(): Promise<unknown> {
     ].filter((part) => part);
     const persisted = await persistRunArtifact(req, res, runTs);
     applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);
+    const stageStatus = formatMlStageStatus(
+      "ML feature dataset exported.",
+      resRecord,
+    );
     patchOptimizeState({
       mlSignalDatasetMeta: metaParts.join(" • "),
       progressMeta: `ML dataset export • ${rowCount.toFixed(0)} rows`,
-      statusLine: formatMlStageStatus(
-        "ML feature dataset exported.",
-        resRecord,
-      ),
+      statusLine: [stageStatus, persisted.artifactPersistenceWarning]
+        .filter((part) => part)
+        .join(" "),
     });
     return res;
   } catch (error) {
@@ -2398,6 +2414,14 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
       res && typeof res === "object" ? (res as Record<string, unknown>) : null;
     const matchedRows = parseNumber(resRecord?.matched_rows, 0);
     const scoreCoverageMeta = formatMlScoreCoverageMeta(resRecord);
+    const persisted = await persistRunArtifact(req, res, runTs);
+    applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);
+    const stageStatus = formatMlStageStatus(
+      nativeScoreSource
+        ? "ML native score cache generated."
+        : "ML score cache generated.",
+      resRecord,
+    );
     patchOptimizeState({
       mlSignalScoreMeta: [
         nativeScoreSource
@@ -2413,15 +2437,10 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
       progressMeta: nativeScoreSource
         ? `ML native score cache • ${matchedRows.toFixed(0)} rows`
         : `ML score cache • ${matchedRows.toFixed(0)} rows`,
-      statusLine: formatMlStageStatus(
-        nativeScoreSource
-          ? "ML native score cache generated."
-          : "ML score cache generated.",
-        resRecord,
-      ),
+      statusLine: [stageStatus, persisted.artifactPersistenceWarning]
+        .filter((part) => part)
+        .join(" "),
     });
-    const persisted = await persistRunArtifact(req, res, runTs);
-    applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);
     return res;
   } catch (error) {
     patchOptimizeState({

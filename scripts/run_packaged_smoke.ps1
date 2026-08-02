@@ -247,12 +247,16 @@ function Expand-NsisBundleProduct {
     '$PLUGINSDIR/StartMenu.dll',
     '$PLUGINSDIR/System.dll',
     "licenses/CatBoost-LICENSE.txt",
+    "licenses/TradingView-Lightweight-Charts-LICENSE.txt",
+    "licenses/TradingView-Lightweight-Charts-NOTICE.txt",
     "native/catboostmodel.dll",
     "sample-data/vectorgrid_synthetic_ohlcv.csv"
   )
   $requiredFiles = @(
     "ta_desktop_demo_app.exe",
     "licenses/CatBoost-LICENSE.txt",
+    "licenses/TradingView-Lightweight-Charts-LICENSE.txt",
+    "licenses/TradingView-Lightweight-Charts-NOTICE.txt",
     "native/catboostmodel.dll",
     "sample-data/vectorgrid_synthetic_ohlcv.csv"
   )
@@ -287,6 +291,16 @@ function Expand-NsisBundleProduct {
       relative_path = "licenses/CatBoost-LICENSE.txt"
       manifest_sha256 = [string]$Manifest.required_resources.catboost_license_sha256
       reviewed_sha256 = [string]$Manifest.required_resources.catboost_license_expected_sha256
+    },
+    [ordered]@{
+      relative_path = "licenses/TradingView-Lightweight-Charts-LICENSE.txt"
+      manifest_sha256 = [string]$Manifest.required_resources.lightweight_charts_license_sha256
+      reviewed_sha256 = [string]$Manifest.required_resources.lightweight_charts_license_expected_sha256
+    },
+    [ordered]@{
+      relative_path = "licenses/TradingView-Lightweight-Charts-NOTICE.txt"
+      manifest_sha256 = [string]$Manifest.required_resources.lightweight_charts_notice_sha256
+      reviewed_sha256 = [string]$Manifest.required_resources.lightweight_charts_notice_expected_sha256
     },
     [ordered]@{
       relative_path = "sample-data/vectorgrid_synthetic_ohlcv.csv"

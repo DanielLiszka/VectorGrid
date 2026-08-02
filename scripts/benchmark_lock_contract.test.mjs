@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,50 @@ const childScript = path.join(
   "benchmark-lock-contract-child.ps1",
 );
 const lockScript = path.join(scriptsDirectory, "benchmark_lock.ps1");
+const productionCanonicalLease = path.join(
+  repoRoot,
+  "output",
+  "qa",
+  "benchmark-lock",
+  "active.json",
+);
 const isWindows = process.platform === "win32";
+
+function snapshotProductionCanonicalLease() {
+  if (!fs.existsSync(productionCanonicalLease)) {
+    return { exists: false };
+  }
+  const stat = fs.lstatSync(productionCanonicalLease, { bigint: true });
+  return {
+    exists: true,
+    device: stat.dev,
+    inode: stat.ino,
+    links: stat.nlink,
+    mode: stat.mode,
+    size: stat.size,
+    modified_ns: stat.mtimeNs,
+    changed_ns: stat.ctimeNs,
+    sha256: stat.isFile()
+      ? crypto
+          .createHash("sha256")
+          .update(fs.readFileSync(productionCanonicalLease))
+          .digest("hex")
+      : null,
+    link_target: stat.isSymbolicLink()
+      ? fs.readlinkSync(productionCanonicalLease)
+      : null,
+  };
+}
+
+function isPathWithin(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (
+    relative.length > 0 &&
+    !relative.startsWith(`..${path.sep}`) &&
+    relative !== ".." &&
+    !path.isAbsolute(relative)
+  );
+}
 
 function createIsolatedWorkspace() {
   const isolatedRoot = fs.mkdtempSync(
@@ -41,9 +85,11 @@ function createIsolatedWorkspace() {
 }
 
 function runContract(mode) {
+  const productionLeaseBefore = snapshotProductionCanonicalLease();
   const isolatedRoot = createIsolatedWorkspace();
+  const resolvedIsolatedRoot = path.resolve(isolatedRoot);
   const isolatedHost = path.join(
-    isolatedRoot,
+    resolvedIsolatedRoot,
     "scripts",
     "support",
     "benchmark-lock-contract-host.ps1",
@@ -72,18 +118,25 @@ function runContract(mode) {
       },
     );
   } finally {
-    const expectedPrefix = path.join(
+    assert.equal(
+      path.dirname(resolvedIsolatedRoot),
       path.resolve(os.tmpdir()),
-      "vectorgrid-benchmark-lock-contract-",
     );
-    const resolvedIsolatedRoot = path.resolve(isolatedRoot);
-    assert.ok(resolvedIsolatedRoot.startsWith(expectedPrefix));
+    assert.match(
+      path.basename(resolvedIsolatedRoot),
+      /^vectorgrid-benchmark-lock-contract-/u,
+    );
     try {
       fs.rmSync(resolvedIsolatedRoot, { recursive: true, force: true });
     } catch {
       // A killed fixture may leave handles briefly alive; the isolated temp
       // workspace is deliberately safe to retain in that failure mode.
     }
+    assert.deepEqual(
+      snapshotProductionCanonicalLease(),
+      productionLeaseBefore,
+      `contract ${mode} changed the production canonical benchmark lease`,
+    );
   }
   assert.equal(
     result.status,
@@ -101,6 +154,10 @@ function runContract(mode) {
   );
   const report = JSON.parse(lines[0].slice(prefix.length));
   assert.equal(report.ok, true, `contract ${mode} failed: ${report.error}`);
+  Object.defineProperty(report, "contractWorkspaceRoot", {
+    value: resolvedIsolatedRoot,
+    enumerable: false,
+  });
   return report;
 }
 
@@ -116,6 +173,14 @@ test(
     assert.match(
       report.lease_path.replaceAll("\\", "/"),
       /\/output\/qa\/benchmark-lock\/active\.json$/u,
+    );
+    assert.equal(
+      isPathWithin(report.contractWorkspaceRoot, report.lease_path),
+      true,
+    );
+    assert.notEqual(
+      path.resolve(report.lease_path).toLowerCase(),
+      path.resolve(productionCanonicalLease).toLowerCase(),
     );
     assert.deepEqual(report.child.before, report.child.during);
     assert.deepEqual(report.child.before, report.child.after);
@@ -183,6 +248,13 @@ test(
     assert.equal(report.probe_code, 5);
     assert.equal(report.child.ok, false);
     assert.match(report.child.error, /reported 5/u);
+    assert.ok(
+      Object.values(report.after_failure_environment).every(
+        (value) => value === null,
+      ),
+    );
+    assert.equal(report.recovery.ok, true);
+    assert.equal(report.recovery.acquired, true);
   },
 );
 

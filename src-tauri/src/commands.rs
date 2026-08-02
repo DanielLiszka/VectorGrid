@@ -32,6 +32,18 @@ mod commands_simple_summary;
 mod commands_system;
 #[path = "commands_validation.rs"]
 mod commands_validation;
+#[path = "commands_vcet_temporal.rs"]
+mod commands_vcet_temporal;
+#[path = "commands_vcet_temporal_campaign.rs"]
+mod commands_vcet_temporal_campaign;
+#[path = "commands_vcet_temporal_execute.rs"]
+mod commands_vcet_temporal_execute;
+#[path = "commands_vcet_temporal_final.rs"]
+mod commands_vcet_temporal_final;
+#[path = "commands_vcet_temporal_prefinal.rs"]
+mod commands_vcet_temporal_prefinal;
+#[path = "commands_vcet_temporal_universe.rs"]
+mod commands_vcet_temporal_universe;
 #[path = "metric_surface.rs"]
 mod metric_surface;
 #[path = "options_parent_adapters.rs"]
@@ -40,6 +52,8 @@ mod options_parent_adapters;
 mod run_artifacts;
 #[path = "validation_common.rs"]
 mod validation_common;
+#[path = "vcet_temporal_durable_ledger.rs"]
+mod vcet_temporal_durable_ledger;
 
 pub use crate::desktop_menu::{set_shell_menu_command_states, ShellMenuCommandEnabledState};
 pub use commands_analysis::{
@@ -157,7 +171,8 @@ pub use commands_reports::{
 };
 pub use commands_reports_api::{
     build_report_xlsx, build_validation_shortlist_csv, open_path, open_reports_dir, reveal_path,
-    save_report_xlsx, save_report_xlsx_from_artifact, SaveReportXlsxResponse,
+    save_report_xlsx, save_report_xlsx_from_artifact, save_vcet_temporal_report_xlsx,
+    SaveReportXlsxResponse, SaveVcetTemporalReportXlsxRequestV1,
 };
 pub use commands_simple_summary::{
     save_simple_summary_markdown, SaveSimpleSummaryMarkdownResponse,
@@ -168,6 +183,62 @@ pub(crate) use commands_validation::apply_cross_ticker_validation;
 pub use commands_validation::{
     apply_cross_ticker_validation_double_ma_headless, get_price_bars, run_composite_validation,
     run_double_ma_validation, PriceBar,
+};
+pub use commands_vcet_temporal::{
+    plan_vcet_temporal_validation, plan_vcet_temporal_validation_blocking,
+    seal_vcet_temporal_candidate_manifest, PlanVcetTemporalValidationRequestV1,
+    PlanVcetTemporalValidationResponseV1, VcetTemporalAlignmentStatusV1,
+    VcetTemporalCandidateEntryV1, VcetTemporalCandidateManifestEvidenceV1,
+    VcetTemporalCandidateManifestPayloadV1, VcetTemporalCoverageStatusV1,
+    VcetTemporalDatasetPlanningEvidenceV1, VcetTemporalDatasetTimelineInputV1,
+    VcetTemporalPlanningStatusV1, VcetTemporalSealedCandidateManifestV1,
+};
+pub use commands_vcet_temporal_campaign::{
+    get_vcet_temporal_campaign_status, open_vcet_temporal_campaign_final_test,
+    prepare_vcet_temporal_campaign, run_vcet_temporal_campaign_selection,
+    GetVcetTemporalCampaignStatusRequestV1, OpenVcetTemporalCampaignFinalTestRequestV1,
+    PrepareVcetTemporalCampaignRequestV1, RunVcetTemporalCampaignSelectionRequestV1,
+    VcetTemporalCampaignStateV1, VcetTemporalCampaignStatusV1,
+};
+pub use commands_vcet_temporal_execute::{
+    execute_vcet_temporal_validation, ExecuteVcetTemporalValidationRequestV1,
+    ExecuteVcetTemporalValidationResponseV1, VcetTemporalCandidateSelectionEvidenceV1,
+    VcetTemporalDatasetExecutionV1, VcetTemporalExecutionArtifactPayloadV1,
+    VcetTemporalExecutionSpecEvidenceV1, VcetTemporalExecutionStatusV1,
+    VcetTemporalFinalTestDatasetResultV1, VcetTemporalFoldExecutionV1,
+    VcetTemporalLoadedDatasetBindingV1, VcetTemporalSelectionPolicyV1,
+    VcetTemporalTradeSupportFailureV1, VcetTemporalWindowCandidateMetricsV1,
+    VcetTemporalWindowExecutionV1, VcetTemporalWinnerLockV1,
+};
+pub use commands_vcet_temporal_final::{
+    execute_vcet_temporal_final_test_shard, load_vcet_temporal_final_test_shard,
+    reduce_vcet_temporal_final_test_shards, ExecuteVcetTemporalFinalTestShardRequestV1,
+    ExecuteVcetTemporalFinalTestShardResponseV1, LoadVcetTemporalFinalTestShardRequestV1,
+    ReduceVcetTemporalFinalTestShardsRequestV1, ReduceVcetTemporalFinalTestShardsResponseV1,
+    VcetTemporalFinalReductionArtifactPayloadV1, VcetTemporalFinalScoringSemanticsV1,
+    VcetTemporalFinalShardReductionEvidenceV1, VcetTemporalFinalSupportStatusV1,
+    VcetTemporalFinalTestDatasetExecutionV1, VcetTemporalFinalTestShardArtifactPayloadV1,
+};
+pub use commands_vcet_temporal_prefinal::{
+    execute_vcet_temporal_pre_final_shard, load_vcet_temporal_pre_final_winner_lock,
+    reduce_vcet_temporal_pre_final_shards, ExecuteVcetTemporalPreFinalShardRequestV1,
+    ExecuteVcetTemporalPreFinalShardResponseV1, LoadVcetTemporalPreFinalWinnerLockRequestV1,
+    ReduceVcetTemporalPreFinalShardsRequestV1, ReduceVcetTemporalPreFinalShardsResponseV1,
+    VcetTemporalFinalShardAuthorizationV1, VcetTemporalGlobalCandidateEvidenceV1,
+    VcetTemporalGlobalWinnerLockV1, VcetTemporalPreFinalDatasetCandidateEvidenceV1,
+    VcetTemporalPreFinalDatasetEvidenceV1, VcetTemporalPreFinalReductionArtifactPayloadV1,
+    VcetTemporalPreFinalShardArtifactPayloadV1, VcetTemporalPreFinalShardCandidateAggregateV1,
+    VcetTemporalPreFinalShardReductionEvidenceV1, VcetTemporalPreFinalSupportFailureV1,
+};
+pub use commands_vcet_temporal_universe::{
+    attest_vcet_temporal_datasets, seal_vcet_temporal_dataset_universe,
+    AttestVcetTemporalDatasetInputV1, AttestVcetTemporalDatasetsRequestV1,
+    AttestVcetTemporalDatasetsResponseV1, SealVcetTemporalDatasetUniverseRequestV1,
+    SealVcetTemporalDatasetUniverseResponseV1, VcetTemporalCrossUniverseAdmissionV1,
+    VcetTemporalDatasetAttestationV1, VcetTemporalDatasetCohortRoleV1,
+    VcetTemporalDatasetUniversePayloadV1, VcetTemporalPhasedExecutionSpecV1,
+    VcetTemporalSealedDatasetUniverseV1, VcetTemporalUniverseDatasetV1,
+    VcetTemporalUniverseShardV1,
 };
 pub use run_artifacts::{
     ArtifactLibrarySnapshot, LatestRunArtifactHydrationResponse, LiveSessionArtifactDetailResponse,

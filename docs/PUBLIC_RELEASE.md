@@ -157,6 +157,21 @@ Each run writes evidence under `output/public_release_candidates/<timestamp>-<va
   recovery;
 - `artifacts/`: publishable staged installers and related update/signature files.
 
+The public gate starts a recursive source mutation monitor before its initial
+source capture and keeps it active through candidate construction, signing,
+evidence validation, and the final capture. It excludes only enumerated
+generated roots that contain no tracked source. The gate rejects
+assume-unchanged, skip-worktree, or other nonstandard tracked index flags and
+rejects source files with multiple filesystem links. It binds canonical
+raw-byte size/hash manifests for every tracked and current untracked file and
+retains read/share-deny-write leases on those files through candidate
+construction, signing, and final capture, so an external hard-link alias cannot
+change captured source bytes. Initial/final HEAD, raw NUL-delimited status, and
+file manifests must match, while any in-scope modify/rename/create/delete event
+or watcher overflow/error fails closed. The public summary contains only
+sanitized counts/hashes and monitor status, never raw status, diff, manifest,
+event paths, or live file handles.
+
 The QA app-data override is runtime-dormant unless the complete harness
 handshake is present. It isolates application-owned persistence for executable
 smoke and recovery tests; it does not provision a new Windows account and does

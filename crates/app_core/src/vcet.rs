@@ -179,7 +179,7 @@ impl Default for VcetStrategyParams {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VcetResolvedPeriods {
     pub vidya_short: u16,
     pub vidya_long: u16,
@@ -291,11 +291,11 @@ impl VcetOwnedDeviceMatrix {
 }
 
 pub fn validate_vcet_params(cfg: &VcetStrategyParams) -> Result<(), String> {
-    if cfg.vidya_short_period == 0 {
-        return Err("VCET vidya_short_period must be > 0".to_string());
+    if cfg.vidya_short_period < 2 {
+        return Err("VCET vidya_short_period must be >= 2".to_string());
     }
-    if cfg.vidya_long_period == 0 {
-        return Err("VCET vidya_long_period must be > 0".to_string());
+    if cfg.vidya_long_period < 2 {
+        return Err("VCET vidya_long_period must be >= 2".to_string());
     }
     if cfg.vidya_long_period <= cfg.vidya_short_period
         && !cfg.map_fast_to_vidya_short_period
@@ -303,8 +303,11 @@ pub fn validate_vcet_params(cfg: &VcetStrategyParams) -> Result<(), String> {
     {
         return Err("VCET vidya_long_period must be > vidya_short_period".to_string());
     }
-    if !cfg.vidya_alpha.is_finite() || cfg.vidya_alpha <= 0.0 {
-        return Err("VCET vidya_alpha must be finite and > 0".to_string());
+    // VectorTA's VIDYA contract accepts both endpoints of [0, 1]. Keep this
+    // boundary aligned so a request accepted here cannot fail later solely on
+    // the indicator's alpha validation.
+    if !cfg.vidya_alpha.is_finite() || !(0.0..=1.0).contains(&cfg.vidya_alpha) {
+        return Err("VCET vidya_alpha must be finite and within [0, 1]".to_string());
     }
     if cfg.ce_period == 0 {
         return Err("VCET ce_period must be > 0".to_string());
@@ -324,26 +327,59 @@ pub fn resolve_vcet_periods(
     slow_len: u16,
 ) -> VcetResolvedPeriods {
     let vidya_short = if cfg.map_fast_to_vidya_short_period {
-        fast_len.max(1)
+        fast_len
     } else {
-        cfg.vidya_short_period.max(1)
+        cfg.vidya_short_period
     };
-    let raw_long = if cfg.map_slow_to_vidya_long_period {
-        slow_len.max(1)
+    let vidya_long = if cfg.map_slow_to_vidya_long_period {
+        slow_len
     } else {
-        cfg.vidya_long_period.max(1)
+        cfg.vidya_long_period
     };
-    let vidya_long = raw_long.max(vidya_short.saturating_add(1));
     let ce = if cfg.map_slow_to_ce_period {
-        slow_len.max(1)
+        slow_len
     } else {
-        cfg.ce_period.max(1)
+        cfg.ce_period
     };
     VcetResolvedPeriods {
         vidya_short,
         vidya_long,
         ce,
     }
+}
+
+/// Resolves the effective periods for one VCET candidate and validates the
+/// resulting indicator contract without changing the candidate's meaning.
+///
+/// `resolve_vcet_periods` remains infallible for existing callers, but neither
+/// resolver clamps zero values nor widens the long period. Request boundaries
+/// should prefer this checked form so invalid mapped Fast/Slow values are
+/// rejected before indicator dispatch.
+pub fn resolve_vcet_periods_checked(
+    cfg: &VcetStrategyParams,
+    fast_len: u16,
+    slow_len: u16,
+) -> Result<VcetResolvedPeriods, String> {
+    validate_vcet_params(cfg)?;
+    let resolved = resolve_vcet_periods(cfg, fast_len, slow_len);
+
+    if resolved.vidya_short < 2 {
+        return Err(format!(
+            "VCET effective vidya_short_period must be >= 2 (resolved {})",
+            resolved.vidya_short
+        ));
+    }
+    if resolved.vidya_long <= resolved.vidya_short {
+        return Err(format!(
+            "VCET effective vidya_long_period must be > vidya_short_period (resolved {} <= {})",
+            resolved.vidya_long, resolved.vidya_short
+        ));
+    }
+    if resolved.ce == 0 {
+        return Err("VCET effective ce_period must be > 0 (resolved 0)".to_string());
+    }
+
+    Ok(resolved)
 }
 
 fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
@@ -907,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_vcet_periods_respects_mixed_mapping_and_normalizes_long_period() {
+    fn resolve_vcet_periods_respects_mixed_mapping_without_changing_semantics() {
         let cfg = VcetStrategyParams {
             map_fast_to_vidya_short_period: true,
             map_slow_to_vidya_long_period: false,
@@ -919,8 +955,113 @@ mod tests {
 
         let resolved = resolve_vcet_periods(&cfg, 8, 34);
         assert_eq!(resolved.vidya_short, 8);
-        assert_eq!(resolved.vidya_long, 9);
+        assert_eq!(resolved.vidya_long, 4);
         assert_eq!(resolved.ce, 15);
+        assert_eq!(
+            resolve_vcet_periods_checked(&cfg, 8, 34).unwrap_err(),
+            "VCET effective vidya_long_period must be > vidya_short_period (resolved 4 <= 8)"
+        );
+    }
+
+    #[test]
+    fn validate_vcet_params_matches_vidya_period_and_alpha_bounds() {
+        let mut cfg = VcetStrategyParams::default();
+
+        cfg.vidya_short_period = 1;
+        assert_eq!(
+            validate_vcet_params(&cfg).unwrap_err(),
+            "VCET vidya_short_period must be >= 2"
+        );
+
+        cfg.vidya_short_period = 2;
+        cfg.vidya_long_period = 1;
+        assert_eq!(
+            validate_vcet_params(&cfg).unwrap_err(),
+            "VCET vidya_long_period must be >= 2"
+        );
+
+        cfg.vidya_long_period = 24;
+        cfg.vidya_alpha = 0.0;
+        assert!(validate_vcet_params(&cfg).is_ok());
+
+        cfg.vidya_alpha = 1.0;
+        assert!(validate_vcet_params(&cfg).is_ok());
+
+        for alpha in [-f64::EPSILON, 1.0 + f64::EPSILON, f64::NAN, f64::INFINITY] {
+            cfg.vidya_alpha = alpha;
+            assert_eq!(
+                validate_vcet_params(&cfg).unwrap_err(),
+                "VCET vidya_alpha must be finite and within [0, 1]"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_vcet_params_rejects_invalid_fixed_long_and_ce_controls() {
+        let mut cfg = VcetStrategyParams {
+            map_fast_to_vidya_short_period: false,
+            map_slow_to_vidya_long_period: false,
+            ..VcetStrategyParams::default()
+        };
+
+        cfg.vidya_long_period = cfg.vidya_short_period;
+        assert_eq!(
+            validate_vcet_params(&cfg).unwrap_err(),
+            "VCET vidya_long_period must be > vidya_short_period"
+        );
+
+        cfg.vidya_long_period = cfg.vidya_short_period + 1;
+        cfg.ce_period = 0;
+        assert_eq!(
+            validate_vcet_params(&cfg).unwrap_err(),
+            "VCET ce_period must be > 0"
+        );
+
+        cfg.ce_period = 1;
+        for mult in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            cfg.ce_mult = mult;
+            assert_eq!(
+                validate_vcet_params(&cfg).unwrap_err(),
+                "VCET ce_mult must be finite and > 0"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_vcet_periods_checked_rejects_invalid_mapped_candidate_periods() {
+        let cfg = VcetStrategyParams::default();
+
+        assert_eq!(
+            resolve_vcet_periods_checked(&cfg, 1, 34).unwrap_err(),
+            "VCET effective vidya_short_period must be >= 2 (resolved 1)"
+        );
+        assert_eq!(
+            resolve_vcet_periods_checked(&cfg, 8, 8).unwrap_err(),
+            "VCET effective vidya_long_period must be > vidya_short_period (resolved 8 <= 8)"
+        );
+
+        let cfg = VcetStrategyParams {
+            map_slow_to_vidya_long_period: false,
+            vidya_long_period: 24,
+            ..VcetStrategyParams::default()
+        };
+        assert_eq!(
+            resolve_vcet_periods_checked(&cfg, 8, 0).unwrap_err(),
+            "VCET effective ce_period must be > 0 (resolved 0)"
+        );
+    }
+
+    #[test]
+    fn resolve_vcet_periods_checked_returns_exact_effective_periods() {
+        let cfg = VcetStrategyParams::default();
+        assert_eq!(
+            resolve_vcet_periods_checked(&cfg, 8, 34).unwrap(),
+            VcetResolvedPeriods {
+                vidya_short: 8,
+                vidya_long: 34,
+                ce: 34,
+            }
+        );
     }
 
     #[test]

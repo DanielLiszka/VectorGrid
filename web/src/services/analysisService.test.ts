@@ -4,11 +4,13 @@ import { invokeCommand } from "../tauri/invoke";
 import { bindRuntimePinia } from "../stores/runtimePinia";
 import {
   __analysisTestUtils,
+  buildExecutionStrategyFromRunContext,
   clearBaseline,
   clearTopFilters,
   drillClearTradeSelection,
   drillNextTrade,
   drillPrevTrade,
+  disposeDrillSupportCharts,
   invalidateAnalysisExecutionCaches,
   refreshAnalysisFromWorkflowRun,
   refreshHeatmapFromWorkflowRun,
@@ -26,7 +28,10 @@ import { useAnalysisStore } from "../stores/analysisStore";
 import { useDataStore } from "../stores/dataStore";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
-import { heatmapTooltipText } from "../visualizations/heatmapCanvasModel";
+import {
+  buildHeatmapCellParams,
+  heatmapTooltipText,
+} from "../visualizations/heatmapCanvasModel";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => ({
@@ -119,7 +124,9 @@ function mountDrillDom(): void {
     <div id="drillTvChartVue"></div>
     <div id="drillTvChartMetaVue">-</div>
     <canvas id="equityCanvasVue" width="1024" height="160"></canvas>
+    <div id="equityChartStatusVue" hidden></div>
     <canvas id="drawdownCanvasVue" width="1024" height="160"></canvas>
+    <div id="drawdownChartStatusVue" hidden></div>
     <div id="tradeStatsWrapVue" style="display:none;"></div>
     <div id="tradeStatsVue">-</div>
     <table><tbody id="tradeTableBodyVue"></tbody></table>
@@ -639,6 +646,1109 @@ describe("analysis service", () => {
     expect(store.topTableRows[1]?.selected).toBe(true);
   });
 
+  it("preserves DynamicDoubleMa identity and IR in Candidate Detail without fabricating static stability", async () => {
+    const dynamicStrategyIr = {
+      schema_version: 1,
+      profile: "double_ma",
+      ma_source: "hlc3",
+      fast_ma: { ma_type: "ema", params: {} },
+      slow_ma: { ma_type: "sma", params: {} },
+      entry: { op: "cross_over", left: "fast_ma", right: "slow_ma" },
+    };
+    const params = {
+      fast_ma_type: "ema",
+      fast_len: 7,
+      slow_ma_type: "sma",
+      slow_len: 30,
+    };
+    const req = {
+      strategy_kind: "DynamicDoubleMa",
+      data_id: "dataset-dynamic",
+      ma_source: "hlc3",
+      objective: "Sharpe",
+      backend: { backend: "GpuKernel", device_id: 0 },
+      strategy: {},
+      dynamic_strategy_ir: dynamicStrategyIr,
+    };
+
+    expect(buildExecutionStrategyFromRunContext(params, req)).toMatchObject({
+      strategyKind: "DynamicDoubleMa",
+      strategy: {
+        kind: "double_ma",
+        req: {
+          data_id: "dataset-dynamic",
+          dynamic_strategy_ir: dynamicStrategyIr,
+        },
+      },
+    });
+    expect(
+      buildExecutionStrategyFromRunContext(params, {
+        ...req,
+        dynamic_strategy_ir: null,
+      }),
+    ).toBeNull();
+
+    mountDrillDom();
+    seedWorkflowRun({
+      req,
+      res: {
+        top: [
+          [
+            params,
+            {
+              pnl: 0.2,
+              sharpe: 1.2,
+              max_dd: 0.1,
+              trades: 20,
+              exposure: 0.5,
+            },
+          ],
+        ],
+      },
+    });
+    const store = useAnalysisStore(pinia);
+    useDataStore(pinia).dataId = "dataset-dynamic";
+    refreshTopTableFromWorkflowRun();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "get_price_bars") return [] as never;
+      return null as never;
+    });
+
+    await selectTopRow(0);
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_double_ma_drilldown",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          dynamic_strategy_ir: dynamicStrategyIr,
+        }),
+      }),
+    );
+    expect(
+      invokeCommandMock.mock.calls.some(
+        ([command]) => command === "compute_double_ma_local_stability",
+      ),
+    ).toBe(false);
+    expect(store.stabilityWrapVisible).toBe(true);
+    expect(store.stabilityStatus).toContain(
+      "Local stability unavailable for Dynamic Double MA",
+    );
+
+    await rerenderDrill();
+
+    expect(store.stabilityWrapVisible).toBe(true);
+    expect(store.stabilityStatus).toContain(
+      "dynamic-IR neighborhood replay is not supported yet",
+    );
+  });
+
+  it("preserves static DoubleMa and Orc identities without adding dynamic IR to Candidate Detail", () => {
+    const params = {
+      fast_ma_type: "ema",
+      fast_len: 7,
+      slow_ma_type: "sma",
+      slow_len: 30,
+    };
+
+    for (const strategyKind of ["DoubleMa", "Orc"]) {
+      const snapshot = buildExecutionStrategyFromRunContext(params, {
+        strategy_kind: strategyKind,
+        data_id: `dataset-${strategyKind.toLowerCase()}`,
+        ma_source: "close",
+        strategy: {},
+        dynamic_strategy_ir: null,
+      });
+
+      expect(snapshot?.strategyKind).toBe(strategyKind);
+      expect(snapshot?.strategy.kind).toBe("double_ma");
+      expect(snapshot?.strategy.req).not.toHaveProperty("dynamic_strategy_ir");
+    }
+  });
+
+  it("paints continuous support-chart bounds when every min/max bin is degenerate", () => {
+    const canvas = document.createElement("canvas");
+    const strokes: Array<Array<{ x: number; y: number }>> = [];
+    let currentPath: Array<{ x: number; y: number }> = [];
+    Object.defineProperty(canvas, "getContext", {
+      value: () =>
+        ({
+          clearRect: vi.fn(),
+          beginPath: () => {
+            currentPath = [];
+          },
+          moveTo: (x: number, y: number) => {
+            currentPath.push({ x, y });
+          },
+          lineTo: (x: number, y: number) => {
+            currentPath.push({ x, y });
+          },
+          stroke: () => {
+            strokes.push([...currentPath]);
+          },
+        }) as unknown as CanvasRenderingContext2D,
+    });
+
+    __analysisTestUtils.drawMinMaxChartDom(
+      canvas,
+      [1, 1, 1.04, 1.04, 0.99, 0.99, 1.08, 1.08],
+      { stroke: "#00aa77", height: 160 },
+    );
+
+    expect(
+      strokes.some(
+        (path) =>
+          new Set(path.map((point) => point.x)).size >= 4 &&
+          new Set(path.map((point) => point.y)).size >= 3,
+      ),
+    ).toBe(true);
+
+    strokes.length = 0;
+    __analysisTestUtils.drawMinMaxChartDom(canvas, [1, 1], {
+      stroke: "#00aa77",
+      height: 160,
+    });
+    expect(
+      strokes.some(
+        (path) =>
+          path.length >= 2 &&
+          path.some(
+            (point, index) =>
+              index > 0 &&
+              (point.x !== path[0]?.x || point.y !== path[0]?.y),
+        ),
+      ),
+    ).toBe(true);
+
+    strokes.length = 0;
+    __analysisTestUtils.drawMinMaxChartDom(
+      canvas,
+      [1, 1, Number.NaN, Number.NaN, 1.08, 1.08],
+      { stroke: "#00aa77", height: 160 },
+    );
+    const logicalMidpoint =
+      Number(canvas.dataset.logicalWidth || 300) / 2;
+    expect(
+      strokes.some((path) =>
+        path.some((point) => point.x < logicalMidpoint),
+      ),
+    ).toBe(true);
+    expect(
+      strokes.some((path) =>
+        path.some((point) => point.x > logicalMidpoint),
+      ),
+    ).toBe(true);
+    expect(
+      strokes.every((path) => {
+        const hasLeft = path.some((point) => point.x < logicalMidpoint);
+        const hasRight = path.some((point) => point.x > logicalMidpoint);
+        return !(hasLeft && hasRight);
+      }),
+    ).toBe(true);
+  });
+
+  it("clears and unregisters a previously valid support chart when its envelope becomes empty or malformed", async () => {
+    const canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    const clearRect = vi.fn();
+    const strokes: string[] = [];
+    const context = {
+      strokeStyle: "",
+      clearRect,
+      setTransform: vi.fn(),
+      beginPath: () => undefined,
+      moveTo: () => undefined,
+      lineTo: () => undefined,
+      stroke() {
+        strokes.push(String(this.strokeStyle));
+      },
+    };
+    Object.defineProperty(canvas, "getContext", {
+      value: () => context as unknown as CanvasRenderingContext2D,
+    });
+    const originalTheme = document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = "light";
+
+    try {
+      __analysisTestUtils.drawMinMaxChartDom(canvas, [1, 1, 1.05, 1.05], {
+        tone: "positive",
+        baseline: 1,
+        height: 160,
+      });
+      expect(strokes.length).toBeGreaterThan(0);
+      expect(canvas.dataset.supportChartStroke).toBe("#047857");
+
+      __analysisTestUtils.drawMinMaxChartDom(canvas, [], {
+        tone: "positive",
+        baseline: 1,
+        height: 160,
+      });
+      expect(clearRect).toHaveBeenLastCalledWith(
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      );
+      expect(canvas.dataset.supportChartStroke).toBeUndefined();
+      expect(canvas.dataset.supportChartTheme).toBeUndefined();
+
+      __analysisTestUtils.drawMinMaxChartDom(canvas, [1, 1.05], {
+        tone: "positive",
+        baseline: 1,
+        height: 160,
+      });
+      expect(canvas.dataset.supportChartStroke).toBe("#047857");
+      __analysisTestUtils.drawMinMaxChartDom(canvas, [1, "not-a-number"], {
+        tone: "positive",
+        baseline: 1,
+        height: 160,
+      });
+      expect(canvas.dataset.supportChartStroke).toBeUndefined();
+      expect(canvas.dataset.supportChartTheme).toBeUndefined();
+
+      const strokeCountAfterClear = strokes.length;
+      document.documentElement.dataset.theme = "dark";
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(strokes).toHaveLength(strokeCountAfterClear);
+    } finally {
+      disposeDrillSupportCharts();
+      if (originalTheme == null) {
+        delete document.documentElement.dataset.theme;
+      } else {
+        document.documentElement.dataset.theme = originalTheme;
+      }
+    }
+  });
+
+  it("clears all-nonfinite support-chart envelopes without painting a baseline", () => {
+    const canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    const clearRect = vi.fn();
+    const stroke = vi.fn();
+    Object.defineProperty(canvas, "getContext", {
+      value: () =>
+        ({
+          clearRect,
+          setTransform: vi.fn(),
+          beginPath: vi.fn(),
+          moveTo: vi.fn(),
+          lineTo: vi.fn(),
+          stroke,
+        }) as unknown as CanvasRenderingContext2D,
+    });
+
+    __analysisTestUtils.drawMinMaxChartDom(
+      canvas,
+      [Number.NaN, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+      { tone: "negative", baseline: 0, height: 160 },
+    );
+
+    expect(clearRect).toHaveBeenCalledWith(
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
+    expect(stroke).not.toHaveBeenCalled();
+    expect(canvas.dataset.supportChartStroke).toBeUndefined();
+    expect(canvas.dataset.supportChartTheme).toBeUndefined();
+  });
+
+  it("sizes support-chart backing pixels to CSS geometry and redraws across resize", () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 160;
+    document.body.appendChild(canvas);
+    let cssWidth = 640;
+    const paths: Array<Array<{ x: number; y: number }>> = [];
+    let currentPath: Array<{ x: number; y: number }> = [];
+    const clearRect = vi.fn();
+    const setTransform = vi.fn();
+    Object.defineProperty(canvas, "clientWidth", {
+      configurable: true,
+      get: () => cssWidth,
+    });
+    Object.defineProperty(canvas, "clientHeight", {
+      configurable: true,
+      get: () => 160,
+    });
+    Object.defineProperty(canvas, "getBoundingClientRect", {
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        right: cssWidth + 2,
+        bottom: 162,
+        left: 0,
+        width: cssWidth + 2,
+        height: 162,
+        toJSON: () => ({}),
+      }),
+    });
+    Object.defineProperty(canvas, "getContext", {
+      value: () =>
+        ({
+          clearRect,
+          setTransform,
+          beginPath: () => {
+            currentPath = [];
+          },
+          moveTo: (x: number, y: number) => {
+            currentPath.push({ x, y });
+          },
+          lineTo: (x: number, y: number) => {
+            currentPath.push({ x, y });
+          },
+          stroke: () => {
+            paths.push([...currentPath]);
+          },
+        }) as unknown as CanvasRenderingContext2D,
+    });
+
+    class TestResizeObserver implements ResizeObserver {
+      static callback: ResizeObserverCallback = () => undefined;
+      static instance: TestResizeObserver | null = null;
+
+      readonly observed: Element[] = [];
+      readonly unobserved: Element[] = [];
+      disconnectCount = 0;
+
+      constructor(callback: ResizeObserverCallback) {
+        TestResizeObserver.callback = callback;
+        TestResizeObserver.instance = this;
+      }
+
+      observe(target: Element): void {
+        this.observed.push(target);
+      }
+
+      unobserve(target: Element): void {
+        this.unobserved.push(target);
+      }
+
+      disconnect(): void {
+        this.disconnectCount += 1;
+      }
+    }
+    class TestMutationObserver implements MutationObserver {
+      static instance: TestMutationObserver | null = null;
+
+      disconnectCount = 0;
+
+      constructor(_callback: MutationCallback) {
+        TestMutationObserver.instance = this;
+      }
+
+      observe(): void {}
+
+      takeRecords(): MutationRecord[] {
+        return [];
+      }
+
+      disconnect(): void {
+        this.disconnectCount += 1;
+      }
+    }
+    const resizeObserverDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "ResizeObserver",
+    );
+    const mutationObserverDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "MutationObserver",
+    );
+    const devicePixelRatioDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "devicePixelRatio",
+    );
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: TestResizeObserver,
+    });
+    Object.defineProperty(globalThis, "MutationObserver", {
+      configurable: true,
+      value: TestMutationObserver,
+    });
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 2,
+    });
+
+    try {
+      __analysisTestUtils.drawMinMaxChartDom(
+        canvas,
+        [1, 1, 1.04, 1.04, 0.99, 0.99, 1.08, 1.08],
+        { stroke: "#00aa77", baseline: 1, height: 160 },
+      );
+
+      expect(canvas.width).toBe(1280);
+      expect(canvas.height).toBe(320);
+      expect(canvas.dataset.pixelRatio).toBe("2");
+      expect(canvas.dataset.logicalWidth).toBe("640");
+      expect(canvas.dataset.logicalHeight).toBe("160");
+      expect(setTransform).toHaveBeenCalledWith(2, 0, 0, 2, 0, 0);
+      expect(clearRect).toHaveBeenCalledWith(0, 0, 640, 160);
+      expect(
+        paths.some((path) => {
+          const xs = path.map((point) => point.x);
+          return (
+            path.length >= 4 &&
+            Math.min(...xs) <= 2 &&
+            Math.max(...xs) >= 638
+          );
+        }),
+      ).toBe(true);
+
+      cssWidth = 420;
+      TestResizeObserver.callback(
+        [{ target: canvas } as unknown as ResizeObserverEntry],
+        TestResizeObserver.instance as unknown as ResizeObserver,
+      );
+
+      expect(canvas.width).toBe(840);
+      expect(canvas.height).toBe(320);
+      expect(canvas.dataset.logicalWidth).toBe("420");
+      expect(clearRect).toHaveBeenLastCalledWith(0, 0, 420, 160);
+      expect(TestResizeObserver.instance?.observed).toEqual([canvas]);
+      const renderCountAfterResize = clearRect.mock.calls.length;
+      TestResizeObserver.callback(
+        [{ target: canvas } as unknown as ResizeObserverEntry],
+        TestResizeObserver.instance as unknown as ResizeObserver,
+      );
+      expect(clearRect).toHaveBeenCalledTimes(renderCountAfterResize);
+
+      canvas.id = "equityCanvasVue";
+      disposeDrillSupportCharts();
+      expect(TestResizeObserver.instance?.unobserved).toEqual([canvas]);
+      expect(TestResizeObserver.instance?.disconnectCount).toBe(1);
+      expect(TestMutationObserver.instance?.disconnectCount).toBe(1);
+    } finally {
+      if (resizeObserverDescriptor) {
+        Object.defineProperty(
+          globalThis,
+          "ResizeObserver",
+          resizeObserverDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(globalThis, "ResizeObserver");
+      }
+      if (mutationObserverDescriptor) {
+        Object.defineProperty(
+          globalThis,
+          "MutationObserver",
+          mutationObserverDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(globalThis, "MutationObserver");
+      }
+      if (devicePixelRatioDescriptor) {
+        Object.defineProperty(
+          window,
+          "devicePixelRatio",
+          devicePixelRatioDescriptor,
+        );
+      }
+    }
+  });
+
+  it("redraws support charts when only the device pixel ratio changes", () => {
+    const canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    Object.defineProperty(canvas, "clientWidth", {
+      configurable: true,
+      value: 300,
+    });
+    Object.defineProperty(canvas, "clientHeight", {
+      configurable: true,
+      value: 160,
+    });
+    const clearRect = vi.fn();
+    Object.defineProperty(canvas, "getContext", {
+      value: () =>
+        ({
+          clearRect,
+          setTransform: vi.fn(),
+          beginPath: vi.fn(),
+          moveTo: vi.fn(),
+          lineTo: vi.fn(),
+          stroke: vi.fn(),
+        }) as unknown as CanvasRenderingContext2D,
+    });
+
+    let pixelRatio = 1;
+    const mediaQueries: Array<{
+      media: string;
+      listener: EventListener | null;
+      removed: boolean;
+    }> = [];
+    const matchMedia = vi.fn((media: string): MediaQueryList => {
+      const record = {
+        media,
+        listener: null as EventListener | null,
+        removed: false,
+      };
+      mediaQueries.push(record);
+      return {
+        media,
+        matches: true,
+        onchange: null,
+        addEventListener: (_type: string, listener: EventListener) => {
+          record.listener = listener;
+        },
+        removeEventListener: (_type: string, listener: EventListener) => {
+          if (record.listener === listener) record.removed = true;
+        },
+        addListener: (listener: EventListener) => {
+          record.listener = listener;
+        },
+        removeListener: (listener: EventListener) => {
+          if (record.listener === listener) record.removed = true;
+        },
+        dispatchEvent: () => true,
+      } as MediaQueryList;
+    });
+    const matchMediaDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "matchMedia",
+    );
+    const devicePixelRatioDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "devicePixelRatio",
+    );
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: matchMedia,
+    });
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      get: () => pixelRatio,
+    });
+
+    try {
+      __analysisTestUtils.drawMinMaxChartDom(
+        canvas,
+        [1, 1, 1.05, 1.05],
+        { tone: "positive", baseline: 1, height: 160 },
+      );
+      expect(canvas.width).toBe(300);
+      expect(canvas.height).toBe(160);
+      expect(canvas.dataset.pixelRatio).toBe("1");
+      expect(mediaQueries[0]?.media).toBe("(resolution: 1dppx)");
+      const renderCountAtOneX = clearRect.mock.calls.length;
+
+      pixelRatio = 2;
+      mediaQueries[0]?.listener?.(new Event("change"));
+
+      expect(canvas.width).toBe(600);
+      expect(canvas.height).toBe(320);
+      expect(canvas.dataset.pixelRatio).toBe("2");
+      expect(clearRect).toHaveBeenCalledTimes(renderCountAtOneX + 1);
+      expect(mediaQueries[0]?.removed).toBe(true);
+      expect(mediaQueries[1]?.media).toBe("(resolution: 2dppx)");
+
+      disposeDrillSupportCharts();
+      expect(mediaQueries[1]?.removed).toBe(true);
+    } finally {
+      disposeDrillSupportCharts();
+      if (matchMediaDescriptor) {
+        Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
+      } else {
+        Reflect.deleteProperty(window, "matchMedia");
+      }
+      if (devicePixelRatioDescriptor) {
+        Object.defineProperty(
+          window,
+          "devicePixelRatio",
+          devicePixelRatioDescriptor,
+        );
+      }
+    }
+  });
+
+  it("tears down observers for detached support canvases instead of rediscovering replacement IDs", () => {
+    class TestResizeObserver implements ResizeObserver {
+      static instance: TestResizeObserver | null = null;
+
+      readonly observed: Element[] = [];
+      readonly unobserved: Element[] = [];
+      disconnectCount = 0;
+
+      constructor(_callback: ResizeObserverCallback) {
+        TestResizeObserver.instance = this;
+      }
+
+      observe(target: Element): void {
+        this.observed.push(target);
+      }
+
+      unobserve(target: Element): void {
+        this.unobserved.push(target);
+      }
+
+      disconnect(): void {
+        this.disconnectCount += 1;
+      }
+    }
+    const resizeObserverDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "ResizeObserver",
+    );
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: TestResizeObserver,
+    });
+    const original = document.createElement("canvas");
+    original.id = "equityCanvasVue";
+    document.body.appendChild(original);
+
+    try {
+      __analysisTestUtils.drawMinMaxChartDom(original, [1, 1, 1.05, 1.05], {
+        tone: "positive",
+        baseline: 1,
+        height: 160,
+      });
+      expect(TestResizeObserver.instance?.observed).toEqual([original]);
+
+      original.remove();
+      const replacement = document.createElement("canvas");
+      replacement.id = "equityCanvasVue";
+      document.body.appendChild(replacement);
+      disposeDrillSupportCharts();
+
+      expect(TestResizeObserver.instance?.unobserved).toEqual([original]);
+      expect(TestResizeObserver.instance?.disconnectCount).toBe(1);
+    } finally {
+      disposeDrillSupportCharts();
+      if (resizeObserverDescriptor) {
+        Object.defineProperty(
+          globalThis,
+          "ResizeObserver",
+          resizeObserverDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(globalThis, "ResizeObserver");
+      }
+    }
+  });
+
+  it("repaints active support charts with the resolved light and dark series palette", async () => {
+    const originalTheme = document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = "light";
+    const equity = document.createElement("canvas");
+    equity.id = "equityCanvasVue";
+    const drawdown = document.createElement("canvas");
+    drawdown.id = "drawdownCanvasVue";
+    document.body.append(equity, drawdown);
+    const equityStrokes: string[] = [];
+    const drawdownStrokes: string[] = [];
+    const installContext = (
+      canvas: HTMLCanvasElement,
+      strokes: string[],
+    ): void => {
+      const context = {
+        strokeStyle: "",
+        clearRect: () => undefined,
+        setTransform: () => undefined,
+        beginPath: () => undefined,
+        moveTo: () => undefined,
+        lineTo: () => undefined,
+        stroke() {
+          strokes.push(String(this.strokeStyle));
+        },
+      };
+      Object.defineProperty(canvas, "getContext", {
+        value: () => context as unknown as CanvasRenderingContext2D,
+      });
+    };
+    installContext(equity, equityStrokes);
+    installContext(drawdown, drawdownStrokes);
+
+    try {
+      __analysisTestUtils.drawMinMaxChartDom(
+        equity,
+        [1, 1, 1.04, 1.04],
+        { tone: "positive", baseline: 1, height: 160 },
+      );
+      __analysisTestUtils.drawMinMaxChartDom(
+        drawdown,
+        [0, 0, -0.04, -0.04],
+        { tone: "negative", baseline: 0, height: 160 },
+      );
+
+      expect(equity.dataset.supportChartStroke).toBe("#047857");
+      expect(drawdown.dataset.supportChartStroke).toBe("#be123c");
+      expect(equityStrokes).toContain("#047857");
+      expect(drawdownStrokes).toContain("#be123c");
+
+      document.documentElement.dataset.theme = "dark";
+      await vi.waitFor(() => {
+        expect(equity.dataset.supportChartStroke).toBe("#22c55e");
+        expect(drawdown.dataset.supportChartStroke).toBe("#fb7185");
+      });
+      expect(equityStrokes).toContain("#22c55e");
+      expect(drawdownStrokes).toContain("#fb7185");
+    } finally {
+      disposeDrillSupportCharts();
+      if (originalTheme == null) {
+        delete document.documentElement.dataset.theme;
+      } else {
+        document.documentElement.dataset.theme = originalTheme;
+      }
+    }
+  });
+
+  it("keeps valid candidate evidence visible when only the drawdown envelope is invalid", async () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-invalid-drawdown",
+        ma_source: "close",
+        objective: "Sharpe",
+        strategy: {},
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            {
+              pnl: 0.2,
+              sharpe: 1.2,
+              max_dd: 0.1,
+              trades: 20,
+              exposure: 0.5,
+            },
+          ],
+        ],
+      },
+    });
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+    mountDrillDom();
+    const equity = document.querySelector<HTMLCanvasElement>("#equityCanvasVue");
+    const drawdown = document.querySelector<HTMLCanvasElement>(
+      "#drawdownCanvasVue",
+    );
+    __analysisTestUtils.drawMinMaxChartDom(equity, [1, 1.05], {
+      tone: "positive",
+      baseline: 1,
+      height: 160,
+    });
+    __analysisTestUtils.drawMinMaxChartDom(drawdown, [0, -0.05], {
+      tone: "negative",
+      baseline: 0,
+      height: 160,
+    });
+    expect(drawdown?.dataset.supportChartStroke).toBeTruthy();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1.05] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "get_price_bars") return [] as never;
+      if (command === "compute_double_ma_local_stability") return null as never;
+      return null as never;
+    });
+
+    await selectTopRow(0);
+
+    expect(store.drillWrapVisible).toBe(true);
+    expect(store.drillChartModel).not.toBeNull();
+    expect(equity?.dataset.supportChartStroke).toBeTruthy();
+    expect(drawdown?.dataset.supportChartStroke).toBeUndefined();
+    expect(equity?.dataset.renderReady).toBe("true");
+    expect(drawdown?.dataset.renderReady).toBe("false");
+    expect(
+      document.querySelector<HTMLElement>("#equityChartStatusVue")?.hidden,
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLElement>("#drawdownChartStatusVue")?.textContent,
+    ).toContain("Drawdown envelope unavailable");
+  });
+
+  it("clears prior candidate evidence while a replacement drilldown is pending and after it fails", async () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-replacement-failure",
+        ma_source: "close",
+        objective: "Sharpe",
+        strategy: {},
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 8,
+              slow_ma_type: "ema",
+              slow_len: 32,
+            },
+            {
+              pnl: 0.2,
+              sharpe: 1.2,
+              max_dd: 0.1,
+              trades: 20,
+              exposure: 0.5,
+            },
+          ],
+        ],
+      },
+    });
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+    mountDrillDom();
+    const equity = document.querySelector<HTMLCanvasElement>("#equityCanvasVue");
+    const drawdown = document.querySelector<HTMLCanvasElement>(
+      "#drawdownCanvasVue",
+    );
+    __analysisTestUtils.drawMinMaxChartDom(equity, [1, 1.05], {
+      tone: "positive",
+      baseline: 1,
+      height: 160,
+    });
+    __analysisTestUtils.drawMinMaxChartDom(drawdown, [0, -0.05], {
+      tone: "negative",
+      baseline: 0,
+      height: 160,
+    });
+    if (equity) equity.dataset.renderReady = "true";
+    if (drawdown) drawdown.dataset.renderReady = "true";
+    store.drillWrapVisible = true;
+    store.tradeStatsWrapVisible = true;
+    store.stabilityWrapVisible = true;
+    store.stabilityTableRows = [
+      {
+        key: "previous",
+        cells: [{ text: "previous candidate", className: "mono" }],
+      },
+    ];
+    store.drillChartModel = {} as never;
+    store.drillTradeTableModel = { visible: true, rows: [] } as never;
+
+    const drillDeferred = createDeferred<unknown>();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return await drillDeferred.promise as never;
+      }
+      return [] as never;
+    });
+
+    const selection = selectTopRow(0);
+
+    expect(store.drillStatus).toBe("Computing candidate detail…");
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(store.drillTradeTableModel).toBeNull();
+    expect(store.tradeStatsWrapVisible).toBe(false);
+    expect(store.stabilityWrapVisible).toBe(false);
+    expect(equity?.dataset.renderReady).toBe("false");
+    expect(drawdown?.dataset.renderReady).toBe("false");
+    expect(equity?.dataset.supportChartStroke).toBeUndefined();
+    expect(drawdown?.dataset.supportChartStroke).toBeUndefined();
+    expect(store.stabilityTableRows).toHaveLength(0);
+
+    drillDeferred.reject(new Error("replacement unavailable"));
+    await selection;
+
+    expect(store.drillStatus).toContain("Candidate detail failed:");
+    expect(store.drillStatus).toContain("replacement unavailable");
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(store.stabilityWrapVisible).toBe(false);
+  });
+
+  it("clears prior evidence when a historical row cannot form a candidate detail request", async () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-malformed-row",
+        ma_source: "close",
+        objective: "Sharpe",
+        strategy: {},
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 8,
+              slow_len: 32,
+            },
+            {
+              pnl: 0.2,
+              sharpe: 1.2,
+              max_dd: 0.1,
+              trades: 20,
+              exposure: 0.5,
+            },
+          ],
+        ],
+      },
+    });
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+    mountDrillDom();
+    store.drillWrapVisible = true;
+    store.tradeStatsWrapVisible = true;
+    store.stabilityWrapVisible = true;
+    store.stabilityTableRows = [
+      {
+        key: "previous",
+        cells: [{ text: "previous candidate", className: "mono" }],
+      },
+    ];
+    store.drillChartModel = {} as never;
+    store.drillTradeTableModel = { visible: true, rows: [] } as never;
+
+    await selectTopRow(0);
+
+    expect(invokeCommandMock).not.toHaveBeenCalled();
+    expect(store.drillStatus).toContain("Candidate detail unavailable:");
+    expect(store.drillStatus).toContain("complete dataset and moving-average");
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(store.drillTradeTableModel).toBeNull();
+    expect(store.stabilityWrapVisible).toBe(false);
+    expect(store.stabilityTableRows).toHaveLength(0);
+  });
+
+  it("keeps valid replacement detail visible while isolating a stability failure", async () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-stability-failure",
+        ma_source: "close",
+        objective: "Sharpe",
+        strategy: {},
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 9,
+              slow_ma_type: "ema",
+              slow_len: 36,
+            },
+            {
+              pnl: 0.25,
+              sharpe: 1.4,
+              max_dd: 0.08,
+              trades: 24,
+              exposure: 0.55,
+            },
+          ],
+        ],
+      },
+    });
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+    mountDrillDom();
+    store.stabilityTableRows = [
+      {
+        key: "previous",
+        cells: [{ text: "previous stability", className: "mono" }],
+      },
+    ];
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1.08] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, -0.08] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "get_price_bars") return [] as never;
+      if (command === "compute_double_ma_local_stability") {
+        throw new Error("stability unavailable");
+      }
+      return null as never;
+    });
+
+    await selectTopRow(0);
+
+    expect(store.drillWrapVisible).toBe(true);
+    expect(store.drillChartModel).not.toBeNull();
+    expect(store.drillStatus).toBe("Done.");
+    expect(store.stabilityWrapVisible).toBe(true);
+    expect(store.stabilityStatus).toContain("Stability failed:");
+    expect(store.stabilityStatus).toContain("stability unavailable");
+    expect(store.stabilityTableRows).toHaveLength(0);
+    expect(
+      document.querySelector<HTMLCanvasElement>("#equityCanvasVue")?.dataset
+        .renderReady,
+    ).toBe("true");
+  });
+
+  it("clears visible candidate evidence when analysis execution caches are invalidated", () => {
+    const store = useAnalysisStore(pinia);
+    mountDrillDom();
+    const equity = document.querySelector<HTMLCanvasElement>("#equityCanvasVue");
+    const drawdown = document.querySelector<HTMLCanvasElement>(
+      "#drawdownCanvasVue",
+    );
+    __analysisTestUtils.drawMinMaxChartDom(equity, [1, 1.05], {
+      tone: "positive",
+      baseline: 1,
+      height: 160,
+    });
+    __analysisTestUtils.drawMinMaxChartDom(drawdown, [0, -0.05], {
+      tone: "negative",
+      baseline: 0,
+      height: 160,
+    });
+    if (equity) equity.dataset.renderReady = "true";
+    if (drawdown) drawdown.dataset.renderReady = "true";
+    store.drillWrapVisible = true;
+    store.tradeStatsWrapVisible = true;
+    store.stabilityWrapVisible = true;
+    store.stabilityTableRows = [
+      {
+        key: "stale",
+        cells: [{ text: "stale", className: "mono" }],
+      },
+    ];
+    store.drillChartModel = {} as never;
+    store.drillTradeTableModel = { visible: true, rows: [] } as never;
+
+    invalidateAnalysisExecutionCaches();
+
+    expect(store.drillStatus).toBe(
+      "Click a Top row to view candidate detail curves.",
+    );
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.tradeStatsWrapVisible).toBe(false);
+    expect(store.stabilityWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(store.drillTradeTableModel).toBeNull();
+    expect(equity?.dataset.renderReady).toBe("false");
+    expect(drawdown?.dataset.renderReady).toBe("false");
+    expect(equity?.dataset.supportChartStroke).toBeUndefined();
+    expect(drawdown?.dataset.supportChartStroke).toBeUndefined();
+    expect(store.stabilityTableRows).toHaveLength(0);
+  });
+
   it("builds detail trade markers from candidate detail trades and publishes chart/table models", async () => {
     mountDrillDom();
     const drillCurves = {
@@ -984,7 +2094,7 @@ describe("analysis service", () => {
       "compute_composite_cpu_drilldown",
       expect.objectContaining({
         req: expect.objectContaining({
-          backend_hint: { backend: "GpuKernel", device_id: 0 },
+          backend: { backend: "GpuKernel", device_id: 0 },
           signal_mode: "hard_gate",
           halftrend: { amplitude: 7, atr_period: 14, channel_deviation: 1.8 },
           macz: { fast_length: 11, slow_length: 28, signal_length: 8 },
@@ -1089,7 +2199,7 @@ describe("analysis service", () => {
       "compute_composite_cpu_drilldown",
       expect.objectContaining({
         req: expect.objectContaining({
-          backend_hint: { backend: "CpuOnly" },
+          backend: { backend: "CpuOnly" },
           signal_mode: "entry_core_exit_overlay",
           halftrend: { amplitude: 9, atr_period: 21, channel_deviation: 1.6 },
           macz: { fast_length: 12, slow_length: 26, signal_length: 9 },
@@ -1366,6 +2476,185 @@ describe("analysis service", () => {
     expect(invokeCommandMock.mock.calls.length).toBe(callsAfterFirstRender);
   });
 
+  it("keeps an in-flight stability result live when Candidate Detail remounts from cached drill evidence", async () => {
+    mountDrillDom();
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-stability-remount",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "CpuOnly" },
+        strategy: {},
+        halftrend_filter: null,
+      },
+      res: {
+        followup_cache_key: "cache-token-stability-remount",
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            {
+              pnl: 0.2,
+              sharpe: 1.2,
+              max_dd: 0.1,
+              trades: 20,
+              exposure: 0.5,
+            },
+          ],
+        ],
+      },
+    });
+    useDataStore(pinia).dataId = "dataset-stability-remount";
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+    const stabilityDeferred = createDeferred<unknown>();
+    let drillCalls = 0;
+    let stabilityCalls = 0;
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        drillCalls += 1;
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1.05] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, -0.05] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "get_price_bars") return [] as never;
+      if (command === "compute_double_ma_local_stability") {
+        stabilityCalls += 1;
+        return await stabilityDeferred.promise as never;
+      }
+      return null as never;
+    });
+
+    const selection = selectTopRow(0);
+    await vi.waitFor(() => {
+      expect(store.stabilityStatus).toBe("Computing stability…");
+    });
+
+    await rerenderDrill();
+
+    expect(store.stabilityStatus).toBe("Computing stability…");
+    expect(drillCalls).toBe(1);
+    expect(stabilityCalls).toBe(1);
+
+    stabilityDeferred.resolve({
+      base: {
+        fast_len: 7,
+        slow_len: 30,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      objective: "Sharpe",
+      radius: 1,
+      step: 1,
+      start_t: 1,
+      points: [
+        {
+          fast_len: 7,
+          slow_len: 30,
+          score: 1.2,
+          metrics: {
+            pnl: 0.2,
+            sharpe: 1.2,
+            max_dd: 0.1,
+            trades: 20,
+          },
+        },
+      ],
+      summary: { base: 1.2, min: 1.2, median: 1.2, max: 1.2 },
+    });
+    await selection;
+
+    expect(store.stabilityStatus).toBe("Done.");
+    expect(store.stabilityTableRows).toHaveLength(1);
+    expect(store.stabilityTableRows[0]?.cells[0]?.text).toBe("7");
+    expect(drillCalls).toBe(1);
+    expect(stabilityCalls).toBe(1);
+  });
+
+  it("invalidates an in-flight candidate detail response when the active dataset is cleared", async () => {
+    mountDrillDom();
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-clear-race",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "CpuOnly" },
+        strategy: {},
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            {
+              pnl: 0.2,
+              sharpe: 1.2,
+              max_dd: 0.1,
+              trades: 20,
+              exposure: 0.5,
+            },
+          ],
+        ],
+      },
+    });
+    const dataStore = useDataStore(pinia);
+    dataStore.baseDataId = "dataset-clear-race";
+    dataStore.dataId = "dataset-clear-race";
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+    const drillDeferred = createDeferred<unknown>();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return await drillDeferred.promise as never;
+      }
+      return null as never;
+    });
+
+    const selection = selectTopRow(0);
+    await vi.waitFor(() => {
+      expect(store.drillStatus).toBe("Computing candidate detail…");
+    });
+
+    dataStore.clearData();
+
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(store.drillStatus).toBe(
+      "Click a Top row to view candidate detail curves.",
+    );
+
+    drillDeferred.resolve({
+      equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1.05] },
+      drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, -0.05] },
+      trades: [],
+      trade_stats: null,
+      indicator_bars: [],
+    });
+    await selection;
+    await Promise.resolve();
+
+    expect(store.drillWrapVisible).toBe(false);
+    expect(store.drillChartModel).toBeNull();
+    expect(
+      document.querySelector<HTMLCanvasElement>("#equityCanvasVue")?.dataset
+        .renderReady,
+    ).toBe("false");
+  });
+
   it("clears top filters in Vue store state", async () => {
     const store = useAnalysisStore(pinia);
     store.filterMinPnl = "1.0";
@@ -1573,6 +2862,8 @@ describe("analysis service", () => {
     expect(store.heatmapCanvasModel).toMatchObject({
       displayLabel: "Sharpe",
       request: {
+        fastAxisLabel: "Fast EMA length",
+        slowAxisLabel: "Slow EMA length",
         fastMaType: "ema",
         slowMaType: "ema",
       },
@@ -1583,6 +2874,420 @@ describe("analysis service", () => {
           label: "1",
         },
       ],
+    });
+  });
+
+  it("keeps a populated aggregate heatmap available while explaining why 3D needs retained multi-slice rows", () => {
+    const store = useAnalysisStore(pinia);
+    store.heatmapViewMode = "3d";
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        include_all: false,
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["alma"],
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 6,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, 0.3, 0.4],
+        },
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(store.heatmapWrapVisible).toBe(true);
+    expect(store.heatmapCanvasModel).not.toBeNull();
+    expect(store.heatmapCanvasModel?.slice3d).toBeNull();
+    expect(store.heatmapViewMode).toBe("2d");
+    expect(store.heatmapViewModeOptions).toContainEqual({
+      value: "3d",
+      label: "3D slices",
+      disabled: true,
+      disabledReason: expect.stringContaining("Return all results"),
+    });
+    expect(
+      store.heatmapCanvasModel?.aggregateSelectionRequiresExactParams,
+    ).toBe(false);
+    expect(
+      buildHeatmapCellParams(store.heatmapCanvasModel!, {
+        col: 0,
+        drawRow: 1,
+        logicalRow: 0,
+        idx: 0,
+      }),
+    ).toMatchObject({
+      fast_len: 5,
+      fast_ma_type: "sma",
+      slow_len: 20,
+      slow_ma_type: "alma",
+    });
+    expect(String(store.heatmapStatusLine)).toContain(
+      "representative parameter pair",
+    );
+  });
+
+  it("opens the exact retained aggregate winner for an ambiguous MA-parameter sweep", () => {
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        include_all: true,
+        fast_ma_types: ["alma"],
+        slow_ma_types: ["ema"],
+        fast_ma_param_sweeps: {
+          offset: [0.75, 0.85],
+        },
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 6,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.8, null, null, null],
+        },
+        all: [
+          [
+            {
+              fast_len: 5,
+              fast_ma_type: "alma",
+              fast_ma_params: { offset: 0.75, sigma: 6 },
+              slow_len: 20,
+              slow_ma_type: "ema",
+            },
+            { sharpe: 0.4 },
+          ],
+          [
+            {
+              fast_len: 5,
+              fast_ma_type: "alma",
+              fast_ma_params: { offset: 0.85, sigma: 6 },
+              slow_len: 20,
+              slow_ma_type: "ema",
+            },
+            { sharpe: 0.8 },
+          ],
+        ],
+        all_scores: [0.4, 0.8],
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    const renderModel = store.heatmapCanvasModel!;
+    const cell = {
+      col: 0,
+      drawRow: 1,
+      logicalRow: 0,
+      idx: 0,
+    };
+    expect(renderModel.aggregateSelectionRequiresExactParams).toBe(true);
+    expect(renderModel.exactAggregateWinnerCells?.[0]).toMatchObject({
+      score: 0.8,
+      params: {
+        fast_ma_type: "alma",
+        fast_ma_params: { offset: 0.85, sigma: 6 },
+      },
+    });
+    expect(buildHeatmapCellParams(renderModel, cell)).toMatchObject({
+      fast_ma_type: "alma",
+      fast_ma_params: { offset: 0.85, sigma: 6 },
+    });
+    expect(heatmapTooltipText(renderModel, cell)).toContain(
+      "exact retained best-in-bin winner",
+    );
+    expect(String(store.heatmapMeta)).toContain(
+      "exact retained best-in-bin winners",
+    );
+    expect(String(store.heatmapStatusLine)).toContain(
+      "exact retained best-in-bin winners",
+    );
+  });
+
+  it("withholds ambiguous aggregate drilldown when the exact winning MA variant was not retained", () => {
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        include_all: false,
+        fast_ma_types: ["alma"],
+        slow_ma_types: ["ema"],
+        fast_ma_param_sweeps: {
+          offset: [0.75, 0.85],
+        },
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 6,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.8, null, null, null],
+        },
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    const renderModel = store.heatmapCanvasModel!;
+    const cell = {
+      col: 0,
+      drawRow: 1,
+      logicalRow: 0,
+      idx: 0,
+    };
+    expect(renderModel.aggregateSelectionRequiresExactParams).toBe(true);
+    expect(buildHeatmapCellParams(renderModel, cell)).toBeNull();
+    expect(heatmapTooltipText(renderModel, cell)).toContain(
+      "exact winning MA variant was not retained",
+    );
+    expect(String(store.heatmapMeta)).toContain(
+      "exact winning MA variant was not retained",
+    );
+    expect(String(store.heatmapStatusLine)).toContain("Return all results");
+  });
+
+  it("publishes strategy-local VCET axes in heatmap metadata and hover text", () => {
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "Vcet",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
+        vcet: {
+          map_fast_to_vidya_short_period: true,
+          map_slow_to_vidya_long_period: true,
+          map_slow_to_ce_period: true,
+        },
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 6,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, 0.3, 0.4],
+        },
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(store.heatmapCanvasModel?.request).toMatchObject({
+      fastAxisLabel: "VIDYA short period",
+      slowAxisLabel: "VIDYA long / Chandelier periods",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      supports3dSlices: false,
+    });
+    expect(String(store.heatmapMeta)).toContain("VIDYA short period=5-6");
+    expect(String(store.heatmapMeta)).toContain(
+      "VIDYA long / Chandelier periods=20-30",
+    );
+
+    const tooltip = heatmapTooltipText(store.heatmapCanvasModel!, {
+      col: 0,
+      drawRow: 1,
+      logicalRow: 0,
+      idx: 0,
+    });
+    expect(tooltip).toContain("VIDYA short period bin 5");
+    expect(tooltip).toContain("VIDYA long / Chandelier periods bin 20");
+    expect(tooltip).not.toContain("SMA bin");
+    expect(tooltip).not.toContain("EMA bin");
+    expect(tooltip).toContain("representative parameter pair");
+    expect(
+      buildHeatmapCellParams(store.heatmapCanvasModel!, {
+        col: 0,
+        drawRow: 1,
+        logicalRow: 0,
+        idx: 0,
+      }),
+    ).toMatchObject({
+      fast_len: 5,
+      slow_len: 20,
+    });
+  });
+
+  it("labels explicitly disconnected VCC heatmap coordinates as unmapped", () => {
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "Vcc",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        vcc: {
+          map_fast_to_squeeze_period: false,
+          map_fast_to_momentum_period: false,
+          map_slow_to_trend_period: false,
+        },
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 6,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, 0.3, 0.4],
+        },
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(store.heatmapCanvasModel?.request).toMatchObject({
+      fastAxisLabel: "Fast grid (unmapped)",
+      slowAxisLabel: "Slow grid (unmapped)",
+      fastAxisDescription: expect.stringContaining(
+        "does not alter any mapped strategy periods",
+      ),
+      slowAxisDescription: expect.stringContaining(
+        "does not alter any mapped strategy periods",
+      ),
+    });
+  });
+
+  it("keeps 3D slices unavailable for standalone strategies even with synthetic MA variants", () => {
+    const store = useAnalysisStore(pinia);
+    store.heatmapViewMode = "3d";
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "Vcet",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        include_all: true,
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 6,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, 0.3, 0.4],
+        },
+        all: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "ema",
+              slow_len: 20,
+            },
+            { sharpe: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "sma",
+              fast_len: 6,
+              slow_ma_type: "sma",
+              slow_len: 30,
+            },
+            { sharpe: 0.3 },
+          ],
+        ],
+        all_scores: [0.4, 0.3],
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(store.heatmapCanvasModel?.slice3d).toBeNull();
+    expect(store.heatmapViewMode).toBe("2d");
+    expect(store.heatmapViewModeOptions).toContainEqual({
+      value: "3d",
+      label: "3D slices",
+      disabled: true,
+      disabledReason: expect.stringContaining("standalone strategy heatmaps"),
+    });
+  });
+
+  it("keeps objective-only 3D slices unavailable while plateau mode is active", () => {
+    const store = useAnalysisStore(pinia);
+    store.heatmapMode = "plateau";
+    store.heatmapViewMode = "3d";
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        include_all: true,
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 6,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, 0.3, 0.4],
+        },
+        all: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "ema",
+              slow_len: 20,
+            },
+            { sharpe: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "sma",
+              fast_len: 6,
+              slow_ma_type: "sma",
+              slow_len: 30,
+            },
+            { sharpe: 0.3 },
+          ],
+        ],
+        all_scores: [0.4, 0.3],
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(store.heatmapCanvasModel?.slice3d?.slices).toHaveLength(2);
+    expect(store.heatmapViewMode).toBe("2d");
+    expect(store.heatmapViewModeOptions).toContainEqual({
+      value: "3d",
+      label: "3D slices",
+      disabled: true,
+      disabledReason: "3D slices are available only in Objective score mode.",
+    });
+
+    store.heatmapMode = "objective";
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(store.heatmapViewModeOptions).toContainEqual({
+      value: "3d",
+      label: "3D slices",
+      disabled: false,
     });
   });
 
@@ -1861,6 +3566,86 @@ describe("analysis service", () => {
     expect(marker2).toMatchObject({ col: 1, drawRow: 1 });
     expect(marker3).toMatchObject({ col: 2, drawRow: 0 });
     expect(markers.some((marker) => marker.label === "1")).toBe(false);
+  });
+
+  it("groups visible Top ranks that map to the same heatmap bin", () => {
+    mountHeatmapDom();
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "ema",
+              slow_len: 20,
+            },
+            { pnl: 0.1, sharpe: 1.2, max_dd: 0.1, trades: 10, exposure: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 6,
+              slow_ma_type: "ema",
+              slow_len: 21,
+            },
+            { pnl: 0.09, sharpe: 1.1, max_dd: 0.11, trades: 11, exposure: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 6,
+              slow_ma_type: "ema",
+              slow_len: 22,
+            },
+            { pnl: 0.08, sharpe: 1, max_dd: 0.12, trades: 12, exposure: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 6,
+              slow_ma_type: "ema",
+              slow_len: 23,
+            },
+            { pnl: 0.07, sharpe: 0.9, max_dd: 0.13, trades: 13, exposure: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 9,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.06, sharpe: 0.8, max_dd: 0.14, trades: 14, exposure: 0.4 },
+          ],
+        ],
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.42, 0.61, 0.39, 0.57],
+        },
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+
+    expect(store.heatmapCanvasModel?.markers).toEqual([
+      { col: 0, drawRow: 1, label: "1,2 +2" },
+      { col: 1, drawRow: 0, label: "5" },
+    ]);
   });
 
   it("keeps the best-candidate marker available when top_k is disabled", () => {

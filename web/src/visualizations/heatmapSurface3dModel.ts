@@ -4,10 +4,11 @@ import {
   slowForHeatmapLogicalRow,
 } from './heatmapModel'
 import {
-  sampleHeatmapColor,
   type HeatmapCanvasRenderModel,
   type HeatmapResolvedCell,
 } from './heatmapCanvasModel'
+import type { LightweightChartTheme } from './chartTheme'
+import { sampleHeatmapColor } from './heatmapTheme'
 import type { Heatmap3dSlice } from './heatmapSliceModel'
 
 export const HEATMAP_SURFACE_3D_MAX_BINS = 96
@@ -21,6 +22,8 @@ export interface HeatmapSurface3dSample {
   fast: number
   slow: number
   displayValue: number
+  finiteCellCount: number
+  blockCellCount: number
   normalizedValue: number
   color: string
   params: Record<string, unknown> | null
@@ -49,6 +52,7 @@ export interface HeatmapSurface3dModel {
 export interface HeatmapSurface3dBuildOptions {
   maxBins?: number
   slice?: Heatmap3dSlice | null
+  theme?: LightweightChartTheme
 }
 
 export function resolveHeatmapSurface3dKeyboardIndex(
@@ -119,6 +123,8 @@ export function buildHeatmapSurface3dModel(
     const logicalRowEnd = Math.min(binsSlow, logicalRowStart + rowStride)
     for (let colStart = 0; colStart < binsFast; colStart += colStride) {
       const colEnd = Math.min(binsFast, colStart + colStride)
+      const blockCellCount =
+        (logicalRowEnd - logicalRowStart) * (colEnd - colStart)
       let blockCount = 0
       let blockSum = 0
       for (let logicalRow = logicalRowStart; logicalRow < logicalRowEnd; logicalRow += 1) {
@@ -170,8 +176,16 @@ export function buildHeatmapSurface3dModel(
         fast: fastForHeatmapCol(model, representativeCol),
         slow: slowForHeatmapLogicalRow(model, representativeLogicalRow),
         displayValue,
+        finiteCellCount: blockCount,
+        blockCellCount,
         normalizedValue: normalizedHeatmapValue(displayValue, range.min, range.max),
-        color: sampleHeatmapColor(displayValue, range.min, range.max, palette),
+        color: sampleHeatmapColor(
+          displayValue,
+          range.min,
+          range.max,
+          palette,
+          options.theme,
+        ),
         params: options.slice?.cells[representativeIdx]?.params ?? null,
         metrics: options.slice?.cells[representativeIdx]?.metrics ?? null,
       })

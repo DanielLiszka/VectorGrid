@@ -11,14 +11,13 @@ import {
   WORKSPACE_TAB_KEY,
 } from './utils/core/storageKeys'
 import { readStorageString as readSharedStorageString } from './utils/storage'
+import { applyRootThemePreference, normalizeThemePreference } from './utils/themeController'
 import { normalizeWindowEffect } from './utils/windowEffects'
 
-type ThemePref = 'light' | 'dark' | 'system'
 type HelpMode = 'full' | 'concise' | 'off'
 type DensityMode = 'comfortable' | 'standard' | 'dense'
 type UiMode = 'advanced'
 
-const THEME_VALUES = new Set<ThemePref>(['light', 'dark', 'system'])
 const HELP_MODE_VALUES = new Set<HelpMode>(['full', 'concise', 'off'])
 const DENSITY_MODE_VALUES = new Set<DensityMode>(['comfortable', 'standard', 'dense'])
 const UI_MODE_VALUES = new Set<UiMode>(['advanced'])
@@ -39,11 +38,7 @@ function setRootDataAttr(name: string, value: string): void {
 
 function applyThemePreflight(): void {
   const raw = readStorageString(THEME_PREF_KEY).toLowerCase()
-  const pref: ThemePref = THEME_VALUES.has(raw as ThemePref) ? (raw as ThemePref) : 'light'
-  setRootDataAttr('themePref', pref)
-  const media = window.matchMedia?.('(prefers-color-scheme: dark)')
-  const theme = pref === 'system' ? (media?.matches ? 'dark' : 'light') : pref
-  setRootDataAttr('theme', theme)
+  applyRootThemePreference(normalizeThemePreference(raw))
 }
 
 function applyControlsWidthPreflight(): void {

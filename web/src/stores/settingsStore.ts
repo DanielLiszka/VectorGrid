@@ -36,11 +36,14 @@ import {
   writeStorageString,
 } from "../utils/storage";
 import {
+  applyRootThemePreference,
+  normalizeThemePreference,
+} from "../utils/themeController";
+import {
   normalizeWindowEffect,
   type WindowEffect,
 } from "../utils/windowEffects";
 
-const THEME_KEYS = new Set(["light", "dark", "system"]);
 const HELP_MODE_KEYS = new Set(["full", "concise", "off"]);
 const DENSITY_MODE_KEYS = new Set(["comfortable", "standard", "dense"]);
 const UI_MODE_KEYS = new Set(["advanced"]);
@@ -278,10 +281,7 @@ function normalizeErrorMessage(error: unknown, fallback: string): string {
 }
 
 function normalizeTheme(value: unknown): string {
-  const next = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  return THEME_KEYS.has(next) ? next : "system";
+  return normalizeThemePreference(value);
 }
 
 function normalizeEffect(value: unknown): string {
@@ -327,16 +327,6 @@ function normalizeSplitFraction(value: unknown): number {
   const next = Number(value);
   if (!Number.isFinite(next)) return 0.34;
   return Math.min(0.9, Math.max(0.1, next));
-}
-
-function resolveTheme(pref: string): string {
-  if (pref === "dark") return "dark";
-  if (pref === "light") return "light";
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function")
-    return "light";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
 }
 
 function setRootDataAttr(name: string, value: string): void {
@@ -431,8 +421,7 @@ function applyUiModeLocally(
 
 function applyThemeLocally(pref: string, options?: LocalApplyOptions): void {
   const normalized = normalizeTheme(pref);
-  setRootDataAttr("themePref", normalized);
-  setRootDataAttr("theme", resolveTheme(normalized));
+  applyRootThemePreference(normalized);
   if (shouldPersistLocally(options)) persistTheme(normalized);
 }
 
@@ -938,7 +927,10 @@ export const useSettingsStore = defineStore("settings", {
       const next = String(value || "");
       if (key === "settingsThemeSelect") {
         const normalized = normalizeTheme(next);
-        if (this.theme === normalized) return;
+        if (this.theme === normalized) {
+          applyThemeLocally(normalized);
+          return;
+        }
         this.theme = normalized;
         applyThemeLocally(normalized);
 

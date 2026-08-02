@@ -20,6 +20,7 @@ import { bindRuntimePinia } from './stores/runtimePinia'
 import { BOOT_STAGES, useRuntimeStore } from './stores/runtimeStore'
 import { installTauriInstrumentation } from './tauri/instrumentation'
 import { runStorageMigrations } from './utils/storage'
+import { installRootThemeController } from './utils/themeController'
 
 function waitForNextPaint(): Promise<void> {
   return new Promise((resolve) => {
@@ -41,6 +42,8 @@ export async function startVectorGridApp(root: HTMLElement): Promise<void> {
   installTauriInstrumentation()
   const runtimeStore = useRuntimeStore(pinia)
   const app = createApp(App)
+  const stopRootThemeController = installRootThemeController()
+  app.onUnmount(stopRootThemeController)
   app.use(pinia)
   app.use(PiniaColada, {
     queryOptions: {

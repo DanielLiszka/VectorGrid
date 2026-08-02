@@ -509,6 +509,8 @@ pub struct DoubleMaDrilldownRequest {
 
     #[serde(default)]
     pub followup_cache_key: Option<String>,
+    #[serde(default)]
+    pub dynamic_strategy_ir: Option<crate::strategy_ir::StrategyIr>,
     pub params: DoubleMaParamsResolved,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
@@ -5103,8 +5105,37 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let fast_ma = req.params.fast_ma_type.trim().to_ascii_lowercase();
-    let slow_ma = req.params.slow_ma_type.trim().to_ascii_lowercase();
+    // Match optimization request normalization: when a dynamic strategy IR is
+    // present, its data/indicator/execution definitions are authoritative.
+    let dynamic_strategy_ir = req.dynamic_strategy_ir.as_ref();
+    let fast_ma = dynamic_strategy_ir
+        .map(|ir| ir.fast_ma.ma_type.as_str())
+        .unwrap_or(req.params.fast_ma_type.as_str())
+        .trim()
+        .to_ascii_lowercase();
+    let slow_ma = dynamic_strategy_ir
+        .map(|ir| ir.slow_ma.ma_type.as_str())
+        .unwrap_or(req.params.slow_ma_type.as_str())
+        .trim()
+        .to_ascii_lowercase();
+    let ma_source = dynamic_strategy_ir
+        .map(|ir| ir.ma_source.trim())
+        .unwrap_or(req.ma_source.as_str());
+    let strategy = dynamic_strategy_ir
+        .map(|ir| &ir.execution.strategy)
+        .unwrap_or(&req.strategy);
+    let halftrend_filter = match dynamic_strategy_ir {
+        Some(ir) if ir.profile == crate::strategy_ir::StrategyProfileKind::DoubleMa => ir
+            .execution
+            .halftrend_filter
+            .as_ref()
+            .or(ir.execution.halftrend.as_ref()),
+        Some(_) => None,
+        None => req.halftrend_filter.as_ref(),
+    };
+    if let Some(ir) = dynamic_strategy_ir {
+        crate::strategy_ir::validate_strategy_ir(ir)?;
+    }
     validate_ma_kind(&fast_ma)?;
     validate_ma_kind(&slow_ma)?;
 
@@ -5119,10 +5150,10 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         ));
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg(strategy)?;
 
     let close = vector_ta::utilities::data_loader::source_type(candles, "close");
-    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
     if close.len() != ma_prices.len() {
         return Err("ma source length mismatch".to_string());
     }
@@ -5130,25 +5161,33 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         req.followup_cache_key.as_deref(),
         &req.data_id,
         n,
-        &req.ma_source,
+        ma_source,
         &fast_ma,
         &slow_ma,
-        &req.strategy,
-        req.halftrend_filter.as_ref(),
+        strategy,
+        halftrend_filter,
         candles,
     )?;
     let cached_backend_hint = cached_followup
         .as_ref()
         .and_then(|entry| entry.backend_hint.clone());
     let followup_backend = req.backend_hint.clone().or(cached_backend_hint);
-    let fast_ma_params = resolve_followup_ma_params(
-        req.fast_ma_params.as_ref(),
-        req.params.fast_ma_params.as_ref(),
-    );
-    let slow_ma_params = resolve_followup_ma_params(
-        req.slow_ma_params.as_ref(),
-        req.params.slow_ma_params.as_ref(),
-    );
+    let fast_ma_params = if let Some(ir) = dynamic_strategy_ir {
+        (!ir.fast_ma.params.is_empty()).then_some(&ir.fast_ma.params)
+    } else {
+        resolve_followup_ma_params(
+            req.fast_ma_params.as_ref(),
+            req.params.fast_ma_params.as_ref(),
+        )
+    };
+    let slow_ma_params = if let Some(ir) = dynamic_strategy_ir {
+        (!ir.slow_ma.params.is_empty()).then_some(&ir.slow_ma.params)
+    } else {
+        resolve_followup_ma_params(
+            req.slow_ma_params.as_ref(),
+            req.params.slow_ma_params.as_ref(),
+        )
+    };
 
     let (halftrend_trend, kaufman_stops, first_valid, lr) = if let Some(entry) = cached_followup {
         (
@@ -5168,13 +5207,9 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
             .ok_or_else(|| "ma source series all non-finite".to_string())?;
         let mut first_valid = fv_close.max(fv_ma);
 
-        let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
-            candles,
-            &req.ma_source,
-            &req.strategy,
-            req.halftrend_filter.as_ref(),
-        )?;
-        let kaufman_stops = compute_kaufman_stop_series(candles, &req.strategy)?;
+        let halftrend_trend: Option<Vec<f64>> =
+            compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
+        let kaufman_stops = compute_kaufman_stop_series(candles, strategy)?;
         if let Some(ks) = kaufman_stops.as_ref() {
             let fv_k_long = first_finite_idx(&ks.long)
                 .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
@@ -5199,7 +5234,7 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         )
     };
 
-    let trade_offset = if req.strategy.trade_on_next_bar {
+    let trade_offset = if strategy.trade_on_next_bar {
         1usize
     } else {
         0usize
@@ -5229,7 +5264,7 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
     let (fast_mat, cols) = ma_matrix_with_backend_f64(
         candles,
         &fast_ma,
-        &req.ma_source,
+        ma_source,
         &fast_periods,
         fast_ma_params,
         fast_alma_offset,
@@ -5245,7 +5280,7 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
     let (slow_mat, cols2) = ma_matrix_with_backend_f64(
         candles,
         &slow_ma,
-        &req.ma_source,
+        ma_source,
         &slow_periods,
         slow_ma_params,
         slow_alma_offset,
@@ -5258,17 +5293,57 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
     }
 
     let bins = req.bins.unwrap_or(1024);
-    let mut curves = eval_curves_f64_with_exit_mode(
-        &lr,
-        close,
-        &fast_mat,
-        &slow_mat,
-        halftrend_trend.as_deref(),
-        start_t,
-        &req.strategy,
-        bins,
-        kaufman_stops.as_ref(),
-    );
+    let mut curves = if let Some(ir) = dynamic_strategy_ir {
+        let runtime_plan = crate::strategy_dynamic::prepare_runnable_dynamic_double_ma_plan(
+            ir.clone(),
+            crate::strategy_plan::StrategyPlanBackend::Cpu,
+            ObjectiveKind::Sharpe,
+            1,
+            false,
+            candles,
+        )?;
+        let plan = runtime_plan.cpu_plan();
+        if plan.profile == crate::strategy_ir::StrategyProfileKind::DoubleMa {
+            let context = runtime_plan.cpu_context(candles)?;
+            let desired = crate::strategy_dynamic::build_dynamic_double_ma_desired_positions(
+                plan, context, &fast_mat, &slow_mat, start_t,
+            )?;
+            crate::asr::eval_asr_curves_from_desired(
+                candles,
+                context.lr.as_slice(),
+                desired.as_slice(),
+                start_t,
+                &plan.strategy,
+                bins,
+            )
+        } else {
+            // Non-Double-MA dynamic profiles currently optimize through their
+            // strategy-local static evaluator; replay the same effective plan.
+            eval_curves_f64_with_exit_mode(
+                &lr,
+                close,
+                &fast_mat,
+                &slow_mat,
+                halftrend_trend.as_deref(),
+                start_t,
+                &plan.strategy,
+                bins,
+                kaufman_stops.as_ref(),
+            )
+        }
+    } else {
+        eval_curves_f64_with_exit_mode(
+            &lr,
+            close,
+            &fast_mat,
+            &slow_mat,
+            halftrend_trend.as_deref(),
+            start_t,
+            strategy,
+            bins,
+            kaufman_stops.as_ref(),
+        )
+    };
     curves.indicator_bars =
         build_indicator_bars_for_chart(candles, &fast_mat, &slow_mat, DRILL_INDICATOR_MAX_POINTS)?;
     Ok(curves)
@@ -13173,6 +13248,9 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
         lookup_ma_info(slow_ma_type).ok_or_else(|| format!("unknown slow MA: '{slow_ma_type}'"))?;
 
     let mut kernel_blockers: Vec<String> = Vec::new();
+    #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+    kernel_blockers
+        .push("GPU kernel backend is disabled (build without `cuda-backtest-kernel`).".to_string());
     let fast_requires_cpu_precompute = should_cpu_stage_indicator(&route_plan.fast, gpu_execution);
     let slow_requires_cpu_precompute = should_cpu_stage_indicator(&route_plan.slow, gpu_execution);
     if fast_requires_cpu_precompute && !fast_info.supports_cpu_single {
@@ -15328,6 +15406,7 @@ mod tests {
             data_id: "single-pair".to_string(),
             backend_hint: None,
             followup_cache_key: None,
+            dynamic_strategy_ir: None,
             params: DoubleMaParamsResolved {
                 fast_len: 9,
                 slow_len: 21,
@@ -18970,6 +19049,11 @@ mod tests {
         assert!(
             reason.contains("falling back to CpuOnly"),
             "unexpected fallback reason: {reason}"
+        );
+        #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+        assert!(
+            reason.contains("cuda-backtest-kernel"),
+            "CUDA-only fallback reason must identify the missing kernel feature: {reason}"
         );
 
         match prev_env {
@@ -24143,6 +24227,7 @@ mod tests {
             data_id: "test".to_string(),
             backend_hint: None,
             followup_cache_key: None,
+            dynamic_strategy_ir: None,
             params: DoubleMaParamsResolved {
                 fast_len: 10,
                 slow_len: 30,
@@ -24179,6 +24264,64 @@ mod tests {
             .minmax
             .iter()
             .all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0));
+    }
+
+    #[test]
+    fn drilldown_dynamic_strategy_ir_replays_dynamic_signals() {
+        let candles = make_choppy_candles(2_048);
+        let dynamic_ir = make_dynamic_constant_close_ir();
+        let cancel = AtomicBool::new(false);
+        let mut optimization_req =
+            build_single_pair_request(Backend::CpuOnly, StrategyConfig::default());
+        optimization_req.dynamic_strategy_ir = Some(dynamic_ir.clone());
+        let optimization = run_double_ma_optimization_blocking_with_candles(
+            optimization_req,
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("dynamic optimization");
+
+        let static_curves = compute_double_ma_drilldown_blocking_with_candles(
+            build_single_pair_drilldown_request(StrategyConfig::default()),
+            &candles,
+        )
+        .expect("static drilldown");
+
+        let mut dynamic_req = build_single_pair_drilldown_request(StrategyConfig::default());
+        dynamic_req.dynamic_strategy_ir = Some(dynamic_ir);
+        let dynamic_curves =
+            compute_double_ma_drilldown_blocking_with_candles(dynamic_req, &candles)
+                .expect("dynamic drilldown");
+
+        let trade_signature = |curves: &DoubleMaCurves| {
+            curves
+                .trades
+                .iter()
+                .map(|trade| (trade.entry_t, trade.exit_t, trade.direction, trade.open))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            trade_signature(&dynamic_curves),
+            trade_signature(&static_curves),
+            "dynamic signal graph must not silently replay the static MA crossover"
+        );
+        assert!(dynamic_curves.equity.bins > 0);
+        assert_eq!(dynamic_curves.equity.bins, dynamic_curves.drawdown.bins);
+        assert!(!dynamic_curves.indicator_bars.is_empty());
+        assert_eq!(
+            optimization.best_metrics.trades,
+            commission_event_count_from_curves(&dynamic_curves),
+            "drilldown must replay the selected dynamic candidate's execution events"
+        );
+        assert_trade22_metrics_match_trade_stats(
+            "dynamic drilldown",
+            &optimization.best_metrics,
+            dynamic_curves
+                .trade_stats
+                .as_ref()
+                .expect("dynamic trade stats"),
+        );
     }
 
     #[test]

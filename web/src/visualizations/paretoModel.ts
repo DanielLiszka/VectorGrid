@@ -102,10 +102,10 @@ const MO_AXIS_OPTIONS: ParetoAxisOption[] = [
 const LOWER_BETTER_AXIS_KEYS = new Set(['max_dd', 'violation', 'minimize_value'])
 
 export const PARETO_TRUTH_NOTE =
-  'Pareto points are non-dominated under the selected axes. They visualize tradeoffs, not validation approval.'
+  'Pareto points are non-dominated only within the retained shortlist under the selected axes. This is not a global search-space frontier and does not imply validation approval.'
 
 export const PARETO_UNAVAILABLE_TRUTH_NOTE =
-  'Pareto points show non-dominated tradeoffs under the selected axes, not proof of robustness.'
+  'Pareto tradeoffs, when available, are computed only within the retained shortlist under the selected axes, not across the global search space and not as proof of robustness.'
 
 function text(value: unknown): string {
   return String(value ?? '').trim()
@@ -194,9 +194,9 @@ function paddedParetoRangeFromBounds(
 
 export function buildParetoConfidenceNote(hasValidationResult = false): string {
   if (!hasValidationResult) {
-    return 'Validation has not run. Frontier membership alone does not approve a candidate.'
+    return 'Validation has not run. Retained-shortlist frontier membership alone does not approve a candidate.'
   }
-  return 'Validation adds admission evidence, but robust_pareto and cross_ticker_pareto are still filters rather than approval by themselves.'
+  return 'Validation adds admission evidence, but the retained-shortlist frontier and robust_pareto or cross_ticker_pareto filters are not global approval by themselves.'
 }
 
 export function buildParetoRepresentativeSummary<T>(
@@ -330,7 +330,7 @@ export function buildParetoViewModel<T>({
     frontier,
     xRange,
     yRange,
-    meta: `${points.length} points • x=${normalizedXKey} (${formatValue(xRange.min, 3)} to ${formatValue(xRange.max, 3)}) • y=${normalizedYKey} (${formatValue(yRange.min, 3)} to ${formatValue(yRange.max, 3)})`,
+    meta: `${points.length} points from the retained shortlist • x=${normalizedXKey} (${formatValue(xRange.min, 3)} to ${formatValue(xRange.max, 3)}) • y=${normalizedYKey} (${formatValue(yRange.min, 3)} to ${formatValue(yRange.max, 3)})`,
     truthNote: PARETO_TRUTH_NOTE,
     representativeSummary: buildParetoRepresentativeSummary(frontier, selectedRowId, selectedRank),
     confidenceNote,

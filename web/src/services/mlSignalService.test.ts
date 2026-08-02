@@ -131,7 +131,10 @@ describe("mlSignalService", () => {
         };
       }
       if (command === "save_run_artifact") {
-        return { path: "runs/vectorgrid_ml_dataset.json" };
+        return {
+          path: "runs/vectorgrid_ml_dataset.json",
+          retention_warning: "cleanup deferred by a protected campaign artifact",
+        };
       }
       return {};
     });
@@ -173,6 +176,9 @@ describe("mlSignalService", () => {
     });
     expect(useOptimizeStore(pinia).mlSignalDatasetMeta).toContain("321 rows");
     expect(useOptimizeStore(pinia).mlSignalDatasetMeta).toContain("splits 3");
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "retention cleanup needs attention",
+    );
     expect(useOptimizeStore(pinia).mlSignalDatasetMeta).toContain(
       "ticker holdout on",
     );

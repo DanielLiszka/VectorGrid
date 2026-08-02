@@ -1,9 +1,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const webRoot = path.resolve(scriptDir, '..')
+const repoRoot = path.resolve(webRoot, '..')
 const distDir = path.resolve(process.cwd(), 'dist')
 const assetsDir = path.join(distDir, 'assets')
 const indexHtmlPath = path.join(distDir, 'index.html')
+const reportPath = path.resolve(repoRoot, 'output', 'qa', 'bundle-budget.json')
 
 const ENTRY_LIMIT_KB = 600
 const LAZY_LIMIT_KB = 550
@@ -12,8 +17,35 @@ const LAZY_LIMIT_KB = 550
 const TOTAL_JS_WARN_KB = 3200
 const TOTAL_JS_LIMIT_KB = 3450
 
-function fail(message) {
-  console.error(`[bundle-budget] ${message}`)
+const budgets = {
+  entryChunkKb: ENTRY_LIMIT_KB,
+  largestLazyChunkKb: LAZY_LIMIT_KB,
+  totalJsWarningKb: TOTAL_JS_WARN_KB,
+  totalJsKb: TOTAL_JS_LIMIT_KB,
+}
+
+function writeReport({ status, observations = null, warnings = [], issues = [] }) {
+  const report = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    status,
+    source: path.relative(repoRoot, distDir).replace(/\\/g, '/'),
+    budgets,
+    observations,
+    warnings,
+    issues,
+  }
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true })
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+  console.log(
+    `[bundle-budget] Report written to ${path.relative(webRoot, reportPath).replace(/\\/g, '/')}`,
+  )
+}
+
+function fail(messages, observations = null, warnings = []) {
+  const issues = Array.isArray(messages) ? messages : [messages]
+  writeReport({ status: 'failed', observations, warnings, issues })
+  for (const issue of issues) console.error(`[bundle-budget] ${issue}`)
   process.exit(1)
 }
 
@@ -48,7 +80,19 @@ const largestLazy = lazyStats.reduce((max, item) => (item.sizeBytes > max.sizeBy
   sizeBytes: 0,
   sizeKb: 0,
 })
-const totalJsKb = assetStats.reduce((sum, item) => sum + item.sizeKb, 0)
+const totalJsBytes = assetStats.reduce((sum, item) => sum + item.sizeBytes, 0)
+const totalJsKb = totalJsBytes / 1024
+const observations = {
+  assetCount: assetStats.length,
+  entryFile: entryStat.file,
+  entryChunkBytes: entryStat.sizeBytes,
+  entryChunkKb: entryStat.sizeKb,
+  largestLazyFile: largestLazy.file,
+  largestLazyChunkBytes: largestLazy.sizeBytes,
+  largestLazyChunkKb: largestLazy.sizeKb,
+  totalJsBytes,
+  totalJsKb,
+}
 
 const violations = []
 if (entryStat.sizeKb > ENTRY_LIMIT_KB) {
@@ -75,9 +119,11 @@ console.log(
 )
 
 if (violations.length) {
-  fail(violations.join('\n'))
+  fail(violations, observations, warnings)
 }
 
 if (warnings.length) {
   console.warn(`[bundle-budget] ${warnings.join('\n[bundle-budget] ')}`)
 }
+
+writeReport({ status: 'passed', observations, warnings })

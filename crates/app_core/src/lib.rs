@@ -1,4 +1,5 @@
 pub(crate) mod alloc_policy;
+pub mod analysis_series;
 pub mod asr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod asr_gpu_kernel;
@@ -83,8 +84,11 @@ pub mod vcc;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vcc_gpu_kernel;
 pub mod vcet;
+pub mod vcet_dataset_coverage;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vcet_gpu_kernel;
+pub mod vcet_search;
+pub mod vcet_temporal;
 pub mod vemr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vemr_gpu_kernel;
@@ -95,6 +99,10 @@ pub use ta_strategies::composite_cpu::CompositeSignalMode;
 pub use ta_strategies::double_ma::DoubleMaCurves;
 pub use ta_strategies::records::{TradeRecord, TradeRecords};
 
+pub use analysis_series::{
+    AnalysisNamedSeries, AnalysisReferenceLine, AnalysisSeriesAggregation, AnalysisSeriesBar,
+    AnalysisSeriesKind, AnalysisSeriesUnit, StrategyIndicatorBundle,
+};
 pub use csv_compat::read_candles_from_csv_compat;
 pub use cuda_device::{
     preferred_cuda_device, preferred_cuda_device_id, preferred_cuda_device_id_result,
@@ -196,10 +204,11 @@ pub use indicator_catalog::{
 
 pub use meta_select::{
     meta_group_key, meta_group_key_for_request, meta_select_from_artifacts,
-    refresh_meta_group_evidence_flags, HoldoutAggregate, HoldoutDatasetRow, HoldoutSummary,
-    MetaCandidateAggregate, MetaClusterConfig, MetaGroupHoldoutCoverage, MetaGroupingMode,
-    MetaHoldoutCoverageSummary, MetaHoldoutMode, MetaHoldoutValidationConfig, MetaScoreWeights,
-    MetaSelectionRequest, MetaSelectionResult, TrainDatasetRow,
+    meta_select_from_artifacts_with_dataset_universe, refresh_meta_group_evidence_flags,
+    HoldoutAggregate, HoldoutDatasetRow, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig,
+    MetaGroupHoldoutCoverage, MetaGroupingMode, MetaHoldoutCoverageSummary, MetaHoldoutMode,
+    MetaHoldoutValidationConfig, MetaScoreWeights, MetaSelectionRequest, MetaSelectionResult,
+    TrainDatasetRow,
 };
 
 pub use ml_confidence::{

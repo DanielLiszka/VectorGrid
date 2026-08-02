@@ -9,13 +9,15 @@ import {
   DEFAULT_HEATMAP_VIEWPORT,
   downloadHeatmapPng,
   fitHeatmapViewportToFiniteDomain,
+  HEATMAP_MAX_CANVAS_PIXEL_RATIO,
   HEATMAP_MAX_VIEWPORT_SCALE,
   HEATMAP_MIN_VIEWPORT_SCALE,
+  heatmapSelectionLegendText,
   heatmapTooltipText,
   heatmapViewportIsZoomed,
   paintHeatmapBase,
   paintHeatmapOverlay,
-  resolveHeatmapCellAt,
+  resolveHeatmapCanvasBackingStore,
   resolveHeatmapCellFromPoint,
   type HeatmapCanvasRenderModel,
   type HeatmapCanvasViewport,
@@ -24,6 +26,12 @@ import {
   type HeatmapHoverCell,
   type HeatmapResolvedCell,
 } from '../../visualizations/heatmapCanvasModel'
+import {
+  observeDevicePixelRatioChanges,
+  resolveDevicePixelRatio,
+} from '../../visualizations/devicePixelRatioObserver'
+import { resolveLightweightChartTheme } from '../../visualizations/chartTheme'
+import { observeHeatmapTheme } from '../../visualizations/heatmapTheme'
 import AppIconButton from '../ui/AppIconButton.vue'
 import AppMetricStrip from '../ui/AppMetricStrip.vue'
 import HeatmapLegend from './HeatmapLegend.vue'
@@ -57,8 +65,12 @@ const selectedCell = ref<HeatmapResolvedCell | null>(null)
 const viewport = ref<HeatmapCanvasViewport>({ ...DEFAULT_HEATMAP_VIEWPORT })
 const isPanning = ref(false)
 const lastBaseSignature = ref('')
+const activeTheme = ref(resolveLightweightChartTheme())
 let resizeObserver: ResizeObserver | null = null
+let stopDevicePixelRatioObserver: (() => void) | null = null
+let stopThemeObserver: (() => void) | null = null
 let panPointerId: number | null = null
+let panStartPoint: { x: number; y: number } | null = null
 let panLastPoint: { x: number; y: number } | null = null
 let panMoved = false
 let suppressNextClick = false
@@ -76,15 +88,19 @@ const heatmapSummaryItems = computed(() => (
   props.renderModel ? buildHeatmapCanvasSummaryItems(props.renderModel) : []
 ))
 const fitModeLabel = computed(() => (props.fitMode === 'valid' ? 'valid domain' : 'full grid'))
-const unavailableCellCount = computed(() => {
-  const values = props.renderModel?.displayValues ?? []
-  return values.reduce<number>((count, value) => (
-    typeof value === 'number' && Number.isFinite(value) ? count : count + 1
-  ), 0)
-})
 const totalCellCount = computed(() => {
   const model = props.renderModel?.model
   return model ? Math.max(0, model.binsFast * model.binsSlow) : 0
+})
+const unavailableCellCount = computed(() => {
+  const values = props.renderModel?.displayValues ?? []
+  const total = totalCellCount.value
+  let unavailable = 0
+  for (let index = 0; index < total; index += 1) {
+    const value = values[index]
+    if (typeof value !== 'number' || !Number.isFinite(value)) unavailable += 1
+  }
+  return unavailable
 })
 const finiteCellCount = computed(() => Math.max(0, totalCellCount.value - unavailableCellCount.value))
 const finiteCoverageData = computed(() => {
@@ -96,9 +112,19 @@ const axisDataSummary = computed(() => {
   const renderModel = props.renderModel
   const model = renderModel?.model
   if (!renderModel || !model) return ''
-  const fastLabel = String(renderModel.request.fastMaType || 'fast').trim().toUpperCase()
-  const slowLabel = String(renderModel.request.slowMaType || 'slow').trim().toUpperCase()
+  const fastLabel = String(renderModel.request.fastAxisLabel || 'Fast length').trim()
+  const slowLabel = String(renderModel.request.slowAxisLabel || 'Slow length').trim()
   return `${fastLabel} ${model.fastMin}-${model.fastMax}; ${slowLabel} ${model.slowMin}-${model.slowMax}`
+})
+const axisAccessibilitySummary = computed(() => {
+  const renderModel = props.renderModel
+  if (!renderModel) return ''
+  const request = renderModel.request
+  return [
+    `Horizontal axis: ${request.fastAxisLabel}, ${request.fastAxisDescription}`,
+    `Vertical axis: ${request.slowAxisLabel}, ${request.slowAxisDescription}`,
+    `Displayed ranges: ${axisDataSummary.value}.`,
+  ].join(' ')
 })
 const unavailableDomainSummary = computed(() => {
   const unavailable = unavailableCellCount.value
@@ -113,6 +139,27 @@ const selectedCellSummary = computed(() => {
   return renderModel && cell ? heatmapTooltipText(renderModel, cell) : ''
 })
 const visibleSelectedSummary = computed(() => selectedCellSummary.value || props.selectedSummary)
+const selectionLegendNote = computed(() => (
+  props.renderModel
+    ? heatmapSelectionLegendText(props.renderModel)
+    : 'Populated cells can open Candidate Detail when a faithful parameter set is available.'
+))
+const keyboardSelectableCells = computed<HeatmapResolvedCell[]>(() => {
+  const renderModel = props.renderModel
+  if (!renderModel) return []
+  const { binsFast, binsSlow } = renderModel.model
+  const cells: HeatmapResolvedCell[] = []
+  for (let drawRow = 0; drawRow < binsSlow; drawRow += 1) {
+    const logicalRow = binsSlow - 1 - drawRow
+    for (let col = 0; col < binsFast; col += 1) {
+      const idx = logicalRow * binsFast + col
+      const value = renderModel.displayValues[idx]
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      cells.push({ col, drawRow, logicalRow, idx })
+    }
+  }
+  return cells
+})
 
 function overlayCell(): HeatmapHoverCell | null {
   if (hoverCell.value) return hoverCell.value
@@ -128,6 +175,8 @@ function hideTooltip(): void {
 function clearCanvases(): void {
   clearHeatmapCanvas(canvasRef.value)
   clearHeatmapCanvas(overlayRef.value)
+  if (canvasRef.value) delete canvasRef.value.dataset.renderSignature
+  if (overlayRef.value) delete overlayRef.value.dataset.renderSignature
   lastBaseSignature.value = ''
 }
 
@@ -138,11 +187,14 @@ function syncCanvasBackingStore(): boolean {
   const rect = stack.getBoundingClientRect()
   const cssWidth = Math.max(240, Math.round(rect.width || stack.clientWidth || 512))
   const cssHeight = Math.max(240, Math.round(rect.height || stack.clientHeight || cssWidth))
-  const ratio = typeof window === 'undefined'
-    ? 1
-    : Math.min(3, Math.max(1, Math.round((window.devicePixelRatio || 1) * 100) / 100))
-  const targetWidth = Math.max(1, Math.round(cssWidth * ratio))
-  const targetHeight = Math.max(1, Math.round(cssHeight * ratio))
+  const backingStore = resolveHeatmapCanvasBackingStore({
+    cssWidth,
+    cssHeight,
+    devicePixelRatio: resolveDevicePixelRatio(HEATMAP_MAX_CANVAS_PIXEL_RATIO),
+  })
+  const ratio = backingStore.pixelRatio
+  const targetWidth = backingStore.width
+  const targetHeight = backingStore.height
   let changed = false
   for (const canvas of canvases) {
     if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
@@ -169,11 +221,25 @@ function canvasLogicalSize(): { width: number; height: number } | null {
   }
 }
 
-function clampViewportState(next: HeatmapCanvasViewport = viewport.value): void {
+function viewportStateChanged(
+  current: HeatmapCanvasViewport,
+  next: HeatmapCanvasViewport,
+): boolean {
+  return (
+    Math.abs(current.scale - next.scale) > 1.0e-6 ||
+    Math.abs(current.offsetX - next.offsetX) > 1.0e-3 ||
+    Math.abs(current.offsetY - next.offsetY) > 1.0e-3
+  )
+}
+
+function clampViewportState(next: HeatmapCanvasViewport = viewport.value): boolean {
   const size = canvasLogicalSize()
-  viewport.value = size
+  const clamped = size
     ? clampHeatmapViewport(next, size.width, size.height)
     : clampHeatmapViewport(next, 512, 512)
+  if (!viewportStateChanged(viewport.value, clamped)) return false
+  viewport.value = clamped
+  return true
 }
 
 function resetViewport(): void {
@@ -207,28 +273,31 @@ function clientPointToLogicalCanvas(clientX: number, clientY: number): { x: numb
   }
 }
 
-function zoomAtLogicalPoint(point: { x: number; y: number }, factor: number): void {
+function zoomAtLogicalPoint(point: { x: number; y: number }, factor: number): boolean {
   const size = canvasLogicalSize()
-  if (!size || !Number.isFinite(factor) || factor <= 0) return
+  if (!size || !Number.isFinite(factor) || factor <= 0) return false
   const current = viewport.value
   const nextScale = Math.max(
     HEATMAP_MIN_VIEWPORT_SCALE,
     Math.min(HEATMAP_MAX_VIEWPORT_SCALE, current.scale * factor),
   )
+  if (Math.abs(nextScale - current.scale) <= 1.0e-6) return false
   const modelX = (point.x - current.offsetX) / current.scale
   const modelY = (point.y - current.offsetY) / current.scale
-  clampViewportState({
+  const changed = clampViewportState({
     scale: nextScale,
     offsetX: point.x - modelX * nextScale,
     offsetY: point.y - modelY * nextScale,
   })
+  if (!changed) return false
   if (!viewportZoomed.value) endPan()
   repaint(true)
+  return true
 }
 
-function zoomAtClientPoint(clientX: number, clientY: number, factor: number): void {
+function zoomAtClientPoint(clientX: number, clientY: number, factor: number): boolean {
   const point = clientPointToLogicalCanvas(clientX, clientY)
-  if (point) zoomAtLogicalPoint(point, factor)
+  return point ? zoomAtLogicalPoint(point, factor) : false
 }
 
 function zoomFromCenter(factor: number): void {
@@ -237,15 +306,17 @@ function zoomFromCenter(factor: number): void {
   zoomAtLogicalPoint({ x: size.width / 2, y: size.height / 2 }, factor)
 }
 
-function panByLogical(deltaX: number, deltaY: number): void {
-  if (!viewportZoomed.value) return
-  clampViewportState({
+function panByLogical(deltaX: number, deltaY: number): boolean {
+  if (!viewportZoomed.value) return false
+  const changed = clampViewportState({
     ...viewport.value,
     offsetX: viewport.value.offsetX + deltaX,
     offsetY: viewport.value.offsetY + deltaY,
   })
+  if (!changed) return false
   hideTooltip()
   repaint(true)
+  return true
 }
 
 function endPan(pointerId: number | null = null): void {
@@ -260,6 +331,7 @@ function endPan(pointerId: number | null = null): void {
   }
   isPanning.value = false
   panPointerId = null
+  panStartPoint = null
   panLastPoint = null
   panMoved = false
 }
@@ -275,15 +347,21 @@ function repaint(forceBase = false): void {
   }
   const backingStoreChanged = syncCanvasBackingStore()
   if (backingStoreChanged) clampViewportState()
-  const renderSignature = `${renderModel.signature}:${viewportKey.value}`
+  const renderSignature = `${renderModel.signature}:${viewportKey.value}:${activeTheme.value}`
   if (forceBase || backingStoreChanged || lastBaseSignature.value !== renderSignature) {
-    paintHeatmapBase(renderModel, canvas, viewport.value)
+    paintHeatmapBase(renderModel, canvas, viewport.value, activeTheme.value)
     canvas.dataset.renderSignature = renderModel.signature
     lastBaseSignature.value = renderSignature
   }
-  paintHeatmapOverlay(renderModel, overlay, overlayCell(), viewport.value)
+  paintHeatmapOverlay(
+    renderModel,
+    overlay,
+    overlayCell(),
+    viewport.value,
+    activeTheme.value,
+  )
   overlay.dataset.renderSignature = renderModel.signature
-  legendRef.value?.paint(renderModel.range, renderModel.palette)
+  legendRef.value?.paint(renderModel.range, renderModel.palette, activeTheme.value)
 }
 
 function setTooltipFromEvent(event: MouseEvent, content: string): void {
@@ -291,10 +369,25 @@ function setTooltipFromEvent(event: MouseEvent, content: string): void {
   const overlay = overlayRef.value
   if (!tooltip || !overlay) return
   const rect = overlay.getBoundingClientRect()
-  tooltip.style.display = 'block'
-  tooltip.style.left = `${Math.max(8, event.clientX - rect.left + 12)}px`
-  tooltip.style.top = `${Math.max(8, event.clientY - rect.top + 12)}px`
+  const inset = 8
+  const gap = 12
+  const anchorX = event.clientX - rect.left
+  const anchorY = event.clientY - rect.top
   tooltip.textContent = content
+  tooltip.style.display = 'block'
+  const tooltipRect = tooltip.getBoundingClientRect()
+  const tooltipWidth = Math.max(0, tooltip.offsetWidth || tooltipRect.width)
+  const tooltipHeight = Math.max(0, tooltip.offsetHeight || tooltipRect.height)
+  const maxLeft = Math.max(inset, rect.width - tooltipWidth - inset)
+  const maxTop = Math.max(inset, rect.height - tooltipHeight - inset)
+  const preferredLeft = anchorX + gap + tooltipWidth > rect.width - inset
+    ? anchorX - tooltipWidth - gap
+    : anchorX + gap
+  const preferredTop = anchorY + gap + tooltipHeight > rect.height - inset
+    ? anchorY - tooltipHeight - gap
+    : anchorY + gap
+  tooltip.style.left = `${Math.max(inset, Math.min(maxLeft, preferredLeft))}px`
+  tooltip.style.top = `${Math.max(inset, Math.min(maxTop, preferredTop))}px`
 }
 
 function handleMouseLeave(): void {
@@ -328,23 +421,24 @@ function handleMouseMove(event: MouseEvent): void {
 }
 
 function handleWheel(event: WheelEvent): void {
-  if (!props.renderModel) return
-  event.preventDefault()
+  if (!props.renderModel || (!event.ctrlKey && !event.metaKey)) return
   const delta = Number(event.deltaY)
   if (!Number.isFinite(delta) || delta === 0) return
   const factor = Math.exp(-delta * 0.0015)
-  zoomAtClientPoint(event.clientX, event.clientY, factor)
+  if (zoomAtClientPoint(event.clientX, event.clientY, factor)) {
+    event.preventDefault()
+  }
 }
 
 function handlePointerDown(event: PointerEvent): void {
   if (!props.renderModel || !viewportZoomed.value || event.button !== 0) return
   const overlay = overlayRef.value
-  event.preventDefault()
   hideTooltip()
   hoverCell.value = null
   isPanning.value = true
   panPointerId = event.pointerId
-  panLastPoint = { x: event.clientX, y: event.clientY }
+  panStartPoint = { x: event.clientX, y: event.clientY }
+  panLastPoint = { ...panStartPoint }
   panMoved = false
   try {
     overlay?.setPointerCapture?.(event.pointerId)
@@ -355,20 +449,28 @@ function handlePointerDown(event: PointerEvent): void {
 }
 
 function handlePointerMove(event: PointerEvent): void {
-  if (!isPanning.value || panPointerId !== event.pointerId || !panLastPoint) return
+  if (
+    !isPanning.value ||
+    panPointerId !== event.pointerId ||
+    !panStartPoint ||
+    !panLastPoint
+  ) return
   const overlay = overlayRef.value
   const size = canvasLogicalSize()
   if (!overlay || !size) return
   const rect = overlay.getBoundingClientRect()
   if (!rect.width || !rect.height) return
-  event.preventDefault()
   const deltaX = ((event.clientX - panLastPoint.x) / rect.width) * size.width
   const deltaY = ((event.clientY - panLastPoint.y) / rect.height) * size.height
-  if (Math.abs(event.clientX - panLastPoint.x) + Math.abs(event.clientY - panLastPoint.y) > 2) {
-    panMoved = true
-  }
+  const movedEnough = Math.hypot(
+    event.clientX - panStartPoint.x,
+    event.clientY - panStartPoint.y,
+  ) > 2
   panLastPoint = { x: event.clientX, y: event.clientY }
-  panByLogical(deltaX, deltaY)
+  if (movedEnough) panMoved = true
+  if (panByLogical(deltaX, deltaY)) {
+    event.preventDefault()
+  }
 }
 
 function handlePointerUp(event: PointerEvent): void {
@@ -395,47 +497,46 @@ function handleClick(event: MouseEvent): void {
   )
   if (!cell) return
   const params = buildHeatmapCellParams(renderModel, cell)
-  if (params) {
-    selectedCell.value = cell
-    repaint()
-    emit('request-candidate-detail', params)
-  }
+  selectedCell.value = cell
+  repaint()
+  if (params) emit('request-candidate-detail', params)
 }
 
-function cellIsSelectable(renderModel: HeatmapCanvasRenderModel, cell: HeatmapResolvedCell | null): cell is HeatmapResolvedCell {
-  return Boolean(cell && heatmapTooltipText(renderModel, cell) && buildHeatmapCellParams(renderModel, cell))
-}
-
-function firstSelectableCell(renderModel: HeatmapCanvasRenderModel, reverse = false): HeatmapResolvedCell | null {
-  const { binsFast, binsSlow } = renderModel.model
-  const total = binsFast * binsSlow
-  for (let offset = 0; offset < total; offset += 1) {
-    const next = reverse ? total - 1 - offset : offset
-    const drawRow = Math.floor(next / binsFast)
-    const col = next % binsFast
-    const cell = resolveHeatmapCellAt(renderModel.model, col, drawRow)
-    if (cellIsSelectable(renderModel, cell)) return cell
-  }
-  return null
+function firstSelectableCell(reverse = false): HeatmapResolvedCell | null {
+  const cells = keyboardSelectableCells.value
+  return (reverse ? cells[cells.length - 1] : cells[0]) ?? null
 }
 
 function directionalSelectableCell(
-  renderModel: HeatmapCanvasRenderModel,
   dCol: number,
   dRow: number,
 ): HeatmapResolvedCell | null {
   const current = selectedCell.value
-  if (!current) return firstSelectableCell(renderModel, dCol < 0 || dRow < 0)
-  const steps = dCol !== 0 ? renderModel.model.binsFast : renderModel.model.binsSlow
-  for (let step = 1; step < steps; step += 1) {
-    const cell = resolveHeatmapCellAt(
-      renderModel.model,
-      current.col + dCol * step,
-      current.drawRow + dRow * step,
-    )
-    if (cellIsSelectable(renderModel, cell)) return cell
+  if (!current) return firstSelectableCell(dCol < 0 || dRow < 0)
+  let best: HeatmapResolvedCell | null = null
+  let bestPrimaryDistance = Number.POSITIVE_INFINITY
+  let bestSecondaryDistance = Number.POSITIVE_INFINITY
+  for (const cell of keyboardSelectableCells.value) {
+    const primaryDistance = dCol !== 0
+      ? (cell.col - current.col) * dCol
+      : (cell.drawRow - current.drawRow) * dRow
+    if (primaryDistance <= 0) continue
+    const secondaryDistance = dCol !== 0
+      ? Math.abs(cell.drawRow - current.drawRow)
+      : Math.abs(cell.col - current.col)
+    if (
+      secondaryDistance < bestSecondaryDistance ||
+      (
+        secondaryDistance === bestSecondaryDistance &&
+        primaryDistance < bestPrimaryDistance
+      )
+    ) {
+      best = cell
+      bestPrimaryDistance = primaryDistance
+      bestSecondaryDistance = secondaryDistance
+    }
   }
-  return null
+  return best
 }
 
 function selectKeyboardCell(cell: HeatmapResolvedCell | null): void {
@@ -454,26 +555,36 @@ function requestSelectedCandidateDetail(): void {
   if (params) emit('request-candidate-detail', params)
 }
 
+function takeKeyboardOwnership(): void {
+  hoverCell.value = null
+  hideTooltip()
+  repaint()
+}
+
 function handleKeydown(event: KeyboardEvent): void {
   const renderModel = props.renderModel
   if (!renderModel) return
   if (event.key === '+' || event.key === '=') {
     event.preventDefault()
+    takeKeyboardOwnership()
     zoomFromCenter(1.25)
     return
   }
   if (event.key === '-' || event.key === '_') {
     event.preventDefault()
+    takeKeyboardOwnership()
     zoomFromCenter(1 / 1.25)
     return
   }
   if (event.key === '0') {
     event.preventDefault()
+    takeKeyboardOwnership()
     resetViewport()
     return
   }
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
+    takeKeyboardOwnership()
     requestSelectedCandidateDetail()
     return
   }
@@ -486,21 +597,37 @@ function handleKeydown(event: KeyboardEvent): void {
   const vector = movement[event.key]
   if (vector) {
     event.preventDefault()
+    takeKeyboardOwnership()
     if (event.shiftKey && viewportZoomed.value) {
       panByLogical(-vector[0] * 48, -vector[1] * 48)
     } else {
-      selectKeyboardCell(directionalSelectableCell(renderModel, vector[0], vector[1]))
+      selectKeyboardCell(directionalSelectableCell(vector[0], vector[1]))
     }
     return
   }
   if (event.key === 'Home' || event.key === 'End') {
     event.preventDefault()
-    selectKeyboardCell(firstSelectableCell(renderModel, event.key === 'End'))
+    takeKeyboardOwnership()
+    selectKeyboardCell(firstSelectableCell(event.key === 'End'))
   }
 }
 
 function exportPng(fileName = 'heatmap.png'): boolean {
-  return downloadHeatmapPng(canvasRef.value, overlayRef.value, fileName)
+  const renderModel = props.renderModel
+  const base = canvasRef.value
+  const overlay = overlayRef.value
+  if (
+    !renderModel ||
+    !base ||
+    !overlay ||
+    base.dataset.renderSignature !== renderModel.signature ||
+    overlay.dataset.renderSignature !== renderModel.signature
+  ) {
+    return false
+  }
+  return downloadHeatmapPng(base, overlay, fileName, () => {
+    paintHeatmapBase(renderModel, base, viewport.value, activeTheme.value)
+  })
 }
 
 watch(
@@ -510,6 +637,12 @@ watch(
     selectedCell.value = null
     hideTooltip()
     await nextTick()
+    if (!props.renderModel) {
+      viewport.value = { ...DEFAULT_HEATMAP_VIEWPORT }
+      endPan()
+      clearCanvases()
+      return
+    }
     if (props.fitMode === 'valid') {
       fitViewportToValidDomain()
     } else {
@@ -521,6 +654,16 @@ watch(
 )
 
 onMounted(() => {
+  stopThemeObserver = observeHeatmapTheme((theme) => {
+    activeTheme.value = theme
+    lastBaseSignature.value = ''
+    repaint(true)
+  })
+  stopDevicePixelRatioObserver = observeDevicePixelRatioChanges(() => {
+    repaint(true)
+  }, {
+    maxPixelRatio: HEATMAP_MAX_CANVAS_PIXEL_RATIO,
+  })
   if (typeof ResizeObserver !== 'undefined' && stackRef.value) {
     resizeObserver = new ResizeObserver(() => {
       if (props.fitMode === 'valid') {
@@ -541,6 +684,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopThemeObserver?.()
+  stopThemeObserver = null
+  stopDevicePixelRatioObserver?.()
+  stopDevicePixelRatioObserver = null
   resizeObserver?.disconnect()
   resizeObserver = null
   hoverCell.value = null
@@ -567,7 +714,7 @@ defineExpose({ exportPng, repaint })
           disabled-reason="Already fit to view"
           @click="zoomFromCenter(1 / 1.25)"
         />
-        <span class="heatmapZoomLevel mono panelNumeric" aria-live="polite">{{ viewportScalePercent }}</span>
+        <span class="heatmapZoomLevel mono panelNumeric">{{ viewportScalePercent }}</span>
         <AppIconButton
           :icon="Plus"
           label="Zoom in"
@@ -596,7 +743,7 @@ defineExpose({ exportPng, repaint })
     </div>
     <div class="chartAssist">
       <div id="heatmapKeyboardHint" class="panelMuted">
-        Click a populated cell, or use arrow keys and Enter. Top results keeps exact ranked candidates.
+        Click a populated cell, use arrow keys and Enter, or hold Ctrl/Command while scrolling to zoom. Top results keeps exact ranked candidates.
       </div>
       <div class="actions">
         <button type="button" data-qa-action="heatmap.reviewTop" @click="$emit('review-top-results')">Review Top results</button>
@@ -610,7 +757,7 @@ defineExpose({ exportPng, repaint })
       </p>
     </details>
     <div id="heatmapWrapVue" v-show="!!renderModel" class="heatmapWrap">
-      <div id="heatmapMetaVue" class="panelStatus heatmapRenderMeta" role="status" aria-live="polite">
+      <div id="heatmapMetaVue" class="panelStatus heatmapRenderMeta">
         {{ renderModel?.meta || '-' }}
       </div>
       <div
@@ -636,7 +783,8 @@ defineExpose({ exportPng, repaint })
         class="heatmapCanvasStack chartSurface"
         role="group"
         :aria-label="ariaLabel"
-        aria-describedby="heatmapKeyboardHint"
+        :data-heatmap-theme="activeTheme"
+        aria-describedby="heatmapKeyboardHint heatmapAxisDescriptionVue"
         :class="{ zoomed: viewportZoomed, panning: isPanning }"
         :data-viewport-scale="viewportScaleData"
         :data-viewport-offset-x="viewportOffsetXData"
@@ -667,12 +815,18 @@ defineExpose({ exportPng, repaint })
         ></canvas>
         <div id="heatmapTooltipVue" ref="tooltipRef" class="heatmapTooltip" style="display: none;"></div>
       </div>
+      <div
+        id="heatmapAxisDescriptionVue"
+        class="srOnly"
+      >
+        {{ axisAccessibilitySummary }}
+      </div>
       <div class="heatmapLegendRow">
         <HeatmapLegend ref="legendRef" :note="renderModel?.displayLegendNote || ''" />
         <div>
           <div class="heatmapLegendSpacer" aria-hidden="true"></div>
           <div class="panelMuted heatmapLegendNote">
-            Click a populated cell for representative detail; Top results keeps exact ranked candidates.
+            {{ selectionLegendNote }}
           </div>
         </div>
       </div>
@@ -693,6 +847,18 @@ defineExpose({ exportPng, repaint })
 .heatmapCanvasHost {
   display: grid;
   gap: 0.65rem;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .heatmapCanvasHeader {
@@ -806,7 +972,7 @@ defineExpose({ exportPng, repaint })
     linear-gradient(135deg, color-mix(in oklab, var(--surface-inline) 96%, transparent), transparent 44%),
     color-mix(in oklab, var(--surface-working) 96%, var(--panel-footer));
   cursor: crosshair;
-  touch-action: none;
+  touch-action: pan-y pinch-zoom;
   user-select: none;
 }
 

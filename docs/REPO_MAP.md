@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-07-24
+Last updated: 2026-08-02
 
 ## Purpose
 
@@ -146,7 +146,7 @@ Current shipped-slice guardrails to remember:
 ### Workspace crates
 
 - `Cargo.toml`
-  - Rust workspace with 4 members.
+  - Rust workspace with 5 members.
 - `src-tauri/`
   - Package: `ta_desktop_demo_app`
   - Role: desktop app crate and Tauri command surface
@@ -161,6 +161,10 @@ Current shipped-slice guardrails to remember:
 - `crates/optimizer/`
   - Package: `ta_optimizer`
   - Role: optimizer support crate
+- `vendor/embed-resource-3.0.6/`
+  - Package: `embed-resource`
+  - Role: reviewed upstream-derived Windows resource compiler dependency used by the exact `tauri-winres -> embed-resource` build chain
+  - The root Cargo patch keeps this dependency in the resolved product graph while workspace membership keeps its compile/test surface exercised
 
 ### Top-level directories to care about first
 
@@ -245,10 +249,19 @@ These crates are smaller than `app_core`, but they are part of the real executio
 - `web/package.json`
   - Node toolchain requirements, frontend scripts, generated-command checks, parity scripts, and request-builder benchmark entrypoints
 - `scripts/run_repo_quality_gate.ps1`
-  - canonical local-first static-analysis lane for broad non-options work: Rust fmt/check/clippy plus web lint/typecheck, with optional desktop typecheck, browser E2E QA, desktop smoke, and workspace tests
+  - canonical local-first static-analysis lane for broad non-options work: first-party Rust fmt/Clippy, workspace check/test coverage including the reviewed `embed-resource` patch, and web lint/typecheck, with optional desktop typecheck, browser E2E QA, desktop smoke, and workspace tests
 - `scripts/run_backend_release_gate.ps1`
   - backend/CLI-preview release lane: Rust-only checks, workspace tests, backend/headless CLI release builds, optional benchmark compilation, and optional perf gates
+  - keeps fmt/Clippy scoped to first-party crates while explicitly compiling and testing the reviewed `embed-resource` patch
   - intentionally does not call npm, require `web/`, build `web/dist`, or run Tauri packaging; use this lane for backend-only checkouts where frontend sources are omitted or ignored
+- `scripts/run_release_candidate_gate.ps1`
+  - broad local candidate rehearsal; records readiness, provenance, manifest, hashes, parity, and configured performance/native evidence but is not public-release authority by itself
+- `scripts/run_packaged_smoke.ps1`
+  - package inspection/runtime wrapper; only `runtime_executed: true` against the extracted staged bundle can support a launch claim
+  - `-DesktopSuite release-proof` runs the exact-package allowlist in `scripts/release_proof_journeys.json` and binds every journey to one run, variant, and packaged-binary identity
+- `scripts/run_public_release_gate.ps1`
+  - final local publication-policy boundary over the candidate gate, exact-package `release-proof` runtime evidence, signing/timestamp checks, final artifact revalidation, exact initial/final Git HEAD plus raw NUL-delimited worktree status, canonical raw-byte manifests and retained deny-write read leases for tracked/current-untracked files, rejection of nonstandard tracked index flags or multi-link source files, and fail-closed run-long working-tree mutation monitoring
+  - dirty-worktree or unsigned-beta allowances are rehearsal-only and can never set `public_release_eligible: true`
 - `scripts/run_frontend_e2e_gate.ps1`
   - build-once frontend browser QA lane for workbench smoke, action coverage, core workflow E2E, and optional responsive/regression/a11y/baseline/exploratory slices; `-IncludeFullWorkflow` runs the full browser spec set instead of the sliced lane
   - `-IncludeInteractionLatency` opts into the separately serialized scoped warm mocked-browser latency lane; that lane performs its own attested production build under the benchmark lock
@@ -374,6 +387,7 @@ Open in this order:
 - `src-tauri/src/commands_reports_validation_xlsx.rs`
 - `src-tauri/src/commands_reports_csv.rs`
 - `src-tauri/src/commands_reports_meta_xlsx.rs`
+- `src-tauri/src/commands_reports_vcet_temporal_xlsx.rs`
 
 Only then open:
 
@@ -418,10 +432,288 @@ Research-campaign orchestration truth anchors:
   - the script drives nine campaign phases in separate CPU-only OS processes against marker-owned isolated app data: interrupted, resume, no-op, stale-resume, stale-no-op, injected partial failure, repaired retry, bounded 12-dataset catalog, and large-catalog no-op
   - it verifies strict identity/hash reuse, portfolio-feasibility synthesis, fail-closed corrupt or tampered summaries, partial-failure recovery, unique item/artifact/CSV paths, ordered durable-checkpoint progress, and bounded cleanup without provider credentials; it does not exercise packaged Wry IPC or make a performance claim
 - keep these campaign contract layers explicit:
-  - request contract owns dataset list, execution mode (`full`, `optimize_only`, `validate_only`), preload policy, validation payload, and optional auto-meta / auto-stage5 follow-ups
+  - request contract owns dataset list, execution mode (`full`, `optimize_only`, `validate_only`, `evaluate_candidates`), preload policy, validation payload, and optional auto-meta / auto-stage5 follow-ups
   - progress payload owns stage labels, counts, and summary-path disclosure during long-running work
   - saved campaign summary artifacts are the source of truth for retry, resume, and reveal behavior
   - supported campaign strategy surface is narrower than the full strategy catalog; `DynamicDoubleMa` and `MlSignal` remain explicitly rejected
+
+VCET fixed-candidate batch and campaign-bound Meta workflow:
+
+- `evaluate_candidates` is a VCET-only campaign mode. It accepts either one
+  canonical fixed-candidate manifest or a sealed deterministic `vcet_search`
+  design and replays the exact resulting manifest for every requested dataset;
+  duplicate/invalid candidates and incompatible strategy payloads fail closed
+  instead of being silently truncated or reshaped.
+- the current `vcet_search` design spans every effective VCET control:
+  `vidya_short_period`, `vidya_long_period`, `vidya_alpha`, `ce_period`,
+  `ce_mult`, `ce_use_close`, `require_vidya_slope`, and `max_trade_bars`.
+  When the budget covers the valid space it emits the complete canonical
+  lexicographic design; otherwise it emits one deterministic, seed-keyed
+  Halton-Cranley-Patterson design with unique identities and no lexicographic
+  fallback. The legacy Fast × Slow period grid remains an explicit UI mode,
+  but it is no longer the only campaign search surface.
+- `validation_config.require_gpu_kernel=true` makes this route strict: the
+  optimization template must request `GpuKernel`, every completed dataset must
+  report the exact GPU-kernel route, and auxiliary validation stages without a
+  proven fully GPU-resident contract are rejected rather than falling back to
+  CPU work.
+- campaign summary integrity v2 and fixed-candidate aggregate schema v4 keep
+  `all_universe`, `training`, and `holdout` aggregates separate. Candidate
+  selection uses training rows only; holdout rows are retained for subsequent
+  audit/validation and never influence the training ranking.
+- cross-universe admission fails closed before Meta. Defaults require at least
+  55% of all requested training stocks to be profitable, 50% to pass the hard
+  gate, and nonnegative training PnL p10 and Sharpe p10. These four floors are
+  visible/configurable in the Batch UI. Profitability and hard-gate shares use
+  the complete requested training-stock denominator. For candidate-level
+  PnL/Sharpe p10, only missing or non-finite candidate metrics occupy the lower
+  tail; if p10 lands inside that mass it is unavailable and admission fails. A
+  relative "least bad" candidate is not selected. Dataset load, attestation,
+  and sealed-shard absence in the phased temporal protocol use the stricter
+  fail-closed rules documented below rather than this candidate-metric rule.
+- terminal VCET candidate campaigns defer Meta/Stage 5 until the final campaign
+  summary is durable. The frontend then passes that exact summary path and its
+  unique `campaign-cohort:<manifest-hash>` tag to Meta; a stale, running,
+  incompatible, or replaced summary pointer is not reused.
+- campaign-bound Meta reads only `summary.items[*].artifact_path` and validates
+  the terminal manifest, cohort role, strategy/timeframe/tag scope, normalized
+  CSV path, source fingerprint, candidate-manifest hash, and fixed-candidate
+  artifact contract. Schema v4 seals each exact raw run-artifact SHA-256 into
+  the terminal campaign summary; Meta compares every loaded file with that
+  baseline before ranking, then persists the hashes and matched/excluded counts
+  in cohort provenance. Meta recomputes the complete training aggregate from
+  those exact artifacts, verifies the v4 admitted set/selection, and removes
+  every non-admitted candidate from both training and holdout inputs.
+- campaign manifests refresh source size, mtime, and change-marker identity
+  before hashing even when discovery hints are absent; fingerprinted legacy
+  manifests omit the redundant marker to preserve exact resume/cohort hashes,
+  while pre-marker size+mtime v2 summaries remain loadable but are explicitly
+  restart-only in the UI so Resume/Retry cannot silently become a full rerun.
+  New no-fingerprint runs bind the refreshed marker into their cohort hash.
+  Campaign CSV preparation and holdout replay re-check current content
+  fingerprints plus supplied discovery identity.
+  Data changed after discovery/campaign capture is rejected instead of being
+  evaluated under stale lineage. Alias-equivalent paths and distinct paths
+  resolving to the same fresh content fingerprint are rejected, so copied CSVs
+  cannot overweight the requested-universe denominator.
+- requested training and holdout dataset counts from the campaign remain the
+  coverage, pass-rate, and profitability denominators. Missing or failed
+  datasets cannot disappear from the denominator, and a requested VCET holdout
+  with zero usable results fails before Meta JSON/XLSX publication.
+- full campaign-summary checkpoints are bounded to at most 100 intermediate
+  snapshots regardless of dataset count. VCET campaign artifacts defer pruning
+  to one terminal retention pass, while the newest three retained campaign
+  summaries protect their exact referenced artifact cohorts.
+- report ownership for this workflow is split between
+  `src-tauri/src/commands_reports_meta_xlsx.rs` and
+  `src-tauri/src/commands_reports.rs`: the Meta workbook adds `VCET Candidate
+  Evidence` with exact search provenance, all effective controls, bounded
+  candidate/cohort metrics, selection/admission state, and a bounded chart;
+  `Holdout Execution` and `Cohort Provenance` retain route, integrity, lineage,
+  raw-hash, admission-policy, and exact artifact evidence. Spreadsheet row/cell
+  safety budgets are derived from the actual table geometry.
+- the fixed-candidate GPU campaign establishes cross-sectional training/holdout
+  evidence across the full sealed VCET design. It is not itself per-stock
+  temporal OOS/regime evidence. The phased temporal core below supplies that
+  separate scientific boundary. A bounded desktop orchestration path now owns
+  preparation, selection, final-test disclosure, restart hydration, and temporal
+  XLSX publication for at most 64 datasets; true provider-scale orchestration
+  and authority remain incomplete.
+- focused contract tests live in:
+  - `src-tauri/src/commands_campaign.rs`
+  - `src-tauri/src/commands_meta.rs`
+  - `src-tauri/src/run_artifacts.rs`
+  - `crates/app_core/src/meta_select.rs`
+  - `src-tauri/src/commands_reports_meta_xlsx.rs`
+  - `web/src/services/metaServiceCampaignLineage.test.ts`
+  - `web/src/services/metaServiceCampaignStrategy.test.ts`
+  - `web/src/services/vcetSearchRequestBuilder.test.ts`
+  - `web/src/components/VcetCampaignSearchControls.test.ts`
+  - `web/src/visualizations/vcetCampaignEvidenceModel.test.ts`
+  - `web/src/components/visualizations/VcetCampaignEvidenceHeatmap.test.ts`
+- synthetic large-catalog and bounded-input tests establish only deterministic
+  contract and checkpoint/retention limits. They do not establish 10,000-symbol
+  readiness, provider throughput, long-duration reliability, package behavior,
+  or performance authority. Prior evidence includes a real RTX 4090 CPU/GPU VCET
+  validation-parity test. The current-source explicit Tauri library suite under
+  `cuda,cuda-backtest-kernel` passed 979 tests with zero failures and one
+  intentionally ignored diagnostic when serialized with one test thread. This is
+  correctness/route evidence only; provider-scale soak, serialized performance/
+  profile, and VRAM-pressure evidence remain explicitly deferred.
+
+VCET temporal-validation protocol:
+
+- strategy-local planning, direct scored-window evaluation, and dataset-quality
+  evidence live in `crates/app_core/src/vcet_temporal.rs`,
+  `crates/app_core/src/composite_validate.rs`, and
+  `crates/app_core/src/vcet_dataset_coverage.rs`.
+- `src-tauri/src/commands_vcet_temporal.rs` seals the candidate manifest and
+  deterministically plans train/validation/final-test intervals. Planning is
+  bounded to 10,000,000 total timestamp/session values per request; that is an
+  input safety cap, not a scale-readiness claim. The older
+  `commands_vcet_temporal_execute.rs` command remains a bounded all-in-one cohort
+  primitive rather than the durable phased authority path. Before hashing,
+  schema-v1 serialization, or publication, that direct path rejects every
+  non-finite metric field and derived aggregate; NaN or infinity cannot be
+  silently converted into null scientific evidence.
+- `src-tauri/src/commands_vcet_temporal_universe.rs` attests already-loaded
+  datasets in bounded calls, binding actual candle-snapshot, source, timeline,
+  coverage, common-interval, and execution identities before sealing the
+  deterministic dataset × candidate shard plan. Every requested dataset must
+  load and attest before sealing; a pre-seal load or attestation failure blocks
+  the seal and cannot be silently omitted.
+- `src-tauri/src/commands_vcet_temporal_prefinal.rs` executes only sealed
+  train/validation cells and reduces the complete, canonical, non-overlapping
+  selection shard set into one support/admission-qualified global winner. A
+  missing dataset or shard after sealing fails closed. Only missing or
+  non-finite candidate metrics remain in the requested denominator and lower-tail
+  mass before mean-validation-Sharpe ranking. The reduction honors the sealed,
+  configurable requested-dataset, evaluated-dataset, profitable-dataset,
+  hard-support, and metric-support share floors exactly; raw fold-level failure
+  counts remain integrity evidence and do not silently strengthen a configured
+  partial-support floor to 100%.
+- `src-tauri/src/commands_vcet_temporal_final.rs` accepts exactly that locked
+  winner, consumes its per-shard authorized prior state, scores only the final
+  cohort, and reduces complete final evidence without ranking or reranking.
+  Final support failure remains final evidence and never unlocks selection.
+- desktop pre-final winner locking and final shard execution use app-local
+  create-new claims plus one immutable schema-v2 `terminal.json` record whose
+  discriminated state is either `completed` or `failed` in
+  `src-tauri/src/vcet_temporal_durable_ledger.rs`; separate `completed.json` and
+  `failed.json` receipts are not used. Durable completion probing is typed:
+  `Missing`, `Completed`, and terminal-poison `Blocked` results distinguish
+  failed, interrupted, and invalid records. Permission-denied, Windows sharing
+  violation, and other I/O probe failures are instead retryable `Unavailable`
+  errors; they surface as path-safe command failures without being rewritten as
+  missing work, poison, or durable state. An identical completed request is
+  designed to replay after a cooperative process restart while that ledger
+  remains intact, but the current native lifecycle proof is in-process rather
+  than a true OS-process restart. Claims representing interrupted,
+  process-crashed, or failed work remain fail closed, and malformed or
+  accidentally corrupted terminal records are rejected. `serde_json` uses its
+  `float_roundtrip` feature so persisted finite floats survive JSON reload with
+  exact IEEE-754 bits instead of changing hash/recovery identity. These unkeyed
+  local hashes detect corruption but do not provide malicious-tamper
+  authenticity, parent-directory persistence across power loss, or cross-machine
+  authority. Campaign-nested and direct pre-final/final routes share one
+  process-local RAII live-authorization registry. Admission reserves before
+  ledger-directory or claim publication, so concurrent admission/probing is
+  retryable, exactly one writer wins, and dropping an unfinished owner leaves any
+  published claim fail closed as interrupted. Claim, terminal, campaign, source,
+  and report validation uses bounded held handles instead of reopening a pathname
+  between metadata, discriminator, body, hash, and identity checks. Reads use
+  max-plus-one overflow checks; Windows readers deny write/delete sharing and do
+  not follow reparse points, while sharing/permission failures remain retryable.
+  Before any final shard may read a mutable source again, the product orchestrator
+  probes every durable final terminal and validates the complete final cohort.
+  A retained final-report receipt never authorizes another final load or score:
+  missing/blocked durable state fails closed, live/unavailable state stays
+  retryable, and receipt-lineage deferral is allowed only for an all-completed
+  cohort. Both mutable operations and compact status perform projection recovery;
+  zero local selection projections plus completed durable pre-final authority
+  reports `resume_selection`. If a poisoned final record is discovered only after
+  other projections were recovered, status retains truthful stage/progress
+  evidence while blocking further execution. The direct blocking helpers remain
+  process-local.
+- `src-tauri/src/commands_vcet_temporal_campaign.rs` is the bounded product
+  orchestrator. It accepts only an app-owned, exact terminal VCET
+  `evaluate_candidates` campaign summary, seals immutable preparation and stage
+  artifacts below `app_local_data_dir/vcet_temporal_campaigns`, loads at most one
+  dataset per execution shard, resumes only hash-valid persisted work, and
+  returns a compact `prepared` / `selection_complete` /
+  `final_test_complete` status. The final command requires both explicit
+  disclosure confirmation and the exact persisted winner-lock hash. Evidence
+  progress remains visible even when execution cannot safely continue: status
+  then sets `execution_blocked`, identifies the blocked durable stage and
+  optional shard with a path-safe reason code, and truthfully sets
+  `next_required_action` to `start_new_campaign` rather than advertising resume.
+  Terminal report failures use the stable path-safe stages `selection_report` or
+  `final_report`, reason `report_receipt_invalid_or_foreign` or
+  `report_xlsx_not_recoverable`, and no shard ordinal. Retained scientific
+  artifacts remain visible, but an unsafe identical retry or pointer-only Forget
+  is not offered; the report label, source, or validation plan must change for a
+  distinct campaign.
+  Campaign storage, durable ledgers, artifacts, and report roots reject Windows
+  symlink/junction/reparse aliases and non-ordinary path components before
+  artifact access.
+- `web/src/services/vcetTemporalCampaignService.ts`,
+  `web/src/stores/vcetTemporalCampaignStore.ts`, and
+  `web/src/components/VcetTemporalCampaignPanel.vue` expose that contract in the
+  Meta Batch workspace. The UI validates the temporal plan, shows the
+  Prepare -> Selection -> Sealed Final stages and shard progress, persists only
+  the bounded plan plus preparation identity, refreshes authoritative status
+  after hydration, and requires the winner-lock suffix before opening final
+  evidence. It can reveal stage artifacts and open the selection/final
+  workbooks. Once prepared, the sealed active plan/source identity remains
+  distinct from an editable next-campaign draft; plan or source drift is shown
+  instead of silently replacing active authority. Every temporal source
+  eligibility resolution forces a native `load_artifact` read of the retained
+  batch summary rather than trusting the in-memory `LAST_BATCH_SUMMARY` cache;
+  drift compares native Windows path identity and retained-summary content. A
+  confirmed `Forget` recovery clears only a saved preparation pointer whose
+  authoritative status cannot be verified or hydrated (`status` is absent). It
+  preserves the next draft and never deletes or rewrites evidence files. Any
+  authoritative durable/report block remains retained and cannot be forgotten.
+  Preparation-pointer adoption is transactional with
+  localStorage: persistence failure restores the prior status, path, source hash,
+  preparation hash, and sealed plan. Eligibility refresh is request-sequenced and
+  side-effect-free; watcher keys exclude the derived eligibility output so a
+  refresh cannot trigger a feedback loop.
+- `src-tauri/src/commands_reports_vcet_temporal_xlsx.rs` projects validated
+  temporal artifacts into a bounded five-sheet workbook: `Summary`, `Candidate
+  Selection`, `Dataset Coverage`, `Final Test`, and `Provenance`. It supports an
+  explicitly pending-final selection workbook and a completed-final workbook,
+  uses typed values, native tables, conditional formats, frozen panes, and a
+  winner-highlighted candidate chart, and rejects cross-artifact lineage drift.
+  The product orchestrator writes and hash-validates immutable report receipts;
+  `save_vcet_temporal_report_xlsx` is also a first-class report command. When a
+  projection or workbook is missing but its durable terminal and retained report
+  receipt remain valid, the native product path can reconstruct the projection
+  without mutable CSV access and regenerate selection and final workbooks with
+  byte-identical output while leaving the retained receipt bytes unchanged. The
+  retained receipt is authoritative for repair: a missing, corrupt, or oversized
+  ordinary XLSX is atomically replaced only if regenerated length and SHA-256
+  exactly match it. Missing final reduction plus corrupt final XLSX can reconcile
+  in one operation. A malformed/foreign receipt or nondeterministic regeneration
+  becomes the stable report block described above rather than rewriting evidence.
+- product V1 is deliberately bounded to 64 datasets, one resident dataset per
+  shard, 2,000,000 timeline values per dataset, 10,000,000 aggregate timeline
+  values, 524,288 evidence cells, 20,000,000 candidate-window trials, and
+  256 MiB source/pre-final artifact budgets. The lower-level inline reducer still
+  caps fan-in at 4,096 shards, and durable completed responses remain inline with
+  a 256 MiB cap rather than validated artifact references. These safety limits
+  do not establish a 10,000-symbol path. A true 10,000-symbol workflow still
+  needs provider/calendar-normalized data, hierarchical or streaming reduction,
+  artifact-reference compaction, long-running recovery/soak evidence, and
+  serialized performance/Nsight/VRAM-pressure authority. Packaged native/Wry
+  execution, a true OS-process restart, power-loss recovery, adversarial
+  authenticity protection, a multi-shard native lifecycle, and cross-machine
+  authority also remain deferred.
+- focused bounded-product and presentation contracts live in:
+  - `src-tauri/src/commands_vcet_temporal_campaign.rs`
+  - `src-tauri/src/commands_vcet_temporal_campaign_lifecycle_tests.rs`
+  - `src-tauri/src/vcet_temporal_durable_ledger.rs`
+  - `src-tauri/src/commands_reports_vcet_temporal_xlsx.rs`
+  - `web/src/services/vcetTemporalCampaignService.test.ts`
+  - `web/src/stores/vcetTemporalCampaignStore.test.ts`
+  - `web/src/components/VcetTemporalCampaignPanel.test.ts`
+  - `web/src/components/MetaWorkspacePanel.test.ts`
+  - `web/src/services/metaService.test.ts`
+- current final CPU/headless verification for this continuation passed the full
+  frontend suite (218 files / 2,045 tests), built workbench smoke (1/1), temporal
+  QA actions (4/4), built accessibility (4/4), and the combined core-plus-temporal
+  workflow matrix (25/25), including the temporal lifecycle/recovery slice
+  (15/15). Static QA reports 189 source actions / 249 manifest entries, 125/689
+  directly annotated controls, and 50 scenarios / 75 workflow references.
+  Focused backend lanes passed campaign aggregate 33/33 (23 module plus 10 native
+  lifecycle/recovery), durable ledger 24/24, pre-final integrity 16/16, and public
+  temporal XLSX 2/2. The complete serialized stable CPU workspace also passed.
+  The native lifecycle covers one selection and one final shard in one Rust
+  process; browser fixtures prove frontend state, actions, responsive layout, and
+  accessibility contracts only. The current-source explicit Tauri library suite
+  under `cuda,cuda-backtest-kernel`, serialized with one test thread, passed
+  979 tests with zero failures and one intentionally ignored diagnostic. This is
+  correctness evidence, not performance/profiling or provider-scale authority.
 
 ### If the task is ML Signal
 
@@ -447,9 +739,19 @@ Open in this order:
 Open in this order:
 
 - `web/src/services/executionService.ts`
+- `web/src/services/executionChartService.ts`
 - `web/src/stores/executionStore.ts`
+- `web/src/components/ExecutionWorkspacePanel.vue`
+- `web/src/components/visualizations/PriceChartPanel.vue`
+- `web/src/visualizations/lightweightChartRuntime.ts`
 - `src-tauri/src/commands_execution.rs`
 - `src-tauri/src/state.rs`
+
+`executionChartService.ts` owns the broker-confirmed order-marker and
+price-level overlays for the execution workspace. The shared price-chart
+component/runtime owns chart presentation and lifecycle; broker state and
+execution commands remain in the execution service/store and Tauri command
+layers.
 
 Use the lightweight safety gate before handoff for execution/broker-contract changes that do not need benchmarks or real credentials:
 
@@ -461,7 +763,12 @@ Open in this order:
 
 - `web/src/services/analysisService.ts`
 - `web/src/stores/analysisStore.ts`
+- `web/src/visualizations/priceSeriesModel.ts`
+- `web/src/visualizations/drillChartModel.ts`
+- `web/src/visualizations/lightweightChartRuntime.ts`
+- `web/src/composables/useDrillPriceChartRuntime.ts`
 - `src-tauri/src/commands_analysis.rs`
+- `crates/app_core/src/analysis_series.rs`
 - `crates/app_core/src/double_ma.rs`
 - `crates/app_core/src/composite_cpu.rs`
 
@@ -469,6 +776,7 @@ Current candidate-detail/local-stability coverage matrix:
 
 - Double-MA family:
   - `DoubleMa`, `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, `Vfct`, `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the Double-MA candidate-detail and local-stability path
+  - `DynamicDoubleMa` replays its exact validated strategy IR for candidate detail and intentionally omits fabricated static local stability
 - Composite-family analysis:
   - `CompositeCpu` supports both candidate detail and local stability on its own analysis path
   - `Asr` supports both candidate detail and local stability on the composite-family analysis path
@@ -477,13 +785,47 @@ Current candidate-detail/local-stability coverage matrix:
   - `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` support both candidate detail and local stability on the composite-family analysis path
 - `MlSignal` does not participate in optimizer candidate-detail/local-stability views; loading an `MlSignal` artifact should leave analysis views in the explicit non-optimizer state
 
+Chart and heatmap ownership:
+
+- Double-MA-family drilldowns retain the existing MA/composite overlay path.
+- `Asr`, `Vcc`, `Vemr`, `Rocb`, `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and
+  `Cdmc` publish strategy-local named indicator bundles through
+  `crates/app_core/src/analysis_series.rs`; the frontend normalizes them in
+  `priceSeriesModel.ts` and renders their pane/scale definitions through
+  `lightweightChartRuntime.ts`.
+- Standalone 2D heatmap axes are owned by
+  `web/src/visualizations/strategyHeatmapAxes.ts`. Standalone 3D slices stay
+  unavailable unless a real independent retained slice dimension is added.
+- Candidate Detail price bars and native indicator bundles share an indexed
+  8,000-point cap. Keep those resolutions aligned if either contract changes.
+- Candidate point inspection is composed by
+  `web/src/composables/useDrillPriceChartRuntime.ts` and
+  `web/src/components/visualizations/PriceChartPanel.vue`. Named-series
+  visibility updates in place while pane topology is stable; adding or removing
+  a pane uses a range-preserving chart rebuild.
+- Shared light/dark heatmap palettes, OKLab interpolation, semantic legend
+  labels, and 2D/3D visualization tokens are owned by
+  `web/src/visualizations/heatmapTheme.ts` and consumed by the heatmap models
+  and components.
+
 Truth anchors for this coverage:
 
 - `web/src/services/analysisService.ts`
 - `web/src/services/analysisService.test.ts`
 - `web/src/components/TopWorkspacePanel.test.ts`
 - `web/src/components/CandidateDetailWorkspacePanel.test.ts`
+- `web/src/components/visualizations/PriceChartPanel.test.ts`
+- `web/src/components/visualizations/HeatmapCanvas.test.ts`
+- `web/src/components/visualizations/HeatmapSurface3D.test.ts`
+- `web/src/components/visualizations/HeatmapLegend.test.ts`
+- `web/src/components/ExecutionWorkspacePanel.test.ts`
+- `web/src/services/executionChartService.test.ts`
+- `web/src/visualizations/priceSeriesModel.test.ts`
+- `web/src/visualizations/lightweightChartRuntime.test.ts`
+- `web/src/visualizations/heatmapTheme.test.ts`
+- `web/src/visualizations/strategyHeatmapAxes.test.ts`
 - `src-tauri/src/commands_analysis.rs`
+- `crates/app_core/src/analysis_series.rs`
 - `crates/app_core/src/double_ma.rs`
 - `crates/app_core/src/composite_cpu.rs`
 
@@ -618,7 +960,7 @@ Open in this order:
 
 ## Tauri Command Surface
 
-The Tauri app currently exposes `132` commands from `src-tauri/src/lib.rs`.
+The Tauri app currently exposes `147` commands from `src-tauri/src/lib.rs`.
 
 Use `src-tauri/src/lib.rs` to see the public command registry and `src-tauri/src/commands.rs` to see the grouped surface. The actual command modules already form a good workflow map.
 
@@ -805,9 +1147,9 @@ These are good first files when the task is startup flow, global shortcuts, quic
 
 ### `web/src` structure
 
-- `components/`: `50` files
-- `services/`: `49` files
-- `stores/`: `30` files
+- `components/`: `95` direct files
+- `services/`: `83` direct files
+- `stores/`: `40` direct files
 - `strategies/`: `4` files
 
 ### Current frontend ownership model
@@ -1460,7 +1802,11 @@ Several workflows write to different app-local directories. This is easy to miss
 - `app_local_data_dir/data_cache`
   - binary candle cache for CSV loads and validation/meta rereads
 - `app_local_data_dir/reports`
-  - saved XLSX reports
+  - saved validation, Meta, and VCET temporal XLSX reports
+- `app_local_data_dir/vcet_temporal_campaigns`
+  - bounded VCET temporal preparation, shard, reduction, and immutable report-receipt artifacts
+- `app_local_data_dir/vcet-temporal-winner-lock-ledger-v2` and `app_local_data_dir/vcet-temporal-final-ledger-v2`
+  - create-new temporal authorization claims plus one completed-or-failed terminal record per authorization
 - `app_local_data_dir/runs`
   - run artifacts, meta artifacts, Stage 4/5 artifacts, ML-confidence policy-eval artifacts, batch summaries
 - `app_local_data_dir/models/confidence`
@@ -1477,7 +1823,7 @@ Several workflows write to different app-local directories. This is easy to miss
 ### Reporting
 
 - active export posture is validation-first
-- current product flow builds validation XLSX workbooks through validation report builders
+- current product flows build validation, Meta, and bounded VCET temporal XLSX workbooks through strategy/workflow-specific report builders
 - older analysis-style workbook code still exists, but is legacy/reference
 
 Start here:
@@ -1489,6 +1835,7 @@ Start here:
 - `src-tauri/src/commands_reports_validation_common.rs`
 - `src-tauri/src/commands_reports_csv.rs`
 - `src-tauri/src/commands_reports_meta_xlsx.rs`
+- `src-tauri/src/commands_reports_vcet_temporal_xlsx.rs`
 - `src-tauri/src/commands_reports_shared.rs`
 
 Important current-state notes:
@@ -1497,6 +1844,8 @@ Important current-state notes:
 - `commands_reports_shared.rs` owns report-path suggestion plus `open_path` and `reveal_path` helpers
 - validation workbook generation still has legacy compatibility mode for older validation artifacts without the full verdict contract
 - validation shortlist CSV generation is a separate path from XLSX generation
+- temporal workbook generation validates the sealed universe, pre-final winner reduction, optional final reduction, exact winner lock, plan/interval identity, and execution spec before writing; selection-stage workbooks retain an explicit pending-final state rather than synthesizing final evidence
+- the bounded VCET product campaign generates a selection workbook after the winner lock and a completed workbook after final reduction, persists hash-bound report receipts, and returns both paths through its compact status contract
 
 ### Artifacts
 
@@ -1853,8 +2202,8 @@ Maintenance and review helpers:
 ### CI and release surfaces
 
 - `.github/workflows/cpu-quality.yml`
-  - prepared working-tree Windows CPU-only pull-request/push/merge-queue/manual workflow; it is not active remotely until the uncommitted workflow and supporting files are landed
-  - defines the future branch-protection check `Required CPU quality`
+  - tracked and locally committed Windows CPU-only pull-request/push/merge-queue/manual workflow; remote execution is not proven until the branch is pushed and GitHub runs it
+  - defines the branch-protection check contract `Required CPU quality`; enabling that required check remains an external repository setting
   - installs locked Node/npm dependencies plus headless Chromium, then delegates to `scripts/run_cpu_ci_gate.ps1`
 - `.github/dependabot.yml`
   - weekly GitHub Actions update lane for reviewing and advancing the workflow's immutable full-commit action pins
@@ -1959,9 +2308,10 @@ required CUDA or NVTX features. The product binary remains gated by
   - the 12-dataset lane is a bounded correctness case, not a benchmark or provider-sized scale claim; exact packaged Wry/foreground and true product aggregate-campaign journeys remain separate QA boundaries
 - `src-tauri/src/bin/ta_cpu_reliability_soak.rs`
   - maintainer-only, synthetic-data CPU reliability worker that keeps one native process alive across repeated load, optimize, validate, artifact catalog/hydration, cleanup, and cancellation cycles
-  - `scripts/run_cpu_reliability_soak.ps1` provides a four-cycle short smoke plus an opt-in six-hours-or-longer operator-authority mode; use `-CargoTargetDir <dedicated-path>` or a validated `CARGO_TARGET_DIR` to keep build scratch off the repository drive
-  - the wrapper serializes build plus execution with the benchmark mutex, builds `--locked --offline` into an explicitly pinned target, clears compiler/profile overrides and credentials, traps external HTTP traffic, rejects filesystem-root/reparse/overlapping target paths, recovers only stopped marker-owned isolation trees, and attests the Cargo-emitted binary, launcher/toolchain environment, and deterministic source manifest (including the vendored `vector-ta` patch)
-  - native schema-2 evidence verifies mutex contention and strict Tauri app-data containment, keeps retained samples bounded while calculating full-run private/working-set/handle and owned file/byte/directory trends, and proves positive-partial-progress optimization cancellation; short-mode inputs require at least 2,048 rows so the pinned 64 MiB cancellation workload spans multiple CPU tiles, and an operator result cannot claim release authority unless a fresh release build reaches at least six hours with at least 30 measured cycles and no sample gap above 15 minutes
+  - `scripts/run_cpu_reliability_soak.ps1` provides a bounded short diagnostic plus an opt-in six-hours-or-longer operator-authority mode; use `-CargoTargetDir <dedicated-path>` or a validated `CARGO_TARGET_DIR` to keep build scratch off the repository drive
+  - the wrapper serializes build plus execution with the benchmark lock, builds `--locked --offline` into an explicitly pinned target, clears inherited compiler/profile/developer-prompt and credential state, traps external HTTP traffic, rejects filesystem-root/reparse/overlapping target paths, and recovers only stopped marker-owned isolation trees
+  - build provenance binds the exact `ta_desktop_demo_app -> tauri-build -> tauri-winres -> vendored embed-resource` dependency/build-script chain, together with target/feature-matched Cargo metadata, source-tree identities, compiler launcher, canonical command interpreter, selected Visual Studio/Windows SDK roots and tools, independently resolved resource-compiler candidates, and a success-only Cargo-emitted RC invocation marker; the selected `rc.exe` is held with deny-write/delete sharing through the build boundary, while other native tools and source trees use before/after hashes to detect and fail on mutation rather than claiming write prevention
+  - emitted evidence verifies benchmark-lock contention and strict Tauri app-data containment, keeps retained samples bounded while calculating full-run private/working-set/handle and owned file/byte/directory trends, and proves positive-partial-progress optimization cancellation; short mode is never release authority, while operator evidence requires a fresh release build, at least six hours, at least 30 measured cycles, and no sample gap above 15 minutes
 - `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
   - supplemental/manual validation-cost measurement helper
 - `src-tauri/src/bin/ta_app_path_faceoff.rs`

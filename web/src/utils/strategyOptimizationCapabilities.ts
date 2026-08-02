@@ -361,7 +361,7 @@ export function describeStrategyOptimizationCapabilities(
       kind,
       usesGlobalBackend: true,
       usesGlobalMode: false,
-      supportsHeatmap: false,
+      supportsHeatmap: true,
       supportsExportAll: false,
       supportsTopK: true,
       supportsIncludeAll: true,
@@ -388,10 +388,10 @@ export function describeStrategyOptimizationCapabilities(
                     : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
         outputSummary: standaloneGpuKernelPreview
-        ? `${kind} supports Top-K and include-all native candidate returns. On requested standalone kernel-capable previews it also supports host-side extra shortlist heads plus route-aligned retained-shortlist union and confidence reranking. Extra shortlist heads and retained-shortlist union reranking currently require include_all=true, retained-shortlist confidence reranking requires top_k > 0, include-all is meaningful and not free, and this route does not emit the Double MA heatmap or per-pair CSV export. Explicit Full17 and Trade22 metric-contract requests are available on both CPU-backed and standalone GpuKernel previews; Trade22 on standalone GpuKernel uses bounded host-side enrichment after GPU search.`
+        ? `${kind} supports Top-K, include-all native candidate returns, and a strategy-local objective heatmap over its fast/slow search coordinates. On requested standalone kernel-capable previews it also supports host-side extra shortlist heads plus route-aligned retained-shortlist union and confidence reranking. Extra shortlist heads and retained-shortlist union reranking currently require include_all=true, retained-shortlist confidence reranking requires top_k > 0, include-all is meaningful and not free, and this route does not emit per-pair CSV export. Explicit Full17 and Trade22 metric-contract requests are available on both CPU-backed and standalone GpuKernel previews; Trade22 on standalone GpuKernel uses bounded host-side enrichment after GPU search.`
         : supportsRequestedCore17MetricSurface(kind, inputs)
-          ? `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface. Explicit Full17 and Trade22 metric-contract requests are available on this CPU-backed route.`
-          : `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface.`,
+          ? `${kind} supports Top-K, include-all native candidate returns, and a strategy-local objective heatmap over its fast/slow search coordinates, but does not emit per-pair CSV export. Include-all remains meaningful and not free on this surface. Explicit Full17 and Trade22 metric-contract requests are available on this CPU-backed route.`
+          : `${kind} supports Top-K, include-all native candidate returns, and a strategy-local objective heatmap over its fast/slow search coordinates, but does not emit per-pair CSV export. Include-all remains meaningful and not free on this surface.`,
     }
   }
   if (kind === 'CompositeCpu') {

@@ -138,7 +138,7 @@ export interface ValidationRequestPayload {
     slices: number;
     bootstrap_samples: number;
     block_length: number;
-    benchmark: "buy_hold";
+    benchmark: "buy_and_hold";
   } | null;
   perturb: {
     iterations: number;
@@ -429,6 +429,37 @@ function isDoubleLikeKind(kind: string): boolean {
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   return value as Record<string, unknown>;
+}
+
+function normalizeValidationStrategyCosts(
+  value: unknown,
+): Record<string, unknown> {
+  const strategy = asRecord(value);
+  if (!strategy) return {};
+
+  const normalized = { ...strategy };
+  const usesComponentCosts = [
+    normalized.fee_bps,
+    normalized.spread_bps,
+    normalized.slippage_bps,
+  ].some(
+    (cost) =>
+      typeof cost === "number" && Number.isFinite(cost) && cost > 0,
+  );
+  const hasExplicitCommission =
+    typeof normalized.commission === "number" &&
+    Number.isFinite(normalized.commission) &&
+    normalized.commission > 0;
+
+  if (usesComponentCosts && hasExplicitCommission) {
+    // Validation perturbation and friction-stress scenarios vary the component
+    // costs independently. Keep those fields as the sole source of truth so
+    // the backend derives the effective commission for every candidate instead
+    // of seeing two conflicting cost representations.
+    normalized.commission = 0;
+  }
+
+  return normalized;
 }
 
 function canonicalizeValue(value: unknown): unknown {
@@ -1796,7 +1827,11 @@ export function buildValidationRequest(
 
   const candidates: ValidationCandidateLike[] = [];
   const seenCandidateKeys = new Set<string>();
-  for (const candidate of candidatesNormalized) {
+  for (const candidateSource of candidatesNormalized) {
+    const candidate = {
+      ...candidateSource,
+      strategy: normalizeValidationStrategyCosts(candidateSource.strategy),
+    };
     const key = canonicalKey(candidate);
     if (seenCandidateKeys.has(key)) continue;
     seenCandidateKeys.add(key);
@@ -1833,7 +1868,7 @@ export function buildValidationRequest(
           Math.floor(num(inputs.spaBootstrapSamples, 500)),
         ),
         block_length: Math.max(1, Math.floor(num(inputs.spaBlockLength, 4))),
-        benchmark: "buy_hold" as const,
+        benchmark: "buy_and_hold" as const,
       }
     : null;
 

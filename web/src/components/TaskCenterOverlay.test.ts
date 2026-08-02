@@ -41,6 +41,39 @@ describe('TaskCenterOverlay', () => {
     wrapper.unmount()
   })
 
+  it('renders store progress percentages without multiplying them again', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const taskStore = useTaskStore(pinia)
+    taskStore.$patch({
+      centerStatus: 'success',
+      overallProgress: {
+        pct: 100,
+        label: 'Evaluate 975/975',
+        source: 'double_ma_progress',
+        atUnixMs: 1_700_000_000_000,
+      },
+    })
+
+    const wrapper = mount(TaskCenterOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    expect(wrapper.get('.togglePct').text()).toBe('100%')
+
+    openTaskCenter(useTaskCenterVisibility())
+    await nextTick()
+    await nextTick()
+
+    expect(wrapper.get('.overallWrap .fill').attributes('style')).toContain('width: 100%')
+    expect(document.body.textContent).not.toContain('10000%')
+
+    wrapper.unmount()
+  })
+
   it('hides the idle launcher and clamps the shared-open launcher back into the viewport', async () => {
     localStorage.setItem('VTA_TASK_CENTER_POS_V1', JSON.stringify({ x: -640, y: 9_999 }))
     localStorage.setItem('VTA_TASK_CENTER_POS_INIT_V1', 'true')

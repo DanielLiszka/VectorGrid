@@ -2495,6 +2495,114 @@ describe("optimizeRequestBuilder", () => {
     });
   }
 
+  it("enforces the VectorTA VIDYA parameter contract for VCET", () => {
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Vcet", {
+        vcetVidyaShortPeriod: "1",
+      }),
+    ).toThrow("VCET VIDYA short period must be in [2, 65535].");
+
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Vcet", {
+        vcetMapFastToVidyaShortPeriod: true,
+        vcetMapSlowToVidyaLongPeriod: true,
+        vcetVidyaShortPeriod: "6",
+        vcetVidyaLongPeriod: "6",
+      }),
+    ).toThrow("VCET VIDYA long period must be > short period.");
+
+    for (const alpha of ["-0.01", "1.01"]) {
+      expect(() =>
+        buildStandaloneCompositeGpuRequest("Vcet", {
+          vcetVidyaAlpha: alpha,
+        }),
+      ).toThrow("VCET VIDYA alpha must be in [0, 1].");
+    }
+
+    for (const alpha of ["0", "1"]) {
+      expect(
+        buildStandaloneCompositeGpuRequest("Vcet", {
+          vcetVidyaAlpha: alpha,
+        }),
+      ).toMatchObject({ vcet: { vidya_alpha: Number(alpha) } });
+    }
+  });
+
+  it("rejects VCET Fast ranges that can generate an invalid VIDYA short period", () => {
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Vcet", {
+        fastStart: "1",
+        fastEnd: "5",
+        fastStep: "1",
+      }),
+    ).toThrow("VCET Fast range must be in [2, 65535].");
+
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Vcet", {
+        fastStart: "65536",
+        fastEnd: "65536",
+        fastStep: "1",
+        slowStart: "65537",
+        slowEnd: "65537",
+        slowStep: "1",
+      }),
+    ).toThrow("VCET Fast range must be in [2, 65535].");
+  });
+
+  it("forwards bounded heatmap bins for every standalone GPU strategy", () => {
+    for (const kind of [
+      "Asr",
+      "Vcc",
+      "Vemr",
+      "Rocb",
+      "Vcet",
+      "Kqsr",
+      "Carm",
+      "Kvdf",
+      "Mkcs",
+      "Cdmc",
+    ] as const) {
+      const req = buildStandaloneCompositeGpuRequest(kind, {
+        heatmapBins: "64",
+      });
+      expect(req?.heatmap_bins, kind).toBe(64);
+    }
+  });
+
+  it("rejects oversized standalone heatmap grids", () => {
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Asr", {
+        heatmapBins: "513",
+      }),
+    ).toThrow(/heatmapBins must be <= 512/i);
+  });
+
+  it("keeps the CPU-only CompositeCpu product heatmap disabled", () => {
+    const req = buildCompositeCpuOptimizationRequest({
+      context: {
+        strategy_kind: "CompositeCpu",
+        data_id: "data-composite-no-heatmap",
+        current_data_meta: compositeDataMeta,
+      },
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "64",
+      compositeSignalMode: "hard_gate",
+    });
+
+    expect(req?.heatmap_bins).toBe(0);
+  });
+
   it("builds a CompositeTrend request through the double-MA builder path with GPU kernel when ADX is off", () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {

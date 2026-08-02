@@ -1,12 +1,86 @@
 use super::commands_reports_validation_common::{
-    build_model_from_report, run_level_rejection_reason, ExportCandidateRow, ValidationExportModel,
+    build_model_from_report, run_level_rejection_reason, ExportCandidateRow,
+    ExportValidationEvidencePack, ValidationExportModel,
 };
 use rust_xlsxwriter::{
-    utility::quote_sheet_name, Chart, ChartType, Color, ConditionalFormat3ColorScale,
-    ConditionalFormatDataBar, DocProperties, ExcelDateTime, Format, FormatAlign, FormatBorder,
-    Table, TableColumn, TableStyle, Workbook, Worksheet, XlsxError,
+    utility::quote_sheet_name, Chart, ChartFormat, ChartMarker, ChartMarkerType, ChartSolidFill,
+    ChartType, Color, ConditionalFormat3ColorScale, ConditionalFormatCell,
+    ConditionalFormatCellRule, ConditionalFormatDataBar, ConditionalFormatType, DocProperties,
+    ExcelDateTime, Format, FormatAlign, FormatBorder, Note, Table, TableColumn, TableStyle,
+    Workbook, Worksheet, XlsxError,
 };
 use serde_json::Value;
+
+const XLSX_MAX_ROW_INDEX: usize = 1_048_575;
+const XLSX_CELL_CHAR_LIMIT: usize = 32_767;
+const SUMMARY_CHART_ROW_CAP: usize = 100;
+const TRUNCATION_SUFFIX: &str = " … [truncated for Excel]";
+
+fn excel_safe_text(value: &str) -> String {
+    if value.chars().count() <= XLSX_CELL_CHAR_LIMIT {
+        return value.to_string();
+    }
+    let keep = XLSX_CELL_CHAR_LIMIT.saturating_sub(TRUNCATION_SUFFIX.chars().count());
+    let mut out: String = value.chars().take(keep).collect();
+    out.push_str(TRUNCATION_SUFFIX);
+    out
+}
+
+fn wrapped_row_height(
+    value: &str,
+    approximate_chars_per_line: usize,
+    minimum_height: f64,
+    maximum_height: f64,
+) -> f64 {
+    let chars_per_line = approximate_chars_per_line.max(1);
+    let lines = value
+        .chars()
+        .count()
+        .max(1)
+        .saturating_add(chars_per_line - 1)
+        / chars_per_line;
+    (6.0 + lines as f64 * 15.0)
+        .max(minimum_height)
+        .min(maximum_height)
+}
+
+fn validate_sheet_row_budget(sheet: &str, row_parts: &[usize]) -> Result<(), String> {
+    let last_row = row_parts
+        .iter()
+        .try_fold(0usize, |row, part| row.checked_add(*part))
+        .ok_or_else(|| format!("{sheet} worksheet row calculation overflowed"))?;
+    if last_row > XLSX_MAX_ROW_INDEX {
+        return Err(format!(
+            "{sheet} worksheet requires zero-based row index {last_row}; Excel supports at most {XLSX_MAX_ROW_INDEX}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_xlsx_export_limits(model: &ValidationExportModel) -> Result<(), String> {
+    // Downside Stress and Distributions place candidate headers on row 3 and
+    // data from row 4 onward, so they are the strictest candidate-row layouts.
+    validate_sheet_row_budget("candidate analysis", &[3, model.all_rows.len()])?;
+    let regime_rows = model
+        .all_rows
+        .iter()
+        .try_fold(0usize, |count, row| {
+            count.checked_add(row.regime_bucket_rows.len())
+        })
+        .ok_or_else(|| "regime audit row count overflowed".to_string())?;
+    validate_sheet_row_budget("Regime Audit", &[regime_rows])?;
+    let decision_rows = model
+        .all_rows
+        .iter()
+        .try_fold(0usize, |count, row| {
+            count.checked_add(candidate_decision_rows(model, row).len())
+        })
+        .ok_or_else(|| "decision ledger row count overflowed".to_string())?;
+    // The Decision Ledger holds a four-row candidate table, a three-row
+    // spacer/detail heading block, and then the per-module decision rows.
+    validate_sheet_row_budget("Decision Ledger", &[7, model.all_rows.len(), decision_rows])?;
+    Ok(())
+}
 
 const COL_RANK: u16 = 0;
 const COL_APPROVAL: u16 = 1;
@@ -284,7 +358,7 @@ fn disabled_or_omitted_status(model: &ValidationExportModel, module: &str) -> &'
     } else if summary_mentions_module(&model.actual_skipped_module_summary, module) {
         "skipped"
     } else if summary_mentions_module(&model.actual_cross_omitted_summary, module) {
-        "omitted by cross mode"
+        "cross omitted"
     } else {
         "not run"
     }
@@ -323,6 +397,49 @@ fn add_native_table(
         .add_table(first_row, first_col, last_row, last_col, &table)
         .map_err(|e: XlsxError| e.to_string())?;
     Ok(())
+}
+
+fn apply_zero_centered_formatting(
+    sheet: &mut Worksheet,
+    first_row: u32,
+    first_col: u16,
+    last_row: u32,
+    last_col: u16,
+) -> Result<(), String> {
+    let positive = ConditionalFormatCell::new()
+        .set_rule(ConditionalFormatCellRule::GreaterThan(0))
+        .set_format(
+            Format::new()
+                .set_font_color("166534")
+                .set_background_color("DCFCE7"),
+        );
+    let neutral = ConditionalFormatCell::new()
+        .set_rule(ConditionalFormatCellRule::EqualTo(0))
+        .set_format(
+            Format::new()
+                .set_font_color("92400E")
+                .set_background_color("FEF3C7"),
+        );
+    let negative = ConditionalFormatCell::new()
+        .set_rule(ConditionalFormatCellRule::LessThan(0))
+        .set_format(
+            Format::new()
+                .set_font_color("991B1B")
+                .set_background_color("FEE2E2"),
+        );
+    for rule in [&positive, &neutral, &negative] {
+        sheet
+            .add_conditional_format(first_row, first_col, last_row, last_col, rule)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn probability_data_bar(color: &str) -> ConditionalFormatDataBar {
+    ConditionalFormatDataBar::new()
+        .set_fill_color(color)
+        .set_minimum(ConditionalFormatType::Number, 0)
+        .set_maximum(ConditionalFormatType::Number, 1)
 }
 
 fn apply_shareable_sheet_layout(sheet: &mut Worksheet, title: &str) {
@@ -444,7 +561,8 @@ fn top_reason_counts(model: &ValidationExportModel, limit: usize) -> Vec<(String
 
 fn set_candidate_sheet_layout(sheet: &mut Worksheet) {
     sheet.set_zoom(110);
-    let _ = sheet.set_freeze_panes(1, 0);
+    sheet.set_screen_gridlines(false);
+    let _ = sheet.set_freeze_panes(1, 5);
     let _ = sheet.set_column_width(COL_RANK, 8);
     let _ = sheet.set_column_width(COL_APPROVAL, 18);
     let _ = sheet.set_column_width(COL_HARD_GATE, 12);
@@ -562,10 +680,15 @@ fn write_candidate_rows(
             )
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, COL_PROFILE, &row.profile_kind, text_fmt)
+            .write_string_with_format(r, COL_PROFILE, excel_safe_text(&row.profile_kind), text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, COL_PARAMS_SUMMARY, &row.params_summary, text_fmt)
+            .write_string_with_format(
+                r,
+                COL_PARAMS_SUMMARY,
+                excel_safe_text(&row.params_summary),
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
             .write_number_with_format(r, COL_ROBUST, row.robust_score, num_fmt)
@@ -587,13 +710,13 @@ fn write_candidate_rows(
             .write_number_with_format(r, COL_SHARPE, row.sharpe, num_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_number_with_format(r, COL_MAX_DD, row.max_dd, num_fmt)
+            .write_number_with_format(r, COL_MAX_DD, row.max_dd, pct_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
             .write_number_with_format(r, COL_TRADES, row.trades, int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         write_optional_number(sheet, r, COL_WF_SHARPE, row.wf_sharpe_median, num_fmt)?;
-        write_optional_number(sheet, r, COL_WF_DD, row.wf_dd_worst, num_fmt)?;
+        write_optional_number(sheet, r, COL_WF_DD, row.wf_dd_worst, pct_fmt)?;
         write_optional_number(sheet, r, COL_CSCV_RANK, row.cscv_oos_rank_frac_p50, pct_fmt)?;
         write_optional_number(sheet, r, COL_CSCV_METRIC, row.cscv_oos_metric_p50, num_fmt)?;
         write_optional_number(sheet, r, COL_CSCV_SEL, row.cscv_selected_frac, pct_fmt)?;
@@ -614,7 +737,7 @@ fn write_candidate_rows(
             pct_fmt,
         )?;
         write_optional_number(sheet, r, COL_BOOTSTRAP_P05, row.bootstrap_pnl_p05, num_fmt)?;
-        write_optional_number(sheet, r, COL_BOOTSTRAP_DD95, row.bootstrap_dd_p95, num_fmt)?;
+        write_optional_number(sheet, r, COL_BOOTSTRAP_DD95, row.bootstrap_dd_p95, pct_fmt)?;
         write_optional_usize(
             sheet,
             r,
@@ -634,7 +757,7 @@ fn write_candidate_rows(
             r,
             COL_BOOTSTRAP_STAT_DD95,
             row.bootstrap_stationary_dd_p95,
-            num_fmt,
+            pct_fmt,
         )?;
         write_optional_number(sheet, r, COL_PERTURB_MEAN, row.perturb_pnl_mean, num_fmt)?;
         write_optional_number(sheet, r, COL_PLATEAU_SCORE, row.plateau_score, num_fmt)?;
@@ -642,11 +765,11 @@ fn write_candidate_rows(
             .write_string_with_format(
                 r,
                 COL_PLATEAU_LABEL,
-                if row.plateau_label.is_empty() {
+                excel_safe_text(if row.plateau_label.is_empty() {
                     "unavailable"
                 } else {
                     row.plateau_label.as_str()
-                },
+                }),
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
@@ -654,11 +777,11 @@ fn write_candidate_rows(
             .write_string_with_format(
                 r,
                 COL_PLATEAU_SOURCE,
-                if row.plateau_source.is_empty() {
+                excel_safe_text(if row.plateau_source.is_empty() {
                     "-"
                 } else {
                     row.plateau_source.as_str()
-                },
+                }),
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
@@ -676,7 +799,7 @@ fn write_candidate_rows(
             row.plateau_sharpe_median,
             num_fmt,
         )?;
-        write_optional_number(sheet, r, COL_PLATEAU_DD, row.plateau_max_dd_worst, num_fmt)?;
+        write_optional_number(sheet, r, COL_PLATEAU_DD, row.plateau_max_dd_worst, pct_fmt)?;
         write_optional_number(sheet, r, COL_WF_PNL_EFF, row.wf_pnl_efficiency, num_fmt)?;
         write_optional_number(
             sheet,
@@ -689,11 +812,11 @@ fn write_candidate_rows(
             .write_string_with_format(
                 r,
                 COL_REGIME_BUCKET,
-                if row.regime_worst_bucket.is_empty() {
+                excel_safe_text(if row.regime_worst_bucket.is_empty() {
                     "not run"
                 } else {
                     row.regime_worst_bucket.as_str()
-                },
+                }),
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
@@ -704,7 +827,7 @@ fn write_candidate_rows(
             row.regime_worst_sharpe,
             num_fmt,
         )?;
-        write_optional_number(sheet, r, COL_REGIME_DD, row.regime_worst_max_dd, num_fmt)?;
+        write_optional_number(sheet, r, COL_REGIME_DD, row.regime_worst_max_dd, pct_fmt)?;
         write_optional_usize(
             sheet,
             r,
@@ -732,11 +855,11 @@ fn write_candidate_rows(
             .write_string_with_format(
                 r,
                 COL_FRICTION_FLAG,
-                if row.friction_flag.is_empty() {
+                excel_safe_text(if row.friction_flag.is_empty() {
                     "not run"
                 } else {
                     row.friction_flag.as_str()
-                },
+                }),
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
@@ -746,16 +869,36 @@ fn write_candidate_rows(
         write_optional_usize(sheet, r, COL_RANK_CROSS, row.cross_view_rank, int_fmt)?;
         write_optional_usize(sheet, r, COL_RANK_DRIFT, row.max_view_rank_drift, int_fmt)?;
         sheet
-            .write_string_with_format(r, COL_WARNINGS, &row.warning_flags, text_fmt)
+            .write_string_with_format(
+                r,
+                COL_WARNINGS,
+                excel_safe_text(&row.warning_flags),
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, COL_FAIL_REASONS, &row.fail_reasons, text_fmt)
+            .write_string_with_format(
+                r,
+                COL_FAIL_REASONS,
+                excel_safe_text(&row.fail_reasons),
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, COL_PARAMS_JSON, &row.params_json, mono_fmt)
+            .write_string_with_format(
+                r,
+                COL_PARAMS_JSON,
+                excel_safe_text(&row.params_json),
+                mono_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, COL_MC_MODE, &row.monte_carlo_mode, text_fmt)
+            .write_string_with_format(
+                r,
+                COL_MC_MODE,
+                excel_safe_text(&row.monte_carlo_mode),
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         write_optional_number(
             sheet,
@@ -766,7 +909,7 @@ fn write_candidate_rows(
         )?;
         write_optional_number(sheet, r, COL_MC_P05, row.monte_carlo_pnl_p05, num_fmt)?;
         write_optional_number(sheet, r, COL_MC_P50, row.monte_carlo_pnl_p50, num_fmt)?;
-        write_optional_number(sheet, r, COL_MC_DD95, row.monte_carlo_max_dd_p95, num_fmt)?;
+        write_optional_number(sheet, r, COL_MC_DD95, row.monte_carlo_max_dd_p95, pct_fmt)?;
         write_optional_usize(
             sheet,
             r,
@@ -786,7 +929,7 @@ fn write_candidate_rows(
             r,
             COL_MC_STAT_DD95,
             row.monte_carlo_stationary_max_dd_p95,
-            num_fmt,
+            pct_fmt,
         )?;
         write_optional_usize(
             sheet,
@@ -927,81 +1070,10 @@ fn write_candidate_sheet(
     )?;
     apply_candidate_sheet_analysis_formatting(sheet, rows.len(), candidate_table_name(name))?;
     if !title_note.is_empty() {
+        let note = Note::new(title_note).set_author("VectorGrid");
         sheet
-            .write_string_with_format(0, COL_CANDIDATE_LAST + 1, title_note, text_fmt)
+            .insert_note(0, 0, &note)
             .map_err(|e: XlsxError| e.to_string())?;
-    }
-    if name == "Audit Data" {
-        let audit_col = COL_CANDIDATE_LAST + 1;
-        sheet
-            .write_string_with_format(2, audit_col, "Regime Slice Audit", header_fmt)
-            .map_err(|e: XlsxError| e.to_string())?;
-        for (offset, header) in [
-            "Rank",
-            "Approval",
-            "Bucket",
-            "Bars",
-            "ActiveFrac",
-            "PnL",
-            "Sharpe",
-            "MaxDD",
-            "Trades",
-            "Stable",
-        ]
-        .iter()
-        .enumerate()
-        {
-            sheet
-                .write_string_with_format(3, audit_col + offset as u16, *header, header_fmt)
-                .map_err(|e: XlsxError| e.to_string())?;
-        }
-        let mut audit_row = 4u32;
-        for row in rows {
-            for bucket in &row.regime_bucket_rows {
-                if bucket.bars.unwrap_or(0) == 0 {
-                    continue;
-                }
-                sheet
-                    .write_number_with_format(audit_row, audit_col, row.rank as f64, int_fmt)
-                    .map_err(|e: XlsxError| e.to_string())?;
-                sheet
-                    .write_string_with_format(
-                        audit_row,
-                        audit_col + 1,
-                        display_approval_label(&row.approval_label),
-                        text_fmt,
-                    )
-                    .map_err(|e: XlsxError| e.to_string())?;
-                sheet
-                    .write_string_with_format(audit_row, audit_col + 2, &bucket.label, text_fmt)
-                    .map_err(|e: XlsxError| e.to_string())?;
-                write_optional_usize(sheet, audit_row, audit_col + 3, bucket.bars, int_fmt)?;
-                write_optional_number(
-                    sheet,
-                    audit_row,
-                    audit_col + 4,
-                    bucket.active_frac,
-                    pct_fmt,
-                )?;
-                write_optional_number(sheet, audit_row, audit_col + 5, bucket.pnl, num_fmt)?;
-                write_optional_number(sheet, audit_row, audit_col + 6, bucket.sharpe, num_fmt)?;
-                write_optional_number(sheet, audit_row, audit_col + 7, bucket.max_dd, num_fmt)?;
-                write_optional_usize(sheet, audit_row, audit_col + 8, bucket.trades, int_fmt)?;
-                sheet
-                    .write_string_with_format(
-                        audit_row,
-                        audit_col + 9,
-                        match bucket.stable {
-                            Some(true) => "yes",
-                            Some(false) => "no",
-                            None => "n/a",
-                        },
-                        text_fmt,
-                    )
-                    .map_err(|e: XlsxError| e.to_string())?;
-                audit_row += 1;
-            }
-        }
     }
     Ok(())
 }
@@ -1021,10 +1093,14 @@ fn write_regime_audit_sheet(
         .map_err(|e: XlsxError| e.to_string())?;
     sheet.set_zoom(110);
     sheet.set_tab_color(Color::RGB(0x14B8A6));
+    sheet.set_screen_gridlines(false);
+    apply_shareable_sheet_layout(sheet, "VectorGrid Regime Audit");
+    let _ = sheet.set_freeze_panes(1, 3);
+    let wrap_fmt = text_fmt.clone().set_text_wrap().set_align(FormatAlign::Top);
     for (col, width) in [
         (0u16, 8.0),
         (1u16, 14.0),
-        (2u16, 34.0),
+        (2u16, 52.0),
         (3u16, 12.0),
         (4u16, 10.0),
         (5u16, 10.0),
@@ -1051,6 +1127,7 @@ fn write_regime_audit_sheet(
     let mut row_idx = 1u32;
     for row in &model.all_rows {
         for bucket in &row.regime_bucket_rows {
+            let _ = sheet.set_row_height(row_idx, 30.0);
             sheet
                 .write_number_with_format(row_idx, 0, row.rank as f64, int_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
@@ -1063,13 +1140,18 @@ fn write_regime_audit_sheet(
                 )
                 .map_err(|e: XlsxError| e.to_string())?;
             sheet
-                .write_string_with_format(row_idx, 2, &row.params_summary, text_fmt)
+                .write_string_with_format(
+                    row_idx,
+                    2,
+                    excel_safe_text(&row.params_summary),
+                    &wrap_fmt,
+                )
                 .map_err(|e: XlsxError| e.to_string())?;
             sheet
                 .write_string_with_format(
                     row_idx,
                     3,
-                    &display_regime_bucket_label(&bucket.label),
+                    excel_safe_text(&display_regime_bucket_label(&bucket.label)),
                     text_fmt,
                 )
                 .map_err(|e: XlsxError| e.to_string())?;
@@ -1077,7 +1159,7 @@ fn write_regime_audit_sheet(
             write_optional_number(sheet, row_idx, 5, bucket.active_frac, pct_fmt)?;
             write_optional_number(sheet, row_idx, 6, bucket.pnl, num_fmt)?;
             write_optional_number(sheet, row_idx, 7, bucket.sharpe, num_fmt)?;
-            write_optional_number(sheet, row_idx, 8, bucket.max_dd, num_fmt)?;
+            write_optional_number(sheet, row_idx, 8, bucket.max_dd, pct_fmt)?;
             write_optional_usize(sheet, row_idx, 9, bucket.trades, int_fmt)?;
             sheet
                 .write_string_with_format(
@@ -1158,6 +1240,22 @@ fn format_optional_usize(value: Option<usize>) -> String {
         .unwrap_or_else(|| "not run".to_string())
 }
 
+fn count_axis_major_unit(max_count: usize) -> f64 {
+    if max_count <= 5 {
+        1.0
+    } else {
+        (max_count as f64 / 5.0).ceil()
+    }
+}
+
+fn capped_chart_title(base: &str, total_rows: usize) -> String {
+    if total_rows > SUMMARY_CHART_ROW_CAP {
+        format!("{base} (top {SUMMARY_CHART_ROW_CAP})")
+    } else {
+        base.to_string()
+    }
+}
+
 fn min_threshold_status(value: Option<f64>, threshold: Option<f64>) -> (&'static str, String) {
     match (value.filter(|v| v.is_finite()), threshold) {
         (Some(value), Some(threshold)) if value >= threshold => {
@@ -1194,7 +1292,7 @@ fn status_format<'a>(
         "pass" | "completed" => approved_fmt,
         "watch" | "observed" => review_fmt,
         "fail" => rejected_fmt,
-        "compat" | "disabled" | "skipped" | "omitted by cross mode" | "not run" => compat_fmt,
+        "compat" | "disabled" | "skipped" | "cross omitted" | "not run" => compat_fmt,
         _ => text_fmt,
     }
 }
@@ -1899,10 +1997,10 @@ fn validation_feature_rows(model: &ValidationExportModel) -> Vec<ValidationFeatu
             .map(|pack| {
                 format!(
                     "requested={} evaluated={} retained={} approved={}",
-                    pack.requested_candidates,
-                    pack.evaluated_candidates,
-                    pack.retained_candidates,
-                    pack.approved_candidates
+                    format_optional_usize(pack.requested_candidates),
+                    format_optional_usize(pack.evaluated_candidates),
+                    format_optional_usize(pack.retained_candidates),
+                    format_optional_usize(pack.approved_candidates)
                 )
             })
             .unwrap_or_else(|| "not recorded".to_string()),
@@ -1990,6 +2088,7 @@ fn build_validation_features_sheet(
     sheet.set_tab_color(Color::RGB(0x2563EB));
     apply_shareable_sheet_layout(sheet, "VectorGrid Validation Feature Coverage");
     let _ = sheet.set_freeze_panes(4, 0);
+    let wrap_fmt = text_fmt.clone().set_text_wrap().set_align(FormatAlign::Top);
     for (col, width) in [
         (0u16, 30.0),
         (1u16, 16.0),
@@ -2040,6 +2139,7 @@ fn build_validation_features_sheet(
         std::collections::BTreeMap::new();
     for (idx, row) in rows.iter().enumerate() {
         let r = 4 + idx as u32;
+        let _ = sheet.set_row_height(r, 42.0);
         *status_counts.entry(row.status.clone()).or_default() += 1;
         for (col, value) in [
             row.feature.as_str(),
@@ -2064,10 +2164,10 @@ fn build_validation_features_sheet(
                     compat_fmt,
                 )
             } else {
-                text_fmt
+                &wrap_fmt
             };
             sheet
-                .write_string_with_format(r, col as u16, *value, fmt)
+                .write_string_with_format(r, col as u16, excel_safe_text(value), fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
     }
@@ -2137,7 +2237,7 @@ fn build_validation_features_sheet(
             .set_name("Validation feature status counts");
         status_chart.legend().set_hidden();
         sheet
-            .insert_chart_with_offset(10, 9, &status_chart, 8, 8)
+            .insert_chart_with_offset(3, 12, &status_chart, 8, 8)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -2480,16 +2580,17 @@ fn build_candidate_decision_sheet(
     sheet.set_tab_color(Color::RGB(0x7C3AED));
     apply_shareable_sheet_layout(sheet, "VectorGrid Candidate Decision Ledger");
     let _ = sheet.set_freeze_panes(4, 2);
+    let detail_wrap_fmt = text_fmt.clone().set_text_wrap().set_align(FormatAlign::Top);
     for (col, width) in [
         (0u16, 8.0),
         (1u16, 16.0),
-        (2u16, 13.0),
-        (3u16, 11.0),
-        (4u16, 11.0),
-        (5u16, 13.0),
+        (2u16, 18.0),
+        (3u16, 13.0),
+        (4u16, 24.0),
+        (5u16, 26.0),
         (6u16, 14.0),
-        (7u16, 12.0),
-        (8u16, 11.0),
+        (7u16, 40.0),
+        (8u16, 30.0),
         (9u16, 13.0),
         (10u16, 13.0),
         (11u16, 13.0),
@@ -2660,7 +2761,7 @@ fn build_candidate_decision_sheet(
         chart.x_axis().set_name("Module count");
         chart.y_axis().set_name("Rank");
         sheet
-            .insert_chart_with_offset(9, 17, &chart, 8, 8)
+            .insert_chart_with_offset(3, 23, &chart, 8, 8)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -2686,11 +2787,12 @@ fn build_candidate_decision_sheet(
     }
     for (idx, decision) in all_decisions.iter().enumerate() {
         let r = ledger_header_row + 1 + idx as u32;
+        let _ = sheet.set_row_height(r, 30.0);
         sheet
             .write_number_with_format(r, 0, decision.rank as f64, int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, 1, &decision.approval, text_fmt)
+            .write_string_with_format(r, 1, excel_safe_text(&decision.approval), text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
             .write_string_with_format(r, 2, decision.module, text_fmt)
@@ -2699,7 +2801,7 @@ fn build_candidate_decision_sheet(
             .write_string_with_format(
                 r,
                 3,
-                &decision.status,
+                excel_safe_text(&decision.status),
                 status_format(
                     &decision.status,
                     text_fmt,
@@ -2711,17 +2813,17 @@ fn build_candidate_decision_sheet(
             )
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, 4, &decision.observed, text_fmt)
+            .write_string_with_format(r, 4, excel_safe_text(&decision.observed), &detail_wrap_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, 5, &decision.required, text_fmt)
+            .write_string_with_format(r, 5, excel_safe_text(&decision.required), &detail_wrap_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         write_optional_number(sheet, r, 6, decision.margin, num_fmt)?;
         sheet
-            .write_string_with_format(r, 7, &decision.detail, text_fmt)
+            .write_string_with_format(r, 7, excel_safe_text(&decision.detail), &detail_wrap_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, 8, decision.source, text_fmt)
+            .write_string_with_format(r, 8, decision.source, &detail_wrap_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
     if !all_decisions.is_empty() {
@@ -2736,13 +2838,7 @@ fn build_candidate_decision_sheet(
             &detail_headers,
             TableStyle::Medium5,
         )?;
-        let gap_scale = ConditionalFormat3ColorScale::new()
-            .set_minimum_color("F8696B")
-            .set_midpoint_color("FFEB84")
-            .set_maximum_color("63BE7B");
-        sheet
-            .add_conditional_format(ledger_header_row + 1, 6, ledger_last, 6, &gap_scale)
-            .map_err(|e: XlsxError| e.to_string())?;
+        apply_zero_centered_formatting(sheet, ledger_header_row + 1, 6, ledger_last, 6)?;
     }
 
     Ok(())
@@ -2784,6 +2880,7 @@ fn build_downside_stress_sheet(
     header_fmt: &Format,
     text_fmt: &Format,
     num_fmt: &Format,
+    pct_fmt: &Format,
     int_fmt: &Format,
 ) -> Result<(), String> {
     let sheet = workbook.add_worksheet();
@@ -2861,13 +2958,13 @@ fn build_downside_stress_sheet(
         sheet
             .write_string_with_format(r, 1, display_approval_label(&row.approval_label), text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(sheet, r, 2, Some(row.max_dd), num_fmt)?;
-        write_optional_number(sheet, r, 3, row.wf_dd_worst, num_fmt)?;
-        write_optional_number(sheet, r, 4, row.bootstrap_dd_p95, num_fmt)?;
-        write_optional_number(sheet, r, 5, row.bootstrap_stationary_dd_p95, num_fmt)?;
-        write_optional_number(sheet, r, 6, row.regime_worst_max_dd, num_fmt)?;
-        write_optional_number(sheet, r, 7, row.friction_worst_max_dd, num_fmt)?;
-        write_optional_number(sheet, r, 8, worst_dd, num_fmt)?;
+        write_optional_number(sheet, r, 2, Some(row.max_dd), pct_fmt)?;
+        write_optional_number(sheet, r, 3, row.wf_dd_worst, pct_fmt)?;
+        write_optional_number(sheet, r, 4, row.bootstrap_dd_p95, pct_fmt)?;
+        write_optional_number(sheet, r, 5, row.bootstrap_stationary_dd_p95, pct_fmt)?;
+        write_optional_number(sheet, r, 6, row.regime_worst_max_dd, pct_fmt)?;
+        write_optional_number(sheet, r, 7, row.friction_worst_max_dd, pct_fmt)?;
+        write_optional_number(sheet, r, 8, worst_dd, pct_fmt)?;
         sheet
             .write_string_with_format(r, 9, worst_dd_source, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -2877,7 +2974,7 @@ fn build_downside_stress_sheet(
             .map_err(|e: XlsxError| e.to_string())?;
         write_optional_number(sheet, r, 12, row.regime_worst_sharpe, num_fmt)?;
         write_optional_number(sheet, r, 13, row.friction_worst_sharpe, num_fmt)?;
-        write_optional_number(sheet, r, 14, row.perturb_positive_frac, num_fmt)?;
+        write_optional_number(sheet, r, 14, row.perturb_positive_frac, pct_fmt)?;
     }
 
     if !model.all_rows.is_empty() {
@@ -2902,15 +2999,13 @@ fn build_downside_stress_sheet(
                 .add_conditional_format(row_min, col, row_max, col, &bad_scale)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
-        let good_scale = ConditionalFormat3ColorScale::new()
-            .set_minimum_color("F8696B")
-            .set_midpoint_color("FFEB84")
-            .set_maximum_color("63BE7B");
-        for col in [10u16, 12u16, 13u16, 14u16] {
-            sheet
-                .add_conditional_format(row_min, col, row_max, col, &good_scale)
-                .map_err(|e: XlsxError| e.to_string())?;
+        for col in [10u16, 12u16, 13u16] {
+            apply_zero_centered_formatting(sheet, row_min, col, row_max, col)?;
         }
+        let probability_bar = probability_data_bar("5A8AC6");
+        sheet
+            .add_conditional_format(row_min, 14, row_max, 14, &probability_bar)
+            .map_err(|e: XlsxError| e.to_string())?;
 
         let mut worst_chart = Chart::new(ChartType::Column);
         worst_chart
@@ -2919,35 +3014,83 @@ fn build_downside_stress_sheet(
             .set_values(("Downside Stress", row_min, 8, row_max, 8));
         worst_chart.title().set_name("Worst drawdown by candidate");
         worst_chart.x_axis().set_name("Rank");
-        worst_chart.y_axis().set_name("Drawdown");
+        worst_chart
+            .y_axis()
+            .set_name("Drawdown")
+            .set_num_format("0.0%");
         worst_chart.legend().set_hidden();
         sheet
             .insert_chart_with_offset(3, 16, &worst_chart, 8, 8)
             .map_err(|e: XlsxError| e.to_string())?;
 
-        let mut component_chart = Chart::new(ChartType::Column);
-        for (name, col) in [
-            ("MaxDD", 2u16),
-            ("WF Worst", 3u16),
-            ("Bootstrap DD95", 4u16),
-            ("Stationary DD95", 5u16),
-            ("Regime DD", 6u16),
-            ("Friction DD", 7u16),
-        ] {
+        let component_series = [
+            (
+                "WF Worst",
+                3u16,
+                model.all_rows.iter().all(|row| row.wf_dd_worst.is_some()),
+            ),
+            (
+                "Bootstrap DD95",
+                4u16,
+                model
+                    .all_rows
+                    .iter()
+                    .all(|row| row.bootstrap_dd_p95.is_some()),
+            ),
+            (
+                "Stationary DD95",
+                5u16,
+                model
+                    .all_rows
+                    .iter()
+                    .all(|row| row.bootstrap_stationary_dd_p95.is_some()),
+            ),
+            (
+                "Regime DD",
+                6u16,
+                model
+                    .all_rows
+                    .iter()
+                    .all(|row| row.regime_worst_max_dd.is_some()),
+            ),
+            (
+                "Friction DD",
+                7u16,
+                model
+                    .all_rows
+                    .iter()
+                    .all(|row| row.friction_worst_max_dd.is_some()),
+            ),
+        ];
+        if component_series.iter().any(|(_, _, available)| *available) {
+            let mut component_chart = Chart::new(ChartType::Column);
             component_chart
                 .add_series()
-                .set_name(name)
+                .set_name("MaxDD")
                 .set_categories(("Downside Stress", row_min, 0, row_max, 0))
-                .set_values(("Downside Stress", row_min, col, row_max, col));
+                .set_values(("Downside Stress", row_min, 2, row_max, 2));
+            for (name, col, available) in component_series {
+                if !available {
+                    continue;
+                }
+                component_chart
+                    .add_series()
+                    .set_name(name)
+                    .set_categories(("Downside Stress", row_min, 0, row_max, 0))
+                    .set_values(("Downside Stress", row_min, col, row_max, col));
+            }
+            component_chart
+                .title()
+                .set_name("Drawdown stress components by candidate");
+            component_chart.x_axis().set_name("Rank");
+            component_chart
+                .y_axis()
+                .set_name("Drawdown")
+                .set_num_format("0.0%");
+            sheet
+                .insert_chart_with_offset(20, 16, &component_chart, 8, 8)
+                .map_err(|e: XlsxError| e.to_string())?;
         }
-        component_chart
-            .title()
-            .set_name("Drawdown stress components by candidate");
-        component_chart.x_axis().set_name("Rank");
-        component_chart.y_axis().set_name("Drawdown");
-        sheet
-            .insert_chart_with_offset(20, 16, &component_chart, 8, 8)
-            .map_err(|e: XlsxError| e.to_string())?;
     } else {
         sheet
             .write_string_with_format(
@@ -2984,7 +3127,8 @@ fn build_robustness_matrix(
     sheet.set_zoom(110);
     sheet.set_tab_color(Color::RGB(0xA855F7));
     apply_shareable_sheet_layout(sheet, "VectorGrid Robustness Matrix");
-    let _ = sheet.set_freeze_panes(19, 0);
+    let _ = sheet.set_freeze_panes(4, 0);
+    let wrap_fmt = text_fmt.clone().set_text_wrap().set_align(FormatAlign::Top);
     for (col, width) in [
         (0u16, 22.0),
         (1u16, 20.0),
@@ -3266,14 +3410,15 @@ fn build_robustness_matrix(
 
     for (idx, (dimension, observed, reference, status, readout)) in dimensions.iter().enumerate() {
         let row = 4 + idx as u32;
+        let _ = sheet.set_row_height(row, 30.0);
         sheet
-            .write_string_with_format(row, 0, dimension, label_fmt)
+            .write_string_with_format(row, 0, excel_safe_text(dimension), label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(row, 1, observed, text_fmt)
+            .write_string_with_format(row, 1, excel_safe_text(observed), &wrap_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(row, 2, reference, text_fmt)
+            .write_string_with_format(row, 2, excel_safe_text(reference), &wrap_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
             .write_string_with_format(
@@ -3291,11 +3436,11 @@ fn build_robustness_matrix(
             )
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(row, 4, readout, text_fmt)
+            .write_string_with_format(row, 4, excel_safe_text(readout), &wrap_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    let peer_header_row = 20u32;
+    let peer_header_row = 6 + dimensions.len() as u32;
     sheet
         .write_string_with_format(peer_header_row - 2, 0, "Peer Comparison", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -3384,7 +3529,7 @@ fn build_robustness_matrix(
             .write_number_with_format(r, 4, row.sharpe, num_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_number_with_format(r, 5, row.max_dd, num_fmt)
+            .write_number_with_format(r, 5, row.max_dd, pct_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         write_optional_number(sheet, r, 6, row.psr, pct_fmt)?;
         write_optional_number(sheet, r, 7, row.dsr, pct_fmt)?;
@@ -3484,26 +3629,51 @@ fn build_robustness_matrix(
             .map_err(|e: XlsxError| e.to_string())?;
 
         let mut probability_chart = Chart::new(ChartType::Line);
-        for (name, col) in [
-            ("PSR", 6u16),
-            ("DSR", 7u16),
-            ("CSCV Rank", 8u16),
-            ("Bootstrap Prob+", 10u16),
+        let mut probability_series_count = 0usize;
+        for (name, col, available) in [
+            ("PSR", 6u16, peer_rows.iter().all(|row| row.psr.is_some())),
+            ("DSR", 7u16, peer_rows.iter().all(|row| row.dsr.is_some())),
+            (
+                "CSCV Rank",
+                8u16,
+                peer_rows
+                    .iter()
+                    .all(|row| row.cscv_oos_rank_frac_p50.is_some()),
+            ),
+            (
+                "Bootstrap Prob+",
+                10u16,
+                peer_rows
+                    .iter()
+                    .all(|row| row.bootstrap_prob_pnl_positive.is_some()),
+            ),
+            (
+                "WFE Sharpe",
+                11u16,
+                peer_rows
+                    .iter()
+                    .all(|row| row.wf_sharpe_efficiency.is_some()),
+            ),
         ] {
-            probability_chart
-                .add_series()
-                .set_name(name)
-                .set_categories(("Robustness Matrix", row_min, 0, row_max, 0))
-                .set_values(("Robustness Matrix", row_min, col, row_max, col));
+            if available {
+                probability_series_count += 1;
+                probability_chart
+                    .add_series()
+                    .set_name(name)
+                    .set_categories(("Robustness Matrix", row_min, 0, row_max, 0))
+                    .set_values(("Robustness Matrix", row_min, col, row_max, col));
+            }
         }
-        probability_chart
-            .title()
-            .set_name("Validation probability metrics by rank");
-        probability_chart.x_axis().set_name("Rank");
-        probability_chart.y_axis().set_name("Metric");
-        sheet
-            .insert_chart_with_offset(20, 16, &probability_chart, 8, 8)
-            .map_err(|e: XlsxError| e.to_string())?;
+        if probability_series_count > 0 {
+            probability_chart
+                .title()
+                .set_name("Validation ratios and probabilities by rank");
+            probability_chart.x_axis().set_name("Rank");
+            probability_chart.y_axis().set_name("Metric");
+            sheet
+                .insert_chart_with_offset(peer_header_row, 16, &probability_chart, 8, 8)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
     } else {
         sheet
             .write_string_with_format(
@@ -3551,12 +3721,12 @@ fn primary_candidate_issue(row: &ExportCandidateRow) -> String {
     }
 }
 
-fn worst_gate_gap(gaps: &[Option<f64>]) -> Option<f64> {
+fn observed_gate_failure_count(gaps: &[Option<f64>]) -> usize {
     gaps.iter()
         .flatten()
         .copied()
-        .filter(|value| value.is_finite())
-        .min_by(|a, b| a.total_cmp(b))
+        .filter(|value| value.is_finite() && *value < 0.0)
+        .count()
 }
 
 fn run_pbo_margin(model: &ValidationExportModel) -> Option<f64> {
@@ -3588,24 +3758,22 @@ fn diagnostic_rows(model: &ValidationExportModel) -> Vec<&ExportCandidateRow> {
         rows.extend(model.all_rows.iter());
     }
     rows.sort_by(|a, b| {
-        let a_worst = worst_gate_gap(&[
+        let a_failures = observed_gate_failure_count(&[
             threshold_gap(a.psr, model.min_psr),
             threshold_gap(a.dsr, model.min_dsr),
             threshold_gap(a.cscv_oos_rank_frac_p50, model.min_cscv_oos_rank_frac),
             threshold_gap(a.cscv_oos_metric_p50, model.min_cscv_oos_metric),
             track_record_gap(a),
-        ])
-        .unwrap_or(f64::INFINITY);
-        let b_worst = worst_gate_gap(&[
+        ]);
+        let b_failures = observed_gate_failure_count(&[
             threshold_gap(b.psr, model.min_psr),
             threshold_gap(b.dsr, model.min_dsr),
             threshold_gap(b.cscv_oos_rank_frac_p50, model.min_cscv_oos_rank_frac),
             threshold_gap(b.cscv_oos_metric_p50, model.min_cscv_oos_metric),
             track_record_gap(b),
-        ])
-        .unwrap_or(f64::INFINITY);
-        a_worst
-            .total_cmp(&b_worst)
+        ]);
+        b_failures
+            .cmp(&a_failures)
             .then_with(|| a.rank.cmp(&b.rank))
     });
     rows
@@ -3629,6 +3797,7 @@ fn build_rejection_diagnostics(
     sheet.set_tab_color(Color::RGB(0xEF4444));
     apply_shareable_sheet_layout(sheet, "VectorGrid Rejection Diagnostics");
     let _ = sheet.set_freeze_panes(4, 3);
+    let wrap_fmt = text_fmt.clone().set_text_wrap().set_align(FormatAlign::Top);
     for (col, width) in [
         (0u16, 38.0),
         (1u16, 10.0),
@@ -3641,7 +3810,7 @@ fn build_rejection_diagnostics(
         (9u16, 14.0),
         (10u16, 13.0),
         (11u16, 13.0),
-        (12u16, 14.0),
+        (12u16, 20.0),
     ] {
         let _ = sheet.set_column_width(col, width);
     }
@@ -3655,7 +3824,7 @@ fn build_rejection_diagnostics(
             0,
             1,
             12,
-            "Gate distance columns show observed minus required minimum; positive values pass. PBO margin is max allowed PBO minus observed PBO; positive values pass.",
+            "Gate distance columns show observed minus required minimum; positive values pass. PBO margin is max allowed PBO minus observed PBO. Observed Gate Fails counts negative recorded margins and excludes unavailable gates.",
             text_fmt,
         )
         .map_err(|e: XlsxError| e.to_string())?;
@@ -3675,7 +3844,7 @@ fn build_rejection_diagnostics(
         for (idx, (reason, count)) in reason_counts.iter().enumerate() {
             let row = 4 + idx as u32;
             sheet
-                .write_string_with_format(row, 0, reason, text_fmt)
+                .write_string_with_format(row, 0, excel_safe_text(reason), text_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
             sheet
                 .write_number_with_format(row, 1, *count as f64, int_fmt)
@@ -3698,14 +3867,14 @@ fn build_rejection_diagnostics(
     for (col, header) in [
         "Rank",
         "Approval",
-        "Primary Issue",
+        "Primary Warning / Issue",
         "PSR Gap",
         "DSR Gap",
         "CSCV Rank Gap",
         "CSCV Metric Gap",
         "Track Gap",
         "Run PBO Margin",
-        "Worst Gate Gap",
+        "Observed Gate Fails",
     ]
     .iter()
     .enumerate()
@@ -3717,8 +3886,10 @@ fn build_rejection_diagnostics(
 
     let rows = diagnostic_rows(model);
     let pbo_margin = run_pbo_margin(model);
+    let charts_row = candidate_header_row + 2 + reason_counts.len().max(rows.len()) as u32;
     for (idx, row) in rows.iter().enumerate() {
         let r = candidate_header_row + 1 + idx as u32;
+        let _ = sheet.set_row_height(r, 30.0);
         sheet
             .write_number_with_format(r, 3, row.rank as f64, int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -3726,7 +3897,12 @@ fn build_rejection_diagnostics(
             .write_string_with_format(r, 4, display_approval_label(&row.approval_label), text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         sheet
-            .write_string_with_format(r, 5, &primary_candidate_issue(row), text_fmt)
+            .write_string_with_format(
+                r,
+                5,
+                excel_safe_text(&primary_candidate_issue(row)),
+                &wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         let psr_gap = threshold_gap(row.psr, model.min_psr);
         let dsr_gap = threshold_gap(row.dsr, model.min_dsr);
@@ -3739,7 +3915,7 @@ fn build_rejection_diagnostics(
         write_optional_number(sheet, r, 9, cscv_metric_gap, num_fmt)?;
         write_optional_number(sheet, r, 10, track_gap, num_fmt)?;
         write_optional_number(sheet, r, 11, pbo_margin, pct_fmt)?;
-        let worst = worst_gate_gap(&[
+        let failed_gate_count = observed_gate_failure_count(&[
             psr_gap,
             dsr_gap,
             cscv_rank_gap,
@@ -3747,7 +3923,9 @@ fn build_rejection_diagnostics(
             track_gap,
             pbo_margin,
         ]);
-        write_optional_number(sheet, r, 12, worst, num_fmt)?;
+        sheet
+            .write_number_with_format(r, 12, failed_gate_count as f64, int_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
     }
 
     if !rows.is_empty() {
@@ -3763,50 +3941,83 @@ fn build_rejection_diagnostics(
             &[
                 "Rank",
                 "Approval",
-                "Primary Issue",
+                "Primary Warning / Issue",
                 "PSR Gap",
                 "DSR Gap",
                 "CSCV Rank Gap",
                 "CSCV Metric Gap",
                 "Track Gap",
                 "Run PBO Margin",
-                "Worst Gate Gap",
+                "Observed Gate Fails",
             ],
-            TableStyle::Medium3,
+            TableStyle::Medium9,
         )?;
 
-        let gap_scale = ConditionalFormat3ColorScale::new()
-            .set_minimum_color("F8696B")
-            .set_midpoint_color("FFEB84")
-            .set_maximum_color("63BE7B");
-        for col in 6u16..=12u16 {
+        apply_zero_centered_formatting(sheet, row_min, 6, row_max, 11)?;
+        let no_failures = ConditionalFormatCell::new()
+            .set_rule(ConditionalFormatCellRule::EqualTo(0))
+            .set_format(
+                Format::new()
+                    .set_font_color("166534")
+                    .set_background_color("DCFCE7"),
+            );
+        let has_failures = ConditionalFormatCell::new()
+            .set_rule(ConditionalFormatCellRule::GreaterThan(0))
+            .set_format(
+                Format::new()
+                    .set_font_color("991B1B")
+                    .set_background_color("FEE2E2"),
+            );
+        for rule in [&no_failures, &has_failures] {
             sheet
-                .add_conditional_format(row_min, col, row_max, col, &gap_scale)
+                .add_conditional_format(row_min, 12, row_max, 12, rule)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
 
         let mut gap_chart = Chart::new(ChartType::Column);
-        for (name, col) in [
-            ("PSR Gap", 6u16),
-            ("DSR Gap", 7u16),
-            ("CSCV Rank Gap", 8u16),
-            ("PBO Margin", 11u16),
-            ("Worst Gate Gap", 12u16),
+        let mut gap_series_count = 0usize;
+        for (name, col, available) in [
+            (
+                "PSR Gap",
+                6u16,
+                rows.iter()
+                    .all(|row| threshold_gap(row.psr, model.min_psr).is_some()),
+            ),
+            (
+                "DSR Gap",
+                7u16,
+                rows.iter()
+                    .all(|row| threshold_gap(row.dsr, model.min_dsr).is_some()),
+            ),
+            (
+                "CSCV Rank Gap",
+                8u16,
+                rows.iter().all(|row| {
+                    threshold_gap(row.cscv_oos_rank_frac_p50, model.min_cscv_oos_rank_frac)
+                        .is_some()
+                }),
+            ),
+            ("PBO Margin", 11u16, pbo_margin.is_some()),
         ] {
-            gap_chart
-                .add_series()
-                .set_name(name)
-                .set_categories(("Rejection Diagnostics", row_min, 3, row_max, 3))
-                .set_values(("Rejection Diagnostics", row_min, col, row_max, col));
+            if available {
+                gap_series_count += 1;
+                gap_chart
+                    .add_series()
+                    .set_name(name)
+                    .set_categories(("Rejection Diagnostics", row_min, 3, row_max, 3))
+                    .set_values(("Rejection Diagnostics", row_min, col, row_max, col));
+            }
         }
-        gap_chart
-            .title()
-            .set_name("Threshold distance by candidate");
-        gap_chart.x_axis().set_name("Rank");
-        gap_chart.y_axis().set_name("Distance");
-        sheet
-            .insert_chart_with_offset(18, 3, &gap_chart, 8, 8)
-            .map_err(|e: XlsxError| e.to_string())?;
+        if gap_series_count > 0 {
+            gap_chart
+                .title()
+                .set_name("Probability and rank-fraction gate margins by candidate");
+            gap_chart.x_axis().set_name("Rank");
+            gap_chart.y_axis().set_name("Margin").set_num_format("0.0%");
+            sheet
+                .insert_chart_with_offset(charts_row, 5, &gap_chart, 8, 8)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
     }
 
     if !reason_counts.is_empty() {
@@ -3821,7 +4032,7 @@ fn build_rejection_diagnostics(
             .set_name("Rejection and review reason counts");
         reason_chart.legend().set_hidden();
         sheet
-            .insert_chart_with_offset(18, 0, &reason_chart, 8, 8)
+            .insert_chart_with_offset(charts_row, 0, &reason_chart, 8, 8)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -3842,12 +4053,13 @@ fn build_report_guide(
     sheet.set_tab_color(Color::RGB(0x64748B));
     apply_shareable_sheet_layout(sheet, "VectorGrid Report Guide");
     let _ = sheet.set_freeze_panes(3, 0);
+    let wrap_fmt = text_fmt.clone().set_text_wrap().set_align(FormatAlign::Top);
     for (col, width) in [
-        (0u16, 24.0),
-        (1u16, 24.0),
-        (2u16, 28.0),
-        (3u16, 36.0),
-        (4u16, 38.0),
+        (0u16, 28.0),
+        (1u16, 30.0),
+        (2u16, 40.0),
+        (3u16, 58.0),
+        (4u16, 56.0),
     ] {
         let _ = sheet.set_column_width(col, width);
     }
@@ -3879,6 +4091,27 @@ fn build_report_guide(
             .map_err(|e: XlsxError| e.to_string())?;
     }
     let rows = [
+        (
+            "Research Readiness",
+            "Promotion and realism evidence",
+            "Fail-closed; declared evidence is better than unknown",
+            "Separates statistical approval from promotion eligibility and deployment-realism declarations",
+            "Readiness overview, candidate funnel, realism table, and promotion gates",
+        ),
+        (
+            "Execution Provenance",
+            "Recorded route vs expected policy",
+            "Recorded runtime evidence is authoritative",
+            "Separates artifact-recorded execution from request-time predictions and inferred auxiliary work",
+            "Recorded execution, expected policy, and validation provenance tables",
+        ),
+        (
+            "Candidate Comparison",
+            "Curated finalist comparison",
+            "Use multiple evidence dimensions",
+            "Compact decision view; Audit Data remains the complete raw evidence table",
+            "Candidate comparison table and decision charts",
+        ),
         (
             "Dashboard",
             "Run Verdict",
@@ -3959,9 +4192,10 @@ fn build_report_guide(
     ];
     for (idx, row) in rows.iter().enumerate() {
         let r = 4 + idx as u32;
+        let _ = sheet.set_row_height(r, 42.0);
         for (col, value) in [row.0, row.1, row.2, row.3, row.4].iter().enumerate() {
             sheet
-                .write_string_with_format(r, col as u16, *value, text_fmt)
+                .write_string_with_format(r, col as u16, *value, &wrap_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
     }
@@ -3998,21 +4232,30 @@ fn build_dashboard(
         .set_name("Dashboard")
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard.set_active(true);
+    dashboard.set_first_tab(true);
+    dashboard.set_screen_gridlines(false);
     dashboard.set_zoom(115);
     dashboard.set_tab_color(Color::RGB(0x0F172A));
     apply_shareable_sheet_layout(dashboard, "VectorGrid Validation Dashboard");
+    let _ = dashboard.set_freeze_panes(2, 0);
     let _ = dashboard.set_column_width(0, 24);
     let _ = dashboard.set_column_width(1, 34);
     let _ = dashboard.set_column_width(2, 22);
-    let _ = dashboard.set_column_width(3, 20);
-    let _ = dashboard.set_column_width(4, 18);
-    let _ = dashboard.set_column_width(5, 18);
-    let _ = dashboard.set_column_width(6, 18);
-    let _ = dashboard.set_column_width(7, 18);
+    let _ = dashboard.set_column_width(3, 34);
+    let _ = dashboard.set_column_width(4, 24);
+    let _ = dashboard.set_column_width(5, 24);
+    let _ = dashboard.set_column_width(6, 36);
+    let _ = dashboard.set_column_width(7, 32);
+    let dashboard_wrap_fmt = text_fmt.clone().set_text_wrap().set_align(FormatAlign::Top);
 
     dashboard
         .merge_range(0, 0, 0, 7, "Validation XLSX Report", title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
+    let research_notice_fmt = review_fmt
+        .clone()
+        .set_text_wrap()
+        .set_align(FormatAlign::Center);
+    let _ = dashboard.set_row_height(1, 34.0);
     if model.compatibility_mode {
         dashboard
             .merge_range(
@@ -4022,6 +4265,17 @@ fn build_dashboard(
                 7,
                 "Compatibility mode: workbook generated from a legacy validation artifact without the full verdict contract.",
                 compat_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+    } else {
+        dashboard
+            .merge_range(
+                1,
+                0,
+                1,
+                7,
+                "Research evidence only — statistical approval is not deployment authorization. Review the Research Readiness sheet before any promotion decision.",
+                &research_notice_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
     }
@@ -4036,8 +4290,9 @@ fn build_dashboard(
         .runtime_ms
         .map(|value| format!("{value} ms"))
         .unwrap_or_else(|| "-".to_string());
-    let backend_reason_label = if model.backend_route.contains("->CpuOnly") {
-        "Fallback"
+    let residency_text = execution_residency_readout(model);
+    let backend_reason_label = if model.actual_fallback_summary.trim() != "-" {
+        "Fallback / Downgrade"
     } else {
         "Route Note"
     };
@@ -4071,14 +4326,7 @@ fn build_dashboard(
                 model.requested_backend.as_str()
             },
         ),
-        (
-            "Residency",
-            if model.validation_residency_tier.is_empty() {
-                "-"
-            } else {
-                model.validation_residency_tier.as_str()
-            },
-        ),
+        ("Residency", residency_text.as_str()),
         (
             "Route",
             if model.backend_route.is_empty() {
@@ -4096,11 +4344,26 @@ fn build_dashboard(
             },
         ),
     ] {
+        let row_height = if value.chars().count() > 70 {
+            42.0
+        } else if value.chars().count() > 42 {
+            30.0
+        } else {
+            20.0
+        };
+        let _ = dashboard.set_row_height(meta_row, row_height);
         dashboard
             .write_string_with_format(meta_row, 0, label, label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(meta_row, 1, value, text_fmt)
+            .merge_range(
+                meta_row,
+                1,
+                meta_row,
+                2,
+                &excel_safe_text(value),
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         meta_row += 1;
     }
@@ -4175,6 +4438,8 @@ fn build_dashboard(
             .map_err(|e: XlsxError| e.to_string())?;
     }
     if let Some(verdict) = run_verdict {
+        let _ = dashboard.set_row_height(6, 34.0);
+        let _ = dashboard.set_row_height(7, 34.0);
         dashboard
             .write_string_with_format(6, 3, "Run Warnings", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -4187,7 +4452,7 @@ fn build_dashboard(
                 } else {
                     verdict.warning_flags.as_str()
                 },
-                text_fmt,
+                &dashboard_wrap_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
@@ -4202,7 +4467,7 @@ fn build_dashboard(
                 } else {
                     verdict.fail_reasons.as_str()
                 },
-                text_fmt,
+                &dashboard_wrap_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
@@ -4389,7 +4654,7 @@ fn build_dashboard(
         dashboard
             .write_string_with_format(20, 5, "Fwd MaxDD", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 20, 6, reopt.forward_max_dd_worst, num_fmt)?;
+        write_optional_number(dashboard, 20, 6, reopt.forward_max_dd_worst, pct_fmt)?;
         dashboard
             .write_string_with_format(21, 5, "Fwd PnL+", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -4498,43 +4763,73 @@ fn build_dashboard(
         .write_string_with_format(35, 5, "Route Fallback", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(35, 6, &model.actual_fallback_summary, text_fmt)
+        .write_string_with_format(
+            35,
+            6,
+            excel_safe_text(&model.actual_fallback_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(36, 5, "Route Note", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(36, 6, &model.actual_route_note_summary, text_fmt)
+        .write_string_with_format(
+            36,
+            6,
+            excel_safe_text(&model.actual_route_note_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(37, 5, "Aux CPU Tails (inferred)", label_fmt)
+        .write_string_with_format(37, 5, "Aux/Mixed Tails (inferred)", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(37, 6, &model.actual_aux_tail_summary, text_fmt)
+        .write_string_with_format(
+            37,
+            6,
+            excel_safe_text(&model.actual_aux_tail_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(38, 5, "Skipped Modules", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(38, 6, &model.actual_skipped_module_summary, text_fmt)
+        .write_string_with_format(
+            38,
+            6,
+            excel_safe_text(&model.actual_skipped_module_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(39, 5, "Disabled Modules", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(39, 6, &model.actual_disabled_module_summary, text_fmt)
+        .write_string_with_format(
+            39,
+            6,
+            excel_safe_text(&model.actual_disabled_module_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(40, 5, "Cross Omitted Modules", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(40, 6, &model.actual_cross_omitted_summary, text_fmt)
+        .write_string_with_format(
+            40,
+            6,
+            excel_safe_text(&model.actual_cross_omitted_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(41, 5, "Top Warning", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(41, 6, top_warning, text_fmt)
+        .write_string_with_format(41, 6, excel_safe_text(top_warning), text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(42, 5, "Expected Execution", label_fmt)
@@ -4543,56 +4838,125 @@ fn build_dashboard(
         .write_string_with_format(43, 5, "Expected Route", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(43, 6, &model.expected_route_summary, text_fmt)
+        .write_string_with_format(
+            43,
+            6,
+            excel_safe_text(&model.expected_route_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(44, 5, "Expected Cross", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(44, 6, &model.expected_cross_summary, text_fmt)
+        .write_string_with_format(
+            44,
+            6,
+            excel_safe_text(&model.expected_cross_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(45, 5, "Expected Modules", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(45, 6, &model.expected_module_summary, text_fmt)
+        .write_string_with_format(
+            45,
+            6,
+            excel_safe_text(&model.expected_module_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(46, 5, "Expected Categories", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(46, 6, &model.expected_category_summary, text_fmt)
+        .write_string_with_format(
+            46,
+            6,
+            excel_safe_text(&model.expected_category_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(47, 5, "Expected Fallback", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(47, 6, &model.expected_fallback_summary, text_fmt)
+        .write_string_with_format(
+            47,
+            6,
+            excel_safe_text(&model.expected_fallback_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(48, 5, "Expected Route Notes", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(48, 6, &model.expected_route_note_summary, text_fmt)
+        .write_string_with_format(
+            48,
+            6,
+            excel_safe_text(&model.expected_route_note_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(49, 5, "Expected Disabled", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(49, 6, &model.expected_disabled_module_summary, text_fmt)
+        .write_string_with_format(
+            49,
+            6,
+            excel_safe_text(&model.expected_disabled_module_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(50, 5, "Expected Cross Omitted", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(50, 6, &model.expected_cross_omitted_summary, text_fmt)
+        .write_string_with_format(
+            50,
+            6,
+            excel_safe_text(&model.expected_cross_omitted_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
         .write_string_with_format(51, 5, "Expected Notes", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(51, 6, &model.expected_warning_summary, text_fmt)
+        .write_string_with_format(
+            51,
+            6,
+            excel_safe_text(&model.expected_warning_summary),
+            text_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
+    for (row, value) in [
+        (35u32, model.actual_fallback_summary.as_str()),
+        (36, model.actual_route_note_summary.as_str()),
+        (37, model.actual_aux_tail_summary.as_str()),
+        (38, model.actual_skipped_module_summary.as_str()),
+        (39, model.actual_disabled_module_summary.as_str()),
+        (40, model.actual_cross_omitted_summary.as_str()),
+        (41, top_warning),
+        (43, model.expected_route_summary.as_str()),
+        (44, model.expected_cross_summary.as_str()),
+        (45, model.expected_module_summary.as_str()),
+        (46, model.expected_category_summary.as_str()),
+        (47, model.expected_fallback_summary.as_str()),
+        (48, model.expected_route_note_summary.as_str()),
+        (49, model.expected_disabled_module_summary.as_str()),
+        (50, model.expected_cross_omitted_summary.as_str()),
+        (51, model.expected_warning_summary.as_str()),
+    ] {
+        let row_height = wrapped_row_height(value, 82, 20.0, 120.0);
+        let _ = dashboard.set_row_height(row, row_height);
+        dashboard
+            .merge_range(row, 6, row, 7, &excel_safe_text(value), &dashboard_wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
 
     dashboard
         .write_string_with_format(32, 3, "Gate Config", label_fmt)
@@ -4619,9 +4983,6 @@ fn build_dashboard(
         }
     }
 
-    dashboard
-        .write_string_with_format(23, 0, "Sheet Links", label_fmt)
-        .map_err(|e: XlsxError| e.to_string())?;
     let approved_link = internal_sheet_link("Approved Candidates", "A1");
     let shortlist_link = internal_sheet_link("Shortlist", "A1");
     let distributions_link = internal_sheet_link("Distributions", "A1");
@@ -4633,6 +4994,9 @@ fn build_dashboard(
     let decision_link = internal_sheet_link("Decision Ledger", "A1");
     let downside_link = internal_sheet_link("Downside Stress", "A1");
     let regime_link = internal_sheet_link("Regime Audit", "A1");
+    let comparison_link = internal_sheet_link("Candidate Comparison", "A1");
+    let readiness_link = internal_sheet_link("Research Readiness", "A1");
+    let provenance_link = internal_sheet_link("Execution Provenance", "A1");
     dashboard
         .write_string_with_format(13, 0, "Sheet Links", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -4653,6 +5017,9 @@ fn build_dashboard(
     let _ = dashboard.write_url_with_text(91, 1, distributions_link.as_str(), "Distributions");
     let _ = dashboard.write_url_with_text(91, 2, regime_link.as_str(), "Regime");
     let _ = dashboard.write_url_with_text(91, 3, guide_link.as_str(), "Guide");
+    let _ = dashboard.write_url_with_text(91, 4, comparison_link.as_str(), "Compare");
+    let _ = dashboard.write_url_with_text(91, 5, readiness_link.as_str(), "Readiness");
+    let _ = dashboard.write_url_with_text(91, 6, provenance_link.as_str(), "Provenance");
 
     dashboard
         .write_string_with_format(15, 0, "Top Candidate Snapshot", label_fmt)
@@ -4685,11 +5052,26 @@ fn build_dashboard(
         .enumerate()
         {
             let base_row = 16 + offset as u32;
+            let row_height = if value.chars().count() > 70 {
+                46.0
+            } else if value.chars().count() > 38 {
+                32.0
+            } else {
+                20.0
+            };
+            let _ = dashboard.set_row_height(base_row, row_height);
             dashboard
                 .write_string_with_format(base_row, 0, *label, label_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
             dashboard
-                .write_string_with_format(base_row, 1, *value, text_fmt)
+                .merge_range(
+                    base_row,
+                    1,
+                    base_row,
+                    2,
+                    &excel_safe_text(value),
+                    &dashboard_wrap_fmt,
+                )
                 .map_err(|e: XlsxError| e.to_string())?;
         }
         for (offset, (label, value, pct_metric)) in [
@@ -4702,12 +5084,12 @@ fn build_dashboard(
             ("Cross Score", row.cross_score, false),
             ("Bootstrap Prob+", row.bootstrap_prob_pnl_positive, true),
             ("Bootstrap P05", row.bootstrap_pnl_p05, false),
-            ("Bootstrap DD95", row.bootstrap_dd_p95, false),
+            ("Bootstrap DD95", row.bootstrap_dd_p95, true),
             ("Stat P05", row.bootstrap_stationary_pnl_p05, false),
-            ("Stat DD95", row.bootstrap_stationary_dd_p95, false),
+            ("Stat DD95", row.bootstrap_stationary_dd_p95, true),
             ("Plateau Score", row.plateau_score, false),
             ("Plateau Sharpe P50", row.plateau_sharpe_median, false),
-            ("Plateau DD Worst", row.plateau_max_dd_worst, false),
+            ("Plateau DD Worst", row.plateau_max_dd_worst, true),
         ]
         .iter()
         .enumerate()
@@ -4830,8 +5212,16 @@ fn build_dashboard(
         .write_string_with_format(64, 5, "Policy", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(64, 6, &model.wfe_policy_summary, text_fmt)
+        .merge_range(
+            64,
+            6,
+            64,
+            7,
+            &excel_safe_text(&model.wfe_policy_summary),
+            &dashboard_wrap_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
+    let _ = dashboard.set_row_height(64, 34.0);
 
     dashboard
         .write_string_with_format(65, 5, "Regime Robustness", label_fmt)
@@ -4844,11 +5234,11 @@ fn build_dashboard(
             .write_string_with_format(
                 66,
                 6,
-                if row.regime_worst_bucket.is_empty() {
+                excel_safe_text(if row.regime_worst_bucket.is_empty() {
                     "not run"
                 } else {
                     row.regime_worst_bucket.as_str()
-                },
+                }),
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
@@ -4859,7 +5249,7 @@ fn build_dashboard(
         dashboard
             .write_string_with_format(68, 5, "Worst MaxDD", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 68, 6, row.regime_worst_max_dd, num_fmt)?;
+        write_optional_number(dashboard, 68, 6, row.regime_worst_max_dd, pct_fmt)?;
         dashboard
             .write_string_with_format(69, 5, "Stable Buckets", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -4894,7 +5284,14 @@ fn build_dashboard(
             .write_string_with_format(73, 5, "Slice Audit", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(73, 6, "see Audit Data -> Regime Slice Audit", text_fmt)
+            .merge_range(
+                73,
+                6,
+                73,
+                7,
+                "see Audit Data -> Regime Slice Audit",
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard
@@ -4929,7 +5326,7 @@ fn build_dashboard(
         dashboard
             .write_string_with_format(78, 5, "IID DD95", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 78, 6, row.bootstrap_dd_p95, num_fmt)?;
+        write_optional_number(dashboard, 78, 6, row.bootstrap_dd_p95, pct_fmt)?;
         dashboard
             .write_string_with_format(79, 5, "Stat P05", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -4937,13 +5334,21 @@ fn build_dashboard(
         dashboard
             .write_string_with_format(80, 5, "Stat DD95", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 80, 6, row.bootstrap_stationary_dd_p95, num_fmt)?;
+        write_optional_number(dashboard, 80, 6, row.bootstrap_stationary_dd_p95, pct_fmt)?;
         dashboard
             .write_string_with_format(81, 5, "Note", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(81, 6, &model.bootstrap_mode_summary, text_fmt)
+            .merge_range(
+                81,
+                6,
+                81,
+                7,
+                &excel_safe_text(&model.bootstrap_mode_summary),
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
+        let _ = dashboard.set_row_height(81, 30.0);
     } else {
         dashboard
             .write_string_with_format(75, 6, "not available", text_fmt)
@@ -4961,11 +5366,11 @@ fn build_dashboard(
             .write_string_with_format(
                 83,
                 6,
-                if row.friction_worst_scenario.is_empty() {
+                excel_safe_text(if row.friction_worst_scenario.is_empty() {
                     "not run"
                 } else {
                     row.friction_worst_scenario.as_str()
-                },
+                }),
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
@@ -4976,7 +5381,7 @@ fn build_dashboard(
         dashboard
             .write_string_with_format(85, 5, "Worst-Scenario MaxDD", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 85, 6, row.friction_worst_max_dd, num_fmt)?;
+        write_optional_number(dashboard, 85, 6, row.friction_worst_max_dd, pct_fmt)?;
         dashboard
             .write_string_with_format(86, 5, "Pass Frac", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -4992,11 +5397,11 @@ fn build_dashboard(
             .write_string_with_format(
                 88,
                 6,
-                if row.friction_flag.is_empty() {
+                excel_safe_text(if row.friction_flag.is_empty() {
                     "not run"
                 } else {
                     row.friction_flag.as_str()
-                },
+                }),
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
@@ -5004,22 +5409,40 @@ fn build_dashboard(
             .write_string_with_format(89, 5, "Rule", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(89, 6, "absolute pass: pnl >= 0 and sharpe >= 0", text_fmt)
+            .merge_range(
+                89,
+                6,
+                89,
+                7,
+                "absolute pass: pnl >= 0 and sharpe >= 0",
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
             .write_string_with_format(90, 5, "Note", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(90, 6, &model.friction_policy_summary, text_fmt)
+            .merge_range(
+                90,
+                6,
+                90,
+                7,
+                &excel_safe_text(&model.friction_policy_summary),
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
+        let _ = dashboard.set_row_height(90, 34.0);
     } else {
         dashboard
             .write_string_with_format(83, 6, "not available", text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
+    let top_rows_title = 94u32;
+    let top_rows_header = top_rows_title + 1;
+    let top_rows_start = top_rows_header + 1;
     dashboard
-        .write_string_with_format(35, 0, "Top Visible Rows", label_fmt)
+        .write_string_with_format(top_rows_title, 0, "Top Visible Rows", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     for (col, header) in [
         "Rank", "Approval", "Profile", "Params", "Robust", "PSR", "DSR", "Reason",
@@ -5028,7 +5451,7 @@ fn build_dashboard(
     .enumerate()
     {
         dashboard
-            .write_string_with_format(36, col as u16, *header, label_fmt)
+            .write_string_with_format(top_rows_header, col as u16, *header, label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
     let mut table_rows = Vec::new();
@@ -5062,7 +5485,10 @@ fn build_dashboard(
         }
     }
     for (idx, row) in table_rows.iter().enumerate() {
-        let r = 37 + idx as u32;
+        let r = top_rows_start + idx as u32;
+        let row_height = wrapped_row_height(&row.params_summary, 34, 34.0, 90.0)
+            .max(wrapped_row_height(&row.approval_reason, 32, 34.0, 90.0));
+        let _ = dashboard.set_row_height(r, row_height);
         let status_fmt = match row.approval_label.as_str() {
             "approved" => approved_fmt,
             "rejected" => rejected_fmt,
@@ -5081,10 +5507,20 @@ fn build_dashboard(
             )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(r, 2, &row.profile_kind, text_fmt)
+            .write_string_with_format(
+                r,
+                2,
+                excel_safe_text(&row.profile_kind),
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(r, 3, &row.params_summary, text_fmt)
+            .write_string_with_format(
+                r,
+                3,
+                excel_safe_text(&row.params_summary),
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
             .write_number_with_format(r, 4, row.robust_score, num_fmt)
@@ -5092,7 +5528,12 @@ fn build_dashboard(
         write_optional_number(dashboard, r, 5, row.psr, pct_fmt)?;
         write_optional_number(dashboard, r, 6, row.dsr, pct_fmt)?;
         dashboard
-            .write_string_with_format(r, 7, &row.approval_reason, text_fmt)
+            .write_string_with_format(
+                r,
+                7,
+                excel_safe_text(&row.approval_reason),
+                &dashboard_wrap_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
     }
     if !model.all_rows.is_empty() {
@@ -5115,7 +5556,7 @@ fn build_dashboard(
             .set_categories(("Audit Data", row_min, COL_MAX_DD, row_max, COL_MAX_DD))
             .set_values(("Audit Data", row_min, COL_SHARPE, row_max, COL_SHARPE));
         rr_chart.title().set_name("Sharpe vs MaxDD");
-        rr_chart.x_axis().set_name("MaxDD");
+        rr_chart.x_axis().set_name("MaxDD").set_num_format("0.0%");
         rr_chart.y_axis().set_name("Sharpe");
         rr_chart.legend().set_hidden();
         dashboard
@@ -5126,6 +5567,1364 @@ fn build_dashboard(
     Ok(())
 }
 
+fn display_identifier(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "Not recorded in artifact".to_string()
+    } else {
+        trimmed.replace('_', " ")
+    }
+}
+
+fn terminal_route_residency(route: &str) -> Option<(&'static str, &'static str)> {
+    match route
+        .rsplit("->")
+        .next()
+        .unwrap_or(route)
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "gpukernel" => Some(("GpuKernel", "gpu_kernel")),
+        "gpuhybridkernel" => Some(("GpuHybridKernel", "gpu_hybrid_kernel")),
+        "cpuonly" | "cpu" => Some(("CpuOnly", "cpu")),
+        _ => None,
+    }
+}
+
+fn explicit_residency_tier(value: &str) -> Option<&'static str> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.contains("hybrid") {
+        Some("gpu_hybrid_kernel")
+    } else if normalized == "gpu_kernel" || normalized.contains("gpukernel") {
+        Some("gpu_kernel")
+    } else if normalized == "cpu" || normalized == "cpu_only" || normalized == "cpuonly" {
+        Some("cpu")
+    } else {
+        None
+    }
+}
+
+fn execution_residency_readout(model: &ValidationExportModel) -> String {
+    let pack = model.validation_evidence_pack.as_ref();
+    let recorded = if model.validation_residency_tier.trim().is_empty() {
+        pack.map(|value| value.residency_tier.as_str())
+            .unwrap_or("")
+    } else {
+        model.validation_residency_tier.as_str()
+    };
+    if recorded.trim().is_empty() {
+        return "Not recorded in artifact".to_string();
+    }
+    let effective_route = if model.backend_route.trim().is_empty() {
+        pack.map(|value| value.route_label.as_str()).unwrap_or("")
+    } else {
+        model.backend_route.as_str()
+    };
+    if let (Some(recorded_tier), Some((terminal_route, terminal_tier))) = (
+        explicit_residency_tier(recorded),
+        terminal_route_residency(effective_route),
+    ) {
+        if recorded_tier != terminal_tier {
+            return format!(
+                "{} (artifact; terminal route {} implies {}; provenance mismatch)",
+                display_identifier(recorded),
+                terminal_route,
+                terminal_tier
+            );
+        }
+    }
+    display_identifier(recorded)
+}
+
+fn realism_interpretation(dimension: &str, status: &str) -> &'static str {
+    match (dimension, status.trim()) {
+        ("Price adjustment", "adjusted") => {
+            "Artifact declares adjusted price data; declaration is not independent verification."
+        }
+        ("Price adjustment", "unadjusted") => {
+            "Artifact declares unadjusted prices; corporate-action effects require review."
+        }
+        (_, "documented") => {
+            "Evidence is declared in the artifact; this is not independent verification."
+        }
+        (_, "not_applicable") => "Artifact explicitly marks this realism dimension not applicable.",
+        _ => "Unknown or absent evidence blocks promotion beyond research use.",
+    }
+}
+
+fn promotion_evidence_is_eligible_for_review(pack: &ExportValidationEvidencePack) -> bool {
+    let price_adjustment_is_declared = |value: &str| {
+        let value = value.trim();
+        value.eq_ignore_ascii_case("adjusted")
+            || value.eq_ignore_ascii_case("unadjusted")
+            || value.eq_ignore_ascii_case("not_applicable")
+    };
+    let realism_status_is_declared = |value: &str| {
+        let value = value.trim();
+        value.eq_ignore_ascii_case("documented") || value.eq_ignore_ascii_case("not_applicable")
+    };
+    pack.schema_version.trim() == ta_app_core::VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION
+        && pack.version == Some(u64::from(ta_app_core::VALIDATION_EVIDENCE_PACK_VERSION))
+        && pack.status.trim() == "complete"
+        && pack.verdict_passed == Some(true)
+        && pack.verdict_approved == Some(true)
+        && pack.promotion_eligible == Some(true)
+        && pack.promotion_state.trim() == "eligible_for_review"
+        && !pack.promotion_reason.trim().is_empty()
+        && pack.realism_complete == Some(true)
+        && pack.realism_missing_or_unknown.trim().is_empty()
+        && price_adjustment_is_declared(&pack.realism_price_adjustment)
+        && [
+            pack.realism_corporate_actions.as_str(),
+            pack.realism_survivorship_bias.as_str(),
+            pack.realism_liquidity_capacity.as_str(),
+            pack.realism_market_impact.as_str(),
+            pack.realism_borrow_availability.as_str(),
+        ]
+        .into_iter()
+        .all(realism_status_is_declared)
+        && pack.promotion_gates_failed.trim().is_empty()
+}
+
+fn evidence_pack_candidate_funnel(
+    pack: &ExportValidationEvidencePack,
+    allow_empty: bool,
+) -> Option<[usize; 5]> {
+    let counts = [
+        pack.requested_candidates?,
+        pack.evaluated_candidates?,
+        pack.retained_candidates?,
+        pack.survived_hard_gates?,
+        pack.approved_candidates?,
+    ];
+    if !allow_empty && counts[0] == 0 {
+        return None;
+    }
+    counts
+        .windows(2)
+        .all(|pair| pair[0] >= pair[1])
+        .then_some(counts)
+}
+
+fn observed_hard_gate_survivors(model: &ValidationExportModel) -> usize {
+    let has_candidate_gate_evidence = model
+        .all_rows
+        .iter()
+        .any(|row| row.hard_gate_passed.is_some());
+    if has_candidate_gate_evidence {
+        return model
+            .all_rows
+            .iter()
+            .filter(|row| row.hard_gate_passed == Some(true))
+            .count();
+    }
+    model
+        .run_verdict
+        .as_ref()
+        .map(|value| value.candidates_survived_hard_gates)
+        .filter(|value| *value > 0)
+        .unwrap_or(model.approved_rows.len())
+        .min(model.all_rows.len())
+}
+
+fn build_candidate_comparison_sheet(
+    workbook: &mut Workbook,
+    model: &ValidationExportModel,
+    title_fmt: &Format,
+    header_fmt: &Format,
+    text_fmt: &Format,
+    num_fmt: &Format,
+    pct_fmt: &Format,
+    int_fmt: &Format,
+    approved_fmt: &Format,
+    review_fmt: &Format,
+    rejected_fmt: &Format,
+    compat_fmt: &Format,
+) -> Result<(), String> {
+    let sheet = workbook.add_worksheet();
+    sheet
+        .set_name("Candidate Comparison")
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet.set_zoom(105);
+    sheet.set_tab_color(Color::RGB(0x2563EB));
+    sheet.set_screen_gridlines(false);
+    apply_shareable_sheet_layout(sheet, "VectorGrid Candidate Comparison");
+    let _ = sheet.set_freeze_panes(4, 6);
+    let wrap_fmt = Format::new()
+        .set_text_wrap()
+        .set_align(FormatAlign::Top)
+        .set_border(FormatBorder::Thin);
+    for (col, width) in [
+        (0u16, 8.0),
+        (1, 16.0),
+        (2, 11.0),
+        (3, 9.0),
+        (4, 15.0),
+        (5, 42.0),
+        (6, 12.0),
+        (7, 10.0),
+        (8, 10.0),
+        (9, 12.0),
+        (10, 12.0),
+        (11, 12.0),
+        (12, 11.0),
+        (13, 12.0),
+        (14, 12.0),
+        (15, 12.0),
+        (16, 14.0),
+        (17, 13.0),
+        (18, 13.0),
+        (19, 11.0),
+        (20, 40.0),
+    ] {
+        let _ = sheet.set_column_width(col, width);
+    }
+    sheet
+        .merge_range(0, 0, 0, 20, "Candidate Comparison", title_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet
+        .merge_range(
+            1,
+            0,
+            1,
+            20,
+            "Curated decision view of the visible shortlist. Audit Data retains the complete 60-column evidence surface.",
+            &wrap_fmt,
+        )
+        .map_err(|e: XlsxError| e.to_string())?;
+    let headers = [
+        "Rank",
+        "Decision",
+        "Hard Gate",
+        "Pareto",
+        "Profile",
+        "Parameters",
+        "Robust Score",
+        "PSR",
+        "DSR",
+        "PnL",
+        "Sharpe",
+        "MaxDD",
+        "Exposure",
+        "WF Sharpe",
+        "CSCV Rank",
+        "Cross Score",
+        "Bootstrap Prob+",
+        "Regime",
+        "Friction",
+        "Max Drift",
+        "Primary Reason",
+    ];
+    for (col, header) in headers.iter().enumerate() {
+        sheet
+            .write_string_with_format(3, col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    for (idx, row) in model.shortlist_rows.iter().enumerate() {
+        let r = 4 + idx as u32;
+        let primary_issue = primary_candidate_issue(row);
+        let row_height = wrapped_row_height(&row.params_summary, 38, 34.0, 90.0)
+            .max(wrapped_row_height(&primary_issue, 46, 34.0, 90.0));
+        let _ = sheet.set_row_height(r, row_height);
+        sheet
+            .write_number_with_format(r, 0, row.rank as f64, int_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        let decision_fmt = match row.approval_label.as_str() {
+            "approved" => approved_fmt,
+            "rejected" => rejected_fmt,
+            "compat_shortlist" | "compat_context" => compat_fmt,
+            _ => review_fmt,
+        };
+        sheet
+            .write_string_with_format(
+                r,
+                1,
+                display_approval_label(&row.approval_label),
+                decision_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                r,
+                2,
+                match row.hard_gate_passed {
+                    Some(true) => "Pass",
+                    Some(false) => "Fail",
+                    None => "Not recorded",
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(r, 3, if row.robust_pareto { "Yes" } else { "No" }, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(r, 4, &row.profile_kind, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(r, 5, excel_safe_text(&row.params_summary), &wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_number_with_format(r, 6, row.robust_score, num_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(sheet, r, 7, row.psr, pct_fmt)?;
+        write_optional_number(sheet, r, 8, row.dsr, pct_fmt)?;
+        sheet
+            .write_number_with_format(r, 9, row.pnl, num_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_number_with_format(r, 10, row.sharpe, num_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_number_with_format(r, 11, row.max_dd, pct_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(sheet, r, 12, row.exposure, pct_fmt)?;
+        write_optional_number(sheet, r, 13, row.wf_sharpe_median, num_fmt)?;
+        write_optional_number(sheet, r, 14, row.cscv_oos_rank_frac_p50, pct_fmt)?;
+        write_optional_number(sheet, r, 15, row.cross_score, num_fmt)?;
+        write_optional_number(sheet, r, 16, row.bootstrap_prob_pnl_positive, pct_fmt)?;
+        sheet
+            .write_string_with_format(
+                r,
+                17,
+                display_regime_flag(&row.regime_fragility_flag),
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                r,
+                18,
+                if row.friction_flag.trim().is_empty() {
+                    "Not run"
+                } else {
+                    row.friction_flag.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_usize(sheet, r, 19, row.max_view_rank_drift, int_fmt)?;
+        sheet
+            .write_string_with_format(r, 20, excel_safe_text(&primary_issue), &wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    if model.shortlist_rows.is_empty() {
+        sheet
+            .write_string_with_format(
+                4,
+                0,
+                "No candidate rows present in this artifact.",
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        return Ok(());
+    }
+
+    let row_min = 4u32;
+    let row_max = 3 + model.shortlist_rows.len() as u32;
+    add_native_table(
+        sheet,
+        3,
+        0,
+        row_max,
+        20,
+        "CandidateComparisonTable",
+        &headers,
+        TableStyle::Medium2,
+    )?;
+    let good_scale = ConditionalFormat3ColorScale::new()
+        .set_minimum_color("F8696B")
+        .set_midpoint_color("FFEB84")
+        .set_maximum_color("63BE7B");
+    let bad_scale = ConditionalFormat3ColorScale::new()
+        .set_minimum_color("63BE7B")
+        .set_midpoint_color("FFEB84")
+        .set_maximum_color("F8696B");
+    sheet
+        .add_conditional_format(row_min, 6, row_max, 6, &good_scale)
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet
+        .add_conditional_format(row_min, 11, row_max, 11, &bad_scale)
+        .map_err(|e: XlsxError| e.to_string())?;
+    for col in [9u16, 10, 13, 15] {
+        apply_zero_centered_formatting(sheet, row_min, col, row_max, col)?;
+    }
+    let probability_bar = probability_data_bar("5A8AC6");
+    for col in [7u16, 8, 12, 14, 16] {
+        sheet
+            .add_conditional_format(row_min, col, row_max, col, &probability_bar)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+
+    let chart_row_max = row_min + model.shortlist_rows.len().min(SUMMARY_CHART_ROW_CAP) as u32 - 1;
+    let mut robust_chart = Chart::new(ChartType::Column);
+    robust_chart
+        .add_series()
+        .set_categories(("Candidate Comparison", row_min, 0, chart_row_max, 0))
+        .set_values(("Candidate Comparison", row_min, 6, chart_row_max, 6))
+        .set_format(ChartFormat::new().set_solid_fill(ChartSolidFill::new().set_color("#2563EB")));
+    robust_chart.title().set_name(&capped_chart_title(
+        "Robust score by candidate rank",
+        model.shortlist_rows.len(),
+    ));
+    robust_chart.x_axis().set_name("Rank");
+    robust_chart.y_axis().set_name("Robust score");
+    robust_chart.legend().set_hidden();
+    robust_chart
+        .set_width(520)
+        .set_height(300)
+        .set_alt_text("Column chart of robust score by candidate rank.");
+    sheet
+        .insert_chart_with_offset(3, 22, &robust_chart, 8, 8)
+        .map_err(|e: XlsxError| e.to_string())?;
+
+    let mut risk_marker = ChartMarker::new();
+    risk_marker
+        .set_type(ChartMarkerType::Circle)
+        .set_size(6)
+        .set_format(ChartFormat::new().set_solid_fill(ChartSolidFill::new().set_color("#0EA5E9")));
+    let mut risk_chart = Chart::new(ChartType::Scatter);
+    risk_chart
+        .add_series()
+        .set_categories(("Candidate Comparison", row_min, 11, chart_row_max, 11))
+        .set_values(("Candidate Comparison", row_min, 10, chart_row_max, 10))
+        .set_marker(&risk_marker);
+    risk_chart.title().set_name(&capped_chart_title(
+        "Sharpe vs downside",
+        model.shortlist_rows.len(),
+    ));
+    risk_chart.x_axis().set_name("MaxDD").set_num_format("0.0%");
+    risk_chart.y_axis().set_name("Sharpe");
+    risk_chart.legend().set_hidden();
+    risk_chart
+        .set_width(520)
+        .set_height(300)
+        .set_alt_text("Scatter chart comparing candidate Sharpe with maximum drawdown.");
+    sheet
+        .insert_chart_with_offset(20, 22, &risk_chart, 8, 8)
+        .map_err(|e: XlsxError| e.to_string())?;
+    Ok(())
+}
+
+fn build_research_readiness_sheet(
+    workbook: &mut Workbook,
+    model: &ValidationExportModel,
+    title_fmt: &Format,
+    header_fmt: &Format,
+    text_fmt: &Format,
+    int_fmt: &Format,
+    approved_fmt: &Format,
+    review_fmt: &Format,
+    rejected_fmt: &Format,
+) -> Result<(), String> {
+    let sheet = workbook.add_worksheet();
+    sheet
+        .set_name("Research Readiness")
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet.set_zoom(110);
+    sheet.set_tab_color(Color::RGB(0xF59E0B));
+    sheet.set_screen_gridlines(false);
+    apply_shareable_sheet_layout(sheet, "VectorGrid Research Readiness");
+    let _ = sheet.set_freeze_panes(4, 0);
+    let wrap_fmt = Format::new()
+        .set_text_wrap()
+        .set_align(FormatAlign::Top)
+        .set_border(FormatBorder::Thin);
+    let banner_fmt = Format::new()
+        .set_bold()
+        .set_font_color(Color::RGB(0x92400E))
+        .set_background_color(Color::RGB(0xFEF3C7))
+        .set_text_wrap()
+        .set_align(FormatAlign::Center)
+        .set_border(FormatBorder::Thin);
+    for (col, width) in [
+        (0u16, 26.0),
+        (1, 34.0),
+        (2, 60.0),
+        (4, 34.0),
+        (5, 18.0),
+        (6, 18.0),
+        (8, 18.0),
+        (9, 14.0),
+    ] {
+        let _ = sheet.set_column_width(col, width);
+    }
+    sheet
+        .merge_range(
+            0,
+            0,
+            0,
+            12,
+            "Research Readiness & Promotion Evidence",
+            title_fmt,
+        )
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet
+        .merge_range(
+            1,
+            0,
+            1,
+            12,
+            "Research evidence only — statistical approval is not deployment authorization. Promotion remains fail-closed when realism evidence is unknown.",
+            &banner_fmt,
+        )
+        .map_err(|e: XlsxError| e.to_string())?;
+    let _ = sheet.set_row_height(1, 36.0);
+
+    let pack = model.validation_evidence_pack.as_ref();
+    let verdict = model.run_verdict.as_ref();
+    let pack_promotion_is_eligible = pack
+        .map(promotion_evidence_is_eligible_for_review)
+        .unwrap_or(false);
+    let top_level_verdict_allows_promotion = verdict
+        .map(|value| value.passed && value.approved)
+        .unwrap_or(true);
+    let promotion_is_eligible = pack_promotion_is_eligible && top_level_verdict_allows_promotion;
+    let promotion_verdict_conflict =
+        pack_promotion_is_eligible && !top_level_verdict_allows_promotion;
+    let promotion_state = match pack {
+        None => "Research only (legacy evidence pack absent)".to_string(),
+        Some(_) if promotion_is_eligible => "Eligible for review".to_string(),
+        Some(_) if promotion_verdict_conflict => {
+            "Research only (fail-closed; top-level run verdict conflicts with evidence pack)"
+                .to_string()
+        }
+        Some(value) if value.promotion_state.trim().eq_ignore_ascii_case("blocked") => {
+            "Blocked".to_string()
+        }
+        Some(value)
+            if value
+                .promotion_state
+                .trim()
+                .eq_ignore_ascii_case("research_only") =>
+        {
+            "Research only".to_string()
+        }
+        Some(value) => format!(
+            "Research only (fail-closed; recorded state: {})",
+            display_identifier(&value.promotion_state)
+        ),
+    };
+    let promotion_fmt = if promotion_is_eligible {
+        approved_fmt
+    } else if pack.is_some_and(|value| {
+        value.promotion_state.trim().eq_ignore_ascii_case("blocked")
+            || value.promotion_eligible == Some(true)
+            || value
+                .promotion_state
+                .trim()
+                .eq_ignore_ascii_case("eligible_for_review")
+    }) {
+        rejected_fmt
+    } else {
+        review_fmt
+    };
+    let statistical_status = match verdict {
+        Some(value) => {
+            if value.approved {
+                "Approved as research evidence".to_string()
+            } else if value.passed {
+                "Hard gates passed; not approved".to_string()
+            } else {
+                "Not approved".to_string()
+            }
+        }
+        None => match pack.map(|value| (value.verdict_passed, value.verdict_approved)) {
+            Some((Some(true), Some(true))) => {
+                "Approved as research evidence (evidence pack)".to_string()
+            }
+            Some((Some(true), Some(false))) => {
+                "Hard gates passed; not approved (evidence pack)".to_string()
+            }
+            Some((Some(false), _)) => "Not approved (evidence pack)".to_string(),
+            _ => "Not recorded in artifact".to_string(),
+        },
+    };
+    let promotion_eligible = match pack {
+        None => "Not recorded; treated as research only",
+        Some(_) if promotion_is_eligible => "Yes — eligible for human review",
+        Some(_) if promotion_verdict_conflict => {
+            "No — fail-closed because the top-level run verdict conflicts with the evidence pack"
+        }
+        Some(value)
+            if value.promotion_eligible == Some(true)
+                || value
+                    .promotion_state
+                    .trim()
+                    .eq_ignore_ascii_case("eligible_for_review") =>
+        {
+            "No — fail-closed because the recorded promotion evidence is inconsistent"
+        }
+        Some(_) => "No",
+    };
+    let overview = [
+        ("Statistical validation", statistical_status),
+        ("Promotion state", promotion_state),
+        ("Promotion eligible", promotion_eligible.to_string()),
+        (
+            "Evidence pack status",
+            pack.map(|value| display_identifier(&value.status))
+                .unwrap_or_else(|| "Not recorded in artifact".to_string()),
+        ),
+        (
+            "Evidence schema",
+            pack.map(|value| {
+                if value.schema_version.trim().is_empty() {
+                    "Not recorded in artifact".to_string()
+                } else {
+                    format!(
+                        "{} / v{}",
+                        value.schema_version,
+                        value
+                            .version
+                            .map(|version| version.to_string())
+                            .unwrap_or_else(|| "?".to_string())
+                    )
+                }
+            })
+            .unwrap_or_else(|| "Legacy artifact".to_string()),
+        ),
+        (
+            "Promotion reason",
+            pack.map(|value| display_identifier(&value.promotion_reason))
+                .unwrap_or_else(|| {
+                    "Promotion evidence is absent; no deployment readiness may be inferred."
+                        .to_string()
+                }),
+        ),
+        (
+            "Evidence status reason",
+            pack.map(|value| display_identifier(&value.status_reason))
+                .unwrap_or_else(|| "Not recorded in artifact".to_string()),
+        ),
+    ];
+    for (col, header) in ["Readiness Field", "Recorded Value", "Interpretation"]
+        .iter()
+        .enumerate()
+    {
+        sheet
+            .write_string_with_format(3, col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    for (idx, (field, value)) in overview.iter().enumerate() {
+        let row = 4 + idx as u32;
+        let value_len = value.chars().count();
+        let row_height = if value_len > 110 {
+            76.0
+        } else if value_len > 70 {
+            56.0
+        } else if value_len > 38 {
+            40.0
+        } else {
+            32.0
+        };
+        let _ = sheet.set_row_height(row, row_height);
+        sheet
+            .write_string_with_format(row, 0, *field, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                row,
+                1,
+                excel_safe_text(value),
+                if *field == "Promotion state" {
+                    promotion_fmt
+                } else {
+                    &wrap_fmt
+                },
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        let interpretation = match *field {
+            "Statistical validation" => {
+                "Statistical evidence is separate from operational promotion eligibility."
+            }
+            "Promotion state" | "Promotion eligible" => {
+                "Use the artifact-recorded fail-closed promotion result; human review is still required."
+            }
+            _ => "Recorded directly from the validation evidence pack when available.",
+        };
+        sheet
+            .write_string_with_format(row, 2, interpretation, &wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        3,
+        0,
+        3 + overview.len() as u32,
+        2,
+        "ResearchReadinessTable",
+        &["Readiness Field", "Recorded Value", "Interpretation"],
+        TableStyle::Medium7,
+    )?;
+
+    let recorded_funnel =
+        pack.and_then(|value| evidence_pack_candidate_funnel(value, model.all_rows.is_empty()));
+    let (funnel, funnel_title) =
+        if let Some([requested, evaluated, retained, survived, approved]) = recorded_funnel {
+            (
+                vec![
+                    ("Requested", requested),
+                    ("Evaluated", evaluated),
+                    ("Retained", retained),
+                    ("Hard-gate survivors", survived),
+                    ("Approved", approved),
+                ],
+                "Candidate evidence funnel",
+            )
+        } else {
+            let observed_rows = model.all_rows.len();
+            let survived = observed_hard_gate_survivors(model).min(observed_rows);
+            let approved = model.approved_rows.len().min(survived);
+            (
+                vec![
+                    ("Observed candidate rows", observed_rows),
+                    ("Observed hard-gate survivors", survived),
+                    ("Observed approved rows", approved),
+                ],
+                "Observed candidate evidence (pack counts unavailable)",
+            )
+        };
+    sheet
+        .write_string_with_format(3, 4, "Candidate Funnel Stage", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet
+        .write_string_with_format(3, 5, "Count", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    for (idx, (stage, count)) in funnel.iter().enumerate() {
+        let row = 4 + idx as u32;
+        sheet
+            .write_string_with_format(row, 4, *stage, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_number_with_format(row, 5, *count as f64, int_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        3,
+        4,
+        3 + funnel.len() as u32,
+        5,
+        "CandidateFunnelTable",
+        &["Candidate Funnel Stage", "Count"],
+        TableStyle::Medium2,
+    )?;
+    let mut funnel_chart = Chart::new(ChartType::Column);
+    funnel_chart
+        .add_series()
+        .set_categories(("Research Readiness", 4, 4, 3 + funnel.len() as u32, 4))
+        .set_values(("Research Readiness", 4, 5, 3 + funnel.len() as u32, 5))
+        .set_format(ChartFormat::new().set_solid_fill(ChartSolidFill::new().set_color("#2563EB")));
+    funnel_chart.title().set_name(funnel_title);
+    funnel_chart.legend().set_hidden();
+    funnel_chart.x_axis().set_name("Stage");
+    funnel_chart
+        .y_axis()
+        .set_name("Candidates")
+        .set_num_format("0")
+        .set_major_unit(count_axis_major_unit(
+            funnel.iter().map(|(_, count)| *count).max().unwrap_or(0),
+        ));
+    funnel_chart.set_width(520).set_height(300).set_alt_text(
+        "Column chart showing authoritative evidence-pack counts when available, otherwise monotonic observed candidate-row counts.",
+    );
+    sheet
+        .insert_chart_with_offset(3, 7, &funnel_chart, 8, 8)
+        .map_err(|e: XlsxError| e.to_string())?;
+
+    let dataset_start = 13u32;
+    for (col, header) in ["Dataset Field", "Recorded Value", "Source"]
+        .iter()
+        .enumerate()
+    {
+        sheet
+            .write_string_with_format(dataset_start, col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    let evidence_data_id = pack
+        .map(|value| value.dataset_data_id.as_str())
+        .filter(|value| !value.trim().is_empty());
+    let evidence_strategy = pack
+        .map(|value| value.dataset_strategy_kind.as_str())
+        .filter(|value| !value.trim().is_empty());
+    let (data_id, data_id_source) = evidence_data_id
+        .map(|value| (value.to_string(), "Validation evidence pack"))
+        .unwrap_or_else(|| {
+            if model.data_id.trim().is_empty() {
+                ("Not recorded in artifact".to_string(), "Not recorded")
+            } else {
+                (model.data_id.clone(), "Validation result fallback")
+            }
+        });
+    let (strategy, strategy_source) = evidence_strategy
+        .map(|value| (value.to_string(), "Validation evidence pack"))
+        .unwrap_or_else(|| {
+            if model.strategy_kind.trim().is_empty() {
+                ("Not recorded in artifact".to_string(), "Not recorded")
+            } else {
+                (model.strategy_kind.clone(), "Validation result fallback")
+            }
+        });
+    let evidence_only_field = |value: Option<&str>| -> (String, &'static str) {
+        value
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| (value.to_string(), "Validation evidence pack"))
+            .unwrap_or_else(|| ("Not recorded in artifact".to_string(), "Not recorded"))
+    };
+    let (dataset_label, dataset_label_source) =
+        evidence_only_field(pack.map(|value| value.dataset_label.as_str()));
+    let (dataset_source_file, dataset_source_file_source) =
+        evidence_only_field(pack.map(|value| value.dataset_source_file.as_str()));
+    let (dataset_timeframe, dataset_timeframe_source) =
+        evidence_only_field(pack.map(|value| value.dataset_timeframe.as_str()));
+    let dataset_rows = [
+        ("Data ID", data_id, data_id_source),
+        ("Strategy", strategy, strategy_source),
+        ("Label", dataset_label, dataset_label_source),
+        (
+            "Source file",
+            dataset_source_file,
+            dataset_source_file_source,
+        ),
+        ("Timeframe", dataset_timeframe, dataset_timeframe_source),
+    ];
+    for (idx, (field, value, source)) in dataset_rows.iter().enumerate() {
+        let row = dataset_start + 1 + idx as u32;
+        sheet
+            .write_string_with_format(row, 0, *field, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(row, 1, excel_safe_text(value), &wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(row, 2, *source, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        dataset_start,
+        0,
+        dataset_start + dataset_rows.len() as u32,
+        2,
+        "ResearchDatasetTable",
+        &["Dataset Field", "Recorded Value", "Source"],
+        TableStyle::Medium4,
+    )?;
+
+    let realism_start = 21u32;
+    for (col, header) in ["Realism Dimension", "Declared Status", "Interpretation"]
+        .iter()
+        .enumerate()
+    {
+        sheet
+            .write_string_with_format(realism_start, col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    let realism_rows = [
+        (
+            "Price adjustment",
+            pack.map(|value| value.realism_price_adjustment.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Corporate actions",
+            pack.map(|value| value.realism_corporate_actions.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Survivorship bias",
+            pack.map(|value| value.realism_survivorship_bias.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Liquidity / capacity",
+            pack.map(|value| value.realism_liquidity_capacity.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Market impact",
+            pack.map(|value| value.realism_market_impact.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Borrow availability",
+            pack.map(|value| value.realism_borrow_availability.as_str())
+                .unwrap_or(""),
+        ),
+    ];
+    for (idx, (dimension, raw_status)) in realism_rows.iter().enumerate() {
+        let row = realism_start + 1 + idx as u32;
+        let status = if raw_status.trim().is_empty() {
+            "unknown"
+        } else {
+            *raw_status
+        };
+        let status_fmt = match status {
+            "adjusted" | "documented" => approved_fmt,
+            "not_applicable" => text_fmt,
+            _ => rejected_fmt,
+        };
+        sheet
+            .write_string_with_format(row, 0, *dimension, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                row,
+                1,
+                excel_safe_text(&display_identifier(status)),
+                status_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                row,
+                2,
+                excel_safe_text(realism_interpretation(dimension, status)),
+                &wrap_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        realism_start,
+        0,
+        realism_start + realism_rows.len() as u32,
+        2,
+        "DeploymentRealismTable",
+        &["Realism Dimension", "Declared Status", "Interpretation"],
+        TableStyle::Medium3,
+    )?;
+
+    let gate_start = 21u32;
+    sheet
+        .write_string_with_format(gate_start, 4, "Promotion Gate", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet
+        .write_string_with_format(gate_start, 5, "Result", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    let passed: Vec<&str> = pack
+        .map(|value| value.promotion_gates_passed.split("; ").collect())
+        .unwrap_or_default();
+    let failed: Vec<&str> = pack
+        .map(|value| value.promotion_gates_failed.split("; ").collect())
+        .unwrap_or_default();
+    let mut gates: Vec<(&str, &str)> = passed
+        .iter()
+        .copied()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| (value, "Passed"))
+        .collect();
+    gates.extend(
+        failed
+            .iter()
+            .copied()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| (value, "Failed")),
+    );
+    if gates.is_empty() {
+        gates.push(("Promotion gates not recorded", "Not recorded"));
+    }
+    for (idx, (gate, result)) in gates.iter().enumerate() {
+        let row = gate_start + 1 + idx as u32;
+        sheet
+            .write_string_with_format(
+                row,
+                4,
+                excel_safe_text(&display_identifier(gate)),
+                &wrap_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                row,
+                5,
+                *result,
+                match *result {
+                    "Passed" => approved_fmt,
+                    "Failed" => rejected_fmt,
+                    _ => review_fmt,
+                },
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        gate_start,
+        4,
+        gate_start + gates.len() as u32,
+        5,
+        "PromotionGatesTable",
+        &["Promotion Gate", "Result"],
+        TableStyle::Medium3,
+    )?;
+
+    let notes_start =
+        (realism_start + realism_rows.len() as u32 + 3).max(gate_start + gates.len() as u32 + 3);
+    for (offset, (label, value)) in [
+        (
+            "Missing / unknown realism",
+            pack.map(|value| value.realism_missing_or_unknown.as_str())
+                .unwrap_or("All realism evidence unavailable"),
+        ),
+        (
+            "Evidence warnings",
+            pack.map(|value| value.warnings.as_str())
+                .unwrap_or("Evidence pack unavailable"),
+        ),
+        (
+            "Evidence caveats",
+            pack.map(|value| value.caveats.as_str()).unwrap_or(
+                "Statistical approval is research evidence, not deployment authorization.",
+            ),
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let row = notes_start + offset as u32;
+        sheet
+            .write_string_with_format(row, 0, *label, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .merge_range(row, 1, row, 6, &excel_safe_text(value), &wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        let _ = sheet.set_row_height(row, 42.0);
+    }
+    Ok(())
+}
+
+fn build_execution_provenance_sheet(
+    workbook: &mut Workbook,
+    model: &ValidationExportModel,
+    title_fmt: &Format,
+    header_fmt: &Format,
+    text_fmt: &Format,
+) -> Result<(), String> {
+    let sheet = workbook.add_worksheet();
+    sheet
+        .set_name("Execution Provenance")
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet.set_zoom(105);
+    sheet.set_tab_color(Color::RGB(0x475569));
+    sheet.set_screen_gridlines(false);
+    apply_shareable_sheet_layout(sheet, "VectorGrid Execution Provenance");
+    let _ = sheet.set_freeze_panes(4, 0);
+    let wrap_fmt = Format::new()
+        .set_text_wrap()
+        .set_align(FormatAlign::Top)
+        .set_border(FormatBorder::Thin);
+    for (col, width) in [(0u16, 28.0), (1, 70.0), (2, 50.0), (4, 30.0), (5, 72.0)] {
+        let _ = sheet.set_column_width(col, width);
+    }
+    sheet
+        .merge_range(0, 0, 0, 7, "Execution Provenance", title_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet
+        .merge_range(
+            1,
+            0,
+            1,
+            7,
+            "Artifact-recorded execution is separated from request-time policy expectations. Expected routes are predictions, not runtime proof.",
+            &wrap_fmt,
+        )
+        .map_err(|e: XlsxError| e.to_string())?;
+    let pack = model.validation_evidence_pack.as_ref();
+    for (col, header) in [
+        "Artifact-Recorded Field",
+        "Recorded Value",
+        "Evidence Source",
+    ]
+    .iter()
+    .enumerate()
+    {
+        sheet
+            .write_string_with_format(3, col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    let residency_readout = execution_residency_readout(model);
+    let actual_rows: Vec<(&str, String, &str)> = vec![
+        (
+            "Requested backend",
+            if model.requested_backend.trim().is_empty() {
+                pack.map(|value| display_identifier(&value.requested_backend))
+                    .unwrap_or_else(|| "Not recorded in artifact".to_string())
+            } else {
+                model.requested_backend.clone()
+            },
+            "Validation result / evidence pack",
+        ),
+        (
+            "Realized backend",
+            if model.backend_used.trim().is_empty() {
+                pack.map(|value| display_identifier(&value.realized_backend))
+                    .unwrap_or_else(|| "Not recorded in artifact".to_string())
+            } else {
+                model.backend_used.clone()
+            },
+            "Validation result / evidence pack",
+        ),
+        (
+            "Realized route",
+            if model.backend_route.trim().is_empty() {
+                pack.map(|value| display_identifier(&value.route_label))
+                    .unwrap_or_else(|| "Not recorded in artifact".to_string())
+            } else {
+                model.backend_route.clone()
+            },
+            "Validation result / evidence pack",
+        ),
+        (
+            "Residency tier",
+            residency_readout,
+            "Validation result / evidence pack + terminal-route consistency check",
+        ),
+        (
+            "Acceleration status",
+            if model.validation_acceleration_status.trim().is_empty() {
+                "Not recorded in artifact".to_string()
+            } else {
+                model.validation_acceleration_status.clone()
+            },
+            "Validation result",
+        ),
+        (
+            "Runtime",
+            model
+                .runtime_ms
+                .map(|value| format!("{value} ms"))
+                .unwrap_or_else(|| "Not recorded in artifact".to_string()),
+            "Validation result",
+        ),
+        (
+            "Fallback",
+            if model.actual_fallback_summary.trim().is_empty()
+                || model.actual_fallback_summary.trim() == "-"
+            {
+                pack.map(|value| value.fallback_reason.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "Not recorded in artifact".to_string())
+            } else {
+                model.actual_fallback_summary.clone()
+            },
+            "Validation result / evidence pack",
+        ),
+        (
+            "Route note",
+            if model.actual_route_note_summary.trim().is_empty()
+                || model.actual_route_note_summary.trim() == "-"
+            {
+                "-".to_string()
+            } else {
+                model.actual_route_note_summary.clone()
+            },
+            "Validation result",
+        ),
+        (
+            "Auxiliary / mixed tails",
+            display_identifier(&model.actual_aux_tail_summary),
+            "Inferred from request and supported route contract",
+        ),
+        (
+            "Skipped modules",
+            display_identifier(&model.actual_skipped_module_summary),
+            "Validation result",
+        ),
+        (
+            "Disabled modules",
+            display_identifier(&model.actual_disabled_module_summary),
+            "Validation request",
+        ),
+        (
+            "Cross-omitted modules",
+            display_identifier(&model.actual_cross_omitted_summary),
+            "Validation request / mode",
+        ),
+        (
+            "Route diagnostics",
+            pack.map(|value| value.route_diagnostics.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "Not recorded in artifact".to_string()),
+            "Validation evidence pack",
+        ),
+    ];
+    for (idx, (field, value, source)) in actual_rows.iter().enumerate() {
+        let row = 4 + idx as u32;
+        let row_height = wrapped_row_height(value, 72, 34.0, 105.0)
+            .max(wrapped_row_height(source, 50, 34.0, 105.0));
+        let _ = sheet.set_row_height(row, row_height);
+        sheet
+            .write_string_with_format(row, 0, *field, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(row, 1, excel_safe_text(value), &wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(row, 2, *source, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        3,
+        0,
+        3 + actual_rows.len() as u32,
+        2,
+        "RecordedExecutionTable",
+        &[
+            "Artifact-Recorded Field",
+            "Recorded Value",
+            "Evidence Source",
+        ],
+        TableStyle::Medium4,
+    )?;
+
+    for (col, header) in ["Request-Time Policy", "Expected / Inferred Value"]
+        .iter()
+        .enumerate()
+    {
+        sheet
+            .write_string_with_format(3, 4 + col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    let expected_rows = [
+        ("Expected route", model.expected_route_summary.as_str()),
+        ("Expected cross mode", model.expected_cross_summary.as_str()),
+        ("Expected modules", model.expected_module_summary.as_str()),
+        (
+            "Expected execution categories",
+            model.expected_category_summary.as_str(),
+        ),
+        (
+            "Expected fallback",
+            model.expected_fallback_summary.as_str(),
+        ),
+        (
+            "Expected route note",
+            model.expected_route_note_summary.as_str(),
+        ),
+        (
+            "Expected disabled modules",
+            model.expected_disabled_module_summary.as_str(),
+        ),
+        (
+            "Expected cross omissions",
+            model.expected_cross_omitted_summary.as_str(),
+        ),
+        ("Expected warnings", model.expected_warning_summary.as_str()),
+        ("Bootstrap policy", model.bootstrap_mode_summary.as_str()),
+        ("WFE policy", model.wfe_policy_summary.as_str()),
+        ("Friction policy", model.friction_policy_summary.as_str()),
+    ];
+    for (idx, (field, value)) in expected_rows.iter().enumerate() {
+        let row = 4 + idx as u32;
+        let _ = sheet.set_row_height(row, wrapped_row_height(value, 76, 38.0, 120.0));
+        sheet
+            .write_string_with_format(row, 4, *field, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(row, 5, excel_safe_text(value), &wrap_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        3,
+        4,
+        3 + expected_rows.len() as u32,
+        5,
+        "ExpectedExecutionPolicyTable",
+        &["Request-Time Policy", "Expected / Inferred Value"],
+        TableStyle::Medium7,
+    )?;
+
+    let provenance_start = 20u32;
+    for (col, header) in ["Validation Provenance", "Recorded Value"]
+        .iter()
+        .enumerate()
+    {
+        sheet
+            .write_string_with_format(provenance_start, col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    let provenance = model.validation_provenance.as_ref();
+    let provenance_rows = [
+        (
+            "Stage sequence",
+            provenance
+                .map(|value| value.stage_sequence.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Score channel",
+            provenance
+                .map(|value| value.score_channel.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Passed vs approved contract",
+            provenance
+                .map(|value| value.passed_vs_approved_contract.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Probability metric source",
+            provenance
+                .map(|value| value.probability_metric_source.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Track-record source",
+            provenance
+                .map(|value| value.track_record_source.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "CSCV coverage",
+            provenance
+                .map(|value| value.cscv_coverage_state.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Cross summary scope",
+            provenance
+                .map(|value| value.cross_summary_scope.as_str())
+                .unwrap_or(""),
+        ),
+        (
+            "Regime semantics",
+            provenance
+                .map(|value| value.regime_summary_semantics.as_str())
+                .unwrap_or(""),
+        ),
+    ];
+    for (idx, (field, value)) in provenance_rows.iter().enumerate() {
+        let row = provenance_start + 1 + idx as u32;
+        sheet
+            .write_string_with_format(row, 0, *field, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                row,
+                1,
+                excel_safe_text(&display_identifier(value)),
+                &wrap_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    add_native_table(
+        sheet,
+        provenance_start,
+        0,
+        provenance_start + provenance_rows.len() as u32,
+        1,
+        "ValidationProvenanceTable",
+        &["Validation Provenance", "Recorded Value"],
+        TableStyle::Medium2,
+    )?;
+    Ok(())
+}
+
 fn build_distributions(
     workbook: &mut Workbook,
     model: &ValidationExportModel,
@@ -5133,6 +6932,7 @@ fn build_distributions(
     header_fmt: &Format,
     text_fmt: &Format,
     num_fmt: &Format,
+    pct_fmt: &Format,
     int_fmt: &Format,
 ) -> Result<(), String> {
     use std::collections::BTreeMap;
@@ -5142,6 +6942,9 @@ fn build_distributions(
         .map_err(|e: XlsxError| e.to_string())?;
     dist.set_zoom(110);
     dist.set_tab_color(Color::RGB(0xF59E0B));
+    dist.set_screen_gridlines(false);
+    apply_shareable_sheet_layout(dist, "VectorGrid Validation Distributions");
+    let _ = dist.set_freeze_panes(4, 0);
     let _ = dist.set_column_width(0, 24);
     let _ = dist.set_column_width(1, 12);
     let _ = dist.set_column_width(3, 18);
@@ -5166,6 +6969,15 @@ fn build_distributions(
         .map_err(|e: XlsxError| e.to_string())?;
     dist.write_number_with_format(1, 4, model.all_rows.len() as f64, int_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
+    dist.write_string_with_format(1, 6, "Metric chart rows", text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dist.write_number_with_format(
+        1,
+        7,
+        model.all_rows.len().min(SUMMARY_CHART_ROW_CAP) as f64,
+        int_fmt,
+    )
+    .map_err(|e: XlsxError| e.to_string())?;
 
     let approval_counts = approval_label_counts(model);
     dist.write_string_with_format(3, 0, "Approval State", header_fmt)
@@ -5207,7 +7019,7 @@ fn build_distributions(
     } else {
         for (idx, (reason, count)) in reason_counts.iter().enumerate() {
             let r = 4 + idx as u32;
-            dist.write_string(r, 6, reason)
+            dist.write_string(r, 6, excel_safe_text(reason))
                 .map_err(|e: XlsxError| e.to_string())?;
             dist.write_number_with_format(r, 7, *count as f64, int_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
@@ -5236,7 +7048,7 @@ fn build_distributions(
             .map_err(|e: XlsxError| e.to_string())?;
         dist.write_number_with_format(r, 10, row.robust_score, num_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        dist.write_number_with_format(r, 12, row.max_dd, num_fmt)
+        dist.write_number_with_format(r, 12, row.max_dd, pct_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dist.write_number_with_format(r, 13, row.sharpe, num_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -5255,7 +7067,11 @@ fn build_distributions(
             .set_values(("Distributions", 4, 1, approval_max, 1));
         approval_chart.title().set_name("Approval state counts");
         approval_chart.legend().set_hidden();
-        dist.insert_chart_with_offset(3, 15, &approval_chart, 10, 10)
+        approval_chart
+            .set_width(520)
+            .set_height(300)
+            .set_alt_text("Column chart of candidate counts by approval state.");
+        dist.insert_chart_with_offset(3, 21, &approval_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -5270,7 +7086,11 @@ fn build_distributions(
             .title()
             .set_name("Top rejection / review reasons");
         reason_chart.legend().set_hidden();
-        dist.insert_chart_with_offset(20, 15, &reason_chart, 10, 10)
+        reason_chart
+            .set_width(520)
+            .set_height(300)
+            .set_alt_text("Bar chart of the most frequent rejection and review reasons.");
+        dist.insert_chart_with_offset(3, 30, &reason_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -5283,23 +7103,32 @@ fn build_distributions(
             .set_values(("Distributions", 4, 4, profile_max, 4));
         profile_chart.title().set_name("Profile counts");
         profile_chart.legend().set_hidden();
-        dist.insert_chart_with_offset(37, 15, &profile_chart, 10, 10)
+        profile_chart
+            .set_width(520)
+            .set_height(300)
+            .set_alt_text("Bar chart of candidate counts by strategy profile.");
+        dist.insert_chart_with_offset(20, 21, &profile_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
     if !model.all_rows.is_empty() {
         let row_min = 4u32;
-        let row_max = 3 + model.all_rows.len() as u32;
+        let row_max = 3 + model.all_rows.len().min(SUMMARY_CHART_ROW_CAP) as u32;
         let mut robust_chart = Chart::new(ChartType::Line);
         robust_chart
             .add_series()
             .set_categories(("Distributions", row_min, 9, row_max, 9))
             .set_values(("Distributions", row_min, 10, row_max, 10));
-        robust_chart
-            .title()
-            .set_name("Robust score distribution by rank");
+        robust_chart.title().set_name(&capped_chart_title(
+            "Robust score distribution by rank",
+            model.all_rows.len(),
+        ));
         robust_chart.legend().set_hidden();
-        dist.insert_chart_with_offset(54, 15, &robust_chart, 10, 10)
+        robust_chart
+            .set_width(520)
+            .set_height(300)
+            .set_alt_text("Line chart of robust score across the top candidate ranks.");
+        dist.insert_chart_with_offset(20, 30, &robust_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
 
         let mut risk_chart = Chart::new(ChartType::Scatter);
@@ -5307,60 +7136,94 @@ fn build_distributions(
             .add_series()
             .set_categories(("Distributions", row_min, 12, row_max, 12))
             .set_values(("Distributions", row_min, 13, row_max, 13));
-        risk_chart.title().set_name("Sharpe vs MaxDD");
-        risk_chart.x_axis().set_name("MaxDD");
+        risk_chart
+            .title()
+            .set_name(&capped_chart_title("Sharpe vs MaxDD", model.all_rows.len()));
+        risk_chart.x_axis().set_name("MaxDD").set_num_format("0.0%");
         risk_chart.y_axis().set_name("Sharpe");
         risk_chart.legend().set_hidden();
-        dist.insert_chart_with_offset(71, 15, &risk_chart, 10, 10)
+        risk_chart
+            .set_width(520)
+            .set_height(300)
+            .set_alt_text("Scatter chart comparing Sharpe with maximum drawdown.");
+        dist.insert_chart_with_offset(37, 21, &risk_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
 
-        if model.all_rows.iter().any(|row| row.plateau_score.is_some()) {
+        if model.all_rows.iter().all(|row| row.plateau_score.is_some()) {
             let mut plateau_chart = Chart::new(ChartType::Line);
             plateau_chart
                 .add_series()
                 .set_categories(("Distributions", row_min, 9, row_max, 9))
                 .set_values(("Distributions", row_min, 15, row_max, 15));
-            plateau_chart
-                .title()
-                .set_name("Plateau score by robust rank");
+            plateau_chart.title().set_name(&capped_chart_title(
+                "Plateau score by robust rank",
+                model.all_rows.len(),
+            ));
             plateau_chart.legend().set_hidden();
-            dist.insert_chart_with_offset(88, 15, &plateau_chart, 10, 10)
+            plateau_chart
+                .set_width(520)
+                .set_height(300)
+                .set_alt_text("Line chart of plateau score across candidate ranks.");
+            dist.insert_chart_with_offset(37, 30, &plateau_chart, 10, 10)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
 
         if model
             .all_rows
             .iter()
-            .any(|row| row.max_view_rank_drift.is_some())
+            .all(|row| row.max_view_rank_drift.is_some())
         {
-            let mut drift_chart = Chart::new(ChartType::Column);
+            let mut drift_marker = ChartMarker::new();
+            drift_marker
+                .set_type(ChartMarkerType::Circle)
+                .set_size(6)
+                .set_format(
+                    ChartFormat::new().set_solid_fill(ChartSolidFill::new().set_color("#2563EB")),
+                );
+            let mut drift_chart = Chart::new(ChartType::Line);
             drift_chart
                 .add_series()
                 .set_categories(("Distributions", row_min, 9, row_max, 9))
-                .set_values(("Distributions", row_min, 16, row_max, 16));
+                .set_values(("Distributions", row_min, 16, row_max, 16))
+                .set_marker(&drift_marker);
+            drift_chart.title().set_name(&capped_chart_title(
+                "Max rank drift by robust rank",
+                model.all_rows.len(),
+            ));
             drift_chart
-                .title()
-                .set_name("Max rank drift by robust rank");
+                .y_axis()
+                .set_name("Rank drift")
+                .set_min(-0.5)
+                .set_num_format("0");
             drift_chart.legend().set_hidden();
-            dist.insert_chart_with_offset(105, 15, &drift_chart, 10, 10)
+            drift_chart
+                .set_width(520)
+                .set_height(300)
+                .set_alt_text("Column chart of maximum ranking drift by candidate rank.");
+            dist.insert_chart_with_offset(54, 21, &drift_chart, 10, 10)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
 
         if model
             .all_rows
             .iter()
-            .any(|row| row.wf_sharpe_efficiency.is_some())
+            .all(|row| row.wf_sharpe_efficiency.is_some())
         {
             let mut efficiency_chart = Chart::new(ChartType::Line);
             efficiency_chart
                 .add_series()
                 .set_categories(("Distributions", row_min, 9, row_max, 9))
                 .set_values(("Distributions", row_min, 19, row_max, 19));
-            efficiency_chart
-                .title()
-                .set_name("WF Sharpe efficiency by robust rank");
+            efficiency_chart.title().set_name(&capped_chart_title(
+                "WF Sharpe efficiency by robust rank",
+                model.all_rows.len(),
+            ));
             efficiency_chart.legend().set_hidden();
-            dist.insert_chart_with_offset(122, 15, &efficiency_chart, 10, 10)
+            efficiency_chart
+                .set_width(520)
+                .set_height(300)
+                .set_alt_text("Line chart of walk-forward Sharpe efficiency by candidate rank.");
+            dist.insert_chart_with_offset(54, 30, &efficiency_chart, 10, 10)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
     }
@@ -5407,7 +7270,7 @@ fn build_formats() -> (
         .set_num_format("0.000000")
         .set_border(FormatBorder::Thin);
     let pct_fmt = Format::new()
-        .set_num_format("0.0000")
+        .set_num_format("0.0%")
         .set_border(FormatBorder::Thin);
     let int_fmt = Format::new()
         .set_num_format("0")
@@ -5415,18 +7278,22 @@ fn build_formats() -> (
     let approved_fmt = Format::new()
         .set_font_color(Color::RGB(0x166534))
         .set_background_color(Color::RGB(0xDCFCE7))
+        .set_align(FormatAlign::VerticalCenter)
         .set_border(FormatBorder::Thin);
     let review_fmt = Format::new()
         .set_font_color(Color::RGB(0x92400E))
         .set_background_color(Color::RGB(0xFEF3C7))
+        .set_align(FormatAlign::VerticalCenter)
         .set_border(FormatBorder::Thin);
     let rejected_fmt = Format::new()
         .set_font_color(Color::RGB(0x991B1B))
         .set_background_color(Color::RGB(0xFEE2E2))
+        .set_align(FormatAlign::VerticalCenter)
         .set_border(FormatBorder::Thin);
     let compat_fmt = Format::new()
         .set_font_color(Color::RGB(0x1D4ED8))
         .set_background_color(Color::RGB(0xDBEAFE))
+        .set_align(FormatAlign::VerticalCenter)
         .set_border(FormatBorder::Thin);
     (
         title_fmt,
@@ -5449,6 +7316,7 @@ pub(super) fn build_validation_report_xlsx(
     max_rows: Option<usize>,
 ) -> Result<Vec<u8>, String> {
     let model = build_model_from_report(report, max_rows)?;
+    validate_xlsx_export_limits(&model)?;
     let mut workbook = Workbook::new();
     // rust_xlsxwriter otherwise embeds SystemTime::now() in docProps/core.xml.
     // Bind the metadata to report content so identical reports produce identical
@@ -5463,7 +7331,16 @@ pub(super) fn build_validation_report_xlsx(
         .filter(|timestamp| timestamp.contains('-'))
         .and_then(|timestamp| ExcelDateTime::parse_from_str(timestamp).ok())
         .unwrap_or(fallback_creation_time);
-    let properties = DocProperties::new().set_creation_datetime(&creation_time);
+    let properties = DocProperties::new()
+        .set_title("VectorGrid Validation Evidence Report")
+        .set_subject("Statistical validation, research readiness, and execution provenance")
+        .set_author("VectorGrid")
+        .set_category("Quantitative Research")
+        .set_keywords("validation, backtest, robustness, research evidence, provenance")
+        .set_comment(
+            "Statistical approval is research evidence and is not deployment authorization.",
+        )
+        .set_creation_datetime(&creation_time);
     workbook.set_properties(&properties);
     let (
         title_fmt,
@@ -5548,6 +7425,7 @@ pub(super) fn build_validation_report_xlsx(
         &header_fmt,
         &text_fmt,
         &num_fmt,
+        &pct_fmt,
         &int_fmt,
     )?;
 
@@ -5651,6 +7529,7 @@ pub(super) fn build_validation_report_xlsx(
         &header_fmt,
         &text_fmt,
         &num_fmt,
+        &pct_fmt,
         &int_fmt,
     )?;
 
@@ -5663,6 +7542,35 @@ pub(super) fn build_validation_report_xlsx(
         &pct_fmt,
         &int_fmt,
     )?;
+
+    build_candidate_comparison_sheet(
+        &mut workbook,
+        &model,
+        &title_fmt,
+        &header_fmt,
+        &text_fmt,
+        &num_fmt,
+        &pct_fmt,
+        &int_fmt,
+        &approved_fmt,
+        &review_fmt,
+        &rejected_fmt,
+        &compat_fmt,
+    )?;
+
+    build_research_readiness_sheet(
+        &mut workbook,
+        &model,
+        &title_fmt,
+        &header_fmt,
+        &text_fmt,
+        &int_fmt,
+        &approved_fmt,
+        &review_fmt,
+        &rejected_fmt,
+    )?;
+
+    build_execution_provenance_sheet(&mut workbook, &model, &title_fmt, &header_fmt, &text_fmt)?;
 
     workbook
         .save_to_buffer()
@@ -5795,7 +7703,17 @@ mod tests {
         assert!(workbook.contains("Distributions"));
         assert!(workbook.contains("Audit Data"));
         assert!(workbook.contains("Dashboard"));
+        assert!(workbook.contains("Candidate Comparison"));
+        assert!(workbook.contains("Research Readiness"));
+        assert!(workbook.contains("Execution Provenance"));
+        let all_xml = all_xml(&bytes);
+        assert!(all_xml.contains("Research only (legacy evidence pack absent)"));
+        assert!(all_xml.contains("CandidateComparisonTable"));
+        assert!(all_xml.contains("ResearchReadinessTable"));
+        assert!(all_xml.contains("RecordedExecutionTable"));
         let core_properties = core_properties_xml(&bytes);
+        assert!(core_properties.contains("VectorGrid Validation Evidence Report"));
+        assert!(core_properties.contains("not deployment authorization"));
         assert!(core_properties.contains(
             "<dcterms:created xsi:type=\"dcterms:W3CDTF\">2026-03-13T00:00:00Z</dcterms:created>"
         ));
@@ -5958,6 +7876,473 @@ mod tests {
         let workbook = workbook_xml(&bytes);
         assert!(workbook.contains("Dashboard"));
         assert!(workbook.contains("Audit Data"));
+    }
+
+    #[test]
+    fn validation_report_surfaces_fail_closed_research_and_promotion_evidence() {
+        let mut report = serde_json::json!({
+          "version": 1,
+          "kind": "vectorgrid_report",
+          "ts": "2026-03-13T00:00:00Z",
+          "run": { "req": { "strategy_kind": "CompositeTrend" } },
+          "validation": {
+            "req": {
+              "backend": { "backend": "Auto" },
+              "candidates": [{
+                "strategy": { "trend_quality_use_adx": false }
+              }]
+            },
+            "res": {
+              "data_id": "research-dataset",
+              "requested_backend": "Auto",
+              "backend_used": "Gpu",
+              "backend_route": "Auto->GpuKernel",
+              "validation_residency_tier": "gpu_kernel",
+              "runtime_ms": 12,
+              "run_verdict": {
+                "passed": true,
+                "approved": true,
+                "approved_candidate_count": 1,
+                "candidates_tested": 1,
+                "candidates_survived_hard_gates": 1,
+                "final_recommendation": "approved_with_warnings"
+              },
+              "validation_evidence_pack": {
+                "schema_version": "1-1-0",
+                "version": 1,
+                "workflow": "double_ma_validation",
+                "status": "incomplete",
+                "status_reason": "deployment-realism evidence unknown",
+                "generated_by": "ta_app_core.validation_pipeline",
+                "dataset": {
+                  "data_id": "research-dataset",
+                  "strategy_kind": "CompositeTrend",
+                  "csv_path": "C:\\private\\research.csv",
+                  "timeframe": "1h",
+                  "label": "Research Dataset",
+                  "data_realism": {
+                    "price_adjustment": "adjusted",
+                    "corporate_actions": "documented",
+                    "survivorship_bias": "unknown",
+                    "liquidity_capacity": "unknown",
+                    "market_impact": "unknown",
+                    "borrow_availability": "not_applicable",
+                    "complete": false,
+                    "missing_or_unknown": [
+                      "survivorship_bias",
+                      "liquidity_capacity",
+                      "market_impact"
+                    ]
+                  }
+                },
+                "route": {
+                  "requested_backend": "Auto",
+                  "realized_backend": "Gpu",
+                  "route_label": "Auto->GpuKernel",
+                  "residency_tier": "gpu_kernel",
+                  "fallback_reason": "hybrid kernel unavailable; kernel fallback used",
+                  "diagnostics": ["compact results returned"]
+                },
+                "candidate_universe": {
+                  "source": "validation_request_candidates",
+                  "requested_candidates": 1,
+                  "evaluated_candidates": 1,
+                  "retained_candidates": 1,
+                  "survived_hard_gates": 1,
+                  "approved_candidates": 1
+                },
+                "verdict": {
+                  "passed": true,
+                  "approved": true,
+                  "recommendation": "approved_with_warnings",
+                  "summary": "approved"
+                },
+                "promotion_eligibility": {
+                  "eligible": false,
+                  "state": "research_only",
+                  "gates_passed": ["validation_run_approved"],
+                  "gates_failed": [
+                    "realism_survivorship_bias_declared",
+                    "realism_liquidity_capacity_declared",
+                    "realism_market_impact_declared"
+                  ],
+                  "reason": "promotion blocked until missing realism evidence is declared"
+                },
+                "warnings": ["promotion_blocked_missing_realism_evidence"],
+                "caveats": [
+                  "validation approval is research evidence, not deployment authorization"
+                ]
+              },
+              "candidates": [{
+                "params": {
+                  "fast_ma_type": "ema",
+                  "fast_len": 10,
+                  "slow_ma_type": "sma",
+                  "slow_len": 30
+                },
+                "in_sample": {
+                  "pnl": 1.0,
+                  "sharpe": 2.0,
+                  "max_dd": 0.2,
+                  "trades": 10,
+                  "exposure": 0.5
+                },
+                "psr": 0.82,
+                "dsr": 0.78,
+                "validation_verdict": {
+                  "passed": true,
+                  "warning_flags": [],
+                  "fail_reasons": []
+                },
+                "robust_score": 1.23,
+                "robust_pareto": true
+              }]
+            }
+          }
+        });
+
+        let bytes = build_validation_report_xlsx(&report, Some(25)).expect("xlsx");
+        let xml = all_xml(&bytes);
+        for expected in [
+            "Research Readiness",
+            "Research Dataset",
+            "research.csv",
+            "Research only",
+            "promotion blocked until missing realism evidence is declared",
+            "survivorship bias",
+            "Unknown or absent evidence blocks promotion beyond research use.",
+            "Auto-&gt;GpuKernel",
+            "hybrid kernel unavailable; kernel fallback used",
+            "Expected GPU kernel route (CompositeTrend) when available",
+            "Statistical approval is research evidence and is not deployment authorization.",
+        ] {
+            assert!(xml.contains(expected), "missing workbook text: {expected}");
+        }
+        assert!(!xml.contains("C:\\private\\research.csv"));
+        assert!(xml.contains("operator=\"greaterThan\""));
+        assert!(xml.contains("operator=\"lessThan\""));
+        assert!(xml.contains("operator=\"equal\""));
+        assert!(xml.contains("formatCode=\"0.0%\""));
+
+        report["validation"]["res"]["validation_evidence_pack"]["candidate_universe"] = serde_json::json!({
+            "requested_candidates": 0,
+            "evaluated_candidates": 0,
+            "retained_candidates": 0,
+            "survived_hard_gates": 0,
+            "approved_candidates": 0
+        });
+        let fallback_bytes =
+            build_validation_report_xlsx(&report, Some(25)).expect("fallback funnel xlsx");
+        let fallback_xml = all_xml(&fallback_bytes);
+        assert!(fallback_xml.contains("Observed candidate rows"));
+        assert!(!fallback_xml.contains("Retained shortlist"));
+
+        report["validation"]["res"]["validation_evidence_pack"]["dataset"]["data_realism"]
+            ["survivorship_bias"] = serde_json::json!("documented");
+        report["validation"]["res"]["validation_evidence_pack"]["dataset"]["data_realism"]
+            ["liquidity_capacity"] = serde_json::json!("documented");
+        report["validation"]["res"]["validation_evidence_pack"]["dataset"]["data_realism"]
+            ["market_impact"] = serde_json::json!("documented");
+        report["validation"]["res"]["validation_evidence_pack"]["dataset"]["data_realism"]
+            ["complete"] = serde_json::json!(true);
+        report["validation"]["res"]["validation_evidence_pack"]["dataset"]["data_realism"]
+            ["missing_or_unknown"] = serde_json::json!([]);
+        report["validation"]["res"]["validation_evidence_pack"]["promotion_eligibility"]
+            ["eligible"] = serde_json::json!(true);
+        report["validation"]["res"]["validation_evidence_pack"]["promotion_eligibility"]["state"] =
+            serde_json::json!("eligible_for_review");
+        report["validation"]["res"]["validation_evidence_pack"]["promotion_eligibility"]
+            ["gates_failed"] = serde_json::json!([]);
+        report["validation"]["res"]["validation_evidence_pack"]["status"] =
+            serde_json::json!("complete");
+        let eligible_bytes =
+            build_validation_report_xlsx(&report, Some(25)).expect("eligible review xlsx");
+        let eligible_xml = all_xml(&eligible_bytes);
+        assert!(eligible_xml.contains("Eligible for review"));
+        assert!(eligible_xml.contains("eligible for human review"));
+
+        report["validation"]["res"]["run_verdict"]["approved"] = serde_json::json!(false);
+        let conflicting_bytes =
+            build_validation_report_xlsx(&report, Some(25)).expect("conflicting verdict xlsx");
+        let conflicting_xml = all_xml(&conflicting_bytes);
+        assert!(conflicting_xml.contains(
+            "Research only (fail-closed; top-level run verdict conflicts with evidence pack)"
+        ));
+        assert!(conflicting_xml.contains(
+            "No — fail-closed because the top-level run verdict conflicts with the evidence pack"
+        ));
+    }
+
+    #[test]
+    fn validation_report_checks_pack_only_route_against_pack_residency() {
+        let report = serde_json::json!({
+            "version": 1,
+            "kind": "vectorgrid_report",
+            "ts": "2026-03-13T00:00:00Z",
+            "run": { "req": { "strategy_kind": "CompositeTrend" } },
+            "validation": {
+                "res": {
+                    "data_id": "pack-only-route",
+                    "validation_evidence_pack": {
+                        "schema_version": ta_app_core::VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION,
+                        "version": ta_app_core::VALIDATION_EVIDENCE_PACK_VERSION,
+                        "workflow": "double_ma_validation",
+                        "status": "complete",
+                        "status_reason": "complete evidence ready for human review",
+                        "dataset": {
+                            "data_id": "pack-only-route",
+                            "strategy_kind": "CompositeTrend",
+                            "data_realism": {
+                                "price_adjustment": "adjusted",
+                                "corporate_actions": "documented",
+                                "survivorship_bias": "documented",
+                                "liquidity_capacity": "documented",
+                                "market_impact": "documented",
+                                "borrow_availability": "not_applicable",
+                                "complete": true
+                            }
+                        },
+                        "route": {
+                            "requested_backend": "Auto",
+                            "realized_backend": "Gpu",
+                            "route_label": "GpuHybridKernel->GpuKernel",
+                            "residency_tier": "gpu_hybrid_kernel"
+                        },
+                        "verdict": {
+                            "passed": true,
+                            "approved": true,
+                            "summary": "approved"
+                        },
+                        "promotion_eligibility": {
+                            "eligible": true,
+                            "state": "eligible_for_review",
+                            "reason": "complete evidence ready for review"
+                        }
+                    },
+                    "candidates": []
+                }
+            }
+        });
+
+        let bytes = build_validation_report_xlsx(&report, Some(25)).expect("pack-only route xlsx");
+        let xml = all_xml(&bytes);
+
+        assert!(xml.contains("GpuHybridKernel-&gt;GpuKernel"));
+        assert!(
+            xml.contains("terminal route GpuKernel implies gpu_kernel; provenance mismatch"),
+            "pack-only route must receive the same residency consistency check as a result route"
+        );
+        assert!(xml.contains("Approved as research evidence (evidence pack)"));
+        assert!(xml.contains("Yes — eligible for human review"));
+    }
+
+    #[test]
+    fn validation_report_truncates_oversized_artifact_text_in_new_audit_sheets() {
+        let oversized = "🧪".repeat(XLSX_CELL_CHAR_LIMIT + 16);
+        let report = serde_json::json!({
+            "version": 1,
+            "kind": "vectorgrid_report",
+            "ts": "2026-03-13T00:00:00Z",
+            "run": { "req": { "strategy_kind": "DoubleMa" } },
+            "validation": {
+                "res": {
+                    "data_id": "oversized-text",
+                    "validation_evidence_pack": {
+                        "schema_version": ta_app_core::VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION,
+                        "version": ta_app_core::VALIDATION_EVIDENCE_PACK_VERSION,
+                        "workflow": "double_ma_validation",
+                        "status": "incomplete",
+                        "status_reason": oversized,
+                        "dataset": {
+                            "data_id": "oversized-text",
+                            "strategy_kind": "DoubleMa",
+                            "data_realism": {
+                                "price_adjustment": oversized,
+                                "complete": false,
+                                "missing_or_unknown": [oversized]
+                            }
+                        },
+                        "route": {
+                            "requested_backend": "CpuOnly",
+                            "realized_backend": "Cpu",
+                            "route_label": "CpuOnly",
+                            "residency_tier": "cpu",
+                            "diagnostics": [oversized]
+                        },
+                        "candidate_universe": {
+                            "requested_candidates": 0,
+                            "evaluated_candidates": 0,
+                            "retained_candidates": 0,
+                            "survived_hard_gates": 0,
+                            "approved_candidates": 0
+                        },
+                        "verdict": {
+                            "passed": false,
+                            "approved": false,
+                            "summary": oversized
+                        },
+                        "promotion_eligibility": {
+                            "eligible": false,
+                            "state": "research_only",
+                            "reason": oversized,
+                            "gates_failed": [oversized]
+                        },
+                        "warnings": [oversized],
+                        "caveats": [oversized]
+                    },
+                    "validation_provenance": {
+                        "stage_sequence": [oversized],
+                        "score_channel": oversized,
+                        "passed_vs_approved_contract": oversized
+                    },
+                    "candidates": [{
+                        "params": {
+                            "fast_ma_type": "ema",
+                            "fast_len": 10,
+                            "slow_ma_type": "sma",
+                            "slow_len": 30
+                        },
+                        "in_sample": {
+                            "pnl": 0.0,
+                            "sharpe": 0.0,
+                            "max_dd": 0.0,
+                            "trades": 0,
+                            "exposure": 0.0
+                        },
+                        "validation_verdict": {
+                            "passed": false,
+                            "warning_flags": [],
+                            "fail_reasons": [oversized]
+                        },
+                        "robust_score": 0.0,
+                        "robust_pareto": false
+                    }]
+                }
+            }
+        });
+
+        let bytes = build_validation_report_xlsx(&report, Some(25))
+            .expect("oversized artifact text should be truncated, not reject XLSX export");
+        let xml = all_xml(&bytes);
+        assert!(xml.contains(TRUNCATION_SUFFIX));
+        assert!(!xml.contains(&oversized));
+    }
+
+    #[test]
+    fn excel_safe_text_truncates_on_unicode_scalar_boundaries() {
+        let original = "🚀".repeat(XLSX_CELL_CHAR_LIMIT + 8);
+        let safe = excel_safe_text(&original);
+        assert_eq!(safe.chars().count(), XLSX_CELL_CHAR_LIMIT);
+        assert!(safe.ends_with(TRUNCATION_SUFFIX));
+        assert!(safe.is_char_boundary(safe.len()));
+    }
+
+    #[test]
+    fn worksheet_row_budget_checks_combined_layout_and_overflow() {
+        assert!(validate_sheet_row_budget("Boundary", &[7, XLSX_MAX_ROW_INDEX - 7]).is_ok());
+        assert!(validate_sheet_row_budget("Too large", &[7, XLSX_MAX_ROW_INDEX - 6]).is_err());
+        assert!(
+            validate_sheet_row_budget("Candidate boundary", &[3, XLSX_MAX_ROW_INDEX - 3]).is_ok()
+        );
+        assert!(
+            validate_sheet_row_budget("Candidate overflow", &[3, XLSX_MAX_ROW_INDEX - 2]).is_err()
+        );
+        assert!(validate_sheet_row_budget("Overflow", &[usize::MAX, 1]).is_err());
+        assert_eq!(count_axis_major_unit(0), 1.0);
+        assert_eq!(count_axis_major_unit(5), 1.0);
+        assert_eq!(count_axis_major_unit(6), 2.0);
+        assert_eq!(count_axis_major_unit(10_000), 2_000.0);
+        assert_eq!(capped_chart_title("Metric", 100), "Metric");
+        assert_eq!(capped_chart_title("Metric", 101), "Metric (top 100)");
+        assert_eq!(wrapped_row_height("short", 80, 20.0, 120.0), 21.0);
+        assert!(wrapped_row_height(&"x".repeat(300), 80, 20.0, 120.0) >= 66.0);
+    }
+
+    #[test]
+    fn promotion_evidence_eligibility_is_fail_closed() {
+        let mut pack = ExportValidationEvidencePack {
+            schema_version: ta_app_core::VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION.to_string(),
+            version: Some(u64::from(ta_app_core::VALIDATION_EVIDENCE_PACK_VERSION)),
+            status: "complete".to_string(),
+            verdict_passed: Some(true),
+            verdict_approved: Some(true),
+            promotion_eligible: Some(true),
+            promotion_state: "eligible_for_review".to_string(),
+            promotion_reason: "complete evidence ready for review".to_string(),
+            realism_complete: Some(false),
+            realism_missing_or_unknown_recorded: false,
+            realism_price_adjustment: "adjusted".to_string(),
+            realism_corporate_actions: "documented".to_string(),
+            realism_survivorship_bias: "documented".to_string(),
+            realism_liquidity_capacity: "documented".to_string(),
+            realism_market_impact: "documented".to_string(),
+            realism_borrow_availability: "not_applicable".to_string(),
+            ..ExportValidationEvidencePack::default()
+        };
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+
+        pack.realism_complete = Some(true);
+        pack.promotion_gates_failed = "market_impact_declared".to_string();
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+
+        pack.promotion_gates_failed.clear();
+        assert!(
+            promotion_evidence_is_eligible_for_review(&pack),
+            "the canonical serializer omits an empty missing_or_unknown list"
+        );
+
+        pack.realism_missing_or_unknown = "market_impact".to_string();
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+        pack.realism_missing_or_unknown.clear();
+        pack.realism_market_impact = "unknown".to_string();
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+        pack.realism_market_impact = "invalid".to_string();
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+        pack.realism_market_impact = "documented".to_string();
+        pack.verdict_approved = Some(false);
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+        pack.verdict_approved = Some(true);
+        pack.status = "incomplete".to_string();
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+        pack.status = "complete".to_string();
+        pack.schema_version = "future-schema".to_string();
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+        pack.schema_version = ta_app_core::VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION.to_string();
+        pack.version = Some(u64::from(ta_app_core::VALIDATION_EVIDENCE_PACK_VERSION) + 1);
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+        pack.version = Some(u64::from(ta_app_core::VALIDATION_EVIDENCE_PACK_VERSION));
+        pack.promotion_state = "research_only".to_string();
+        assert!(!promotion_evidence_is_eligible_for_review(&pack));
+    }
+
+    #[test]
+    fn evidence_pack_funnel_requires_complete_monotonic_counts() {
+        let mut pack = ExportValidationEvidencePack::default();
+        assert!(evidence_pack_candidate_funnel(&pack, false).is_none());
+
+        pack.requested_candidates = Some(4);
+        pack.evaluated_candidates = Some(4);
+        pack.retained_candidates = Some(2);
+        pack.survived_hard_gates = Some(2);
+        pack.approved_candidates = Some(1);
+        assert_eq!(
+            evidence_pack_candidate_funnel(&pack, false),
+            Some([4, 4, 2, 2, 1])
+        );
+
+        pack.retained_candidates = Some(5);
+        assert!(evidence_pack_candidate_funnel(&pack, false).is_none());
+
+        pack.requested_candidates = Some(0);
+        pack.evaluated_candidates = Some(0);
+        pack.retained_candidates = Some(0);
+        pack.survived_hard_gates = Some(0);
+        pack.approved_candidates = Some(0);
+        assert!(evidence_pack_candidate_funnel(&pack, false).is_none());
+        assert_eq!(
+            evidence_pack_candidate_funnel(&pack, true),
+            Some([0, 0, 0, 0, 0])
+        );
     }
 
     #[test]

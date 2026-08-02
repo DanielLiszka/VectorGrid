@@ -11,7 +11,6 @@ import { useWorkflowStore } from '../stores/workflowStore'
 import {
   artifactExportSnapshotIcon,
   compareCandidatesIcon,
-  emptyResultsWorkspaceIllustration,
 } from '../utils/appSvgAssets'
 import { describeExecutionRisk } from '../utils/executionRisk'
 import {
@@ -19,6 +18,8 @@ import {
   formatRouteProvenanceCompact,
 } from '../utils/core/runArtifactReview'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import AppButton from './ui/AppButton.vue'
+import AppEmptyState from './ui/AppEmptyState.vue'
 import AppMetricStrip, { type AppMetricItem } from './ui/AppMetricStrip.vue'
 
 const analysisStore = useAnalysisStore()
@@ -152,6 +153,11 @@ function reviewTopResults(): void {
   workflowStore.selectResultsTab('top')
 }
 
+function openOptimizationWorkspace(): void {
+  workflowStore.selectWorkspace('workflow', 'optimize')
+  workflowStore.selectControlsTab('opt')
+}
+
 </script>
 
 <template>
@@ -172,21 +178,23 @@ function reviewTopResults(): void {
         <div v-for="chip in overviewSummaryChips" :key="chip" class="panelSummaryChip">{{ chip }}</div>
       </div>
 
-      <section v-if="showNoDataOverview" class="emptyState">
-        <img class="emptyStateIllustration" :src="emptyResultsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
-        <div class="emptyTitle">{{ overviewEmptyTitle }}</div>
-        <div class="emptyBody">{{ overviewEmptyBody }}</div>
-        <div class="emptyActions">
-          <button
-            class="primary"
+      <AppEmptyState
+        v-if="showNoDataOverview"
+        :title="overviewEmptyTitle"
+        :body="overviewEmptyBody"
+        :hint="overviewEmptyHint"
+      >
+        <template #actions>
+          <AppButton
+            variant="primary"
             type="button"
             data-qa-action="overview.empty.primary"
             :disabled="overviewPrimaryDisabled"
             @click="analysisStore.overviewEmptyPrimary()"
           >
             {{ overviewPrimaryLabel }}
-          </button>
-          <button
+          </AppButton>
+          <AppButton
             v-if="overviewSecondaryVisible"
             type="button"
             data-qa-action="overview.empty.secondary"
@@ -194,19 +202,23 @@ function reviewTopResults(): void {
             @click="analysisStore.overviewEmptySecondary()"
           >
             {{ overviewSecondaryLabel }}
-          </button>
-        </div>
-        <div class="panelMuted" style="margin-top: 0.65rem; font-size: 0.85rem;">{{ overviewEmptyHint }}</div>
-      </section>
+          </AppButton>
+        </template>
+      </AppEmptyState>
 
-      <section v-else-if="showPendingOverview" class="emptyState overviewPendingState">
-        <img class="emptyStateIllustration" :src="emptyResultsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
-        <div class="emptyTitle">No analyzed winner yet.</div>
-        <div class="emptyBody">
-          Results will appear here after an optimization run is scored or an existing run library result is loaded.
-        </div>
-        <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
-      </section>
+      <AppEmptyState
+        v-else-if="showPendingOverview"
+        class="overviewPendingState"
+        title="No analyzed winner yet."
+        body="Results will appear here after an optimization run is scored or an existing run library result is loaded."
+        hint="Next: open Optimize to configure and run a strategy, or load a completed run from the Library."
+      >
+        <template #actions>
+          <AppButton variant="primary" type="button" @click="openOptimizationWorkspace">
+            Open Optimize
+          </AppButton>
+        </template>
+      </AppEmptyState>
 
       <section v-if="showReadyOverview" class="overviewHealthGrid" aria-label="Post-run health summary">
         <h3 class="overviewHealthTitle">Run health</h3>
@@ -347,13 +359,6 @@ function reviewTopResults(): void {
   min-width: 0;
 }
 
-.emptyStateIllustration {
-  width: clamp(88px, 18vw, 124px);
-  height: auto;
-  margin-bottom: 0.2rem;
-  opacity: 0.92;
-}
-
 .riskNotice {
   border: 1px solid color-mix(in oklab, var(--warning-ink) 34%, var(--border));
   border-radius: 12px;
@@ -471,7 +476,6 @@ function reviewTopResults(): void {
   font-family: var(--mono);
 }
 </style>
-
 
 
 

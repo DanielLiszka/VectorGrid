@@ -1,5 +1,13 @@
 use super::{
     build_meta_report_xlsx_bytes,
+    commands_campaign::{
+        build_vcet_fixed_candidate_artifact_contract, validate_campaign_summary_artifact_value,
+        validate_vcet_fixed_candidate_artifact_contract,
+        validate_vcet_fixed_candidate_training_evidence,
+        CampaignVcetFixedCandidateArtifactContract, ResearchCampaignCrossUniverseAdmissionPolicy,
+        ResearchCampaignExecutionMode, ResearchCampaignFixedCandidateAggregate,
+        ResearchCampaignRequest, ResearchCampaignSummary,
+    },
     metric_surface::{summarize_artifact_metric_surfaces, ArtifactMetricSurfaceSummary},
     run_artifacts, sanitize_filename_component, TauriProgressSink,
 };
@@ -7,7 +15,7 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -22,6 +30,8 @@ use ta_app_core::{
 use tauri::Manager;
 
 static META_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const META_VCET_CANDIDATE_EVIDENCE_ROW_CAP: usize =
+    ta_app_core::vcet_search::MAX_VCET_SEARCH_BUDGET;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -95,6 +105,108 @@ pub struct MetaCohortArtifactRef {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct MetaCampaignCohortLineage {
+    pub campaign_summary_path: String,
+    pub campaign_summary_sha256: String,
+    pub manifest_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_manifest_hash: Option<String>,
+    pub admitted_candidate_count: usize,
+    pub admitted_candidates: Vec<MetaVcetAdmittedCandidate>,
+    pub cross_universe_admission: ResearchCampaignCrossUniverseAdmissionPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_candidate_id: Option<String>,
+    pub expected_train_datasets: usize,
+    pub expected_holdout_datasets: usize,
+    pub matched_train_artifacts: usize,
+    pub matched_holdout_artifacts: usize,
+    pub excluded_out_of_scope_artifacts: usize,
+    /// Bounded, report-ready projection of the sealed campaign candidate
+    /// evidence. This keeps Meta artifacts and XLSX generation independent of
+    /// the potentially much larger campaign-summary payload while prioritizing
+    /// selected/admitted rows and their effective VCET controls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vcet_candidate_evidence: Option<MetaVcetCandidateEvidenceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetaVcetAdmittedCandidate {
+    pub candidate_id: String,
+    pub fast_len: u16,
+    pub slow_len: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetaVcetSearchProvenance {
+    pub schema_version: u32,
+    pub sequence: String,
+    pub search_id: String,
+    pub seed: u64,
+    pub requested_budget: usize,
+    pub effective_budget: usize,
+    pub valid_search_space_size: String,
+    pub float_identity_scale: i64,
+    pub halton_attempts: usize,
+    pub invalid_period_pairs_discarded: usize,
+    pub duplicate_candidates_discarded: usize,
+    pub lexicographic_fallback_candidates: usize,
+    pub exhaustive_candidates: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ta_app_core::vcet_search::VcetSearchConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetaVcetEffectiveControls {
+    pub evidence_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vidya_short_period: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vidya_long_period: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vidya_alpha: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ce_period: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ce_mult: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ce_use_close: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_vidya_slope: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_trade_bars: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetaVcetCandidateEvidenceRow {
+    pub manifest_ordinal: usize,
+    pub candidate_id: String,
+    pub selected: bool,
+    pub admitted: bool,
+    pub controls: MetaVcetEffectiveControls,
+    pub training: ResearchCampaignFixedCandidateAggregate,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holdout: Option<ResearchCampaignFixedCandidateAggregate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_universe: Option<ResearchCampaignFixedCandidateAggregate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetaVcetCandidateEvidenceSummary {
+    pub schema_version: u32,
+    pub candidate_manifest_hash: String,
+    pub selection_cohort: String,
+    pub selection_status: String,
+    pub require_gpu_kernel: bool,
+    pub source_candidate_count: usize,
+    pub included_candidate_count: usize,
+    pub omitted_candidate_count: usize,
+    pub row_cap: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<MetaVcetSearchProvenance>,
+    pub candidates: Vec<MetaVcetCandidateEvidenceRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MetaCohortDisjointnessSummary {
     pub train_artifacts: usize,
     pub holdout_artifacts: usize,
@@ -111,8 +223,245 @@ pub struct MetaCohortManifest {
     pub disjointness: MetaCohortDisjointnessSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign_lineage: Option<MetaCampaignCohortLineage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+fn unavailable_vcet_controls(evidence_state: &str) -> MetaVcetEffectiveControls {
+    MetaVcetEffectiveControls {
+        evidence_state: evidence_state.to_string(),
+        vidya_short_period: None,
+        vidya_long_period: None,
+        vidya_alpha: None,
+        ce_period: None,
+        ce_mult: None,
+        ce_use_close: None,
+        require_vidya_slope: None,
+        max_trade_bars: None,
+    }
+}
+
+fn controls_from_search_candidate(
+    candidate: &ta_app_core::vcet_search::VcetSearchCandidate,
+) -> MetaVcetEffectiveControls {
+    let effective = &candidate.effective;
+    MetaVcetEffectiveControls {
+        evidence_state: "sealed_search_manifest".to_string(),
+        vidya_short_period: Some(effective.vidya_short_period),
+        vidya_long_period: Some(effective.vidya_long_period),
+        vidya_alpha: Some(effective.vidya_alpha),
+        ce_period: Some(effective.ce_period),
+        ce_mult: Some(effective.ce_mult),
+        ce_use_close: Some(effective.ce_use_close),
+        require_vidya_slope: Some(effective.require_vidya_slope),
+        max_trade_bars: Some(effective.max_trade_bars),
+    }
+}
+
+fn controls_from_campaign_template(
+    vcet: Option<&ta_app_core::VcetStrategyParams>,
+    fast_len: u16,
+    slow_len: u16,
+) -> MetaVcetEffectiveControls {
+    let Some(vcet) = vcet else {
+        return unavailable_vcet_controls("unavailable_campaign_template");
+    };
+    let Ok(periods) = ta_app_core::vcet::resolve_vcet_periods_checked(vcet, fast_len, slow_len)
+    else {
+        return unavailable_vcet_controls("invalid_campaign_template_mapping");
+    };
+    MetaVcetEffectiveControls {
+        evidence_state: "resolved_campaign_template".to_string(),
+        vidya_short_period: Some(periods.vidya_short),
+        vidya_long_period: Some(periods.vidya_long),
+        vidya_alpha: Some(vcet.vidya_alpha),
+        ce_period: Some(periods.ce),
+        ce_mult: Some(vcet.ce_mult),
+        ce_use_close: Some(vcet.ce_use_close),
+        require_vidya_slope: Some(vcet.require_vidya_slope),
+        max_trade_bars: Some(vcet.max_trade_bars),
+    }
+}
+
+fn build_meta_vcet_candidate_evidence(
+    summary: &ResearchCampaignSummary,
+) -> Option<MetaVcetCandidateEvidenceSummary> {
+    let evaluation = summary.fixed_candidate_evaluation.as_ref()?;
+    let request = serde_json::from_value::<ResearchCampaignRequest>(summary.request.clone()).ok();
+    let search_config = request
+        .as_ref()
+        .and_then(|request| request.validation_config.vcet_search.clone());
+    let template_vcet = request.as_ref().and_then(|request| {
+        request
+            .optimization_template
+            .get("vcet")
+            .filter(|value| !value.is_null())
+            .and_then(|value| {
+                serde_json::from_value::<ta_app_core::VcetStrategyParams>(value.clone()).ok()
+            })
+    });
+
+    let search_by_evaluation_id: HashMap<&str, &ta_app_core::vcet_search::VcetSearchCandidate> =
+        evaluation
+            .search_manifest
+            .as_ref()
+            .into_iter()
+            .flat_map(|manifest| manifest.candidates.iter())
+            .filter_map(|candidate| {
+                candidate
+                    .evaluation_candidate_id
+                    .as_deref()
+                    .map(|candidate_id| (candidate_id, candidate))
+            })
+            .collect();
+    let holdout_by_id: HashMap<&str, &ResearchCampaignFixedCandidateAggregate> = evaluation
+        .holdout
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.candidate_id.as_str(), candidate))
+        .collect();
+    let all_universe_by_id: HashMap<&str, &ResearchCampaignFixedCandidateAggregate> = evaluation
+        .all_universe
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.candidate_id.as_str(), candidate))
+        .collect();
+    let admitted_ids: HashSet<&str> = evaluation
+        .admitted_candidate_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let selected_id = evaluation.selected_candidate_id.as_deref();
+
+    let mut ordered: Vec<(u8, usize, &ResearchCampaignFixedCandidateAggregate)> = evaluation
+        .training
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let priority = if selected_id == Some(candidate.candidate_id.as_str()) {
+                0
+            } else if admitted_ids.contains(candidate.candidate_id.as_str()) {
+                1
+            } else {
+                2
+            };
+            (priority, index, candidate)
+        })
+        .collect();
+    ordered.sort_by_key(|(priority, index, _)| (*priority, *index));
+    ordered.truncate(META_VCET_CANDIDATE_EVIDENCE_ROW_CAP);
+
+    let candidates = ordered
+        .into_iter()
+        .map(|(_, fallback_ordinal, candidate)| {
+            let search_candidate = search_by_evaluation_id
+                .get(candidate.candidate_id.as_str())
+                .copied();
+            let controls = match evaluation.search_manifest.as_ref() {
+                Some(_) => search_candidate
+                    .map(controls_from_search_candidate)
+                    .unwrap_or_else(|| {
+                        unavailable_vcet_controls("unavailable_search_manifest_mapping")
+                    }),
+                None => controls_from_campaign_template(
+                    template_vcet.as_ref(),
+                    candidate.fast_len,
+                    candidate.slow_len,
+                ),
+            };
+            MetaVcetCandidateEvidenceRow {
+                manifest_ordinal: search_candidate
+                    .map(|candidate| candidate.ordinal)
+                    .unwrap_or(fallback_ordinal),
+                candidate_id: candidate.candidate_id.clone(),
+                selected: selected_id == Some(candidate.candidate_id.as_str()),
+                admitted: admitted_ids.contains(candidate.candidate_id.as_str()),
+                controls,
+                training: candidate.clone(),
+                holdout: holdout_by_id
+                    .get(candidate.candidate_id.as_str())
+                    .map(|candidate| (*candidate).clone()),
+                all_universe: all_universe_by_id
+                    .get(candidate.candidate_id.as_str())
+                    .map(|candidate| (*candidate).clone()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let source_candidate_count = evaluation.training.candidates.len();
+    let included_candidate_count = candidates.len();
+
+    let search = evaluation.search_manifest.as_ref().map(|manifest| {
+        let stats = &manifest.generation_stats;
+        MetaVcetSearchProvenance {
+            schema_version: manifest.schema_version,
+            sequence: match manifest.sequence {
+                ta_app_core::vcet_search::VcetSearchSequence::Halton => "halton",
+                ta_app_core::vcet_search::VcetSearchSequence::HaltonCranleyPatterson => {
+                    "halton_cranley_patterson"
+                }
+                ta_app_core::vcet_search::VcetSearchSequence::ExhaustiveLexicographic => {
+                    "exhaustive_lexicographic"
+                }
+            }
+            .to_string(),
+            search_id: manifest.search_id.clone(),
+            seed: manifest.seed,
+            requested_budget: manifest.requested_budget,
+            effective_budget: manifest.effective_budget,
+            valid_search_space_size: manifest.valid_search_space_size.clone(),
+            float_identity_scale: manifest.float_identity_scale,
+            halton_attempts: stats.halton_attempts,
+            invalid_period_pairs_discarded: stats.invalid_period_pairs_discarded,
+            duplicate_candidates_discarded: stats.duplicate_candidates_discarded,
+            lexicographic_fallback_candidates: stats.lexicographic_fallback_candidates,
+            exhaustive_candidates: stats.exhaustive_candidates,
+            config: search_config,
+        }
+    });
+
+    Some(MetaVcetCandidateEvidenceSummary {
+        schema_version: evaluation.schema_version,
+        candidate_manifest_hash: evaluation.candidate_manifest_hash.clone(),
+        selection_cohort: evaluation.selection_cohort.clone(),
+        selection_status: evaluation.selection_status.clone(),
+        require_gpu_kernel: evaluation.require_gpu_kernel,
+        source_candidate_count,
+        included_candidate_count,
+        omitted_candidate_count: source_candidate_count.saturating_sub(included_candidate_count),
+        row_cap: META_VCET_CANDIDATE_EVIDENCE_ROW_CAP,
+        search,
+        candidates,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetaCampaignCohortRole {
+    Train,
+    Holdout,
+}
+
+#[derive(Debug, Clone)]
+struct ExpectedCampaignDatasetIdentity {
+    role: MetaCampaignCohortRole,
+    source_content_fingerprint: Option<String>,
+    path_timeframe_key: String,
+    artifact_path_key: Option<String>,
+    artifact_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MetaCampaignCohortExpectation {
+    pub(super) lineage: MetaCampaignCohortLineage,
+    fingerprints: HashMap<String, ExpectedCampaignDatasetIdentity>,
+    paths: HashMap<String, ExpectedCampaignDatasetIdentity>,
+    artifact_paths: HashMap<String, ExpectedCampaignDatasetIdentity>,
+    pub(super) referenced_artifact_paths: Vec<PathBuf>,
+    candidate_artifact_contract: Option<CampaignVcetFixedCandidateArtifactContract>,
+    admitted_vcet_periods: Option<HashSet<(u16, u16)>>,
+    campaign_summary: Option<ResearchCampaignSummary>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -631,11 +980,18 @@ fn artifact_tags_vec(artifact: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn cohort_artifact_ref(path: &Path, artifact: &Value, role: &str) -> MetaCohortArtifactRef {
+fn cohort_artifact_ref(
+    path: &Path,
+    artifact: &Value,
+    role: &str,
+    precomputed_sha256: Option<&str>,
+) -> MetaCohortArtifactRef {
     MetaCohortArtifactRef {
         role: role.to_string(),
         path: path.to_string_lossy().to_string(),
-        artifact_sha256: sha256_file_hex_opt(path),
+        artifact_sha256: precomputed_sha256
+            .map(str::to_string)
+            .or_else(|| sha256_file_hex_opt(path)),
         ts: value_string_at(artifact, &["/ts"]),
         dataset_label: value_string_at(artifact, &["/dataset_meta/label", "/data/label"]),
         csv_path: artifact_csv_path(artifact),
@@ -668,6 +1024,10 @@ fn cohort_dataset_key(artifact: &Value) -> Option<String> {
     let timeframe = value_string_at(artifact, &["/dataset_meta/timeframe", "/run/req/timeframe"])
         .map(|tf| normalize_timeframe_label(&tf))
         .unwrap_or_default();
+    Some(cohort_path_timeframe_key(&csv_path, &timeframe))
+}
+
+fn cohort_path_timeframe_key(csv_path: &str, timeframe: &str) -> String {
     let mut path_key = String::with_capacity(csv_path.len());
     let mut needs_separator = false;
     for part in csv_path.trim().split(['/', '\\']) {
@@ -683,21 +1043,542 @@ fn cohort_dataset_key(artifact: &Value) -> Option<String> {
         }
         needs_separator = true;
     }
-    Some(format!("path:{}|tf:{}", path_key, timeframe))
+    format!(
+        "path:{}|tf:{}",
+        path_key,
+        normalize_timeframe_label(timeframe)
+    )
+}
+
+fn cohort_artifact_path_key(path: impl AsRef<Path>) -> String {
+    path.as_ref()
+        .to_string_lossy()
+        .trim()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn campaign_manifest_cohort_tag(manifest_hash: &str) -> String {
+    format!(
+        "campaign-cohort:{}",
+        manifest_hash.trim().trim_start_matches("sha256:")
+    )
+}
+
+fn insert_expected_campaign_identity(
+    expectation: &mut MetaCampaignCohortExpectation,
+    path_key: String,
+    fingerprint: Option<String>,
+    artifact_path: Option<&str>,
+    artifact_sha256: Option<&str>,
+    role: MetaCampaignCohortRole,
+) -> Result<(), String> {
+    if expectation.paths.contains_key(&path_key) {
+        return Err(format!(
+            "campaign-bound Meta cohort contains a duplicate dataset path/timeframe identity: {path_key}"
+        ));
+    }
+    let artifact_path_key = artifact_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(cohort_artifact_path_key);
+    let identity = ExpectedCampaignDatasetIdentity {
+        role,
+        source_content_fingerprint: fingerprint.clone(),
+        path_timeframe_key: path_key.clone(),
+        artifact_path_key: artifact_path_key.clone(),
+        artifact_sha256: artifact_sha256.map(str::to_string),
+    };
+    if let Some(fingerprint) = fingerprint.as_deref() {
+        if expectation.fingerprints.contains_key(fingerprint) {
+            return Err(
+                "campaign-bound Meta cohort contains duplicate dataset content fingerprints; each requested stock must have a unique dataset identity"
+                    .to_string(),
+            );
+        }
+        expectation
+            .fingerprints
+            .insert(fingerprint.to_string(), identity.clone());
+    }
+    if let Some(artifact_path_key) = artifact_path_key {
+        if expectation.artifact_paths.contains_key(&artifact_path_key) {
+            return Err(format!(
+                "campaign-bound Meta cohort contains a duplicate run-artifact path: {artifact_path_key}"
+            ));
+        }
+        expectation
+            .artifact_paths
+            .insert(artifact_path_key, identity.clone());
+    }
+    expectation.paths.insert(path_key, identity);
+    Ok(())
+}
+
+fn validate_campaign_artifact_raw_sha256(
+    expectation: &MetaCampaignCohortExpectation,
+    artifact_path: &Path,
+    actual_sha256: &str,
+) -> Result<(), String> {
+    let path_key = cohort_artifact_path_key(artifact_path);
+    let expected = expectation.artifact_paths.get(&path_key).ok_or_else(|| {
+        format!(
+            "campaign-bound Meta has no sealed artifact identity for '{}'",
+            artifact_path.to_string_lossy()
+        )
+    })?;
+    let expected_sha256 = expected
+        .artifact_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "campaign-bound Meta is missing the sealed raw SHA-256 for '{}'",
+                artifact_path.to_string_lossy()
+            )
+        })?;
+    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+        return Err(format!(
+            "campaign-bound Meta rejected '{}' because its raw SHA-256 changed after the terminal campaign summary was sealed",
+            artifact_path.to_string_lossy()
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn load_meta_campaign_cohort_expectation<R: tauri::Runtime>(
+    campaign_summary_path: Option<&str>,
+    req: &MetaSelectionRequest,
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<MetaCampaignCohortExpectation>, String> {
+    let Some(path) = campaign_summary_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(None);
+    };
+    let (value, campaign_summary_sha256) =
+        run_artifacts::load_artifact_value_checked_with_sha256_blocking(
+            path.to_string(),
+            app.clone(),
+        )?;
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !matches!(
+        kind,
+        "vectorgrid_campaign_summary" | "vectorbt_campaign_summary"
+    ) {
+        return Err(
+            "campaign-bound Meta requires a research campaign summary artifact".to_string(),
+        );
+    }
+    if value.get("version").and_then(Value::as_u64) != Some(2) {
+        return Err(
+            "campaign-bound Meta requires campaign summary integrity version 2; rerun the campaign with this build"
+                .to_string(),
+        );
+    }
+    validate_campaign_summary_artifact_value(&value).map_err(|error| {
+        format!("campaign-bound Meta rejected the supplied campaign summary: {error}")
+    })?;
+    let summary: ResearchCampaignSummary = serde_json::from_value(value)
+        .map_err(|error| format!("invalid campaign summary for Meta lineage: {error}"))?;
+    if summary.counts.cancelled
+        || !matches!(
+            summary.state.trim(),
+            "completed" | "completed_with_failures" | "completed_with_warnings"
+        )
+    {
+        return Err(
+            "campaign-bound Meta requires a terminal, non-cancelled campaign summary".to_string(),
+        );
+    }
+    let manifest = summary
+        .manifest
+        .as_ref()
+        .ok_or_else(|| "campaign-bound Meta requires a v2 campaign manifest".to_string())?;
+    if manifest.execution_mode != ResearchCampaignExecutionMode::EvaluateCandidates {
+        return Err(
+            "campaign-bound Meta currently requires a VCET evaluate_candidates campaign summary"
+                .to_string(),
+        );
+    }
+    if req.strategy_kind.trim() != "Vcet" || summary.strategy_kind.trim() != "Vcet" {
+        return Err(
+            "campaign-bound Meta lineage currently supports strategy_kind='Vcet' only".to_string(),
+        );
+    }
+    let candidate_artifact_contract = build_vcet_fixed_candidate_artifact_contract(&summary)
+        .map_err(|error| {
+            format!("campaign-bound Meta rejected the VCET candidate contract: {error}")
+        })?;
+    let fixed_candidate_evaluation =
+        summary.fixed_candidate_evaluation.as_ref().ok_or_else(|| {
+            "campaign-bound Meta requires a VCET fixed-candidate evaluation summary".to_string()
+        })?;
+    if fixed_candidate_evaluation.schema_version != 4 {
+        return Err(
+            "campaign-bound Meta requires sealed VCET fixed-candidate admission schema v4; rerun the campaign with this build"
+                .to_string(),
+        );
+    }
+    if fixed_candidate_evaluation.admitted_candidate_ids.is_empty()
+        || fixed_candidate_evaluation.selected_candidate_id.is_none()
+    {
+        return Err(
+            "campaign-bound Meta stopped because no VCET candidate met the configured cross-universe admission policy"
+                .to_string(),
+        );
+    }
+    let admitted_candidate_ids: HashSet<&str> = fixed_candidate_evaluation
+        .admitted_candidate_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let admitted_vcet_periods: HashSet<(u16, u16)> = fixed_candidate_evaluation
+        .training
+        .candidates
+        .iter()
+        .filter(|row| admitted_candidate_ids.contains(row.candidate_id.as_str()))
+        .map(|row| (row.fast_len, row.slow_len))
+        .collect();
+    let admitted_candidates: Vec<MetaVcetAdmittedCandidate> = fixed_candidate_evaluation
+        .training
+        .candidates
+        .iter()
+        .filter(|row| admitted_candidate_ids.contains(row.candidate_id.as_str()))
+        .map(|row| MetaVcetAdmittedCandidate {
+            candidate_id: row.candidate_id.clone(),
+            fast_len: row.fast_len,
+            slow_len: row.slow_len,
+        })
+        .collect();
+    if admitted_vcet_periods.len() != fixed_candidate_evaluation.admitted_candidate_count
+        || !fixed_candidate_evaluation
+            .selected_candidate_id
+            .as_deref()
+            .is_some_and(|candidate_id| admitted_candidate_ids.contains(candidate_id))
+    {
+        return Err(
+            "campaign-bound Meta rejected inconsistent VCET cross-universe admission lineage"
+                .to_string(),
+        );
+    }
+    let requested_timeframe = req
+        .timeframe
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .filter(|value| !value.is_empty());
+    let campaign_timeframe = summary
+        .timeframe
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .filter(|value| !value.is_empty());
+    if requested_timeframe.is_some()
+        && campaign_timeframe.is_some()
+        && requested_timeframe != campaign_timeframe
+    {
+        return Err(
+            "campaign-bound Meta timeframe does not match the campaign summary".to_string(),
+        );
+    }
+    if let Some(required_tag) = req
+        .required_tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+    {
+        let cohort_tag = campaign_manifest_cohort_tag(&manifest.manifest_hash);
+        if !summary
+            .tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(required_tag))
+            && !cohort_tag.eq_ignore_ascii_case(required_tag)
+        {
+            return Err(format!(
+                "campaign-bound Meta required_tag '{required_tag}' does not identify the supplied campaign summary"
+            ));
+        }
+    }
+    if req.eval_holdout {
+        let requested_holdout_tag = req
+            .holdout_tag
+            .as_deref()
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .ok_or_else(|| {
+                "campaign-bound VCET holdout evaluation requires holdout_tag".to_string()
+            })?;
+        if summary.holdout_pct == 0
+            || summary
+                .holdout_tag
+                .as_deref()
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .is_none_or(|tag| !tag.eq_ignore_ascii_case(requested_holdout_tag))
+        {
+            return Err(
+                "campaign-bound Meta holdout scope does not match the campaign summary".to_string(),
+            );
+        }
+    }
+
+    let expected_train_datasets = summary.items.iter().filter(|item| !item.is_holdout).count();
+    let expected_holdout_datasets = summary.items.iter().filter(|item| item.is_holdout).count();
+    let mut expectation = MetaCampaignCohortExpectation {
+        lineage: MetaCampaignCohortLineage {
+            campaign_summary_path: path.to_string(),
+            campaign_summary_sha256,
+            manifest_hash: manifest.manifest_hash.clone(),
+            candidate_manifest_hash: manifest.candidate_manifest_hash.clone(),
+            admitted_candidate_count: fixed_candidate_evaluation.admitted_candidate_count,
+            admitted_candidates,
+            cross_universe_admission: fixed_candidate_evaluation.cross_universe_admission,
+            selected_candidate_id: fixed_candidate_evaluation.selected_candidate_id.clone(),
+            expected_train_datasets,
+            expected_holdout_datasets,
+            matched_train_artifacts: 0,
+            matched_holdout_artifacts: 0,
+            excluded_out_of_scope_artifacts: 0,
+            vcet_candidate_evidence: build_meta_vcet_candidate_evidence(&summary),
+        },
+        fingerprints: HashMap::with_capacity(summary.items.len()),
+        paths: HashMap::with_capacity(summary.items.len()),
+        artifact_paths: HashMap::with_capacity(summary.items.len()),
+        referenced_artifact_paths: Vec::with_capacity(summary.items.len()),
+        candidate_artifact_contract: Some(candidate_artifact_contract),
+        admitted_vcet_periods: Some(admitted_vcet_periods),
+        campaign_summary: Some(summary.clone()),
+    };
+    for item in &summary.items {
+        let role = if item.is_holdout {
+            MetaCampaignCohortRole::Holdout
+        } else {
+            MetaCampaignCohortRole::Train
+        };
+        let fingerprint = item
+            .dataset_identity
+            .as_ref()
+            .and_then(|identity| identity.source_content_fingerprint.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        insert_expected_campaign_identity(
+            &mut expectation,
+            cohort_path_timeframe_key(&item.csv_path, &item.timeframe),
+            fingerprint,
+            item.artifact_path.as_deref(),
+            item.artifact_sha256.as_deref(),
+            role,
+        )?;
+        if let Some(path) = item
+            .artifact_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            expectation
+                .referenced_artifact_paths
+                .push(PathBuf::from(path));
+        }
+    }
+    Ok(Some(expectation))
+}
+
+fn campaign_cohort_role_for_artifact(
+    expectation: &MetaCampaignCohortExpectation,
+    artifact_path: &Path,
+    artifact: &Value,
+) -> Option<MetaCampaignCohortRole> {
+    let expected_manifest_hash = expectation.lineage.manifest_hash.trim();
+    let mut has_campaign_lineage = false;
+    for pointer in ["/campaign/manifest_hash", "/campaign/cohort_id"] {
+        if let Some(actual) = artifact
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            has_campaign_lineage = true;
+            if actual != expected_manifest_hash {
+                return None;
+            }
+        }
+    }
+    let artifact_path_key = cohort_artifact_path_key(artifact_path);
+    let exact_path_identity = expectation.artifact_paths.get(&artifact_path_key);
+    if !has_campaign_lineage && exact_path_identity.is_none() {
+        return None;
+    }
+
+    if let Some(expected_candidate_manifest_hash) = expectation
+        .lineage
+        .candidate_manifest_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let actual_candidate_manifest_hash = artifact
+            .pointer("/validation/req/candidate_manifest_hash")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        match actual_candidate_manifest_hash {
+            Some(actual) if actual == expected_candidate_manifest_hash => {}
+            _ => return None,
+        }
+    }
+    if let Some(contract) = expectation.candidate_artifact_contract.as_ref() {
+        if validate_vcet_fixed_candidate_artifact_contract(artifact, contract).is_err() {
+            return None;
+        }
+    }
+
+    let fingerprint = value_string_at(
+        artifact,
+        &[
+            "/dataset_meta/source_content_fingerprint",
+            "/data/source_content_fingerprint",
+            "/run/req/source_content_fingerprint",
+        ],
+    );
+    let fingerprint_identity = fingerprint
+        .as_deref()
+        .and_then(|value| expectation.fingerprints.get(value));
+    if fingerprint.is_some() && fingerprint_identity.is_none() {
+        return None;
+    }
+    let csv_path = artifact_csv_path(artifact)?;
+    let timeframe = value_string_at(artifact, &["/dataset_meta/timeframe", "/run/req/timeframe"])
+        .map(|value| normalize_timeframe_label(&value))
+        .unwrap_or_default();
+    let path_key = cohort_path_timeframe_key(&csv_path, &timeframe);
+    let expected = expectation.paths.get(&path_key)?;
+    match (
+        expected.source_content_fingerprint.as_deref(),
+        fingerprint.as_deref(),
+    ) {
+        (Some(expected_fingerprint), Some(actual_fingerprint))
+            if expected_fingerprint != actual_fingerprint =>
+        {
+            None
+        }
+        (Some(_), None) => None,
+        _ => {
+            for identity in [fingerprint_identity, exact_path_identity]
+                .into_iter()
+                .flatten()
+            {
+                if identity.role != expected.role
+                    || identity.path_timeframe_key != expected.path_timeframe_key
+                    || identity.source_content_fingerprint != expected.source_content_fingerprint
+                    || identity.artifact_path_key != expected.artifact_path_key
+                    || identity.artifact_sha256 != expected.artifact_sha256
+                {
+                    return None;
+                }
+            }
+            if let Some(actual_role) = artifact
+                .pointer("/campaign/cohort_role")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let role_matches = match expected.role {
+                    MetaCampaignCohortRole::Train => {
+                        actual_role.eq_ignore_ascii_case("train")
+                            || actual_role.eq_ignore_ascii_case("training")
+                    }
+                    MetaCampaignCohortRole::Holdout => actual_role.eq_ignore_ascii_case("holdout"),
+                };
+                if !role_matches {
+                    return None;
+                }
+            }
+            Some(expected.role)
+        }
+    }
+}
+
+fn retain_admitted_vcet_candidate_rows(
+    artifact: &mut Value,
+    admitted_periods: &HashSet<(u16, u16)>,
+) -> Result<(), String> {
+    let rows = artifact
+        .pointer_mut("/validation/res/candidates")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            "campaign-bound VCET artifact is missing validation.res.candidates".to_string()
+        })?;
+    rows.retain(|row| {
+        let fast_len = row
+            .pointer("/params/fast_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok());
+        let slow_len = row
+            .pointer("/params/slow_len")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok());
+        fast_len
+            .zip(slow_len)
+            .is_some_and(|periods| admitted_periods.contains(&periods))
+    });
+    if rows.len() != admitted_periods.len() {
+        return Err(format!(
+            "campaign-bound VCET artifact retained {} admitted candidates, expected {}",
+            rows.len(),
+            admitted_periods.len()
+        ));
+    }
+    Ok(())
+}
+
+fn requested_dataset_denominator(observed: usize, expected: Option<usize>) -> usize {
+    expected.unwrap_or(observed).max(observed)
+}
+
+#[cfg(test)]
+fn load_campaign_referenced_artifact<R: tauri::Runtime>(
+    path: &Path,
+    app: &tauri::AppHandle<R>,
+) -> Result<Value, String> {
+    run_artifacts::load_artifact_value_checked_blocking(
+        path.to_string_lossy().to_string(),
+        app.clone(),
+    )
+    .map_err(|error| {
+        format!(
+            "campaign-bound Meta could not load referenced run artifact '{}': {error}",
+            path.to_string_lossy()
+        )
+    })
 }
 
 fn build_meta_cohort_manifest(
     train_artifacts: &[(PathBuf, Value)],
     holdout_artifacts: &[(PathBuf, Value)],
     holdout_tag: Option<&str>,
+    campaign_lineage: Option<MetaCampaignCohortLineage>,
+    artifact_sha256_by_path: Option<&HashMap<String, String>>,
 ) -> MetaCohortManifest {
     let train_refs: Vec<MetaCohortArtifactRef> = train_artifacts
         .iter()
-        .map(|(path, artifact)| cohort_artifact_ref(path, artifact, "train"))
+        .map(|(path, artifact)| {
+            let sha256 = artifact_sha256_by_path
+                .and_then(|digests| digests.get(&cohort_artifact_path_key(path)));
+            cohort_artifact_ref(path, artifact, "train", sha256.map(String::as_str))
+        })
         .collect();
     let holdout_refs: Vec<MetaCohortArtifactRef> = holdout_artifacts
         .iter()
-        .map(|(path, artifact)| cohort_artifact_ref(path, artifact, "holdout"))
+        .map(|(path, artifact)| {
+            let sha256 = artifact_sha256_by_path
+                .and_then(|digests| digests.get(&cohort_artifact_path_key(path)));
+            cohort_artifact_ref(path, artifact, "holdout", sha256.map(String::as_str))
+        })
         .collect();
 
     let mut train_keys: HashSet<String> = HashSet::new();
@@ -721,7 +1602,9 @@ fn build_meta_cohort_manifest(
     }
 
     let overlapping_dataset_keys = train_keys.intersection(&holdout_keys).count();
-    let disjoint = overlapping_dataset_keys == 0;
+    let disjoint = overlapping_dataset_keys == 0
+        && missing_train_dataset_keys == 0
+        && missing_holdout_dataset_keys == 0;
     let mut warnings = Vec::new();
     if overlapping_dataset_keys > 0 {
         warnings.push(format!(
@@ -747,6 +1630,7 @@ fn build_meta_cohort_manifest(
             disjoint,
         },
         holdout_tag: holdout_tag.map(str::to_string),
+        campaign_lineage,
         warnings,
     }
 }
@@ -778,6 +1662,43 @@ fn require_meta_holdout_disjointness(
     }
 
     Ok(())
+}
+
+fn require_requested_vcet_holdout_artifacts(
+    strategy_kind: &str,
+    eval_holdout: bool,
+    requested_holdout_tag: Option<&str>,
+    matched_holdout_artifacts: usize,
+) -> Result<(), String> {
+    let requested_holdout_tag = requested_holdout_tag
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty());
+    if strategy_kind.trim() != "Vcet"
+        || !eval_holdout
+        || requested_holdout_tag.is_none()
+        || matched_holdout_artifacts > 0
+    {
+        return Ok(());
+    }
+
+    let tag = requested_holdout_tag.unwrap_or_default();
+    Err(format!(
+        "VCET holdout evaluation requested tag '{tag}', but zero matching holdout validation artifacts remained after the strategy, tag, and timeframe filters. Verify that the campaign saved VCET validation artifacts with this holdout tag and timeframe, select the matching scope, or disable holdout evaluation."
+    ))
+}
+
+fn require_usable_vcet_holdout_results(
+    strategy_kind: &str,
+    holdout_tag: &str,
+    datasets_requested: usize,
+    datasets_evaluated: usize,
+) -> Result<(), String> {
+    if strategy_kind.trim() != "Vcet" || datasets_evaluated > 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "VCET holdout evaluation for tag '{holdout_tag}' produced zero usable dataset results out of {datasets_requested} requested. No Meta XLSX or JSON was published; repair the referenced CSV/validation failures before promotion."
+    ))
 }
 
 fn stage5_training_artifact_ref(path: &Path, meta: &Value) -> Stage5TrainingArtifactRef {
@@ -2628,7 +3549,43 @@ pub struct RunMetaSelectionResponse {
     pub meta_json_bytes: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cohort_manifest: Option<MetaCohortManifest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holdout_execution: Option<MetaHoldoutExecutionEvidence>,
     pub result: MetaSelectionResult,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct MetaHoldoutGroupExecutionEvidence {
+    pub group_key: String,
+    pub datasets_requested: usize,
+    pub datasets_evaluated: usize,
+    pub datasets_failed: usize,
+    pub passes: usize,
+    pub profitable: usize,
+    pub evaluation_rate: f64,
+    pub pass_rate: f64,
+    pub profitable_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct MetaHoldoutExecutionEvidence {
+    pub requested_backend: String,
+    pub require_gpu: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_device_id: Option<u32>,
+    pub datasets_requested: usize,
+    pub datasets_evaluated: usize,
+    pub datasets_failed: usize,
+    pub gpu_datasets: usize,
+    pub cpu_datasets: usize,
+    pub hybrid_datasets: usize,
+    pub fallback_datasets: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_auxiliary_stages: Vec<String>,
+    pub pass_rate_denominator: String,
+    pub profitable_rate_denominator: String,
+    pub route_validation_batch_counts: BTreeMap<String, usize>,
+    pub group_metrics: Vec<MetaHoldoutGroupExecutionEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
@@ -2643,6 +3600,7 @@ struct MetaOptimizationMetricSurfaceSummary {
 #[tauri::command]
 pub async fn run_meta_selection(
     req: MetaSelectionRequest,
+    campaign_summary_path: Option<String>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<RunMetaSelectionResponse, String> {
@@ -2651,9 +3609,11 @@ pub async fn run_meta_selection(
 
     let cancel2 = cancel.clone();
     let app2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run_meta_selection_blocking(req, app2, cancel2))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_meta_selection_blocking(req, campaign_summary_path, app2, cancel2)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn reports_dir(app: &tauri::AppHandle<impl tauri::Runtime>) -> Result<std::path::PathBuf, String> {
@@ -2691,13 +3651,21 @@ fn suggest_meta_report_path(
     Ok(path)
 }
 
+fn into_owned_artifact_values(artifacts: Vec<(PathBuf, Value)>) -> Vec<Value> {
+    artifacts
+        .into_iter()
+        .map(|(_, artifact)| artifact)
+        .collect()
+}
+
 pub(super) fn run_meta_selection_blocking(
     mut req: MetaSelectionRequest,
+    campaign_summary_path: Option<String>,
     app: tauri::AppHandle,
     cancel: Arc<AtomicBool>,
 ) -> Result<RunMetaSelectionResponse, String> {
-    let dir = run_artifacts::runs_dir(&app)?;
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    let mut campaign_expectation =
+        load_meta_campaign_cohort_expectation(campaign_summary_path.as_deref(), &req, &app)?;
 
     let supports_holdout = strategy_supports_holdout(req.strategy_kind.as_str());
     let holdout_tag = if req.eval_holdout && supports_holdout {
@@ -2710,42 +3678,92 @@ pub(super) fn run_meta_selection_blocking(
         None
     };
 
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
+    let mut paths: Vec<PathBuf> = if let Some(expectation) = campaign_expectation.as_ref() {
+        expectation.referenced_artifact_paths.clone()
+    } else {
+        let dir = run_artifacts::runs_dir(&app)?;
+        let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+        let mut discovered = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if run_artifacts::is_known_non_run_artifact_file_name(name) {
+                continue;
+            }
+            discovered.push(path);
         }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if run_artifacts::is_known_non_run_artifact_file_name(name) {
-            continue;
-        }
-        paths.push(path);
-    }
+        discovered
+    };
     paths.sort_unstable();
 
     let sink = TauriProgressSink { app: app.clone() };
     let mut train_artifacts_with_paths: Vec<(PathBuf, Value)> = Vec::with_capacity(paths.len());
     let mut holdout_artifacts_with_paths: Vec<(PathBuf, Value)> = Vec::new();
+    let mut campaign_artifact_sha256_by_path: HashMap<String, String> =
+        HashMap::with_capacity(paths.len());
     let mut unreadable_artifact_count = 0usize;
+    let mut campaign_loaded_artifacts = if campaign_expectation.is_some() {
+        Some(
+            run_artifacts::load_artifact_values_checked_bulk_with_sha256_and_cancel_blocking(
+                &paths,
+                &app,
+                Some(cancel.as_ref()),
+            )
+                .map_err(|error| {
+                    format!(
+                        "campaign-bound Meta could not load its referenced run-artifact cohort: {error}"
+                    )
+                })?
+                .into_iter(),
+        )
+    } else {
+        None
+    };
     for (i, p) in paths.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
-        let Some(v) = read_json_value(p) else {
-            unreadable_artifact_count = unreadable_artifact_count.saturating_add(1);
-            ta_app_core::progress::emit_double_ma_progress(
-                Some(&sink),
-                i + 1,
-                paths.len(),
-                "meta_read",
-            );
-            continue;
+        let v = if let Some(loaded) = campaign_loaded_artifacts.as_mut() {
+            let (loaded_path, value, sha256) = loaded.next().ok_or_else(|| {
+                "campaign-bound Meta bulk artifact load returned too few entries".to_string()
+            })?;
+            if loaded_path != *p {
+                return Err(
+                    "campaign-bound Meta bulk artifact load changed referenced path ordering"
+                        .to_string(),
+                );
+            }
+            if let Some(expectation) = campaign_expectation.as_ref() {
+                validate_campaign_artifact_raw_sha256(expectation, &loaded_path, &sha256)?;
+            }
+            campaign_artifact_sha256_by_path.insert(cohort_artifact_path_key(&loaded_path), sha256);
+            value
+        } else {
+            let Some(value) = read_json_value(p) else {
+                unreadable_artifact_count = unreadable_artifact_count.saturating_add(1);
+                ta_app_core::progress::emit_double_ma_progress(
+                    Some(&sink),
+                    i + 1,
+                    paths.len(),
+                    "meta_read",
+                );
+                continue;
+            };
+            value
         };
         if !artifact_matches_meta_req_relaxed(&v, &req) {
+            if campaign_expectation.is_some() {
+                return Err(format!(
+                    "campaign-bound Meta referenced artifact '{}' does not match the supplied strategy/tag scope",
+                    p.to_string_lossy()
+                ));
+            }
             ta_app_core::progress::emit_double_ma_progress(
                 Some(&sink),
                 i + 1,
@@ -2754,7 +3772,35 @@ pub(super) fn run_meta_selection_blocking(
             );
             continue;
         }
-        if holdout_tag
+        if let Some(expectation) = campaign_expectation.as_mut() {
+            let role = campaign_cohort_role_for_artifact(expectation, p, &v);
+            match role {
+                Some(MetaCampaignCohortRole::Train) => {
+                    expectation.lineage.matched_train_artifacts = expectation
+                        .lineage
+                        .matched_train_artifacts
+                        .saturating_add(1);
+                    train_artifacts_with_paths.push((p.clone(), v));
+                }
+                Some(MetaCampaignCohortRole::Holdout) => {
+                    expectation.lineage.matched_holdout_artifacts = expectation
+                        .lineage
+                        .matched_holdout_artifacts
+                        .saturating_add(1);
+                    holdout_artifacts_with_paths.push((p.clone(), v));
+                }
+                None => {
+                    expectation.lineage.excluded_out_of_scope_artifacts = expectation
+                        .lineage
+                        .excluded_out_of_scope_artifacts
+                        .saturating_add(1);
+                    return Err(format!(
+                        "campaign-bound Meta rejected referenced artifact '{}' because its cohort, role, dataset path, or fingerprint lineage does not match the supplied summary",
+                        p.to_string_lossy()
+                    ));
+                }
+            }
+        } else if holdout_tag
             .as_deref()
             .map(|tag| artifact_has_tag(&v, tag))
             .unwrap_or(false)
@@ -2830,32 +3876,90 @@ pub(super) fn run_meta_selection_blocking(
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
     {
+        let train_before = train_artifacts_with_paths.len();
+        let holdout_before = holdout_artifacts_with_paths.len();
         train_artifacts_with_paths
             .retain(|(_, artifact)| artifact_matches_meta_req(artifact, &req));
         holdout_artifacts_with_paths
             .retain(|(_, artifact)| artifact_matches_meta_req(artifact, &req));
+        if campaign_expectation.is_some()
+            && (train_before != train_artifacts_with_paths.len()
+                || holdout_before != holdout_artifacts_with_paths.len())
+        {
+            return Err(
+                "campaign-bound Meta artifact timeframe/tag evidence drifted from the supplied campaign summary"
+                    .to_string(),
+            );
+        }
     }
+
+    if let Some(expectation) = campaign_expectation.as_ref() {
+        let summary = expectation.campaign_summary.as_ref().ok_or_else(|| {
+            "campaign-bound Meta is missing its validated campaign summary".to_string()
+        })?;
+        validate_vcet_fixed_candidate_training_evidence(
+            summary,
+            train_artifacts_with_paths
+                .iter()
+                .map(|(_, artifact)| artifact),
+        )
+        .map_err(|error| format!("campaign-bound Meta evidence audit failed: {error}"))?;
+    }
+
+    require_requested_vcet_holdout_artifacts(
+        &req.strategy_kind,
+        req.eval_holdout,
+        holdout_tag.as_deref(),
+        holdout_artifacts_with_paths.len(),
+    )?;
 
     let cohort_manifest = build_meta_cohort_manifest(
         &train_artifacts_with_paths,
         &holdout_artifacts_with_paths,
         holdout_tag.as_deref(),
+        campaign_expectation
+            .as_ref()
+            .map(|expectation| expectation.lineage.clone()),
+        campaign_expectation
+            .as_ref()
+            .map(|_| &campaign_artifact_sha256_by_path),
     );
     require_meta_holdout_disjointness(
         req.eval_holdout,
         holdout_artifacts_with_paths.len(),
         &cohort_manifest,
     )?;
-    let train_artifacts: Vec<Value> = train_artifacts_with_paths
-        .iter()
-        .map(|(_, artifact)| artifact.clone())
-        .collect();
-    let holdout_artifacts: Vec<Value> = holdout_artifacts_with_paths
-        .iter()
-        .map(|(_, artifact)| artifact.clone())
-        .collect();
+    if let Some(admitted_periods) = campaign_expectation
+        .as_ref()
+        .and_then(|expectation| expectation.admitted_vcet_periods.as_ref())
+    {
+        for (path, artifact) in train_artifacts_with_paths
+            .iter_mut()
+            .chain(holdout_artifacts_with_paths.iter_mut())
+        {
+            retain_admitted_vcet_candidate_rows(artifact, admitted_periods).map_err(|error| {
+                format!(
+                    "campaign-bound Meta rejected referenced artifact '{}': {error}",
+                    path.to_string_lossy()
+                )
+            })?;
+        }
+    }
+    let train_artifacts = into_owned_artifact_values(train_artifacts_with_paths);
+    let holdout_artifacts = into_owned_artifact_values(holdout_artifacts_with_paths);
 
-    let mut result = ta_app_core::meta_select_from_artifacts(&req, &train_artifacts, Some(&sink));
+    let expected_train_datasets = campaign_expectation
+        .as_ref()
+        .map(|expectation| expectation.lineage.expected_train_datasets);
+    let expected_holdout_datasets = campaign_expectation
+        .as_ref()
+        .map(|expectation| expectation.lineage.expected_holdout_datasets);
+    let mut result = ta_app_core::meta_select_from_artifacts_with_dataset_universe(
+        &req,
+        &train_artifacts,
+        expected_train_datasets,
+        Some(&sink),
+    );
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
@@ -2881,6 +3985,7 @@ pub(super) fn run_meta_selection_blocking(
         ));
     }
 
+    let mut holdout_execution = None;
     if let Some(tag) = holdout_tag.as_deref() {
         let mut selected_groups: Option<Vec<usize>> = None;
         let top_n = req.holdout_eval_top_n.unwrap_or(0);
@@ -3010,10 +4115,11 @@ pub(super) fn run_meta_selection_blocking(
             }
         }
 
-        apply_holdout_evaluation(
+        holdout_execution = apply_holdout_evaluation(
             &mut result,
             &req,
             &holdout_artifacts,
+            expected_holdout_datasets,
             &app,
             cancel.as_ref(),
             &sink,
@@ -3028,7 +4134,12 @@ pub(super) fn run_meta_selection_blocking(
         build_metric_surface_meta_summary(&train_artifacts, &holdout_artifacts);
 
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_export");
-    let xlsx_bytes = build_meta_report_xlsx_bytes(&ts, &result)?;
+    let xlsx_bytes = build_meta_report_xlsx_bytes(
+        &ts,
+        &result,
+        holdout_execution.as_ref(),
+        Some(&cohort_manifest),
+    )?;
     let _artifact_library_lock = run_artifacts::acquire_artifact_library_process_lock(&app)?;
     let report_path = suggest_meta_report_path(&ts, &app, "xlsx")?;
     run_artifacts::publish_new_artifact_file_atomically(&report_path, &xlsx_bytes)?;
@@ -3043,6 +4154,7 @@ pub(super) fn run_meta_selection_blocking(
         "tags": [],
         "optimization_metric_surface_summary": metric_surface_summary,
         "cohort_manifest": &cohort_manifest,
+        "holdout_execution": &holdout_execution,
         "req": req,
         "res": result,
     });
@@ -3064,6 +4176,7 @@ pub(super) fn run_meta_selection_blocking(
         meta_json_path: meta_path.to_string_lossy().to_string(),
         meta_json_bytes: meta_bytes.len(),
         cohort_manifest: Some(cohort_manifest),
+        holdout_execution,
         result,
     })
 }
@@ -3147,7 +4260,7 @@ fn artifact_has_tag(artifact: &Value, tag: &str) -> bool {
         .map_or(&[][..], |xs| xs.as_slice());
     tags.iter()
         .filter_map(|v| v.as_str())
-        .any(|t| t.trim() == tag)
+        .any(|t| t.trim().eq_ignore_ascii_case(tag))
 }
 
 fn normalize_timeframe_label(raw: &str) -> String {
@@ -3293,6 +4406,80 @@ fn artifact_dataset_label(artifact: &Value, csv_path: &str) -> String {
         .to_string()
 }
 
+fn share_safe_holdout_dataset_key(identity: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in identity.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("source-fnv1a64-{hash:016x}")
+}
+
+fn unique_holdout_dataset_paths(
+    holdout: &[&Value],
+) -> Vec<(String, String, String, Option<String>)> {
+    let mut unique: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut index_by_identity: HashMap<String, usize> = HashMap::new();
+    for artifact in holdout {
+        let csv_path = artifact_csv_path(artifact);
+        let Some(identity) = cohort_dataset_key(artifact).or_else(|| csv_path.clone()) else {
+            continue;
+        };
+        if let Some(&existing_idx) = index_by_identity.get(&identity) {
+            if unique[existing_idx].0.is_empty() {
+                if let Some(replacement_path) = csv_path {
+                    unique[existing_idx].0 = replacement_path.clone();
+                    unique[existing_idx].1 = artifact_dataset_label(artifact, &replacement_path);
+                }
+            }
+            if unique[existing_idx].3.is_none() {
+                unique[existing_idx].3 = value_string_at(
+                    artifact,
+                    &[
+                        "/dataset_meta/source_content_fingerprint",
+                        "/data/source_content_fingerprint",
+                        "/run/req/source_content_fingerprint",
+                    ],
+                );
+            }
+            continue;
+        }
+        let csv_path = csv_path.unwrap_or_default();
+        index_by_identity.insert(identity.clone(), unique.len());
+        unique.push((
+            csv_path.clone(),
+            artifact_dataset_label(artifact, &csv_path),
+            share_safe_holdout_dataset_key(&identity),
+            value_string_at(
+                artifact,
+                &[
+                    "/dataset_meta/source_content_fingerprint",
+                    "/data/source_content_fingerprint",
+                    "/run/req/source_content_fingerprint",
+                ],
+            ),
+        ));
+    }
+    unique
+}
+
+fn require_unchanged_holdout_source_fingerprint(
+    expected: Option<&str>,
+    actual: &str,
+    label: &str,
+) -> Result<(), String> {
+    if expected
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|expected| expected != actual)
+    {
+        return Err(format!(
+            "Meta holdout source fingerprint changed after campaign capture for dataset '{label}'; rerun the campaign before holdout validation"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Default, Clone)]
 struct HoldoutAcc {
     scores: Vec<f64>,
@@ -3300,6 +4487,7 @@ struct HoldoutAcc {
     max_dds: Vec<f64>,
     pnls: Vec<f64>,
     passes: usize,
+    profitable: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -3315,6 +4503,7 @@ struct HoldoutDatasetStats {
     sharpe_median: f64,
     max_dd_worst: f64,
     pnl_median: f64,
+    profitable: bool,
     pass: bool,
 }
 
@@ -3324,6 +4513,166 @@ struct HoldoutMetricSample {
     sharpe: f64,
     max_dd: f64,
     pnl: f64,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedMetaHoldoutExecution {
+    backend: ta_app_core::Backend,
+    requested_backend: &'static str,
+    require_gpu: bool,
+    gpu_device_id: Option<u32>,
+    configured_auxiliary_stages: Vec<String>,
+}
+
+#[derive(Default)]
+struct HoldoutRouteEvidenceAcc {
+    gpu_datasets: usize,
+    cpu_datasets: usize,
+    hybrid_datasets: usize,
+    fallback_datasets: usize,
+    route_validation_batch_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Default)]
+struct HoldoutDatasetRouteState {
+    saw_gpu: bool,
+    saw_cpu: bool,
+    saw_fallback: bool,
+}
+
+impl HoldoutDatasetRouteState {
+    fn observe(
+        &mut self,
+        backend_used: &ta_app_core::BackendUsed,
+        backend_route: Option<&str>,
+        backend_fallback_reason: Option<&str>,
+        routes: &mut BTreeMap<String, usize>,
+    ) {
+        match backend_used {
+            ta_app_core::BackendUsed::Gpu => self.saw_gpu = true,
+            ta_app_core::BackendUsed::Cpu => self.saw_cpu = true,
+        }
+        let route = backend_route.unwrap_or("unknown");
+        if route.contains("->CpuOnly") || backend_fallback_reason.is_some() {
+            self.saw_fallback = true;
+        }
+        *routes.entry(route.to_string()).or_default() += 1;
+    }
+}
+
+impl HoldoutRouteEvidenceAcc {
+    fn record_evaluated_dataset(
+        &mut self,
+        dataset: HoldoutDatasetRouteState,
+        route_counts: BTreeMap<String, usize>,
+    ) {
+        if dataset.saw_gpu && dataset.saw_cpu {
+            self.hybrid_datasets = self.hybrid_datasets.saturating_add(1);
+        } else if dataset.saw_gpu {
+            self.gpu_datasets = self.gpu_datasets.saturating_add(1);
+        } else if dataset.saw_cpu {
+            self.cpu_datasets = self.cpu_datasets.saturating_add(1);
+        }
+        if dataset.saw_fallback {
+            self.fallback_datasets = self.fallback_datasets.saturating_add(1);
+        }
+        for (route, count) in route_counts {
+            *self.route_validation_batch_counts.entry(route).or_default() += count;
+        }
+    }
+}
+
+fn resolve_meta_holdout_execution(
+    req: &MetaSelectionRequest,
+    validation_engine: ta_app_core::ValidationEngine,
+) -> Result<ResolvedMetaHoldoutExecution, String> {
+    let (use_gpu, require_gpu, gpu_device_id) = req
+        .holdout_validation
+        .as_ref()
+        .map(|cfg| (cfg.use_gpu, cfg.require_gpu, cfg.gpu_device_id))
+        .unwrap_or((false, false, 0));
+    let gpu_requested = use_gpu || require_gpu;
+    if gpu_requested && req.strategy_kind != "Vcet" {
+        return Err(format!(
+            "Meta holdout GPU execution currently supports strategy_kind='Vcet' only (received '{}').",
+            req.strategy_kind
+        ));
+    }
+    if gpu_requested && validation_engine != ta_app_core::ValidationEngine::Vectorized {
+        return Err(
+            "Meta VCET GPU holdout execution requires validation_engine='vectorized'.".to_string(),
+        );
+    }
+    let mut configured_auxiliary_stages = Vec::new();
+    if matches!(req.holdout_mode, ta_app_core::MetaHoldoutMode::Heavy) {
+        if let Some(cfg) = req.holdout_validation.as_ref() {
+            if cfg.walk_forward.is_some() {
+                configured_auxiliary_stages.push("walk_forward".to_string());
+            }
+            if cfg.perturb.is_some() {
+                configured_auxiliary_stages.push("perturb".to_string());
+            }
+            if cfg.trade_bootstrap.is_some() {
+                configured_auxiliary_stages.push("trade_bootstrap".to_string());
+            }
+            if cfg.monte_carlo.is_some() {
+                configured_auxiliary_stages.push("monte_carlo".to_string());
+            }
+        }
+    }
+    if require_gpu && !configured_auxiliary_stages.is_empty() {
+        return Err(format!(
+            "Strict Meta VCET GPU holdout cannot prove end-to-end GPU residency for configured stage(s): {}. Remove those stages or set require_gpu=false to permit hybrid execution.",
+            configured_auxiliary_stages.join(", ")
+        ));
+    }
+
+    Ok(if gpu_requested {
+        ResolvedMetaHoldoutExecution {
+            backend: ta_app_core::Backend::GpuKernel {
+                device_id: gpu_device_id,
+            },
+            requested_backend: "GpuKernel",
+            require_gpu,
+            gpu_device_id: Some(gpu_device_id),
+            configured_auxiliary_stages,
+        }
+    } else {
+        ResolvedMetaHoldoutExecution {
+            backend: ta_app_core::Backend::CpuOnly,
+            requested_backend: "CpuOnly",
+            require_gpu: false,
+            gpu_device_id: None,
+            configured_auxiliary_stages,
+        }
+    })
+}
+
+fn require_strict_meta_vcet_gpu_result(
+    require_gpu: bool,
+    requested_backend: &str,
+    backend_used: &ta_app_core::BackendUsed,
+    backend_route: Option<&str>,
+    backend_fallback_reason: Option<&str>,
+    validation_residency_tier: &str,
+) -> Result<(), String> {
+    if !require_gpu {
+        return Ok(());
+    }
+    let valid = requested_backend == "GpuKernel"
+        && matches!(backend_used, ta_app_core::BackendUsed::Gpu)
+        && backend_route == Some("GpuKernel")
+        && backend_fallback_reason.is_none()
+        && validation_residency_tier == "gpu_kernel";
+    if valid {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Strict Meta VCET GPU holdout execution failed: requested_backend={requested_backend}, backend_used={backend_used:?}, backend_route={}, validation_residency_tier={validation_residency_tier}, fallback_reason={}",
+        backend_route.unwrap_or("none"),
+        backend_fallback_reason.unwrap_or("none")
+    ))
 }
 
 fn describe_holdout_coverage_selection_policy(
@@ -3389,7 +4738,11 @@ struct HoldoutSummaryScratch {
 }
 
 impl HoldoutSummaryScratch {
-    fn summarize_rows(&mut self, rows: &[HoldoutMetricSample]) -> Option<HoldoutDatasetStats> {
+    fn summarize_rows(
+        &mut self,
+        strategy_kind: &str,
+        rows: &[HoldoutMetricSample],
+    ) -> Option<HoldoutDatasetStats> {
         if rows.is_empty() {
             return None;
         }
@@ -3411,6 +4764,7 @@ impl HoldoutSummaryScratch {
         }
 
         summarize_holdout_metric_columns(
+            strategy_kind,
             self.scores.as_mut_slice(),
             self.sharpes.as_mut_slice(),
             self.max_dds.as_slice(),
@@ -3423,18 +4777,36 @@ impl HoldoutSummaryScratch {
 struct PreparedDoubleMaHoldoutBatch {
     request: ta_app_core::DoubleMaValidationRequest,
     candidate_targets: Vec<Vec<usize>>,
+    candidate_idx_by_key: HashMap<RepresentativeParamKey, usize>,
 }
 
 #[derive(Clone)]
 struct PreparedCompositeHoldoutBatch {
     request: ta_app_core::CompositeValidationRequest,
     candidate_targets: Vec<Vec<usize>>,
+    candidate_idx_by_key: HashMap<RepresentativeParamKey, usize>,
 }
 
 #[derive(Clone)]
 enum PreparedHoldoutBatch {
     DoubleMa(PreparedDoubleMaHoldoutBatch),
     Composite(PreparedCompositeHoldoutBatch),
+}
+
+fn prepared_candidate_targets_for_params<'a, T: Serialize>(
+    params: &T,
+    candidate_idx_by_key: &HashMap<RepresentativeParamKey, usize>,
+    candidate_targets: &'a [Vec<usize>],
+) -> Result<(RepresentativeParamKey, &'a [usize]), String> {
+    let key = canonical_typed_param_key(params)?;
+    let candidate_idx = candidate_idx_by_key.get(&key).copied().ok_or_else(|| {
+        "holdout validation returned candidate parameters absent from the prepared request"
+            .to_string()
+    })?;
+    let targets = candidate_targets.get(candidate_idx).ok_or_else(|| {
+        "holdout validation candidate target index drifted from the prepared request".to_string()
+    })?;
+    Ok((key, targets.as_slice()))
 }
 
 fn quantile_index(len: usize, q: f64) -> usize {
@@ -3466,6 +4838,7 @@ fn max_total_cmp(values: &[f64]) -> f64 {
 }
 
 fn summarize_holdout_metric_columns(
+    strategy_kind: &str,
     scores: &mut [f64],
     sharpes: &mut [f64],
     max_dds: &[f64],
@@ -3480,7 +4853,8 @@ fn summarize_holdout_metric_columns(
     let sharpe_median = quantile_in_place(sharpes, 0.50);
     let max_dd_worst = max_total_cmp(max_dds);
     let pnl_median = quantile_in_place(pnls, 0.50);
-    let pass = score_p10 > 0.0 && sharpe_median > 0.0;
+    let profitable = pnl_median > 0.0;
+    let pass = score_p10 > 0.0 && sharpe_median > 0.0 && (strategy_kind != "Vcet" || profitable);
 
     Some(HoldoutDatasetStats {
         score_median,
@@ -3488,6 +4862,7 @@ fn summarize_holdout_metric_columns(
         sharpe_median,
         max_dd_worst,
         pnl_median,
+        profitable,
         pass,
     })
 }
@@ -3558,6 +4933,30 @@ fn holdout_cfg_key(
     )?)))
 }
 
+fn composite_holdout_effective_cfg_key(
+    params: &ta_app_core::CompositeParams,
+) -> Result<HoldoutConfigKey, String> {
+    Ok(HoldoutConfigKey(Arc::from(canonical_json_key(
+        &serde_json::json!({
+            "strategy": &params.strategy,
+            "vcet": &params.vcet,
+        }),
+    )?)))
+}
+
+fn is_vcet_only_holdout_candidate(params: &ta_app_core::CompositeParams) -> bool {
+    params.vcet.is_some()
+        && params.asr.is_none()
+        && params.vcc.is_none()
+        && params.vemr.is_none()
+        && params.rocb.is_none()
+        && params.mkcs.is_none()
+        && params.kqsr.is_none()
+        && params.carm.is_none()
+        && params.kvdf.is_none()
+        && params.cdmc.is_none()
+}
+
 fn decode_double_ma_validation_params(
     value: &Value,
 ) -> Result<ta_app_core::DoubleMaValidationParams, String> {
@@ -3611,6 +5010,7 @@ fn build_prepared_holdout_batches(
     req: &MetaSelectionRequest,
     active_indices: &[usize],
     dense_index_by_global: &HashMap<usize, usize>,
+    holdout_backend: ta_app_core::Backend,
     hv_seed: u64,
     hv_wf: Option<ta_app_core::WalkForwardConfigOptional>,
     hv_perturb: Option<ta_app_core::PerturbConfig>,
@@ -3685,7 +5085,7 @@ fn build_prepared_holdout_batches(
                 PreparedDoubleMaHoldoutBatch {
                     request: ta_app_core::DoubleMaValidationRequest {
                         data_id: String::new(),
-                        backend: ta_app_core::Backend::CpuOnly,
+                        backend: holdout_backend.clone(),
                         ma_source: g0.ma_source.clone(),
                         dynamic_strategy_ir: None,
                         fast_ma_params: g0.fast_ma_params.clone(),
@@ -3711,14 +5111,24 @@ fn build_prepared_holdout_batches(
                         validation_context: None,
                     },
                     candidate_targets,
+                    candidate_idx_by_key,
                 },
             ));
         } else {
-            let mut candidates: Vec<ta_app_core::CompositeParams> =
-                Vec::with_capacity(expected_candidates);
-            let mut candidate_targets: Vec<Vec<usize>> = Vec::with_capacity(expected_candidates);
-            let mut candidate_idx_by_key: HashMap<RepresentativeParamKey, usize> =
+            type CompositeBatchParts = (
+                Vec<ta_app_core::CompositeParams>,
+                Vec<Vec<usize>>,
+                HashMap<RepresentativeParamKey, usize>,
+            );
+            let mut batches_by_effective_cfg: HashMap<HoldoutConfigKey, CompositeBatchParts> =
                 HashMap::with_capacity(expected_candidates);
+            let gpu_requested = matches!(
+                &holdout_backend,
+                ta_app_core::Backend::GpuKernel { .. }
+                    | ta_app_core::Backend::GpuHybridKernel { .. }
+                    | ta_app_core::Backend::GpuOnly { .. }
+                    | ta_app_core::Backend::Auto { .. }
+            );
             for &global_idx in &idxs {
                 let group = &result.groups[global_idx];
                 let dense_idx = dense_index_by_global
@@ -3733,6 +5143,27 @@ fn build_prepared_holdout_batches(
                 for rep in reps {
                     let params: ta_app_core::CompositeParams =
                         serde_json::from_value(rep.clone()).map_err(|e| e.to_string())?;
+                    if req.strategy_kind == "Vcet" && params.vcet.is_none() {
+                        return Err(
+                            "Meta VCET holdout representative is missing VCET parameters."
+                                .to_string(),
+                        );
+                    }
+                    if gpu_requested && !is_vcet_only_holdout_candidate(&params) {
+                        return Err(
+                            "Meta VCET GPU holdout execution requires every representative to be VCET-only."
+                                .to_string(),
+                        );
+                    }
+                    let cfg_key = if req.strategy_kind == "Vcet" && gpu_requested {
+                        composite_holdout_effective_cfg_key(&params)?
+                    } else {
+                        HoldoutConfigKey(Arc::from("shared_composite_batch"))
+                    };
+                    let (candidates, candidate_targets, candidate_idx_by_key) =
+                        batches_by_effective_cfg
+                            .entry(cfg_key)
+                            .or_insert_with(|| (Vec::new(), Vec::new(), HashMap::new()));
                     let key = canonical_typed_param_key(&params)?;
                     if let Some(&candidate_idx) = candidate_idx_by_key.get(&key) {
                         candidate_targets[candidate_idx].push(dense_idx);
@@ -3745,41 +5176,46 @@ fn build_prepared_holdout_batches(
                 }
             }
 
-            if candidates.is_empty() {
-                continue;
-            }
-            let max_candidates = candidates.len();
-            batches.push(PreparedHoldoutBatch::Composite(
-                PreparedCompositeHoldoutBatch {
-                    request: ta_app_core::CompositeValidationRequest {
-                        data_id: String::new(),
-                        backend: ta_app_core::Backend::CpuOnly,
-                        ma_source: g0.ma_source.clone(),
-                        fast_ma_params: g0.fast_ma_params.clone(),
-                        slow_ma_params: g0.slow_ma_params.clone(),
-                        candidates,
-                        walk_forward: hv_wf.clone(),
-                        reopt_walk_forward: None,
-                        spa: None,
-                        perturb: hv_perturb.clone(),
-                        trade_bootstrap: hv_mc.clone(),
-                        monte_carlo: hv_monte_carlo.clone(),
-                        cross_ticker: None,
-                        cscv_pbo: None,
-                        seed: hv_seed,
-                        max_candidates,
-                        validation_engine: hv_engine,
-                        iterative: hv_iterative.clone(),
-                        min_psr: None,
-                        min_dsr: None,
-                        min_cscv_oos_rank_frac: None,
-                        min_cscv_oos_metric: None,
-                        max_pbo: None,
-                        validation_context: None,
+            for (candidates, candidate_targets, candidate_idx_by_key) in
+                batches_by_effective_cfg.into_values()
+            {
+                if candidates.is_empty() {
+                    continue;
+                }
+                let max_candidates = candidates.len();
+                batches.push(PreparedHoldoutBatch::Composite(
+                    PreparedCompositeHoldoutBatch {
+                        request: ta_app_core::CompositeValidationRequest {
+                            data_id: String::new(),
+                            backend: holdout_backend.clone(),
+                            ma_source: g0.ma_source.clone(),
+                            fast_ma_params: g0.fast_ma_params.clone(),
+                            slow_ma_params: g0.slow_ma_params.clone(),
+                            candidates,
+                            walk_forward: hv_wf.clone(),
+                            reopt_walk_forward: None,
+                            spa: None,
+                            perturb: hv_perturb.clone(),
+                            trade_bootstrap: hv_mc.clone(),
+                            monte_carlo: hv_monte_carlo.clone(),
+                            cross_ticker: None,
+                            cscv_pbo: None,
+                            seed: hv_seed,
+                            max_candidates,
+                            validation_engine: hv_engine,
+                            iterative: hv_iterative.clone(),
+                            min_psr: None,
+                            min_dsr: None,
+                            min_cscv_oos_rank_frac: None,
+                            min_cscv_oos_metric: None,
+                            max_pbo: None,
+                            validation_context: None,
+                        },
+                        candidate_targets,
+                        candidate_idx_by_key,
                     },
-                    candidate_targets,
-                },
-            ));
+                ));
+            }
         }
     }
 
@@ -3792,11 +5228,15 @@ fn apply_holdout_accumulators_to_result(
     active_indices: &[usize],
     accs: &mut [HoldoutAcc],
     holdout_rows: &mut Vec<Vec<ta_app_core::HoldoutDatasetRow>>,
-    datasets: usize,
+    datasets_requested: usize,
+    datasets_evaluated: usize,
     skipped: usize,
     holdout_tag: &str,
 ) {
-    result.holdout = Some(ta_app_core::HoldoutSummary { datasets, skipped });
+    result.holdout = Some(ta_app_core::HoldoutSummary {
+        datasets: datasets_evaluated,
+        skipped,
+    });
 
     for (dense_idx, global_idx) in active_indices.iter().copied().enumerate() {
         let g = &mut result.groups[global_idx];
@@ -3805,7 +5245,12 @@ fn apply_holdout_accumulators_to_result(
             continue;
         }
 
-        let pass_rate = (acc.passes as f64) / (datasets as f64);
+        let group_datasets_evaluated = acc.scores.len();
+        let pass_rate = if datasets_requested == 0 {
+            0.0
+        } else {
+            (acc.passes as f64) / (datasets_requested as f64)
+        };
         let score_median = quantile_in_place(&mut acc.scores, 0.50);
         let score_p10 = quantile_in_place(&mut acc.scores, 0.10);
         let sharpe_median = quantile_in_place(&mut acc.sharpes, 0.50);
@@ -3813,7 +5258,7 @@ fn apply_holdout_accumulators_to_result(
         let pnl_median = quantile_in_place(&mut acc.pnls, 0.50);
 
         g.holdout = Some(ta_app_core::HoldoutAggregate {
-            datasets,
+            datasets: group_datasets_evaluated,
             pass_rate,
             score_median,
             score_p10,
@@ -3874,7 +5319,7 @@ fn apply_holdout_accumulators_to_result(
         groups_total: total_groups,
         groups_evaluated,
         groups_unevaluated,
-        datasets_total: datasets,
+        datasets_total: datasets_evaluated,
         datasets_skipped: skipped,
         coverage_mode: coverage_mode.to_string(),
         selection_policy: describe_holdout_coverage_selection_policy(
@@ -3911,9 +5356,13 @@ fn apply_holdout_accumulators_to_result(
 
     if skipped > 0 {
         result.warnings.push(format!(
-            "Holdout evaluation: skipped {skipped} dataset(s) (missing/invalid CSV path or parse error) for tag='{holdout_tag}'."
+            "Holdout evaluation: failed {skipped} of {datasets_requested} requested unique dataset(s) (missing/invalid CSV path, parse error, or validation failure) for tag='{holdout_tag}'."
         ));
     }
+    result.warnings.push(
+        "Holdout pass rates use requested unique holdout datasets as the denominator; failed datasets count as non-passes. Holdout quantiles use evaluated datasets only."
+            .to_string(),
+    );
     result.warnings.push(
         "Final group ordering uses holdout-adjusted score when holdout is available.".to_string(),
     );
@@ -3929,18 +5378,61 @@ fn apply_holdout_accumulators_to_result(
     }
 }
 
+fn build_holdout_group_execution_evidence(
+    result: &MetaSelectionResult,
+    active_indices: &[usize],
+    accs: &[HoldoutAcc],
+    datasets_requested: usize,
+) -> Vec<MetaHoldoutGroupExecutionEvidence> {
+    let denominator = datasets_requested as f64;
+    active_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(dense_idx, global_idx)| {
+            let group = result.groups.get(global_idx)?;
+            let acc = accs.get(dense_idx)?;
+            let datasets_evaluated = acc.scores.len();
+            Some(MetaHoldoutGroupExecutionEvidence {
+                group_key: group.key.clone(),
+                datasets_requested,
+                datasets_evaluated,
+                datasets_failed: datasets_requested.saturating_sub(datasets_evaluated),
+                passes: acc.passes,
+                profitable: acc.profitable,
+                evaluation_rate: if datasets_requested == 0 {
+                    0.0
+                } else {
+                    datasets_evaluated as f64 / denominator
+                },
+                pass_rate: if datasets_requested == 0 {
+                    0.0
+                } else {
+                    acc.passes as f64 / denominator
+                },
+                profitable_rate: if datasets_requested == 0 {
+                    0.0
+                } else {
+                    acc.profitable as f64 / denominator
+                },
+            })
+        })
+        .collect()
+}
+
 fn apply_holdout_evaluation(
     result: &mut MetaSelectionResult,
     req: &MetaSelectionRequest,
     holdout_artifacts: &[Value],
+    expected_dataset_universe: Option<usize>,
     app: &tauri::AppHandle,
     cancel: &AtomicBool,
     sink: &TauriProgressSink,
     holdout_tag: &str,
     selected_groups: Option<&[usize]>,
-) -> Result<(), String> {
+) -> Result<Option<MetaHoldoutExecutionEvidence>, String> {
     if result.groups.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let active_indices: Vec<usize> = if let Some(indices) = selected_groups {
@@ -3953,7 +5445,7 @@ fn apply_holdout_evaluation(
         (0..result.groups.len()).collect()
     };
     if active_indices.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let mut dense_index_by_global: HashMap<usize, usize> =
         HashMap::with_capacity(active_indices.len());
@@ -3995,31 +5487,22 @@ fn apply_holdout_evaluation(
             ta_app_core::IterativeSimConfig::default(),
         )
     };
+    let holdout_execution = resolve_meta_holdout_execution(req, hv_engine)?;
 
     let holdout: Vec<&Value> = holdout_artifacts
         .iter()
         .filter(|a| artifact_matches_meta_req(a, req))
         .collect();
     if holdout.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
 
-    let mut uniq_paths: Vec<(String, String)> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for art in &holdout {
-        let Some(csv_path) = artifact_csv_path(art) else {
-            continue;
-        };
-        if !seen.insert(csv_path.clone()) {
-            continue;
-        }
-        uniq_paths.push((csv_path.clone(), artifact_dataset_label(art, &csv_path)));
-    }
+    let uniq_paths = unique_holdout_dataset_paths(&holdout);
     if uniq_paths.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let prepared_batches = build_prepared_holdout_batches(
@@ -4027,6 +5510,7 @@ fn apply_holdout_evaluation(
         req,
         &active_indices,
         &dense_index_by_global,
+        holdout_execution.backend.clone(),
         hv_seed,
         hv_wf.clone(),
         hv_perturb.clone(),
@@ -4036,10 +5520,12 @@ fn apply_holdout_evaluation(
         hv_iterative.clone(),
     )?;
     if prepared_batches.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
-    let total = uniq_paths.len();
+    let observed_total = uniq_paths.len();
+    let total = requested_dataset_denominator(observed_total, expected_dataset_universe);
+    let missing_expected_datasets = total.saturating_sub(observed_total);
     let mut accs: Vec<HoldoutAcc> = vec![HoldoutAcc::default(); active_indices.len()];
     for acc in &mut accs {
         acc.scores.reserve(total);
@@ -4059,17 +5545,43 @@ fn apply_holdout_evaluation(
     }
     let mut local: Vec<Vec<HoldoutMetricSample>> = vec![Vec::new(); active_indices.len()];
     let mut summary_scratch = HoldoutSummaryScratch::default();
-    let mut skipped = 0usize;
+    let mut skipped = missing_expected_datasets;
+    let mut route_evidence = HoldoutRouteEvidenceAcc::default();
 
-    for (i, (csv_path, label)) in uniq_paths.into_iter().enumerate() {
+    for (i, (csv_path, label, dataset_key, expected_source_fingerprint)) in
+        uniq_paths.into_iter().enumerate()
+    {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
+        if csv_path.trim().is_empty() {
+            skipped = skipped.saturating_add(1);
+            ta_app_core::progress::emit_double_ma_progress(
+                Some(sink),
+                i + 1,
+                total,
+                "meta_holdout",
+            );
+            continue;
+        }
 
         let candles = match crate::data_cache::load_or_build(Path::new(&csv_path), &cache_dir) {
-            Ok(outcome) => outcome.candles,
+            Ok(outcome) => {
+                require_unchanged_holdout_source_fingerprint(
+                    expected_source_fingerprint.as_deref(),
+                    &outcome.source_content_fingerprint,
+                    &label,
+                )?;
+                outcome.candles
+            }
             Err(_) => {
-                skipped += 1;
+                skipped = skipped.saturating_add(1);
+                ta_app_core::progress::emit_double_ma_progress(
+                    Some(sink),
+                    i + 1,
+                    total,
+                    "meta_holdout",
+                );
                 continue;
             }
         };
@@ -4078,14 +5590,25 @@ fn apply_holdout_evaluation(
             rows.clear();
         }
         let mut ok = true;
+        let mut dataset_route_state = HoldoutDatasetRouteState::default();
+        if holdout_execution.requested_backend == "GpuKernel"
+            && !holdout_execution.configured_auxiliary_stages.is_empty()
+        {
+            dataset_route_state.saw_cpu = true;
+        }
+        let mut dataset_route_counts: BTreeMap<String, usize> = BTreeMap::new();
 
         for batch in &prepared_batches {
             match batch {
                 PreparedHoldoutBatch::DoubleMa(prepared) => {
                     let mut val_req = prepared.request.clone();
                     val_req.data_id = label.clone();
-                    let val_res = match ta_app_core::run_double_ma_validation_blocking_with_candles(
-                        val_req, &candles, cancel, None,
+                    let val_res = match ta_app_core::run_double_ma_validation_blocking_with_candles_with_aux_mask(
+                        val_req,
+                        &candles,
+                        cancel,
+                        None,
+                        ta_app_core::ValidationAuxWorkMask::preserved_finalists(),
                     ) {
                         Ok(r) => r,
                         Err(_) => {
@@ -4094,6 +5617,21 @@ fn apply_holdout_evaluation(
                         }
                     };
 
+                    require_strict_meta_vcet_gpu_result(
+                        holdout_execution.require_gpu,
+                        &val_res.requested_backend,
+                        &val_res.backend_used,
+                        val_res.backend_route.as_deref(),
+                        val_res.backend_fallback_reason.as_deref(),
+                        &val_res.validation_residency_tier,
+                    )?;
+                    dataset_route_state.observe(
+                        &val_res.backend_used,
+                        val_res.backend_route.as_deref(),
+                        val_res.backend_fallback_reason.as_deref(),
+                        &mut dataset_route_counts,
+                    );
+
                     if val_res.candidates.len() != prepared.candidate_targets.len() {
                         return Err(format!(
                             "double-ma holdout batch result length drifted (expected {}, got {})",
@@ -4101,11 +5639,20 @@ fn apply_holdout_evaluation(
                             val_res.candidates.len()
                         ));
                     }
-                    for (cand, targets) in val_res
-                        .candidates
-                        .into_iter()
-                        .zip(prepared.candidate_targets.iter())
-                    {
+                    let mut seen_result_keys: HashSet<RepresentativeParamKey> =
+                        HashSet::with_capacity(val_res.candidates.len());
+                    for cand in val_res.candidates {
+                        let (candidate_key, targets) = prepared_candidate_targets_for_params(
+                            &cand.params,
+                            &prepared.candidate_idx_by_key,
+                            &prepared.candidate_targets,
+                        )?;
+                        if !seen_result_keys.insert(candidate_key) {
+                            return Err(
+                                "double-ma holdout validation returned duplicate candidate parameters"
+                                    .to_string(),
+                            );
+                        }
                         let base_metrics =
                             cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
                         let sample = if heavy {
@@ -4157,8 +5704,12 @@ fn apply_holdout_evaluation(
                 PreparedHoldoutBatch::Composite(prepared) => {
                     let mut val_req = prepared.request.clone();
                     val_req.data_id = label.clone();
-                    let val_res = match ta_app_core::run_composite_validation_blocking_with_candles(
-                        val_req, &candles, cancel, None,
+                    let val_res = match ta_app_core::run_composite_validation_blocking_with_candles_with_aux_mask(
+                        val_req,
+                        &candles,
+                        cancel,
+                        None,
+                        ta_app_core::ValidationAuxWorkMask::preserved_finalists(),
                     ) {
                         Ok(r) => r,
                         Err(_) => {
@@ -4167,6 +5718,21 @@ fn apply_holdout_evaluation(
                         }
                     };
 
+                    require_strict_meta_vcet_gpu_result(
+                        holdout_execution.require_gpu,
+                        &val_res.requested_backend,
+                        &val_res.backend_used,
+                        val_res.backend_route.as_deref(),
+                        val_res.backend_fallback_reason.as_deref(),
+                        &val_res.validation_residency_tier,
+                    )?;
+                    dataset_route_state.observe(
+                        &val_res.backend_used,
+                        val_res.backend_route.as_deref(),
+                        val_res.backend_fallback_reason.as_deref(),
+                        &mut dataset_route_counts,
+                    );
+
                     if val_res.candidates.len() != prepared.candidate_targets.len() {
                         return Err(format!(
                             "composite holdout batch result length drifted (expected {}, got {})",
@@ -4174,11 +5740,20 @@ fn apply_holdout_evaluation(
                             val_res.candidates.len()
                         ));
                     }
-                    for (cand, targets) in val_res
-                        .candidates
-                        .into_iter()
-                        .zip(prepared.candidate_targets.iter())
-                    {
+                    let mut seen_result_keys: HashSet<RepresentativeParamKey> =
+                        HashSet::with_capacity(val_res.candidates.len());
+                    for cand in val_res.candidates {
+                        let (candidate_key, targets) = prepared_candidate_targets_for_params(
+                            &cand.params,
+                            &prepared.candidate_idx_by_key,
+                            &prepared.candidate_targets,
+                        )?;
+                        if !seen_result_keys.insert(candidate_key) {
+                            return Err(
+                                "composite holdout validation returned duplicate candidate parameters"
+                                    .to_string(),
+                            );
+                        }
                         let base_metrics =
                             cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
                         let sample = if heavy {
@@ -4231,16 +5806,24 @@ fn apply_holdout_evaluation(
         }
 
         if !ok {
-            skipped += 1;
+            skipped = skipped.saturating_add(1);
+            ta_app_core::progress::emit_double_ma_progress(
+                Some(sink),
+                i + 1,
+                total,
+                "meta_holdout",
+            );
             continue;
         }
+
+        route_evidence.record_evaluated_dataset(dataset_route_state, dataset_route_counts);
 
         for (dense_idx, rows) in local.iter().enumerate() {
             if rows.is_empty() {
                 continue;
             }
 
-            let Some(stats) = summary_scratch.summarize_rows(rows) else {
+            let Some(stats) = summary_scratch.summarize_rows(&req.strategy_kind, rows) else {
                 continue;
             };
 
@@ -4251,10 +5834,14 @@ fn apply_holdout_evaluation(
             if stats.pass {
                 accs[dense_idx].passes = accs[dense_idx].passes.saturating_add(1);
             }
+            if stats.profitable {
+                accs[dense_idx].profitable = accs[dense_idx].profitable.saturating_add(1);
+            }
 
             if req.save_holdout_rows && !holdout_rows.is_empty() {
                 holdout_rows[dense_idx].push(ta_app_core::HoldoutDatasetRow {
                     dataset: label.clone(),
+                    dataset_key: dataset_key.clone(),
                     score_median: stats.score_median,
                     score_p10: stats.score_p10,
                     sharpe_median: stats.sharpe_median,
@@ -4270,8 +5857,34 @@ fn apply_holdout_evaluation(
 
     ta_app_core::progress::emit_double_ma_progress(Some(sink), total, total, "meta_holdout");
 
-    let datasets = total.saturating_sub(skipped);
-    if datasets == 0 {
+    let datasets_evaluated =
+        observed_total.saturating_sub(skipped.saturating_sub(missing_expected_datasets));
+    let group_metrics =
+        build_holdout_group_execution_evidence(result, &active_indices, &accs, total);
+    let execution_evidence = MetaHoldoutExecutionEvidence {
+        requested_backend: holdout_execution.requested_backend.to_string(),
+        require_gpu: holdout_execution.require_gpu,
+        gpu_device_id: holdout_execution.gpu_device_id,
+        datasets_requested: total,
+        datasets_evaluated,
+        datasets_failed: skipped,
+        gpu_datasets: route_evidence.gpu_datasets,
+        cpu_datasets: route_evidence.cpu_datasets,
+        hybrid_datasets: route_evidence.hybrid_datasets,
+        fallback_datasets: route_evidence.fallback_datasets,
+        configured_auxiliary_stages: holdout_execution.configured_auxiliary_stages,
+        pass_rate_denominator: "requested_unique_holdout_datasets".to_string(),
+        profitable_rate_denominator: "requested_unique_holdout_datasets".to_string(),
+        route_validation_batch_counts: route_evidence.route_validation_batch_counts,
+        group_metrics,
+    };
+    require_usable_vcet_holdout_results(
+        &req.strategy_kind,
+        holdout_tag,
+        total,
+        datasets_evaluated,
+    )?;
+    if datasets_evaluated == 0 {
         result.holdout = Some(ta_app_core::HoldoutSummary {
             datasets: 0,
             skipped,
@@ -4280,7 +5893,7 @@ fn apply_holdout_evaluation(
         result.warnings.push(format!(
             "Holdout evaluation produced zero usable dataset results for tag='{holdout_tag}'. Review dataset paths and validation failures before trusting holdout-adjusted ranking."
         ));
-        return Ok(());
+        return Ok(Some(execution_evidence));
     }
 
     apply_holdout_accumulators_to_result(
@@ -4289,48 +5902,64 @@ fn apply_holdout_evaluation(
         &active_indices,
         &mut accs,
         &mut holdout_rows,
-        datasets,
+        total,
+        datasets_evaluated,
         skipped,
         holdout_tag,
     );
+    if execution_evidence.requested_backend == "GpuKernel"
+        && execution_evidence.fallback_datasets > 0
+    {
+        result.warnings.push(format!(
+            "Meta VCET holdout requested GpuKernel, but {} evaluated dataset(s) used a CPU fallback route. Inspect holdout_execution route evidence before promotion.",
+            execution_evidence.fallback_datasets
+        ));
+    }
 
-    Ok(())
+    Ok(Some(execution_evidence))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         append_stage5_training_manifest_warnings, apply_holdout_accumulators_to_result,
-        artifact_matches_meta_req, artifact_matches_meta_req_relaxed, build_meta_cohort_manifest,
-        build_metric_surface_meta_summary, build_metric_surface_meta_warnings,
-        build_ml_confidence_status, build_prepared_holdout_batches, canonical_typed_param_key,
+        artifact_matches_meta_req, artifact_matches_meta_req_relaxed,
+        build_holdout_group_execution_evidence, build_meta_cohort_manifest,
+        build_meta_vcet_candidate_evidence, build_metric_surface_meta_summary,
+        build_metric_surface_meta_warnings, build_ml_confidence_status,
+        build_prepared_holdout_batches, canonical_typed_param_key, controls_from_campaign_template,
         decode_double_ma_validation_params, evaluate_ml_confidence_policy_from_scoped_metas,
         evaluate_policy_candidates, finalize_policy_arm_metrics, group_holdout_label,
-        group_policy_eval_meta_score, group_rank_score, is_known_non_run_artifact_filename,
-        ml_confidence_model_path_read_only, ml_uncertainty_from_prob,
-        normalize_ml_policy_evaluation_request, normalize_ml_scope,
-        require_meta_holdout_disjointness, should_block_stage4_for_unhealthy_model, stable_logit,
+        group_policy_eval_meta_score, group_rank_score, into_owned_artifact_values,
+        is_known_non_run_artifact_filename, ml_confidence_model_path_read_only,
+        ml_uncertainty_from_prob, normalize_ml_policy_evaluation_request, normalize_ml_scope,
+        prepared_candidate_targets_for_params, require_meta_holdout_disjointness,
+        require_requested_vcet_holdout_artifacts, require_strict_meta_vcet_gpu_result,
+        require_unchanged_holdout_source_fingerprint, resolve_meta_holdout_execution,
+        retain_admitted_vcet_candidate_rows, should_block_stage4_for_unhealthy_model, stable_logit,
         stage4_autotrain_failure_fallback, stage4_training_metas_for_policy,
         stage5_evidence_policy_summary, strategy_supports_holdout,
         strategy_uses_double_ma_validation, suggest_meta_report_path,
-        summarize_holdout_metric_columns, update_policy_arm_metrics, write_bytes_atomically,
-        HoldoutAcc, HoldoutMetricSample, HoldoutSummaryScratch, MlConfidenceModelState,
+        summarize_holdout_metric_columns, unique_holdout_dataset_paths, update_policy_arm_metrics,
+        write_bytes_atomically, HoldoutAcc, HoldoutDatasetRouteState, HoldoutMetricSample,
+        HoldoutRouteEvidenceAcc, HoldoutSummaryScratch, MlConfidenceModelState,
         MlConfidencePolicyArmMetrics, MlConfidencePolicyEvaluationRequest,
         MlConfidencePolicyEvaluationResult, MlMetaScopeSummary, PreparedHoldoutBatch,
         Stage5TrainingHistoryPolicy,
     };
     use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
     use serde_json::{json, Value};
-    use std::collections::HashMap;
+    use sha2::{Digest, Sha256};
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::path::PathBuf;
     use ta_app_core::ml_confidence::MlConfidenceModelMeta;
     use ta_app_core::{
         meta_group_key_for_request, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig,
-        MetaGroupingMode, MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest,
-        MetaSelectionResult, MlConfidenceCompatibilityKey, MlConfidenceEvidenceTier,
-        MlConfidenceLabelConfig, MlConfidenceModelKind, MlConfidenceModelSummary,
-        MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
+        MetaGroupingMode, MetaHoldoutMode, MetaHoldoutValidationConfig, MetaScoreWeights,
+        MetaSelectionRequest, MetaSelectionResult, MlConfidenceCompatibilityKey,
+        MlConfidenceEvidenceTier, MlConfidenceLabelConfig, MlConfidenceModelKind,
+        MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
     };
 
     fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -4349,6 +5978,310 @@ mod tests {
             .manage(crate::state::AppState::default())
             .build(context)
             .expect("failed to build tauri mock app")
+    }
+
+    #[test]
+    fn holdout_dataset_keys_are_stable_share_safe_path_fingerprints() {
+        let first = super::share_safe_holdout_dataset_key("path:c:/private/one/aapl.csv|tf:1h");
+        let first_again =
+            super::share_safe_holdout_dataset_key("path:c:/private/one/aapl.csv|tf:1h");
+        let second = super::share_safe_holdout_dataset_key("path:d:/secret/two/aapl.csv|tf:1h");
+
+        assert_eq!(first, first_again);
+        assert_ne!(first, second);
+        assert!(first.starts_with("source-fnv1a64-"));
+        assert!(!first.contains("private"));
+        assert!(!second.contains("secret"));
+    }
+
+    #[test]
+    fn artifact_value_projection_moves_large_fixture_payloads_without_cloning() {
+        const ARTIFACTS: usize = 10_000;
+        let artifacts = (0..ARTIFACTS)
+            .map(|index| {
+                (
+                    PathBuf::from(format!("run-{index}.json")),
+                    json!({
+                        "index": index,
+                        "payload": format!("{index:05}-{}", "x".repeat(256)),
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        let payload_addresses = artifacts
+            .iter()
+            .map(|(_, artifact)| {
+                artifact["payload"]
+                    .as_str()
+                    .expect("fixture payload")
+                    .as_ptr() as usize
+            })
+            .collect::<Vec<_>>();
+
+        let projected = into_owned_artifact_values(artifacts);
+
+        assert_eq!(projected.len(), ARTIFACTS);
+        for (index, (artifact, original_address)) in projected
+            .iter()
+            .zip(payload_addresses.into_iter())
+            .enumerate()
+        {
+            assert_eq!(artifact["index"].as_u64(), Some(index as u64));
+            assert_eq!(
+                artifact["payload"]
+                    .as_str()
+                    .expect("projected payload")
+                    .as_ptr() as usize,
+                original_address
+            );
+        }
+    }
+
+    #[test]
+    fn meta_holdout_gpu_config_defaults_preserve_cpu_compatibility() {
+        let cfg: MetaHoldoutValidationConfig =
+            serde_json::from_value(json!({})).expect("default holdout config");
+
+        assert!(!cfg.use_gpu);
+        assert!(!cfg.require_gpu);
+        assert_eq!(cfg.gpu_device_id, 0);
+        assert_eq!(
+            cfg.validation_engine,
+            ta_app_core::ValidationEngine::Vectorized
+        );
+    }
+
+    #[test]
+    fn meta_holdout_gpu_policy_is_vcet_only_and_vectorized() {
+        let mut req = test_meta_req();
+        req.strategy_kind = "Vcet".to_string();
+        req.holdout_validation = Some(
+            serde_json::from_value(json!({
+                "require_gpu": true,
+                "gpu_device_id": 3,
+                "validation_engine": "vectorized"
+            }))
+            .expect("GPU holdout config"),
+        );
+
+        let resolved =
+            resolve_meta_holdout_execution(&req, ta_app_core::ValidationEngine::Vectorized)
+                .expect("VCET GPU execution");
+        assert!(resolved.require_gpu);
+        assert_eq!(resolved.gpu_device_id, Some(3));
+        assert!(matches!(
+            resolved.backend,
+            ta_app_core::Backend::GpuKernel { device_id: 3 }
+        ));
+
+        req.strategy_kind = "CompositeMo".to_string();
+        let non_vcet =
+            resolve_meta_holdout_execution(&req, ta_app_core::ValidationEngine::Vectorized)
+                .expect_err("non-VCET GPU execution must fail");
+        assert!(non_vcet.contains("supports strategy_kind='Vcet' only"));
+
+        req.strategy_kind = "Vcet".to_string();
+        let iterative =
+            resolve_meta_holdout_execution(&req, ta_app_core::ValidationEngine::Iterative)
+                .expect_err("iterative GPU execution must fail");
+        assert!(iterative.contains("requires validation_engine='vectorized'"));
+
+        req.holdout_mode = MetaHoldoutMode::Heavy;
+        req.holdout_validation
+            .as_mut()
+            .expect("holdout config")
+            .walk_forward = Some(
+            serde_json::from_value(json!({
+                "window_bars": 20_000,
+                "step_bars": 20_000
+            }))
+            .expect("walk-forward config"),
+        );
+        let unproven_stage =
+            resolve_meta_holdout_execution(&req, ta_app_core::ValidationEngine::Vectorized)
+                .expect_err("strict GPU must reject unproven auxiliary stages");
+        assert!(unproven_stage.contains("walk_forward"), "{unproven_stage}");
+        assert!(
+            unproven_stage.contains("require_gpu=false"),
+            "{unproven_stage}"
+        );
+
+        let cfg = req.holdout_validation.as_mut().expect("holdout config");
+        cfg.require_gpu = false;
+        cfg.use_gpu = true;
+        let hybrid =
+            resolve_meta_holdout_execution(&req, ta_app_core::ValidationEngine::Vectorized)
+                .expect("non-strict GPU may use auxiliary CPU stages");
+        assert_eq!(
+            hybrid.configured_auxiliary_stages,
+            vec!["walk_forward".to_string()]
+        );
+    }
+
+    #[test]
+    fn strict_meta_vcet_gpu_route_rejects_cpu_fallback() {
+        require_strict_meta_vcet_gpu_result(
+            true,
+            "GpuKernel",
+            &ta_app_core::BackendUsed::Gpu,
+            Some("GpuKernel"),
+            None,
+            "gpu_kernel",
+        )
+        .expect("fully GPU-resident route");
+
+        let error = require_strict_meta_vcet_gpu_result(
+            true,
+            "GpuKernel",
+            &ta_app_core::BackendUsed::Cpu,
+            Some("GpuKernel->CpuOnly"),
+            Some("CUDA feature unavailable"),
+            "cpu_fallback",
+        )
+        .expect_err("strict route must reject fallback");
+        assert!(error.contains("backend_used=Cpu"), "{error}");
+        assert!(error.contains("GpuKernel->CpuOnly"), "{error}");
+        assert!(error.contains("CUDA feature unavailable"), "{error}");
+    }
+
+    #[test]
+    fn mixed_holdout_routes_are_counted_once_as_hybrid_with_fallback_orthogonal() {
+        let mut state = HoldoutDatasetRouteState::default();
+        let mut route_counts = std::collections::BTreeMap::new();
+        state.observe(
+            &ta_app_core::BackendUsed::Gpu,
+            Some("GpuKernel"),
+            None,
+            &mut route_counts,
+        );
+        state.observe(
+            &ta_app_core::BackendUsed::Cpu,
+            Some("GpuKernel->CpuOnly"),
+            Some("fallback"),
+            &mut route_counts,
+        );
+        let mut evidence = HoldoutRouteEvidenceAcc::default();
+
+        evidence.record_evaluated_dataset(state, route_counts);
+
+        let mut hybrid_state = HoldoutDatasetRouteState {
+            saw_cpu: true,
+            ..HoldoutDatasetRouteState::default()
+        };
+        let mut hybrid_routes = std::collections::BTreeMap::new();
+        hybrid_state.observe(
+            &ta_app_core::BackendUsed::Gpu,
+            Some("GpuKernel"),
+            None,
+            &mut hybrid_routes,
+        );
+        evidence.record_evaluated_dataset(hybrid_state, hybrid_routes);
+
+        assert_eq!(evidence.gpu_datasets, 0);
+        assert_eq!(evidence.cpu_datasets, 0);
+        assert_eq!(evidence.hybrid_datasets, 2);
+        assert_eq!(evidence.fallback_datasets, 1);
+        assert_eq!(evidence.route_validation_batch_counts["GpuKernel"], 2);
+        assert_eq!(
+            evidence.route_validation_batch_counts["GpuKernel->CpuOnly"],
+            1
+        );
+    }
+
+    #[test]
+    fn one_dataset_multi_config_counts_validation_batches_not_datasets() {
+        let mut state = HoldoutDatasetRouteState::default();
+        let mut route_counts = std::collections::BTreeMap::new();
+        state.observe(
+            &ta_app_core::BackendUsed::Gpu,
+            Some("GpuKernel"),
+            None,
+            &mut route_counts,
+        );
+        state.observe(
+            &ta_app_core::BackendUsed::Gpu,
+            Some("GpuKernel"),
+            None,
+            &mut route_counts,
+        );
+        state.observe(
+            &ta_app_core::BackendUsed::Cpu,
+            Some("CpuOnly"),
+            None,
+            &mut route_counts,
+        );
+        let mut evidence = HoldoutRouteEvidenceAcc::default();
+
+        evidence.record_evaluated_dataset(state, route_counts);
+
+        assert_eq!(
+            evidence.gpu_datasets + evidence.cpu_datasets + evidence.hybrid_datasets,
+            1
+        );
+        assert_eq!(evidence.hybrid_datasets, 1);
+        assert_eq!(evidence.route_validation_batch_counts["GpuKernel"], 2);
+        assert_eq!(evidence.route_validation_batch_counts["CpuOnly"], 1);
+    }
+
+    #[test]
+    fn holdout_dataset_universe_dedupes_by_content_identity_not_path() {
+        let first = json!({
+            "data": {
+                "csv_path": "c:/private/aapl-copy-one.csv",
+                "source_content_fingerprint": "same-bars"
+            },
+            "dataset_meta": { "label": "AAPL one", "timeframe": "1m" }
+        });
+        let duplicate = json!({
+            "data": {
+                "csv_path": "d:/other/aapl-copy-two.csv",
+                "source_content_fingerprint": "same-bars"
+            },
+            "dataset_meta": { "label": "AAPL two", "timeframe": "1m" }
+        });
+        let distinct = json!({
+            "data": {
+                "csv_path": "c:/private/msft.csv",
+                "source_content_fingerprint": "different-bars"
+            },
+            "dataset_meta": { "label": "MSFT", "timeframe": "1m" }
+        });
+        let missing_path = json!({
+            "data": { "source_content_fingerprint": "missing-path-bars" },
+            "dataset_meta": { "label": "Unavailable", "timeframe": "1m" }
+        });
+
+        let unique = unique_holdout_dataset_paths(&[&first, &duplicate, &distinct, &missing_path]);
+
+        assert_eq!(unique.len(), 3);
+        assert_eq!(unique[0].0, "c:/private/aapl-copy-one.csv");
+        assert_eq!(unique[1].0, "c:/private/msft.csv");
+        assert!(unique[2].0.is_empty());
+        assert_eq!(unique[2].1, "Unavailable");
+        assert_ne!(unique[0].2, unique[1].2);
+        assert!(!unique[0].2.contains("private"));
+        assert_eq!(unique[0].3.as_deref(), Some("same-bars"));
+        assert_eq!(unique[1].3.as_deref(), Some("different-bars"));
+    }
+
+    #[test]
+    fn campaign_holdout_rejects_source_content_changed_after_capture() {
+        require_unchanged_holdout_source_fingerprint(
+            Some("sha256:captured"),
+            "sha256:captured",
+            "AAPL",
+        )
+        .expect("unchanged holdout source remains valid");
+        require_unchanged_holdout_source_fingerprint(None, "sha256:current", "legacy")
+            .expect("legacy unbound holdout has no captured fingerprint contract");
+        let error = require_unchanged_holdout_source_fingerprint(
+            Some("sha256:captured"),
+            "sha256:mutated",
+            "AAPL",
+        )
+        .expect_err("mutated holdout source must fail before backtest");
+        assert!(error.contains("changed after campaign capture"));
+        assert!(error.contains("AAPL"));
     }
 
     fn test_meta_req() -> MetaSelectionRequest {
@@ -4854,7 +6787,7 @@ mod tests {
             }),
         )];
 
-        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"));
+        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"), None, None);
 
         assert_eq!(manifest.disjointness.overlapping_dataset_keys, 1);
         assert!(!manifest.disjointness.disjoint);
@@ -4862,6 +6795,513 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("share 1 dataset key")));
+    }
+
+    #[test]
+    fn campaign_bound_meta_retains_only_cross_universe_admitted_vcet_candidates() {
+        let artifact = json!({
+            "validation": {
+                "res": {
+                    "candidates": [
+                        { "params": { "fast_len": 6, "slow_len": 24 }, "in_sample": { "pnl": 1.0 } },
+                        { "params": { "fast_len": 12, "slow_len": 48 }, "in_sample": { "pnl": 100.0 } },
+                        { "params": { "fast_len": 20, "slow_len": 80 }, "in_sample": { "pnl": 2.0 } }
+                    ]
+                }
+            }
+        });
+        let admitted: HashSet<(u16, u16)> = [(6, 24), (20, 80)].into_iter().collect();
+
+        for role in ["training", "holdout"] {
+            let mut scoped = artifact.clone();
+            scoped["campaign"] = json!({ "cohort_role": role });
+            retain_admitted_vcet_candidate_rows(&mut scoped, &admitted)
+                .expect("both campaign cohorts retain the exact admitted candidate set");
+            let periods: Vec<(u64, u64)> = scoped
+                .pointer("/validation/res/candidates")
+                .and_then(Value::as_array)
+                .expect("candidate rows")
+                .iter()
+                .map(|row| {
+                    (
+                        row.pointer("/params/fast_len")
+                            .and_then(Value::as_u64)
+                            .expect("fast_len"),
+                        row.pointer("/params/slow_len")
+                            .and_then(Value::as_u64)
+                            .expect("slow_len"),
+                    )
+                })
+                .collect();
+            assert_eq!(periods, vec![(6, 24), (20, 80)]);
+        }
+
+        let missing: HashSet<(u16, u16)> = [(6, 24), (99, 100)].into_iter().collect();
+        let mut incomplete = artifact;
+        assert!(
+            retain_admitted_vcet_candidate_rows(&mut incomplete, &missing)
+                .expect_err("every admitted candidate must exist in each validated artifact")
+                .contains("expected 2")
+        );
+    }
+
+    #[test]
+    fn campaign_bound_meta_projects_qmc_controls_by_evaluation_candidate_identity() {
+        let mut search_config = ta_app_core::vcet_search::VcetSearchConfig::default();
+        search_config.budget = 1;
+        search_config.seed = 99;
+        let aggregate = json!({
+            "candidate_id": "vcet_candidate_joined",
+            "fast_len": 8,
+            "slow_len": 34,
+            "requested_datasets": 10,
+            "evaluated_datasets": 9,
+            "missing_or_failed_datasets": 1,
+            "profitable_datasets": 7,
+            "hard_gate_pass_datasets": 6,
+            "profitable_share_requested": 0.7,
+            "hard_gate_pass_share_requested": 0.6,
+            "pnl_p10": 0.02,
+            "pnl_median": 0.08,
+            "sharpe_p10": 0.31,
+            "sharpe_median": 0.72,
+            "max_drawdown_p90": 0.14,
+            "trades_median": 23.0
+        });
+        let search_manifest = json!({
+            "schema_version": 1,
+            "sequence": "halton_cranley_patterson",
+            "search_id": "vcet_search_test",
+            "seed": 99,
+            "requested_budget": 1,
+            "effective_budget": 1,
+            "valid_search_space_size": "500000",
+            "float_identity_scale": 1000000,
+            "generation_stats": {
+                "halton_attempts": 4,
+                "invalid_period_pairs_discarded": 1,
+                "duplicate_candidates_discarded": 0,
+                "lexicographic_fallback_candidates": 0,
+                "exhaustive_candidates": 0
+            },
+            "candidates": [{
+                "ordinal": 7,
+                "candidate_id": "vcet_v1_generator_identity",
+                "evaluation_candidate_id": "vcet_candidate_joined",
+                "identity_inputs": {
+                    "vidya_short_period": 8,
+                    "vidya_long_period": 34,
+                    "vidya_alpha_micros": 275000,
+                    "ce_period": 26,
+                    "ce_mult_micros": 3250000,
+                    "ce_use_close": false,
+                    "require_vidya_slope": true,
+                    "max_trade_bars": 150
+                },
+                "effective": {
+                    "vidya_short_period": 8,
+                    "vidya_long_period": 34,
+                    "vidya_alpha": 0.275,
+                    "ce_period": 26,
+                    "ce_mult": 3.25,
+                    "ce_use_close": false,
+                    "require_vidya_slope": true,
+                    "max_trade_bars": 150
+                }
+            }]
+        });
+        let request = json!({
+            "strategy_kind": "Vcet",
+            "datasets": [],
+            "execution_mode": "evaluate_candidates",
+            "optimization_template": {
+                "vcet": {
+                    "vidya_short_period": 6,
+                    "vidya_long_period": 24,
+                    "vidya_alpha": 0.2,
+                    "ce_period": 22,
+                    "ce_mult": 3.0,
+                    "ce_use_close": true,
+                    "require_vidya_slope": true,
+                    "max_trade_bars": 120
+                }
+            },
+            "validation_config": {
+                "max_candidates": 1,
+                "vcet_search": serde_json::to_value(&search_config).expect("search config")
+            }
+        });
+        let summary: crate::commands::commands_campaign::ResearchCampaignSummary =
+            serde_json::from_value(json!({
+                "version": 2,
+                "kind": "vectorgrid_campaign_summary",
+                "ts": "2026-08-02T00:00:00Z",
+                "state": "completed",
+                "strategy_kind": "Vcet",
+                "timeframe": "1m",
+                "tags": [],
+                "holdout_pct": 20,
+                "request": request,
+                "counts": {
+                    "total": 10,
+                    "optimized": 0,
+                    "validated": 10,
+                    "skipped": 0,
+                    "failed": 0,
+                    "cancelled": false
+                },
+                "items": [],
+                "fixed_candidate_evaluation": {
+                    "schema_version": 4,
+                    "candidate_manifest_hash": "sha256:candidate-manifest",
+                    "search_manifest": search_manifest,
+                    "require_gpu_kernel": true,
+                    "requested_datasets": 10,
+                    "evaluated_datasets": 9,
+                    "gpu_kernel_datasets": 9,
+                    "missing_or_failed_datasets": 1,
+                    "candidates": [aggregate.clone()],
+                    "selection_cohort": "training",
+                    "selected_candidate_id": "vcet_candidate_joined",
+                    "admitted_candidate_count": 1,
+                    "admitted_candidate_ids": ["vcet_candidate_joined"],
+                    "selection_status": "selected",
+                    "all_universe": {
+                        "requested_datasets": 10,
+                        "evaluated_datasets": 9,
+                        "gpu_kernel_datasets": 9,
+                        "missing_or_failed_datasets": 1,
+                        "candidates": [aggregate.clone()]
+                    },
+                    "training": {
+                        "requested_datasets": 8,
+                        "evaluated_datasets": 8,
+                        "gpu_kernel_datasets": 8,
+                        "missing_or_failed_datasets": 0,
+                        "candidates": [aggregate.clone()]
+                    },
+                    "holdout": {
+                        "requested_datasets": 2,
+                        "evaluated_datasets": 1,
+                        "gpu_kernel_datasets": 1,
+                        "missing_or_failed_datasets": 1,
+                        "candidates": [aggregate]
+                    }
+                },
+                "runtime_ms": 12
+            }))
+            .expect("campaign summary");
+
+        let evidence = build_meta_vcet_candidate_evidence(&summary).expect("VCET evidence");
+        assert_eq!(evidence.source_candidate_count, 1);
+        assert_eq!(evidence.included_candidate_count, 1);
+        assert_eq!(evidence.omitted_candidate_count, 0);
+        let search = evidence.search.as_ref().expect("search provenance");
+        assert_eq!(search.sequence, "halton_cranley_patterson");
+        assert_eq!(search.exhaustive_candidates, 0);
+        assert_eq!(search.config.as_ref().map(|config| config.seed), Some(99));
+        let row = &evidence.candidates[0];
+        assert_eq!(row.manifest_ordinal, 7);
+        assert!(row.selected);
+        assert!(row.admitted);
+        assert_eq!(row.controls.evidence_state, "sealed_search_manifest");
+        assert_eq!(row.controls.vidya_short_period, Some(8));
+        assert_eq!(row.controls.vidya_long_period, Some(34));
+        assert_eq!(row.controls.vidya_alpha, Some(0.275));
+        assert_eq!(row.controls.ce_period, Some(26));
+        assert_eq!(row.controls.ce_mult, Some(3.25));
+        assert_eq!(row.controls.ce_use_close, Some(false));
+        assert_eq!(row.controls.require_vidya_slope, Some(true));
+        assert_eq!(row.controls.max_trade_bars, Some(150));
+        assert!(row.holdout.is_some());
+        assert!(row.all_universe.is_some());
+    }
+
+    #[test]
+    fn campaign_bound_meta_resolves_legacy_fixed_pair_controls_from_template() {
+        let mut vcet = ta_app_core::VcetStrategyParams::default();
+        vcet.vidya_alpha = 0.4;
+        vcet.ce_mult = 2.75;
+        vcet.ce_use_close = false;
+        vcet.require_vidya_slope = false;
+        vcet.max_trade_bars = 180;
+
+        let controls = controls_from_campaign_template(Some(&vcet), 8, 34);
+
+        assert_eq!(controls.evidence_state, "resolved_campaign_template");
+        assert_eq!(controls.vidya_short_period, Some(8));
+        assert_eq!(controls.vidya_long_period, Some(34));
+        assert_eq!(controls.ce_period, Some(34));
+        assert_eq!(controls.vidya_alpha, Some(0.4));
+        assert_eq!(controls.ce_mult, Some(2.75));
+        assert_eq!(controls.ce_use_close, Some(false));
+        assert_eq!(controls.require_vidya_slope, Some(false));
+        assert_eq!(controls.max_trade_bars, Some(180));
+    }
+
+    fn test_campaign_cohort_expectation(
+        artifact_path: &std::path::Path,
+    ) -> super::MetaCampaignCohortExpectation {
+        let mut expectation = super::MetaCampaignCohortExpectation {
+            lineage: super::MetaCampaignCohortLineage {
+                campaign_summary_path: "C:/runs/campaign.json".to_string(),
+                campaign_summary_sha256: "campaign-summary-sha256".to_string(),
+                manifest_hash: "sha256:cohort-current".to_string(),
+                candidate_manifest_hash: Some("sha256:candidates".to_string()),
+                admitted_candidate_count: 1,
+                admitted_candidates: vec![super::MetaVcetAdmittedCandidate {
+                    candidate_id: "vcet_candidate_test".to_string(),
+                    fast_len: 6,
+                    slow_len: 24,
+                }],
+                cross_universe_admission: Default::default(),
+                selected_candidate_id: Some("vcet_candidate_test".to_string()),
+                expected_train_datasets: 2,
+                expected_holdout_datasets: 1,
+                matched_train_artifacts: 0,
+                matched_holdout_artifacts: 0,
+                excluded_out_of_scope_artifacts: 0,
+                vcet_candidate_evidence: None,
+            },
+            fingerprints: HashMap::new(),
+            paths: HashMap::new(),
+            artifact_paths: HashMap::new(),
+            referenced_artifact_paths: Vec::new(),
+            candidate_artifact_contract: None,
+            admitted_vcet_periods: None,
+            campaign_summary: None,
+        };
+        let artifact_path_string = artifact_path.to_string_lossy().to_string();
+        let artifact_sha256 = "d".repeat(64);
+        super::insert_expected_campaign_identity(
+            &mut expectation,
+            super::cohort_path_timeframe_key("C:/data/AAPL.csv", "1m"),
+            Some("bars-aapl".to_string()),
+            Some(&artifact_path_string),
+            Some(&artifact_sha256),
+            super::MetaCampaignCohortRole::Train,
+        )
+        .expect("expected campaign identity");
+        expectation
+            .referenced_artifact_paths
+            .push(artifact_path.to_path_buf());
+        expectation
+    }
+
+    #[test]
+    fn campaign_cohort_artifacts_require_consistent_lineage_and_dataset_identity() {
+        let artifact_path = PathBuf::from("C:/runs/vectorgrid_run_current.json");
+        let expectation = test_campaign_cohort_expectation(&artifact_path);
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "data": { "csv_path": "c:\\data\\aapl.csv" },
+            "dataset_meta": {
+                "timeframe": "60s",
+                "source_content_fingerprint": "bars-aapl"
+            },
+            "validation": {
+                "req": { "candidate_manifest_hash": "sha256:candidates" }
+            },
+            "campaign": {
+                "manifest_hash": "sha256:cohort-current",
+                "cohort_id": "sha256:cohort-current",
+                "cohort_role": "training"
+            }
+        });
+
+        assert_eq!(
+            super::campaign_cohort_role_for_artifact(
+                &expectation,
+                artifact_path.as_path(),
+                &artifact,
+            ),
+            Some(super::MetaCampaignCohortRole::Train)
+        );
+
+        for (label, pointer, replacement) in [
+            (
+                "cohort",
+                "/campaign/cohort_id",
+                json!("sha256:cohort-older"),
+            ),
+            ("role", "/campaign/cohort_role", json!("holdout")),
+            ("path", "/data/csv_path", json!("C:/data/MSFT.csv")),
+            (
+                "fingerprint",
+                "/dataset_meta/source_content_fingerprint",
+                json!("bars-msft"),
+            ),
+            (
+                "candidate manifest",
+                "/validation/req/candidate_manifest_hash",
+                json!("sha256:older-candidates"),
+            ),
+        ] {
+            let mut tampered = artifact.clone();
+            *tampered.pointer_mut(pointer).expect("fixture pointer") = replacement;
+            assert_eq!(
+                super::campaign_cohort_role_for_artifact(
+                    &expectation,
+                    artifact_path.as_path(),
+                    &tampered,
+                ),
+                None,
+                "{label} contradiction must reject the artifact"
+            );
+        }
+
+        let mut missing_candidate_manifest = artifact.clone();
+        missing_candidate_manifest
+            .pointer_mut("/validation/req")
+            .and_then(Value::as_object_mut)
+            .expect("validation request")
+            .remove("candidate_manifest_hash");
+        assert_eq!(
+            super::campaign_cohort_role_for_artifact(
+                &expectation,
+                artifact_path.as_path(),
+                &missing_candidate_manifest,
+            ),
+            None,
+            "current campaign artifacts must carry the expected candidate manifest hash"
+        );
+
+        let mut legacy_exact_path = artifact.clone();
+        legacy_exact_path
+            .as_object_mut()
+            .expect("artifact object")
+            .remove("campaign");
+        assert_eq!(
+            super::campaign_cohort_role_for_artifact(
+                &expectation,
+                artifact_path.as_path(),
+                &legacy_exact_path,
+            ),
+            Some(super::MetaCampaignCohortRole::Train),
+            "the exact summary-referenced artifact path is a valid lineage fallback"
+        );
+        assert_eq!(
+            super::campaign_cohort_role_for_artifact(
+                &expectation,
+                PathBuf::from("C:/runs/vectorgrid_run_other.json").as_path(),
+                &legacy_exact_path,
+            ),
+            None,
+            "an unmarked artifact from another path must not enter the bound cohort"
+        );
+    }
+
+    #[test]
+    fn campaign_artifact_raw_hash_rejects_psr_dsr_verdict_and_cscv_tampering() {
+        let artifact_path = PathBuf::from("C:/runs/vectorgrid_run_sealed.json");
+        let mut expectation = test_campaign_cohort_expectation(&artifact_path);
+        let artifact = json!({
+            "validation": {
+                "res": {
+                    "run_verdict": { "passed": true },
+                    "cscv_pbo": 0.12,
+                    "candidates": [{
+                        "psr": 0.71,
+                        "dsr": 0.64
+                    }]
+                }
+            }
+        });
+        let raw_sha256 = |value: &Value| {
+            let bytes = serde_json::to_vec_pretty(value).expect("serialize raw artifact fixture");
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            format!("{:x}", hasher.finalize())
+        };
+        let baseline_sha256 = raw_sha256(&artifact);
+        expectation
+            .artifact_paths
+            .get_mut(&super::cohort_artifact_path_key(&artifact_path))
+            .expect("expected path identity")
+            .artifact_sha256 = Some(baseline_sha256.to_ascii_uppercase());
+        super::validate_campaign_artifact_raw_sha256(
+            &expectation,
+            &artifact_path,
+            &baseline_sha256,
+        )
+        .expect("an exact raw hash should pass case-insensitively");
+
+        for (label, pointer, replacement) in [
+            ("PSR", "/validation/res/candidates/0/psr", json!(0.99)),
+            ("DSR", "/validation/res/candidates/0/dsr", json!(0.98)),
+            (
+                "run verdict",
+                "/validation/res/run_verdict/passed",
+                json!(false),
+            ),
+            ("CSCV PBO", "/validation/res/cscv_pbo", json!(0.91)),
+        ] {
+            let mut tampered = artifact.clone();
+            *tampered.pointer_mut(pointer).expect("tamper pointer") = replacement;
+            let tampered_sha256 = raw_sha256(&tampered);
+            assert_ne!(
+                baseline_sha256, tampered_sha256,
+                "{label} must alter raw SHA-256"
+            );
+            assert!(
+                super::validate_campaign_artifact_raw_sha256(
+                    &expectation,
+                    &artifact_path,
+                    &tampered_sha256,
+                )
+                .expect_err("tampered raw evidence must fail before Meta ranking")
+                .contains("changed after the terminal campaign summary was sealed"),
+                "{label} tampering must fail the sealed artifact contract"
+            );
+        }
+    }
+
+    #[test]
+    fn artifact_tag_matching_is_case_insensitive() {
+        let artifact = json!({ "tags": ["Campaign-Main", "HOLDOUT"] });
+        assert!(super::artifact_has_tag(&artifact, "campaign-main"));
+        assert!(super::artifact_has_tag(&artifact, "holdout"));
+        assert!(!super::artifact_has_tag(&artifact, "different"));
+    }
+
+    #[test]
+    fn missing_campaign_summary_fails_before_meta_artifact_discovery() {
+        let app = build_mock_app();
+        let runs = super::run_artifacts::runs_dir(app.handle()).expect("runs dir");
+        let missing = runs.join("vectorgrid_campaign_missing.json");
+
+        let error = super::load_meta_campaign_cohort_expectation(
+            Some(missing.to_string_lossy().as_ref()),
+            &test_meta_req(),
+            app.handle(),
+        )
+        .expect_err("missing campaign summary must fail closed");
+
+        assert!(error.contains("does not exist"), "{error}");
+        assert!(!super::reports_dir(app.handle())
+            .expect("reports dir")
+            .join("vectorgrid_meta.xlsx")
+            .exists());
+    }
+
+    #[test]
+    fn missing_summary_referenced_run_artifact_fails_closed() {
+        let app = build_mock_app();
+        let runs = super::run_artifacts::runs_dir(app.handle()).expect("runs dir");
+        let missing = runs.join("vectorgrid_run_missing.json");
+
+        let error = super::load_campaign_referenced_artifact(&missing, app.handle())
+            .expect_err("missing referenced artifact must fail closed");
+
+        assert!(error.contains("could not load referenced run artifact"));
+        assert!(error.contains("does not exist"), "{error}");
+    }
+
+    #[test]
+    fn requested_dataset_denominator_preserves_missing_campaign_members() {
+        assert_eq!(super::requested_dataset_denominator(15, Some(100)), 100);
+        assert_eq!(super::requested_dataset_denominator(120, Some(100)), 120);
+        assert_eq!(super::requested_dataset_denominator(15, None), 15);
     }
 
     #[test]
@@ -4880,7 +7320,7 @@ mod tests {
                 "dataset_meta": { "timeframe": "1m" }
             }),
         )];
-        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"));
+        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"), None, None);
 
         let error = require_meta_holdout_disjointness(true, holdout.len(), &manifest)
             .expect_err("overlapping holdout datasets must fail closed");
@@ -4901,7 +7341,7 @@ mod tests {
                 "data": { "source_content_fingerprint": "holdout-content" }
             }),
         )];
-        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"));
+        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"), None, None);
 
         let error = require_meta_holdout_disjointness(true, holdout.len(), &manifest)
             .expect_err("unverifiable holdout disjointness must fail closed");
@@ -4920,12 +7360,33 @@ mod tests {
             PathBuf::from("runs/holdout.json"),
             json!({"kind": "vectorgrid_report"}),
         )];
-        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"));
+        let manifest = build_meta_cohort_manifest(&train, &holdout, Some("holdout"), None, None);
 
         require_meta_holdout_disjointness(false, holdout.len(), &manifest)
             .expect("ordinary meta selection should retain legacy compatibility");
         require_meta_holdout_disjointness(true, 0, &manifest)
             .expect("an empty holdout cohort should remain a handled no-evidence case");
+    }
+
+    #[test]
+    fn vcet_requested_holdout_tag_fails_closed_when_no_artifacts_match() {
+        let error =
+            require_requested_vcet_holdout_artifacts("Vcet", true, Some("campaign-holdout"), 0)
+                .expect_err("VCET must not save a no-evidence holdout report");
+        assert!(error.contains("campaign-holdout"), "{error}");
+        assert!(
+            error.contains("zero matching holdout validation artifacts"),
+            "{error}"
+        );
+        assert!(
+            error.contains("strategy, tag, and timeframe filters"),
+            "{error}"
+        );
+
+        require_requested_vcet_holdout_artifacts("CompositeMo", true, Some("campaign-holdout"), 0)
+            .expect("non-VCET behavior remains compatible");
+        require_requested_vcet_holdout_artifacts("Vcet", true, Some("campaign-holdout"), 1)
+            .expect("matched VCET holdout evidence is accepted");
     }
 
     #[test]
@@ -5511,6 +7972,7 @@ mod tests {
                 max_dds: vec![0.10, 0.12],
                 pnls: vec![2.0, 2.2],
                 passes: 2,
+                profitable: 2,
             },
             HoldoutAcc {
                 scores: vec![0.70, 0.75],
@@ -5518,6 +7980,7 @@ mod tests {
                 max_dds: vec![0.20, 0.24],
                 pnls: vec![1.0, 1.1],
                 passes: 2,
+                profitable: 2,
             },
             HoldoutAcc {
                 scores: vec![0.95, 1.05],
@@ -5525,12 +7988,14 @@ mod tests {
                 max_dds: vec![0.14, 0.16],
                 pnls: vec![1.7, 1.9],
                 passes: 2,
+                profitable: 2,
             },
         ];
         let mut subset_accs = vec![full_accs[0].clone(), full_accs[2].clone()];
         let mut full_rows = vec![
             vec![ta_app_core::HoldoutDatasetRow {
                 dataset: "A".to_string(),
+                dataset_key: "source-a".to_string(),
                 score_median: 1.15,
                 score_p10: 1.10,
                 sharpe_median: 1.05,
@@ -5540,6 +8005,7 @@ mod tests {
             }],
             vec![ta_app_core::HoldoutDatasetRow {
                 dataset: "A".to_string(),
+                dataset_key: "source-a".to_string(),
                 score_median: 0.72,
                 score_p10: 0.70,
                 sharpe_median: 0.68,
@@ -5549,6 +8015,7 @@ mod tests {
             }],
             vec![ta_app_core::HoldoutDatasetRow {
                 dataset: "A".to_string(),
+                dataset_key: "source-a".to_string(),
                 score_median: 1.00,
                 score_p10: 0.95,
                 sharpe_median: 0.95,
@@ -5566,6 +8033,7 @@ mod tests {
             &mut full_accs,
             &mut full_rows,
             2,
+            2,
             0,
             "holdout",
         );
@@ -5575,6 +8043,7 @@ mod tests {
             &[0, 2],
             &mut subset_accs,
             &mut subset_rows,
+            2,
             2,
             0,
             "holdout",
@@ -5651,6 +8120,45 @@ mod tests {
     }
 
     #[test]
+    fn prepared_candidate_targets_follow_params_after_result_reordering() {
+        let first = decode_double_ma_validation_params(&json!({
+            "fast_ma_type": "ema",
+            "slow_ma_type": "ema",
+            "fast_len": 5,
+            "slow_len": 20
+        }))
+        .expect("first params");
+        let second = decode_double_ma_validation_params(&json!({
+            "fast_ma_type": "ema",
+            "slow_ma_type": "ema",
+            "fast_len": 13,
+            "slow_len": 55
+        }))
+        .expect("second params");
+        let candidate_idx_by_key = HashMap::from([
+            (canonical_typed_param_key(&first).unwrap(), 0usize),
+            (canonical_typed_param_key(&second).unwrap(), 1usize),
+        ]);
+        let candidate_targets = vec![vec![10usize], vec![20usize]];
+
+        let (_, second_targets) = prepared_candidate_targets_for_params(
+            &second,
+            &candidate_idx_by_key,
+            &candidate_targets,
+        )
+        .expect("second result targets");
+        let (_, first_targets) = prepared_candidate_targets_for_params(
+            &first,
+            &candidate_idx_by_key,
+            &candidate_targets,
+        )
+        .expect("first result targets");
+
+        assert_eq!(second_targets, &[20]);
+        assert_eq!(first_targets, &[10]);
+    }
+
+    #[test]
     fn prepared_holdout_batches_dedupe_duplicate_representatives_across_groups() {
         let req = MetaSelectionRequest {
             strategy_kind: "DoubleMa".to_string(),
@@ -5704,6 +8212,7 @@ mod tests {
             &req,
             &active,
             &dense,
+            ta_app_core::Backend::CpuOnly,
             1,
             None,
             None,
@@ -5735,6 +8244,137 @@ mod tests {
     }
 
     #[test]
+    fn prepared_vcet_gpu_holdout_batches_split_effective_execution_configs() {
+        let mut req = test_meta_req();
+        req.strategy_kind = "Vcet".to_string();
+
+        let candidate = |ce_mult: f64, allow_flip: bool| {
+            json!({
+                "fast_ma_type": "ema",
+                "slow_ma_type": "ema",
+                "fast_len": 8,
+                "slow_len": 34,
+                "halftrend": {
+                    "amplitude": 2,
+                    "channel_deviation": 2.0,
+                    "atr_period": 100
+                },
+                "vcet": { "ce_mult": ce_mult },
+                "strategy": {
+                    "long_only": true,
+                    "allow_flip": allow_flip,
+                    "trade_on_next_bar": true,
+                    "commission": 0.0,
+                    "eps_rel": 0.0
+                }
+            })
+        };
+        let first = candidate(3.0, false);
+        let second_vcet = candidate(4.0, false);
+        let third_strategy = candidate(3.0, true);
+        let mut group = make_meta_candidate(&req, 8, 34, 0.25);
+        group.params = first.clone();
+        group.representatives = vec![first, second_vcet, third_strategy];
+        let result = MetaSelectionResult {
+            runtime_ms: 0,
+            strategy_kind: "Vcet".to_string(),
+            timeframe: Some("1m".to_string()),
+            artifacts_considered: 1,
+            artifacts_used: 1,
+            candidates_considered: 3,
+            groups: vec![group],
+            warnings: Vec::new(),
+            holdout: None,
+            holdout_coverage: None,
+        };
+        let active = vec![0usize];
+        let dense = HashMap::from([(0usize, 0usize)]);
+
+        let batches = build_prepared_holdout_batches(
+            &result,
+            &req,
+            &active,
+            &dense,
+            ta_app_core::Backend::GpuKernel { device_id: 7 },
+            1,
+            None,
+            None,
+            None,
+            None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        )
+        .expect("prepared VCET GPU batches");
+
+        assert_eq!(batches.len(), 3);
+        for batch in batches {
+            let PreparedHoldoutBatch::Composite(batch) = batch else {
+                panic!("expected composite VCET batch");
+            };
+            assert!(matches!(
+                batch.request.backend,
+                ta_app_core::Backend::GpuKernel { device_id: 7 }
+            ));
+            assert_eq!(batch.request.candidates.len(), 1);
+            assert_eq!(batch.candidate_targets, vec![vec![0]]);
+        }
+    }
+
+    #[test]
+    fn holdout_rates_use_requested_unique_dataset_denominator() {
+        let mut req = test_meta_req();
+        req.save_holdout_rows = false;
+        let mut result = MetaSelectionResult {
+            runtime_ms: 0,
+            strategy_kind: req.strategy_kind.clone(),
+            timeframe: req.timeframe.clone(),
+            artifacts_considered: 1,
+            artifacts_used: 1,
+            candidates_considered: 1,
+            groups: vec![make_meta_candidate(&req, 8, 32, 0.2)],
+            warnings: Vec::new(),
+            holdout: None,
+            holdout_coverage: None,
+        };
+        let mut accs = vec![HoldoutAcc {
+            scores: vec![0.2, 0.3],
+            sharpes: vec![0.8, 0.9],
+            max_dds: vec![0.2, 0.3],
+            pnls: vec![1.0, 1.5],
+            passes: 1,
+            profitable: 2,
+        }];
+
+        let evidence = build_holdout_group_execution_evidence(&result, &[0], &accs, 3);
+        assert_eq!(evidence[0].datasets_requested, 3);
+        assert_eq!(evidence[0].datasets_evaluated, 2);
+        assert_eq!(evidence[0].datasets_failed, 1);
+        assert_eq!(evidence[0].pass_rate, 1.0 / 3.0);
+        assert_eq!(evidence[0].profitable_rate, 2.0 / 3.0);
+        assert_eq!(evidence[0].evaluation_rate, 2.0 / 3.0);
+
+        apply_holdout_accumulators_to_result(
+            &mut result,
+            &req,
+            &[0],
+            &mut accs,
+            &mut Vec::new(),
+            3,
+            2,
+            1,
+            "holdout",
+        );
+        let aggregate = result.groups[0]
+            .holdout
+            .as_ref()
+            .expect("holdout aggregate");
+        assert_eq!(aggregate.datasets, 2);
+        assert_eq!(aggregate.pass_rate, 1.0 / 3.0);
+        assert_eq!(result.holdout.as_ref().unwrap().datasets, 2);
+        assert_eq!(result.holdout.as_ref().unwrap().skipped, 1);
+    }
+
+    #[test]
     fn holdout_summary_scratch_reuses_buffers_without_row_leakage() {
         let mut scratch = HoldoutSummaryScratch::default();
         let first = vec![
@@ -5758,14 +8398,19 @@ mod tests {
             pnl: 0.7,
         }];
 
-        let first_stats = scratch.summarize_rows(&first).expect("first stats");
-        let second_stats = scratch.summarize_rows(&second).expect("second stats");
+        let first_stats = scratch
+            .summarize_rows("CompositeMo", &first)
+            .expect("first stats");
+        let second_stats = scratch
+            .summarize_rows("CompositeMo", &second)
+            .expect("second stats");
 
         let mut second_scores = vec![0.4];
         let mut second_sharpes = vec![0.2];
         let second_max_dds = vec![0.35];
         let mut second_pnls = vec![0.7];
         let reference = summarize_holdout_metric_columns(
+            "CompositeMo",
             second_scores.as_mut_slice(),
             second_sharpes.as_mut_slice(),
             second_max_dds.as_slice(),
@@ -5775,6 +8420,90 @@ mod tests {
 
         assert!(first_stats.score_median > second_stats.score_median);
         assert_eq!(second_stats, reference);
+    }
+
+    #[test]
+    fn non_vcet_negative_pnl_preserves_historic_holdout_pass_and_final_score() {
+        let mut req = test_meta_req();
+        req.strategy_kind = "CompositeMo".to_string();
+        let mut scores = vec![0.5, 0.6];
+        let mut sharpes = vec![1.0, 1.1];
+        let max_dds = vec![0.1, 0.2];
+        let mut pnls = vec![-2.0, -1.0];
+
+        let stats = summarize_holdout_metric_columns(
+            &req.strategy_kind,
+            &mut scores,
+            &mut sharpes,
+            &max_dds,
+            &mut pnls,
+        )
+        .expect("holdout stats");
+
+        assert!(!stats.profitable);
+        assert!(stats.pass);
+
+        let base_score = 0.2;
+        let mut result = MetaSelectionResult {
+            runtime_ms: 0,
+            strategy_kind: req.strategy_kind.clone(),
+            timeframe: req.timeframe.clone(),
+            artifacts_considered: 1,
+            artifacts_used: 1,
+            candidates_considered: 1,
+            groups: vec![make_meta_candidate(&req, 8, 32, base_score)],
+            warnings: Vec::new(),
+            holdout: None,
+            holdout_coverage: None,
+        };
+        let mut accs = vec![HoldoutAcc {
+            scores: vec![stats.score_median],
+            sharpes: vec![stats.sharpe_median],
+            max_dds: vec![stats.max_dd_worst],
+            pnls: vec![stats.pnl_median],
+            passes: usize::from(stats.pass),
+            profitable: usize::from(stats.profitable),
+        }];
+        let mut rows = Vec::new();
+        apply_holdout_accumulators_to_result(
+            &mut result,
+            &req,
+            &[0],
+            &mut accs,
+            &mut rows,
+            1,
+            1,
+            0,
+            "holdout",
+        );
+
+        let group = &result.groups[0];
+        let holdout = group.holdout.as_ref().expect("holdout aggregate");
+        assert_eq!(holdout.pass_rate, 1.0);
+        let expected_final_score = base_score
+            + req.weights.w_holdout_pass_rate
+            + req.weights.w_holdout_p10 * stats.score_median
+            - req.weights.w_holdout_dd_p90 * stats.max_dd_worst;
+        assert_eq!(group.final_score, Some(expected_final_score));
+    }
+
+    #[test]
+    fn vcet_holdout_pass_requires_positive_median_pnl() {
+        let summarize = |pnls: &mut [f64]| {
+            let mut scores = vec![0.5, 0.6];
+            let mut sharpes = vec![1.0, 1.1];
+            let max_dds = vec![0.1, 0.2];
+            summarize_holdout_metric_columns("Vcet", &mut scores, &mut sharpes, &max_dds, pnls)
+                .expect("VCET holdout stats")
+        };
+
+        let losing = summarize(&mut [-2.0, -1.0]);
+        assert!(!losing.profitable);
+        assert!(!losing.pass);
+
+        let profitable = summarize(&mut [1.0, 2.0]);
+        assert!(profitable.profitable);
+        assert!(profitable.pass);
     }
 
     #[test]
@@ -5840,5 +8569,21 @@ mod tests {
             serde_json::to_value(&result).unwrap(),
             serde_json::to_value(&expected).unwrap()
         );
+    }
+
+    #[test]
+    fn vcet_zero_usable_holdout_results_fail_before_report_publication() {
+        let error = super::require_usable_vcet_holdout_results("Vcet", "campaign-holdout", 25, 0)
+            .expect_err("VCET zero-evidence holdout must fail closed");
+        assert!(error.contains("zero usable dataset results"), "{error}");
+        assert!(
+            error.contains("No Meta XLSX or JSON was published"),
+            "{error}"
+        );
+
+        super::require_usable_vcet_holdout_results("Vcet", "campaign-holdout", 25, 1)
+            .expect("one usable dataset permits a denominator-aware report");
+        super::require_usable_vcet_holdout_results("CompositeMo", "holdout", 25, 0)
+            .expect("legacy non-VCET behavior remains unchanged");
     }
 }

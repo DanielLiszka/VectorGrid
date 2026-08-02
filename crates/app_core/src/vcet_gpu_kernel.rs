@@ -14,7 +14,7 @@ use crate::standalone_gpu_runtime::{
 };
 use crate::vcet::{
     compute_vcet_chandelier_signal_cuda_device, compute_vcet_start_t,
-    compute_vcet_vidya_signal_cuda_device, resolve_vcet_periods, VcetOwnedDeviceMatrix,
+    compute_vcet_vidya_signal_cuda_device, resolve_vcet_periods_checked, VcetOwnedDeviceMatrix,
     VcetStrategyParams,
 };
 use crate::PreparedCudaIndicatorInputs;
@@ -54,6 +54,14 @@ pub struct VcetGpuComboBatch<'a> {
     pub ce_row_index: &'a [i32],
     pub start_t: &'a [i32],
     pub end_t: &'a [i32],
+}
+
+/// Strategy-local controls that may vary independently for every VCET combo.
+/// Execution assumptions and transaction-cost settings remain uniform through
+/// the separate `StrategyConfig` argument.
+pub struct VcetGpuPerComboControls<'a> {
+    pub require_vidya_slope: &'a [i32],
+    pub max_trade_bars: &'a [i32],
 }
 
 pub struct VcetGpuOwnedSignalTables {
@@ -197,7 +205,7 @@ impl PreparedVcetGpuKernelBatch {
                 if fast_len >= slow_len {
                     continue;
                 }
-                let periods = resolve_vcet_periods(vcet, fast_len, slow_len);
+                let periods = resolve_vcet_periods_checked(vcet, fast_len, slow_len)?;
                 vidya_keys.push((periods.vidya_short, periods.vidya_long));
                 ce_keys.push(periods.ce);
             }
@@ -268,7 +276,7 @@ impl PreparedVcetGpuKernelBatch {
                 if fast_len >= slow_len {
                     continue;
                 }
-                let periods = resolve_vcet_periods(vcet, fast_len, slow_len);
+                let periods = resolve_vcet_periods_checked(vcet, fast_len, slow_len)?;
                 let (vidya_row, vidya_first_valid) = *vidya_lookup
                     .get(&(periods.vidya_short, periods.vidya_long))
                     .ok_or_else(|| "VCET GPU VIDYA row lookup miss".to_string())?;
@@ -388,6 +396,8 @@ struct VcetKernelScratch {
     d_combo_ce: Option<DeviceBuffer<i32>>,
     d_combo_start: Option<DeviceBuffer<i32>>,
     d_combo_end: Option<DeviceBuffer<i32>>,
+    d_combo_require_vidya_slope: Option<DeviceBuffer<i32>>,
+    d_combo_max_trade_bars: Option<DeviceBuffer<i32>>,
     d_out: Option<DeviceBuffer<f32>>,
     host_metrics: Vec<f32>,
     vidya_rows_sig: Option<UploadSignature>,
@@ -397,6 +407,8 @@ struct VcetKernelScratch {
     combo_ce_sig: Option<UploadSignature>,
     combo_start_sig: Option<UploadSignature>,
     combo_end_sig: Option<UploadSignature>,
+    combo_require_vidya_slope_sig: Option<UploadSignature>,
+    combo_max_trade_bars_sig: Option<UploadSignature>,
 }
 
 impl VcetKernelScratch {
@@ -565,6 +577,34 @@ fn validate_inputs(
     Ok(())
 }
 
+fn validate_per_combo_controls(
+    combo_count: usize,
+    controls: &VcetGpuPerComboControls<'_>,
+) -> Result<(), String> {
+    if controls.require_vidya_slope.len() != combo_count
+        || controls.max_trade_bars.len() != combo_count
+    {
+        return Err("VCET GPU per-combo control vector length mismatch".to_string());
+    }
+
+    for (idx, &require_slope) in controls.require_vidya_slope.iter().enumerate() {
+        if require_slope != 0 && require_slope != 1 {
+            return Err(format!(
+                "VCET GPU require_vidya_slope[{idx}] must be encoded as 0 or 1"
+            ));
+        }
+    }
+    for (idx, &max_trade_bars) in controls.max_trade_bars.iter().enumerate() {
+        if max_trade_bars < 1 {
+            return Err(format!(
+                "VCET GPU max_trade_bars[{idx}] must be greater than zero"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn launch_compute_log_returns_f32(
     rt: &mut VcetCudaRuntime,
     close_ptr: u64,
@@ -649,6 +689,15 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
+#[derive(Clone, Copy)]
+enum VcetGpuControlMode<'a> {
+    Uniform {
+        require_vidya_slope: i32,
+        max_trade_bars: i32,
+    },
+    PerCombo(&'a VcetGpuPerComboControls<'a>),
+}
+
 pub fn eval_vcet_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &VcetGpuDeviceSignalMatrices<'_>,
@@ -656,8 +705,46 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
     strategy: &StrategyConfig,
     vcet: &VcetStrategyParams,
 ) -> Result<Vec<Metrics>, String> {
+    eval_vcet_metrics_gpu_kernel_device_rows_impl(
+        device_id,
+        signals,
+        combos,
+        strategy,
+        VcetGpuControlMode::Uniform {
+            require_vidya_slope: i32::from(vcet.require_vidya_slope),
+            max_trade_bars: i32::from(vcet.max_trade_bars.max(1)),
+        },
+    )
+}
+
+pub fn eval_vcet_metrics_gpu_kernel_device_rows_per_combo(
+    device_id: u32,
+    signals: &VcetGpuDeviceSignalMatrices<'_>,
+    combos: &VcetGpuComboBatch<'_>,
+    controls: &VcetGpuPerComboControls<'_>,
+    strategy: &StrategyConfig,
+) -> Result<Vec<Metrics>, String> {
+    eval_vcet_metrics_gpu_kernel_device_rows_impl(
+        device_id,
+        signals,
+        combos,
+        strategy,
+        VcetGpuControlMode::PerCombo(controls),
+    )
+}
+
+fn eval_vcet_metrics_gpu_kernel_device_rows_impl(
+    device_id: u32,
+    signals: &VcetGpuDeviceSignalMatrices<'_>,
+    combos: &VcetGpuComboBatch<'_>,
+    strategy: &StrategyConfig,
+    controls: VcetGpuControlMode<'_>,
+) -> Result<Vec<Metrics>, String> {
     validate_inputs(signals, combos)?;
     let combo_count = combos.vidya_row_index.len();
+    if let VcetGpuControlMode::PerCombo(controls) = controls {
+        validate_per_combo_controls(combo_count, controls)?;
+    }
     if combo_count == 0 {
         return Ok(Vec::new());
     }
@@ -710,6 +797,18 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
         VcetKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_ce, combo_count, &rt.stream)?;
         VcetKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_start, combo_count, &rt.stream)?;
         VcetKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_end, combo_count, &rt.stream)?;
+        if matches!(controls, VcetGpuControlMode::PerCombo(_)) {
+            VcetKernelScratch::ensure_len_i32(
+                &mut rt.scratch.d_combo_require_vidya_slope,
+                combo_count,
+                &rt.stream,
+            )?;
+            VcetKernelScratch::ensure_len_i32(
+                &mut rt.scratch.d_combo_max_trade_bars,
+                combo_count,
+                &rt.stream,
+            )?;
+        }
         VcetKernelScratch::ensure_len_f32(&mut rt.scratch.d_out, out_len, &rt.stream)?;
 
         let vidya_rows_sig = slice_signature(signals.vidya_rows_ptr);
@@ -810,6 +909,36 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
             rt.scratch.combo_end_sig = Some(combo_end_sig);
         }
 
+        if let VcetGpuControlMode::PerCombo(per_combo) = controls {
+            let require_slope_sig = slice_signature(per_combo.require_vidya_slope);
+            if rt.scratch.combo_require_vidya_slope_sig != Some(require_slope_sig) {
+                let mut require_slope_slice = rt
+                    .scratch
+                    .d_combo_require_vidya_slope
+                    .as_mut()
+                    .ok_or_else(|| "VCET combo slope-control scratch missing".to_string())?
+                    .index(..combo_count);
+                require_slope_slice
+                    .copy_from(per_combo.require_vidya_slope)
+                    .map_err(|e| e.to_string())?;
+                rt.scratch.combo_require_vidya_slope_sig = Some(require_slope_sig);
+            }
+
+            let max_trade_bars_sig = slice_signature(per_combo.max_trade_bars);
+            if rt.scratch.combo_max_trade_bars_sig != Some(max_trade_bars_sig) {
+                let mut max_trade_bars_slice = rt
+                    .scratch
+                    .d_combo_max_trade_bars
+                    .as_mut()
+                    .ok_or_else(|| "VCET combo max-trade-bars scratch missing".to_string())?
+                    .index(..combo_count);
+                max_trade_bars_slice
+                    .copy_from(per_combo.max_trade_bars)
+                    .map_err(|e| e.to_string())?;
+                rt.scratch.combo_max_trade_bars_sig = Some(max_trade_bars_sig);
+            }
+        }
+
         let kernel = rt
             .module
             .get_function("vcet_backtest_metrics_f32")
@@ -892,8 +1021,33 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
         let mut combo_count_i = checked_i32("VCET GPU combo count", combo_count)?;
         let mut flags_u = flags;
         let mut commission_f = commission;
-        let mut require_vidya_slope_i = if vcet.require_vidya_slope { 1i32 } else { 0i32 };
-        let mut max_trade_bars_i = i32::from(vcet.max_trade_bars.max(1));
+        let (
+            mut combo_require_vidya_slope_ptr,
+            mut combo_max_trade_bars_ptr,
+            mut require_vidya_slope_i,
+            mut max_trade_bars_i,
+        ) = match controls {
+            VcetGpuControlMode::Uniform {
+                require_vidya_slope,
+                max_trade_bars,
+            } => (0u64, 0u64, require_vidya_slope, max_trade_bars),
+            VcetGpuControlMode::PerCombo(_) => (
+                rt.scratch
+                    .d_combo_require_vidya_slope
+                    .as_ref()
+                    .ok_or_else(|| "VCET combo slope-control scratch missing".to_string())?
+                    .as_device_ptr()
+                    .as_raw(),
+                rt.scratch
+                    .d_combo_max_trade_bars
+                    .as_ref()
+                    .ok_or_else(|| "VCET combo max-trade-bars scratch missing".to_string())?
+                    .as_device_ptr()
+                    .as_raw(),
+                0,
+                1,
+            ),
+        };
         let mut hurdle_tau_f = strategy.hurdle_tau.unwrap_or(0.0) as f32;
         let mut out_stride_i = checked_i32("VCET GPU metrics stride", VCET_METRICS_STRIDE)?;
         let mut out_ptr = rt
@@ -921,6 +1075,8 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
                 &mut combo_count_i as *mut _ as *mut c_void,
                 &mut flags_u as *mut _ as *mut c_void,
                 &mut commission_f as *mut _ as *mut c_void,
+                &mut combo_require_vidya_slope_ptr as *mut _ as *mut c_void,
+                &mut combo_max_trade_bars_ptr as *mut _ as *mut c_void,
                 &mut require_vidya_slope_i as *mut _ as *mut c_void,
                 &mut max_trade_bars_i as *mut _ as *mut c_void,
                 &mut hurdle_tau_f as *mut _ as *mut c_void,
@@ -961,8 +1117,8 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_inputs, validate_prepared_device_id, VcetGpuComboBatch,
-        VcetGpuDeviceSignalMatrices,
+        validate_inputs, validate_per_combo_controls, validate_prepared_device_id,
+        VcetGpuComboBatch, VcetGpuDeviceSignalMatrices, VcetGpuPerComboControls,
     };
 
     #[test]
@@ -1049,5 +1205,38 @@ mod tests {
             validate_prepared_device_id(2, 3).expect_err("mismatched prepared/requested device");
         assert!(err.contains("prepared on device 2"));
         assert!(err.contains("requested device 3"));
+    }
+
+    #[test]
+    fn validate_per_combo_controls_rejects_mismatches_and_invalid_values() {
+        let err = validate_per_combo_controls(
+            2,
+            &VcetGpuPerComboControls {
+                require_vidya_slope: &[1],
+                max_trade_bars: &[120, 60],
+            },
+        )
+        .expect_err("mismatched control vectors");
+        assert!(err.contains("length mismatch"));
+
+        let err = validate_per_combo_controls(
+            2,
+            &VcetGpuPerComboControls {
+                require_vidya_slope: &[1, 2],
+                max_trade_bars: &[120, 60],
+            },
+        )
+        .expect_err("invalid slope encoding");
+        assert!(err.contains("encoded as 0 or 1"));
+
+        let err = validate_per_combo_controls(
+            2,
+            &VcetGpuPerComboControls {
+                require_vidya_slope: &[1, 0],
+                max_trade_bars: &[120, 0],
+            },
+        )
+        .expect_err("invalid max-trade-bars control");
+        assert!(err.contains("greater than zero"));
     }
 }

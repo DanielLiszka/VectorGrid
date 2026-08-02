@@ -149,8 +149,16 @@ try {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
   }
 
+  # The manifest/toolchain contract deliberately resolves the complete graph
+  # offline later in this lane. A cache miss in CI must therefore materialize
+  # every locked target dependency first, not rely on whichever packages the
+  # Windows-only compile happens to touch.
+  Invoke-Step "Fetch locked Cargo dependency graph" {
+    cargo fetch --locked
+  }
+
   Invoke-Step "Cargo lockfile contract" {
-    cargo metadata --locked --no-deps --format-version 1 | Out-Null
+    cargo metadata --locked --offline --format-version 1 | Out-Null
   }
 
   Invoke-Step "Strict Clippy: ta_strategies" {

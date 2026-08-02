@@ -143,6 +143,16 @@
       "search_semantics": {
         "approx_mode": "exact_exhaustive",
         "contract_summary": "Exact exhaustive search over the full requested candidate space.",
+        "search_distribution": {
+          "attempted_count": 9,
+          "feasible_count": 9,
+          "finite_sharpe_count": 9,
+          "finite_sharpe_mean": 0.580110591675586,
+          "finite_sharpe_sample_std": 0.015219239193306325,
+          "metric_surface_kind": "core17",
+          "sharpe_metric_id": "double_ma_log_return_sharpe_v1",
+          "unique_count": 9
+        },
         "workload_family": "double_ma_exact_grid_full_output"
       },
       "top": [
@@ -505,6 +515,17 @@
       "validation_context": {
         "csv_path": "src-tauri/resources/sample-data/vectorgrid_synthetic_ohlcv.csv",
         "label": null,
+        "optimization_trials": 9,
+        "search_distribution": {
+          "attempted_count": 9,
+          "feasible_count": 9,
+          "finite_sharpe_count": 9,
+          "finite_sharpe_mean": 0.580110591675586,
+          "finite_sharpe_sample_std": 0.015219239193306325,
+          "metric_surface_kind": "core17",
+          "sharpe_metric_id": "double_ma_log_return_sharpe_v1",
+          "unique_count": 9
+        },
         "strategy_kind": "DoubleMa",
         "timeframe": null
       }
@@ -668,7 +689,7 @@
           "cscv_pbo": {
             "is_selected_frac": 0.0
           },
-          "dsr": 0.4571116187530422,
+          "dsr": 0.45711161875304185,
           "entry_margin_fragility": {
             "active_mean_margin": 0.009762531710603083,
             "entry_count": 1,
@@ -1161,7 +1182,7 @@
           "cscv_pbo": {
             "is_selected_frac": 0.0
           },
-          "dsr": 0.4571116187530422,
+          "dsr": 0.45711161875304185,
           "entry_margin_fragility": {
             "active_mean_margin": 0.008130150927933589,
             "entry_count": 1,
@@ -1598,7 +1619,7 @@
           "cscv_pbo": {
             "is_selected_frac": 0.0
           },
-          "dsr": 0.4292151695804476,
+          "dsr": 0.42921516958044736,
           "entry_margin_fragility": {
             "active_mean_margin": 0.008153288380931314,
             "entry_count": 1,
@@ -2035,7 +2056,7 @@
           "cscv_pbo": {
             "is_selected_frac": 0.0
           },
-          "dsr": 0.4292151695804476,
+          "dsr": 0.42921516958044736,
           "entry_margin_fragility": {
             "active_mean_margin": 0.006507866574221365,
             "entry_count": 1,
@@ -2424,7 +2445,7 @@
         "first_approved_rank": 1,
         "passed": true,
         "pbo": 0.0,
-        "top_candidate_dsr": 0.4571116187530422,
+        "top_candidate_dsr": 0.45711161875304185,
         "top_candidate_min_track_record_length_bars": 11,
         "top_candidate_psr": 0.9999999998959221,
         "top_candidate_track_record_bars": 136,
@@ -2437,6 +2458,7 @@
         "candidate_universe": {
           "approved_candidates": 4,
           "evaluated_candidates": 9,
+          "optimization_trials": 9,
           "requested_candidates": 9,
           "retained_candidates": 4,
           "selection_scope": "retained_validation_candidates",
@@ -2446,10 +2468,29 @@
         "caveats": [
           "Evidence policy summary is additive metadata and does not alter candidate math, order, passed, or approved semantics.",
           "General validation probability metrics are labeled raw-bar based until an explicit effective-count audit is implemented.",
-          "CSCV/PBO is set-level overfit evidence rather than a candidate-specific proof."
+          "CSCV/PBO is set-level overfit evidence rather than a candidate-specific proof.",
+          "validation approval is statistical research evidence, not deployment authorization",
+          "fee and slippage stress does not by itself establish liquidity, capacity, market-impact, or borrow availability"
         ],
         "dataset": {
-          "data_id": "vectorgrid_synthetic_ohlcv"
+          "data_id": "vectorgrid_synthetic_ohlcv",
+          "data_realism": {
+            "borrow_availability": "unknown",
+            "complete": false,
+            "corporate_actions": "unknown",
+            "liquidity_capacity": "unknown",
+            "market_impact": "unknown",
+            "missing_or_unknown": [
+              "price_adjustment",
+              "corporate_actions",
+              "survivorship_bias",
+              "liquidity_capacity",
+              "market_impact",
+              "borrow_availability"
+            ],
+            "price_adjustment": "unknown",
+            "survivorship_bias": "unknown"
+          }
         },
         "generated_by": "ta_app_core.validation_pipeline",
         "metrics": [
@@ -2479,7 +2520,7 @@
             "metric_class": "confidence_bounded",
             "sample_unit": "raw_bars",
             "scope": "top_retained_candidate",
-            "value": 0.4571116187530422
+            "value": 0.45711161875304185
           },
           {
             "availability": "available",
@@ -2624,15 +2665,31 @@
           "version": 1,
           "workflow": "general_validation"
         },
+        "promotion_eligibility": {
+          "eligible": false,
+          "gates_failed": [
+            "realism_price_adjustment_declared",
+            "realism_corporate_actions_declared",
+            "realism_survivorship_bias_declared",
+            "realism_liquidity_capacity_declared",
+            "realism_market_impact_declared",
+            "realism_borrow_availability_declared"
+          ],
+          "gates_passed": [
+            "validation_run_approved"
+          ],
+          "reason": "promotion blocked until realism evidence is declared for: price_adjustment, corporate_actions, survivorship_bias, liquidity_capacity, market_impact, borrow_availability",
+          "state": "research_only"
+        },
         "route": {
           "realized_backend": "Cpu",
           "requested_backend": "CpuOnly",
           "residency_tier": "cpu",
           "route_label": "CpuOnly"
         },
-        "schema_version": "1-0-0",
-        "status": "complete",
-        "status_reason": "all requested validation evidence modules produced review metadata",
+        "schema_version": "1-1-0",
+        "status": "incomplete",
+        "status_reason": "deployment-realism evidence unknown: price_adjustment, corporate_actions, survivorship_bias, liquidity_capacity, market_impact, borrow_availability",
         "verdict": {
           "approved": true,
           "first_approved_rank": 1,
@@ -2645,6 +2702,13 @@
         },
         "version": 1,
         "warnings": [
+          "data_realism_unknown:borrow_availability",
+          "data_realism_unknown:corporate_actions",
+          "data_realism_unknown:liquidity_capacity",
+          "data_realism_unknown:market_impact",
+          "data_realism_unknown:price_adjustment",
+          "data_realism_unknown:survivorship_bias",
+          "promotion_blocked_missing_realism_evidence",
           "walk_forward_overlap_adjusted:2/6"
         ],
         "workflow": "double_ma_validation"

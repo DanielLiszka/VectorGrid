@@ -3,6 +3,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import {
+  normalizeUiPerfBudgetEvidence,
+  resolveFrontendQaReportRun,
+} from './qa-evidence-freshness.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const webRoot = path.resolve(scriptDir, '..')
@@ -10,6 +14,8 @@ const repoRoot = path.resolve(webRoot, '..')
 const outputDir = path.resolve(repoRoot, 'output', 'qa')
 const jsonPath = path.resolve(outputDir, 'local-qa-summary.json')
 const markdownPath = path.resolve(outputDir, 'local-qa-summary.md')
+const reportGeneratedAt = new Date().toISOString()
+const reportRun = resolveFrontendQaReportRun(process.env, reportGeneratedAt)
 
 const existsCache = new Map()
 const statCache = new Map()
@@ -74,7 +80,7 @@ function newestMtimeMs(entries) {
     if (stat.isDirectory()) {
       const files = listFiles(
         fullPath,
-        (item) => /\.(json|mjs|ts|tsx|vue)$/.test(item),
+        (item) => /\.(css|html|js|json|mjs|ts|tsx|vue)$/.test(item),
       )
       for (const file of files) {
         newest = Math.max(newest, fileStat(file).mtimeMs)
@@ -132,7 +138,11 @@ function collectFreshnessIssues() {
       'src-tauri/tauri.conf.json',
       'web/scripts/check-tauri-capabilities.mjs',
     ]),
-    reportFreshnessIssue('UI perf budget', 'output/qa/ui-perf-budget.json', [
+    reportFreshnessIssue('production bundle budget', 'output/qa/bundle-budget.json', [
+      'web/dist',
+      'web/scripts/check-bundle-budget.mjs',
+    ]),
+    reportFreshnessIssue('UI performance baseline budget evaluation', 'output/qa/ui-perf-budget.json', [
       'scripts/baselines/ui_capture/perf_metrics.json',
       'web/scripts/check-ui-perf-budget.mjs',
     ]),
@@ -161,6 +171,46 @@ function countWorkflowIds() {
 
 function formatNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? String(value) : 'n/a'
+}
+
+function formatKilobytes(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)} kB` : 'n/a'
+}
+
+function formatBundleBudget(report) {
+  if (!report) return '- production bundle budget report not available'
+  const observations = report.observations || {}
+  const budgets = report.budgets || {}
+  return [
+    `- Status: ${report.status || 'unknown'}`,
+    `- Entry chunk (${observations.entryFile || 'n/a'}): ${formatKilobytes(observations.entryChunkKb)} / ${formatKilobytes(budgets.entryChunkKb)}`,
+    `- Largest lazy chunk (${observations.largestLazyFile || 'n/a'}): ${formatKilobytes(observations.largestLazyChunkKb)} / ${formatKilobytes(budgets.largestLazyChunkKb)}`,
+    `- Total JavaScript: ${formatKilobytes(observations.totalJsKb)} / ${formatKilobytes(budgets.totalJsKb)}`,
+    `- Warnings: ${report.warnings?.length ? report.warnings.join('; ') : 'none'}`,
+  ].join('\n')
+}
+
+function formatUiPerfEvidence(report) {
+  if (!report) return '- UI performance evidence report not available'
+  const scopeLabel = report.currentRun ? 'current-run capture' : 'baseline reference'
+  const lines = [
+    `- Status for this report: ${report.status}`,
+    `- Source budget evaluation status: ${report.sourceStatus}`,
+    `- Evidence scope: ${scopeLabel}`,
+    `- Freshness reason: ${report.freshnessReason}`,
+    `- Evaluation run ID: ${report.runId || 'none'}`,
+    `- Evaluation generated: ${report.generatedAt || 'unknown'}`,
+    `- Source capture run ID: ${report.sourceCapture?.runId || 'none'}`,
+    `- Source captured: ${report.sourceCapture?.generatedAt || 'unknown'}`,
+    `- Source file modified: ${report.sourceCapture?.fileModifiedAt || 'unknown'}`,
+    `- Capture mode: ${report.sourceCapture?.mode || 'unknown'}`,
+    `- Capture note: ${report.sourceCapture?.note || 'none'}`,
+    `- Source: ${report.source || 'unknown'}`,
+  ]
+  for (const [key, value] of Object.entries(report.observations || {})) {
+    lines.push(`- ${key}: ${value ?? 'missing'} / ${(report.budgets || {})[key] ?? 'n/a'}`)
+  }
+  return lines.join('\n')
 }
 
 function bulletList(items) {
@@ -248,6 +298,7 @@ const artifactFixtures = readJson('output/qa/artifact-fixtures.json')
 const fixtureMatrix = readJson('output/qa/e2e-fixture-matrix.json')
 const selectorInventory = readJson('output/qa/qa-selector-inventory.json')
 const tauriCapabilities = readJson('output/qa/tauri-capabilities.json')
+const bundleBudget = readJson('output/qa/bundle-budget.json')
 const perfBudget = readJson('output/qa/ui-perf-budget.json')
 const a11ySmoke = readJson('output/qa/a11y-smoke.json')
 const actionCoverageReports = ['action-coverage.json', 'action-coverage-options.json']
@@ -255,6 +306,7 @@ const actionCoverageReports = ['action-coverage.json', 'action-coverage-options.
   .filter(Boolean)
 const visualBaselineEvidence = collectVisualBaselineEvidence()
 const workflowIds = countWorkflowIds()
+const perfBudgetEvidence = normalizeUiPerfBudgetEvidence(perfBudget, reportRun)
 
 const issues = []
 issues.push(...collectFreshnessIssues())
@@ -277,6 +329,9 @@ if (fixtureMatrix) {
 if (tauriCapabilities) {
   issues.push(...(tauriCapabilities.issues || []).map((issue) => `tauri capability/CSP: ${issue}`))
 }
+if (bundleBudget) {
+  issues.push(...(bundleBudget.issues || []).map((issue) => `production bundle budget: ${issue}`))
+}
 if (perfBudget) {
   issues.push(...(perfBudget.issues || []).map((issue) => `ui perf budget: ${issue}`))
 }
@@ -288,7 +343,8 @@ for (const report of actionCoverageReports) {
 
 const summary = {
   schemaVersion: 1,
-  generatedAt: new Date().toISOString(),
+  generatedAt: reportGeneratedAt,
+  reportRun,
   status: issues.length > 0 ? 'failed' : 'passed',
   workflows: {
     count: workflowIds.length,
@@ -338,13 +394,17 @@ const summary = {
   visualBaselines: {
     ...visualBaselineEvidence,
   },
-  perfBudget: perfBudget
+  bundleBudget: bundleBudget
     ? {
-        source: perfBudget.source,
-        observations: perfBudget.observations,
-        budgets: perfBudget.budgets,
+        status: bundleBudget.status,
+        generatedAt: bundleBudget.generatedAt,
+        source: bundleBudget.source,
+        budgets: bundleBudget.budgets,
+        observations: bundleBudget.observations,
+        warnings: bundleBudget.warnings ?? [],
       }
     : null,
+  perfBudget: perfBudgetEvidence,
   a11ySmoke: a11ySmoke
     ? {
         status: a11ySmoke.status,
@@ -361,6 +421,7 @@ const summary = {
     fixtureMatrix: !!fixtureMatrix,
     selectorInventory: !!selectorInventory,
     tauriCapabilities: !!tauriCapabilities,
+    bundleBudget: !!bundleBudget,
     perfBudget: !!perfBudget,
     a11ySmoke: !!a11ySmoke,
     runtimeActionCoverageReports: actionCoverageReports.length,
@@ -373,13 +434,15 @@ const lines = [
   '',
   `Generated: ${summary.generatedAt}`,
   `Status: ${summary.status}`,
+  `Report run: ${summary.reportRun.available ? summary.reportRun.id : 'standalone (no current-run context)'}`,
+  `Report run started: ${summary.reportRun.startedAt || 'unknown'}`,
   '',
   '## Coverage',
   '',
   `- Browser workflow IDs: ${summary.workflows.count}`,
   `- Source QA actions: ${formatNumber(summary.actions?.sourceActionCount)}`,
-  `- Manifest entries: ${formatNumber(summary.actions?.manifestEntryCount)}`,
-  `- Required manifest entries covered: ${formatNumber(summary.actions?.requiredCoveredCount)} / ${formatNumber(summary.actions?.requiredEntryCount)}`,
+  `- Manifest registrations: ${formatNumber(summary.actions?.manifestEntryCount)}`,
+  `- Required manifest actions registered with workflow references: ${formatNumber(summary.actions?.requiredCoveredCount)} / ${formatNumber(summary.actions?.requiredEntryCount)}`,
   `- Manifest waivers: ${formatNumber(summary.actions?.waiverCount)}`,
   `- Coverage references without a matching workflow id: ${formatNumber(summary.actions?.unknownCoverageReferenceCount)}`,
   `- Visual baseline snapshots: ${summary.visualBaselines.actualCount} actual / ${summary.visualBaselines.expectedCount} expected`,
@@ -401,13 +464,13 @@ const lines = [
   `- Panel markers: ${formatNumber(summary.selectors?.panelSelectorCount)}`,
   `- State markers: ${formatNumber(summary.selectors?.stateSelectorCount)}`,
   '',
-  '## Perf Budget',
+  '## Production Bundle Budget',
   '',
-  perfBudget
-    ? Object.entries(perfBudget.observations || {})
-        .map(([key, value]) => `- ${key}: ${value ?? 'missing'} / ${(perfBudget.budgets || {})[key] ?? 'n/a'}`)
-        .join('\n')
-    : '- perf budget report not available',
+  formatBundleBudget(summary.bundleBudget),
+  '',
+  '## UI Performance Capture / Baseline Reference',
+  '',
+  formatUiPerfEvidence(summary.perfBudget),
   '',
   '## Issues',
   '',

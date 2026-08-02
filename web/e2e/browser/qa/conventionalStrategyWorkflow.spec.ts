@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { emptyAppScenario, type MockTauriScenario } from '../fixtures'
+import { mockTauriSequence } from '../support/mockTauri'
 import { expectNoHorizontalDocumentOverflow, expectNoStuckBusyState, installQaGuards } from '../support/qaAssertions'
 import { gotoMockedShellWithScenario, readTauriInvokeLog } from '../support/workflowRunner'
 
@@ -81,8 +82,18 @@ const PRICE_BARS = Array.from({ length: DRILL_BAR_COUNT }, (_, index) => {
 })
 
 const BASE_DRILL_CURVES = {
-  equity: { start_t: 1, end_t: 72, bins: 6, minmax: [1, 1.02, 1.01, 1.05, 1.03, 1.08] },
-  drawdown: { start_t: 1, end_t: 72, bins: 6, minmax: [0, -0.01, -0.02, -0.01, -0.015, -0.025] },
+  equity: {
+    start_t: 1,
+    end_t: 72,
+    bins: 6,
+    minmax: [1, 1.01, 1.01, 1.02, 1.02, 1.035, 1.03, 1.05, 1.045, 1.065, 1.06, 1.08],
+  },
+  drawdown: {
+    start_t: 1,
+    end_t: 72,
+    bins: 6,
+    minmax: [0, -0.005, -0.005, -0.01, -0.01, -0.02, -0.01, -0.015, -0.015, -0.025, -0.02, -0.03],
+  },
   trades: [
     { entry_t: 4, exit_t: 14, direction: 1, pnl: 0.03, bars: 10, open: false },
     { entry_t: 22, exit_t: 33, direction: -1, pnl: -0.01, bars: 11, open: false },
@@ -99,6 +110,10 @@ const BASE_DRILL_CURVES = {
     profit_factor: 4.8,
     expectancy: 0.0127,
   },
+}
+
+const DOUBLE_MA_DRILL_CURVES = {
+  ...BASE_DRILL_CURVES,
   indicator_bars: PRICE_BARS.map((bar, index) => ({
     time: bar.time,
     from_index: index + 1,
@@ -108,8 +123,8 @@ const BASE_DRILL_CURVES = {
   })),
 }
 
-const COMPOSITE_DRILL_CURVES = {
-  ...BASE_DRILL_CURVES,
+const LEGACY_COMPOSITE_DRILL_CURVES = {
+  ...DOUBLE_MA_DRILL_CURVES,
   composite_indicator_bars: PRICE_BARS.map((bar, index) => ({
     time: bar.time,
     from_index: index + 1,
@@ -118,6 +133,667 @@ const COMPOSITE_DRILL_CURVES = {
     macz_hist: Number((Math.sin(index / 6) * 0.58).toFixed(3)),
     ott_line: Number((bar.close - 0.45 + Math.cos(index / 9) * 0.16).toFixed(3)),
   })),
+}
+
+type StrategySeriesKind = 'line' | 'histogram'
+type StrategySeriesUnit =
+  | 'price'
+  | 'price_delta'
+  | 'number'
+  | 'ratio'
+  | 'degrees'
+  | 'state'
+  | 'z_score'
+  | 'oscillator'
+
+interface StrategyReferenceLineFixture {
+  value: number
+  label: string
+}
+
+interface StrategySeriesFixtureDefinition {
+  id: string
+  label: string
+  kind: StrategySeriesKind
+  pane_id: string
+  scale_id: string
+  unit: StrategySeriesUnit
+  default_visible: boolean
+  reference_lines?: StrategyReferenceLineFixture[]
+}
+
+interface StandaloneVisualizationFixture {
+  fastAxisLabel: string
+  slowAxisLabel: string
+  representativeLabels: [string, string]
+  series: StrategySeriesFixtureDefinition[]
+}
+
+const STANDALONE_VISUALIZATIONS: Record<string, StandaloneVisualizationFixture> = {
+  Asr: {
+    fastAxisLabel: 'Squeeze period',
+    slowAxisLabel: 'Trend / ER / Z-score periods',
+    representativeLabels: ['Kaufman long stop', 'Z-score'],
+    series: [
+      {
+        id: 'asr_kaufman_long_stop',
+        label: 'Kaufman long stop',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'asr_kaufman_short_stop',
+        label: 'Kaufman short stop',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'asr_squeeze_state',
+        label: 'Squeeze state',
+        kind: 'histogram',
+        pane_id: 'asr_squeeze',
+        scale_id: 'asr_state',
+        unit: 'state',
+        default_visible: true,
+        reference_lines: [{ value: 0.5, label: 'Squeeze on' }],
+      },
+      {
+        id: 'asr_squeeze_momentum',
+        label: 'Squeeze momentum',
+        kind: 'histogram',
+        pane_id: 'asr_squeeze',
+        scale_id: 'asr_momentum',
+        unit: 'price_delta',
+        default_visible: true,
+        reference_lines: [{ value: 0, label: 'Zero' }],
+      },
+      {
+        id: 'asr_linearreg_angle',
+        label: 'Linear-regression angle',
+        kind: 'line',
+        pane_id: 'asr_angle',
+        scale_id: 'asr_angle',
+        unit: 'degrees',
+        default_visible: false,
+        reference_lines: [
+          { value: 15, label: 'Long trend minimum' },
+          { value: -15, label: 'Short trend minimum' },
+          { value: 5, label: 'Mean-reversion upper' },
+          { value: -5, label: 'Mean-reversion lower' },
+        ],
+      },
+      {
+        id: 'asr_efficiency_ratio',
+        label: 'Efficiency ratio',
+        kind: 'line',
+        pane_id: 'asr_efficiency',
+        scale_id: 'asr_efficiency',
+        unit: 'ratio',
+        default_visible: false,
+        reference_lines: [
+          { value: 0.35, label: 'Trend minimum' },
+          { value: 0.22, label: 'Mean-reversion maximum' },
+        ],
+      },
+      {
+        id: 'asr_zscore',
+        label: 'Z-score',
+        kind: 'line',
+        pane_id: 'asr_zscore',
+        scale_id: 'asr_zscore',
+        unit: 'z_score',
+        default_visible: true,
+        reference_lines: [
+          { value: -2, label: 'Long entry' },
+          { value: 2, label: 'Short entry' },
+          { value: -0.5, label: 'Long exit' },
+          { value: 0.5, label: 'Short exit' },
+        ],
+      },
+    ],
+  },
+  Vcc: {
+    fastAxisLabel: 'Squeeze / momentum periods',
+    slowAxisLabel: 'Trend period',
+    representativeLabels: ['Squeeze state', 'Squeeze momentum'],
+    series: [
+      {
+        id: 'vcc_squeeze_state',
+        label: 'Squeeze state',
+        kind: 'histogram',
+        pane_id: 'vcc_state',
+        scale_id: 'vcc_state',
+        unit: 'state',
+        default_visible: true,
+        reference_lines: [{ value: 0.5, label: 'Squeeze on' }],
+      },
+      {
+        id: 'vcc_trend_state',
+        label: 'Trend state',
+        kind: 'line',
+        pane_id: 'vcc_state',
+        scale_id: 'vcc_state',
+        unit: 'state',
+        default_visible: true,
+        reference_lines: [{ value: 0.5, label: 'Bullish threshold' }],
+      },
+      {
+        id: 'vcc_squeeze_momentum',
+        label: 'Squeeze momentum',
+        kind: 'histogram',
+        pane_id: 'vcc_momentum',
+        scale_id: 'vcc_momentum',
+        unit: 'price_delta',
+        default_visible: true,
+        reference_lines: [{ value: 0, label: 'Zero' }],
+      },
+    ],
+  },
+  Vemr: {
+    fastAxisLabel: 'Z-score / BB periods',
+    slowAxisLabel: 'ATR period',
+    representativeLabels: ['Bollinger upper', 'Z-score'],
+    series: [
+      {
+        id: 'vemr_bb_upper',
+        label: 'Bollinger upper',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'vemr_bb_middle',
+        label: 'Bollinger middle',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'vemr_bb_lower',
+        label: 'Bollinger lower',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'vemr_zscore',
+        label: 'Z-score',
+        kind: 'line',
+        pane_id: 'vemr_zscore',
+        scale_id: 'vemr_zscore',
+        unit: 'z_score',
+        default_visible: true,
+        reference_lines: [
+          { value: -2, label: 'Long entry' },
+          { value: 2, label: 'Short entry' },
+          { value: -0.5, label: 'Long exit' },
+          { value: 0.5, label: 'Short exit' },
+        ],
+      },
+      {
+        id: 'vemr_atr',
+        label: 'Average true range',
+        kind: 'line',
+        pane_id: 'vemr_volatility',
+        scale_id: 'vemr_atr',
+        unit: 'price_delta',
+        default_visible: false,
+      },
+    ],
+  },
+  Rocb: {
+    fastAxisLabel: 'Channel period',
+    slowAxisLabel: 'ATR period',
+    representativeLabels: ['Donchian upper', 'Donchian lower'],
+    series: [
+      {
+        id: 'rocb_donchian_upper',
+        label: 'Donchian upper',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'rocb_donchian_lower',
+        label: 'Donchian lower',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'rocb_atr',
+        label: 'Average true range',
+        kind: 'line',
+        pane_id: 'rocb_volatility',
+        scale_id: 'rocb_atr',
+        unit: 'price_delta',
+        default_visible: false,
+      },
+    ],
+  },
+  Vcet: {
+    fastAxisLabel: 'VIDYA short period',
+    slowAxisLabel: 'VIDYA long / Chandelier periods',
+    representativeLabels: ['VIDYA', 'Chandelier long stop'],
+    series: [
+      {
+        id: 'vcet_vidya',
+        label: 'VIDYA',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'vcet_chandelier_long',
+        label: 'Chandelier long stop',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'vcet_chandelier_short',
+        label: 'Chandelier short stop',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+    ],
+  },
+  Mkcs: {
+    fastAxisLabel: 'StdDev period',
+    slowAxisLabel: 'Breakout lookback',
+    representativeLabels: ['Donchian upper', 'Compression ratio'],
+    series: [
+      {
+        id: 'mkcs_donchian_upper',
+        label: 'Donchian upper',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'mkcs_donchian_lower',
+        label: 'Donchian lower',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'mkcs_compression_ratio',
+        label: 'Compression ratio',
+        kind: 'line',
+        pane_id: 'mkcs_compression',
+        scale_id: 'mkcs_compression',
+        unit: 'ratio',
+        default_visible: true,
+        reference_lines: [
+          { value: 0.018, label: 'Compression threshold' },
+          { value: 0.026, label: 'Re-expansion threshold' },
+        ],
+      },
+    ],
+  },
+  Kqsr: {
+    fastAxisLabel: 'Fast oscillator period floor',
+    slowAxisLabel: 'Slow oscillator period floor',
+    representativeLabels: ['PRB upper', 'KDJ J'],
+    series: [
+      {
+        id: 'kqsr_prb_upper',
+        label: 'PRB upper',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'kqsr_prb_lower',
+        label: 'PRB lower',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'kqsr_kdj_j',
+        label: 'KDJ J',
+        kind: 'line',
+        pane_id: 'kqsr_bounded',
+        scale_id: 'kqsr_bounded',
+        unit: 'oscillator',
+        default_visible: true,
+        reference_lines: [
+          { value: 20, label: 'Oversold' },
+          { value: 50, label: 'Neutral' },
+          { value: 80, label: 'Overbought' },
+        ],
+      },
+      {
+        id: 'kqsr_srsi_k',
+        label: 'Stochastic RSI K',
+        kind: 'line',
+        pane_id: 'kqsr_bounded',
+        scale_id: 'kqsr_bounded',
+        unit: 'oscillator',
+        default_visible: true,
+      },
+      {
+        id: 'kqsr_srsi_d',
+        label: 'Stochastic RSI D',
+        kind: 'line',
+        pane_id: 'kqsr_bounded',
+        scale_id: 'kqsr_bounded',
+        unit: 'oscillator',
+        default_visible: true,
+      },
+      {
+        id: 'kqsr_qqe_fast',
+        label: 'QQE fast',
+        kind: 'line',
+        pane_id: 'kqsr_bounded',
+        scale_id: 'kqsr_bounded',
+        unit: 'oscillator',
+        default_visible: true,
+      },
+      {
+        id: 'kqsr_qqe_slow',
+        label: 'QQE slow',
+        kind: 'line',
+        pane_id: 'kqsr_bounded',
+        scale_id: 'kqsr_bounded',
+        unit: 'oscillator',
+        default_visible: true,
+      },
+      {
+        id: 'kqsr_ift_rsi',
+        label: 'Inverse Fisher RSI',
+        kind: 'line',
+        pane_id: 'kqsr_ift',
+        scale_id: 'kqsr_ift',
+        unit: 'ratio',
+        default_visible: true,
+        reference_lines: [{ value: 0, label: 'Zero' }],
+      },
+      {
+        id: 'kqsr_prb_fraction',
+        label: 'PRB band fraction',
+        kind: 'line',
+        pane_id: 'kqsr_prb_fraction',
+        scale_id: 'kqsr_prb_fraction',
+        unit: 'ratio',
+        default_visible: false,
+        reference_lines: [
+          { value: 0.2, label: 'Long gate' },
+          { value: 0.8, label: 'Short gate' },
+        ],
+      },
+    ],
+  },
+  Carm: {
+    fastAxisLabel: 'Fast indicator period floor',
+    slowAxisLabel: 'Slow indicator period floor',
+    representativeLabels: ['OTTO HOTT', 'OTTO regime spread'],
+    series: [
+      {
+        id: 'carm_otto_hott',
+        label: 'OTTO HOTT',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'carm_otto_lott',
+        label: 'OTTO LOTT',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'carm_coppock',
+        label: 'Coppock curve',
+        kind: 'line',
+        pane_id: 'carm_coppock',
+        scale_id: 'carm_coppock',
+        unit: 'oscillator',
+        default_visible: false,
+        reference_lines: [{ value: 0, label: 'Zero' }],
+      },
+      {
+        id: 'carm_ao',
+        label: 'Awesome oscillator',
+        kind: 'histogram',
+        pane_id: 'carm_price_delta',
+        scale_id: 'carm_price_delta',
+        unit: 'price_delta',
+        default_visible: false,
+        reference_lines: [{ value: 0, label: 'Zero' }],
+      },
+      {
+        id: 'carm_apo',
+        label: 'Absolute price oscillator',
+        kind: 'line',
+        pane_id: 'carm_price_delta',
+        scale_id: 'carm_price_delta',
+        unit: 'price_delta',
+        default_visible: false,
+      },
+      {
+        id: 'carm_rocr',
+        label: 'Rate of change ratio',
+        kind: 'line',
+        pane_id: 'carm_rocr',
+        scale_id: 'carm_rocr',
+        unit: 'ratio',
+        default_visible: false,
+        reference_lines: [{ value: 1, label: 'Neutral' }],
+      },
+      {
+        id: 'carm_otto_regime_spread',
+        label: 'OTTO regime spread',
+        kind: 'line',
+        pane_id: 'carm_otto_spread',
+        scale_id: 'carm_otto_spread',
+        unit: 'ratio',
+        default_visible: true,
+        reference_lines: [
+          { value: 0.012, label: 'Bullish threshold' },
+          { value: -0.012, label: 'Bearish threshold' },
+        ],
+      },
+    ],
+  },
+  Kvdf: {
+    fastAxisLabel: 'FVG / fast DTI period floors',
+    slowAxisLabel: 'Keltner / DevStop / DTI period floors',
+    representativeLabels: ['Keltner upper', 'Directional trend index'],
+    series: [
+      {
+        id: 'kvdf_keltner_upper',
+        label: 'Keltner upper',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'kvdf_keltner_middle',
+        label: 'Keltner middle',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'kvdf_keltner_lower',
+        label: 'Keltner lower',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'kvdf_vwap',
+        label: 'VWAP',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'kvdf_devstop_long',
+        label: 'DevStop long',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: false,
+      },
+      {
+        id: 'kvdf_devstop_short',
+        label: 'DevStop short',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: false,
+      },
+      {
+        id: 'kvdf_fvg_upper',
+        label: 'FVG upper trail',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: false,
+      },
+      {
+        id: 'kvdf_fvg_lower',
+        label: 'FVG lower trail',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: false,
+      },
+      {
+        id: 'kvdf_dti',
+        label: 'Directional trend index',
+        kind: 'histogram',
+        pane_id: 'kvdf_dti',
+        scale_id: 'kvdf_dti',
+        unit: 'oscillator',
+        default_visible: true,
+        reference_lines: [
+          { value: -20, label: 'Bearish threshold' },
+          { value: 0, label: 'Zero' },
+          { value: 20, label: 'Bullish threshold' },
+        ],
+      },
+    ],
+  },
+  Cdmc: {
+    fastAxisLabel: 'DPO period floor',
+    slowAxisLabel: 'Cycle / decycler period floors',
+    representativeLabels: ['MAMA', 'Detrended price oscillator'],
+    series: [
+      {
+        id: 'cdmc_mama',
+        label: 'MAMA',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'cdmc_fama',
+        label: 'FAMA',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'cdmc_decycler',
+        label: 'Decycler',
+        kind: 'line',
+        pane_id: 'price',
+        scale_id: 'price',
+        unit: 'price',
+        default_visible: true,
+      },
+      {
+        id: 'cdmc_dpo',
+        label: 'Detrended price oscillator',
+        kind: 'histogram',
+        pane_id: 'cdmc_dpo',
+        scale_id: 'cdmc_dpo',
+        unit: 'price_delta',
+        default_visible: true,
+        reference_lines: [{ value: 0, label: 'Zero' }],
+      },
+      {
+        id: 'cdmc_cycle_angle',
+        label: 'Correlation-cycle angle',
+        kind: 'line',
+        pane_id: 'cdmc_cycle',
+        scale_id: 'cdmc_angle',
+        unit: 'degrees',
+        default_visible: true,
+        reference_lines: [
+          { value: -25, label: 'Bearish phase' },
+          { value: 25, label: 'Bullish phase' },
+        ],
+      },
+      {
+        id: 'cdmc_cycle_state',
+        label: 'Correlation-cycle state',
+        kind: 'histogram',
+        pane_id: 'cdmc_cycle',
+        scale_id: 'cdmc_state',
+        unit: 'state',
+        default_visible: true,
+        reference_lines: [{ value: 0, label: 'Regime boundary' }],
+      },
+    ],
+  },
 }
 
 const STRATEGIES: ConventionalStrategyCase[] = [
@@ -213,70 +889,70 @@ const STRATEGIES: ConventionalStrategyCase[] = [
     label: 'Risk Overlay Channel Breakout',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Vcet',
     label: 'VIDYA Chandelier Exit Trend',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Kqsr',
     label: 'KDJ QQE Stochastic Reversion',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Carm',
     label: 'Coppock AO Relative Momentum',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Kvdf',
     label: 'Keltner VWAP Directional Flow',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Mkcs',
     label: 'Market Kurtosis Compression Setup',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Cdmc',
     label: 'Cycle Decycler MAMA Composite',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Asr',
     label: 'Adaptive Squeeze Regime',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Vcc',
     label: 'Volatility Compression Confirmation',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'Vemr',
     label: 'Volatility Expansion Mean Reversion',
     optimizationCommand: 'run_composite_cpu_optimization',
     validationCommand: 'run_composite_validation',
-    expectsHeatmap: false,
+    expectsHeatmap: true,
   },
   {
     kind: 'CompositeCpu',
@@ -303,23 +979,141 @@ function sanitizeFilePart(value: string): string {
   return String(value || '').replace(/[^a-z0-9_-]+/gi, '_').toLowerCase()
 }
 
-function buildHeatmapFixture(bins = 16): Record<string, unknown> {
-  const values = Array.from({ length: bins * bins }, (_, index) => {
+const CONVENTIONAL_HEATMAP_BINS = 16
+const STRATEGY_BUNDLE_START_INDEX = 6
+
+function heatmapPeriodAt(min: number, max: number, index: number, bins: number): number {
+  if (bins <= 1) return min
+  return Math.round(min + ((max - min) * index) / (bins - 1))
+}
+
+function buildHeatmapFixture(bins = CONVENTIONAL_HEATMAP_BINS): Record<string, unknown> {
+  const fastMin = 5
+  const fastMax = 20
+  const slowMin = 20
+  const slowMax = 35
+  const values: Array<number | null> = Array.from({ length: bins * bins }, (_, index) => {
     const logicalRow = Math.floor(index / bins)
     const col = index % bins
-    if (logicalRow <= col) return null
+    const fast = heatmapPeriodAt(fastMin, fastMax, col, bins)
+    const slow = heatmapPeriodAt(slowMin, slowMax, logicalRow, bins)
+    if (fast >= slow) return null
     const ridge = Math.cos((logicalRow - col) / 4) * 0.16
     const slope = (logicalRow / Math.max(1, bins - 1)) * 0.11 - (col / Math.max(1, bins - 1)) * 0.05
     return Number((ridge + slope).toFixed(4))
   })
+  const meanValues = values.map((value, index) => (
+    value == null
+      ? null
+      : Number((value - Math.abs(Math.sin(index / 7)) * 0.012).toFixed(4))
+  ))
+  const sampleCounts = values.map((value, index) => (
+    value == null ? 0 : 1 + (index % 3)
+  ))
   return {
     bins_fast: bins,
     bins_slow: bins,
-    fast_min: 5,
-    fast_max: 20,
-    slow_min: 20,
-    slow_max: 35,
+    fast_min: fastMin,
+    fast_max: fastMax,
+    slow_min: slowMin,
+    slow_max: slowMax,
+    cell_order: 'slow_fast_row_major_v1',
     values,
+    mean_values: meanValues,
+    sample_counts: sampleCounts,
+  }
+}
+
+function strategySeriesFixtureValue(
+  definition: StrategySeriesFixtureDefinition,
+  index: number,
+  seriesIndex: number,
+): number | null {
+  const warmup = STRATEGY_BUNDLE_START_INDEX + (seriesIndex % 4)
+  if (index < warmup) return null
+  const bar = PRICE_BARS[index]
+  if (!bar) return null
+  const phase = index / (4.5 + (seriesIndex % 4)) + seriesIndex * 0.37
+  const wave = Math.sin(phase)
+  const label = definition.label.toLowerCase()
+  switch (definition.unit) {
+    case 'price': {
+      const directionalOffset =
+        label.includes('upper') || label.includes('short stop') || label.includes('lott')
+          ? 0.72
+          : label.includes('lower') || label.includes('long stop') || label.includes('hott')
+            ? -0.72
+            : 0
+      return Number((bar.close + directionalOffset + wave * 0.16).toFixed(4))
+    }
+    case 'price_delta':
+      if (definition.id.endsWith('_atr')) {
+        return Number((0.48 + Math.abs(wave) * 0.74).toFixed(4))
+      }
+      return Number((wave * 0.82).toFixed(4))
+    case 'degrees':
+      return Number((wave * 38).toFixed(3))
+    case 'state':
+      if (definition.id === 'cdmc_cycle_state') return index % 14 < 7 ? 1 : -1
+      return index % 12 < 6 ? 1 : 0
+    case 'z_score':
+      return Number((wave * 2.35).toFixed(4))
+    case 'oscillator':
+      if (definition.id.startsWith('kqsr_')) {
+        return Number((50 + wave * 36).toFixed(3))
+      }
+      return Number((wave * 34).toFixed(3))
+    case 'ratio':
+      if (definition.id === 'carm_rocr') return Number((1 + wave * 0.045).toFixed(5))
+      if (definition.id === 'mkcs_compression_ratio') {
+        return Number((0.021 + wave * 0.008).toFixed(5))
+      }
+      if (definition.id === 'kqsr_prb_fraction') {
+        return Number((0.5 + wave * 0.42).toFixed(4))
+      }
+      if (definition.id === 'kqsr_ift_rsi') return Number((wave * 0.86).toFixed(4))
+      if (definition.id === 'carm_otto_regime_spread') {
+        return Number((wave * 0.021).toFixed(5))
+      }
+      return Number((0.48 + wave * 0.32).toFixed(4))
+    case 'number':
+      return Number((wave * 10).toFixed(4))
+  }
+  return null
+}
+
+function buildStandaloneDrillCurves(strategyKind: string): Record<string, unknown> {
+  const fixture = STANDALONE_VISUALIZATIONS[strategyKind]
+  if (!fixture) throw new Error(`Missing standalone visualization fixture for ${strategyKind}`)
+  return {
+    ...BASE_DRILL_CURVES,
+    strategy_indicator_bundle: {
+      strategy_kind: strategyKind,
+      aggregation: 'last_finite',
+      bars: PRICE_BARS.slice(STRATEGY_BUNDLE_START_INDEX).map((bar, index) => ({
+        time: bar.time * 1000,
+        from_index: index + STRATEGY_BUNDLE_START_INDEX,
+        to_index: index + STRATEGY_BUNDLE_START_INDEX,
+      })),
+      series: fixture.series.map((definition, seriesIndex) => ({
+        id: definition.id,
+        label: definition.label,
+        kind: definition.kind,
+        pane_id: definition.pane_id,
+        scale_id: definition.scale_id,
+        unit: definition.unit,
+        default_visible: definition.default_visible,
+        values: PRICE_BARS.slice(STRATEGY_BUNDLE_START_INDEX).map((_, index) =>
+          strategySeriesFixtureValue(
+            definition,
+            index + STRATEGY_BUNDLE_START_INDEX,
+            seriesIndex,
+          )),
+        ...(definition.reference_lines?.length
+          ? { reference_lines: definition.reference_lines.map((line) => ({ ...line })) }
+          : {}),
+      })),
+    },
   }
 }
 
@@ -382,7 +1176,9 @@ function buildDoubleMaRunResult(): Record<string, unknown> {
   }
 }
 
-function buildCompositeCpuRunResult(): Record<string, unknown> {
+function buildCompositeCpuRunResult(strategyKind = 'CompositeCpu'): Record<string, unknown> {
+  const standalone = STANDALONE_VISUALIZATIONS[strategyKind]
+  const strategyCacheKey = sanitizeFilePart(strategyKind)
   return {
     best_params: COMPOSITE_PARAMS,
     best_metrics: BASE_METRICS,
@@ -394,9 +1190,10 @@ function buildCompositeCpuRunResult(): Record<string, unknown> {
       ],
     ],
     runtime_ms: 96,
-    backend_used: 'cpu',
-    backend_route: 'CompositeCpu',
-    followup_cache_key: 'qa-composite-cpu-cache',
+    backend_used: 'Cpu',
+    backend_route: standalone ? 'CpuOnly' : 'CompositeCpu',
+    followup_cache_key: `qa-${strategyCacheKey}-cache`,
+    ...(standalone ? { heatmap: buildHeatmapFixture() } : {}),
   }
 }
 
@@ -461,12 +1258,13 @@ function buildValidationResult(route: string): Record<string, unknown> {
   }
 }
 
-function conventionalScenario(): MockTauriScenario {
+function conventionalScenario(strategy: ConventionalStrategyCase): MockTauriScenario {
+  const standalone = STANDALONE_VISUALIZATIONS[strategy.kind]
   return {
     ...emptyAppScenario,
-    name: 'conventional-strategy-workflow-ready',
+    name: `conventional-strategy-workflow-${sanitizeFilePart(strategy.kind)}`,
     family: 'optimization',
-    description: 'Every conventional strategy can load data, optimize, inspect visuals, validate, and enter analysis.',
+    description: `${strategy.label} can load data, optimize, inspect contract-faithful visuals, validate, and enter analysis.`,
     commandResults: {
       ...emptyAppScenario.commandResults,
       load_price_data: {
@@ -495,10 +1293,12 @@ function conventionalScenario(): MockTauriScenario {
         },
       },
       run_double_ma_optimization: buildDoubleMaRunResult(),
-      run_composite_cpu_optimization: buildCompositeCpuRunResult(),
+      run_composite_cpu_optimization: buildCompositeCpuRunResult(strategy.kind),
       run_composite_mo_optimization: buildCompositeMoRunResult(),
-      compute_double_ma_drilldown: BASE_DRILL_CURVES,
-      compute_composite_cpu_drilldown: COMPOSITE_DRILL_CURVES,
+      compute_double_ma_drilldown: DOUBLE_MA_DRILL_CURVES,
+      compute_composite_cpu_drilldown: standalone
+        ? buildStandaloneDrillCurves(strategy.kind)
+        : LEGACY_COMPOSITE_DRILL_CURVES,
       compute_double_ma_local_stability: {
         base: DOUBLE_PARAMS,
         objective: 'Sharpe',
@@ -519,12 +1319,39 @@ function conventionalScenario(): MockTauriScenario {
       },
       get_price_bars: PRICE_BARS,
       run_double_ma_validation: buildValidationResult('CpuOnly'),
-      run_composite_validation: buildValidationResult('CompositeCpu'),
+      run_composite_validation: buildValidationResult(standalone ? 'CpuOnly' : 'CompositeCpu'),
       save_run_artifact: {
         path: 'C:/runs/vectorgrid_run_conventional_strategy_qa.json',
         bytes: 73728,
         artifact_updated: true,
       },
+    },
+  }
+}
+
+function requireStrategyCase(strategyKind: string): ConventionalStrategyCase {
+  const strategy = STRATEGIES.find((candidate) => candidate.kind === strategyKind)
+  if (!strategy) throw new Error(`Missing conventional strategy case for ${strategyKind}`)
+  return strategy
+}
+
+function standaloneStrategySwitchScenario(): MockTauriScenario {
+  const base = conventionalScenario(requireStrategyCase('Vcc'))
+  return {
+    ...base,
+    name: 'standalone-native-series-switch-vcc-vemr',
+    description:
+      'A CPU-fallback browser fixture switches between two GPU-capable standalone strategy contracts without retaining stale indicator panes.',
+    commandResults: {
+      ...base.commandResults,
+      run_composite_cpu_optimization: mockTauriSequence(
+        buildCompositeCpuRunResult('Vcc'),
+        buildCompositeCpuRunResult('Vemr'),
+      ),
+      compute_composite_cpu_drilldown: mockTauriSequence(
+        buildStandaloneDrillCurves('Vcc'),
+        buildStandaloneDrillCurves('Vemr'),
+      ),
     },
   }
 }
@@ -535,6 +1362,18 @@ async function loadData(page: Page): Promise<void> {
   await expect
     .poll(async () => (await readTauriInvokeLog(page)).some((entry) => entry.command === 'load_price_data'))
     .toBe(true)
+}
+
+async function configureHeatmapBins(page: Page, bins: number): Promise<void> {
+  await action(page, 'shell.controlsTab.advanced').click()
+  await expect(page.locator('#controls_panel_advanced')).toBeVisible()
+  const input = page.locator('#vueHeatmapBins')
+  await expect(input).toBeVisible()
+  await input.fill(String(bins))
+  await input.blur()
+  await expect(input).toHaveValue(String(bins))
+  await action(page, 'shell.controlsTab.optimize').click()
+  await expect(page.locator('#controls_panel_opt')).toBeVisible()
 }
 
 async function canvasPaintSummary(page: Page, selector: string): Promise<{
@@ -608,13 +1447,17 @@ test.describe('conventional strategy workflow matrix', () => {
     }) => {
       const guard = installQaGuards(page)
       const evidenceDir = await ensureEvidenceDir()
+      const standaloneVisualization = STANDALONE_VISUALIZATIONS[strategy.kind]
       await page.setViewportSize({ width: 1600, height: 1000 })
-      await gotoMockedShellWithScenario(page, context, conventionalScenario())
+      await gotoMockedShellWithScenario(page, context, conventionalScenario(strategy))
 
       await loadData(page)
       await action(page, 'shell.workflowStep.optimize').click()
       await page.locator('#vueStrategyKind').selectOption(strategy.kind)
       await strategy.setup?.(page)
+      if (strategy.expectsHeatmap) {
+        await configureHeatmapBins(page, CONVENTIONAL_HEATMAP_BINS)
+      }
 
       await expect(action(page, 'optimize.run')).toBeEnabled()
       await action(page, 'optimize.run').click()
@@ -626,6 +1469,12 @@ test.describe('conventional strategy workflow matrix', () => {
       expect(optimizationEntry?.args?.req, `${strategy.kind} optimization request`).toMatchObject({
         strategy_kind: strategy.kind,
       })
+      if (strategy.expectsHeatmap) {
+        expect(
+          (optimizationEntry?.args?.req as Record<string, unknown> | undefined)?.heatmap_bins,
+          `${strategy.kind} requested heatmap bins`,
+        ).toBe(CONVENTIONAL_HEATMAP_BINS)
+      }
       if (strategy.kind === 'DynamicDoubleMa') {
         expect((await readTauriInvokeLog(page)).some((entry) => entry.command === 'preview_dynamic_double_ma_strategy_ir_json')).toBe(true)
       }
@@ -646,13 +1495,40 @@ test.describe('conventional strategy workflow matrix', () => {
       if (strategy.expectsHeatmap) {
         await action(page, 'shell.resultsTab.heatmap').click()
         await expect(page.locator('#results_panel_heatmap')).toBeVisible()
-        await expect(page.locator('#heatmapCanvasStackVue')).toBeVisible()
-        await expect(page.locator('#heatmapMetaVue')).toContainText(/heatmap/i)
+        const heatmapStack = page.locator('#heatmapCanvasStackVue')
+        await expect(heatmapStack).toBeVisible()
+        await expect(heatmapStack).toHaveAttribute('data-render-ready', 'true')
+        await expect(heatmapStack).toHaveAttribute(
+          'data-total-cells',
+          String(CONVENTIONAL_HEATMAP_BINS * CONVENTIONAL_HEATMAP_BINS),
+        )
+        await expect(heatmapStack).toHaveAttribute('data-finite-cells', /^[1-9]\d*$/)
+        if (standaloneVisualization) {
+          await expect(page.locator('#heatmapMetaVue')).toContainText(
+            `bins=${CONVENTIONAL_HEATMAP_BINS}x${CONVENTIONAL_HEATMAP_BINS}`,
+          )
+          const expectedAxisSummary =
+            `${standaloneVisualization.fastAxisLabel} 5-20; ${standaloneVisualization.slowAxisLabel} 20-35`
+          await expect(heatmapStack).toHaveAttribute('data-axis-summary', expectedAxisSummary)
+          await expect(page.locator('#heatmapMetaVue')).toContainText(
+            standaloneVisualization.fastAxisLabel,
+          )
+          await expect(page.locator('#heatmapMetaVue')).toContainText(
+            standaloneVisualization.slowAxisLabel,
+          )
+          await expect(page.locator('#vueHeatmapViewMode option[value="3d"]')).toBeDisabled()
+          await expect(page.locator('#heatmap3dAvailabilityReasonVue')).toContainText(
+            /3D slices are unavailable for standalone strategy heatmaps/i,
+          )
+          await expect(page.locator('#vueHeatmap2dSource')).toHaveCount(0)
+        }
         await expect.poll(async () => heatmapPainted(page)).toBe(true)
         heatmapSummary = {
           expected: true,
           painted: await heatmapPainted(page),
           meta: await page.locator('#heatmapMetaVue').innerText(),
+          axisSummary: await heatmapStack.getAttribute('data-axis-summary'),
+          finiteCells: await heatmapStack.getAttribute('data-finite-cells'),
         }
         await page.locator('#results_panel_heatmap').screenshot({
           path: path.join(evidenceDir, `${sanitizeFilePart(strategy.kind)}-heatmap.png`),
@@ -663,19 +1539,106 @@ test.describe('conventional strategy workflow matrix', () => {
       await action(page, 'top.selected.openCandidateDetail').click()
       await expect(page.locator('#results_panel_drill')).toBeVisible()
       await expect(page.locator('#drillTvChartVue')).toBeVisible()
-      await expect(page.locator('#drillTvChartMetaVue')).toContainText(/candles=72/)
-      await expect(page.locator('#drillTvChartMetaVue')).toContainText(/fast=72/)
-      await expect(page.locator('#drillTvChartMetaVue')).toContainText(/slow=72/)
-      await expect(page.locator('#drillTvChartMetaVue')).toContainText(/entries=3/)
-      await expect(page.locator('#drillTvChartMetaVue')).toContainText(/exits=3/)
-      await expect(page.locator('#drillTvChartMetaVue')).toContainText(/markers=6/)
-      if (strategy.optimizationCommand !== 'run_double_ma_optimization' || strategy.expectsPareto) {
-        await expect(page.locator('#drillTvChartMetaVue')).toContainText(/halftrend=72/)
-        await expect(page.locator('#drillTvChartMetaVue')).toContainText(/ott=72/)
-        await expect(page.locator('#drillTvChartMetaVue')).toContainText(/macz=72/)
-        await expect(page.locator('.chartLegendOverlay').getByText(/HalfTrend/)).toBeVisible()
-        await expect(page.locator('.chartLegendOverlay').getByText('OTT')).toBeVisible()
-        await expect(page.locator('.chartLegendOverlay').getByText('MAC-Z')).toBeVisible()
+      const chartMeta = page.locator('#drillTvChartMetaVue')
+      const chartFrame = page.locator('#results_panel_drill .tvChartFrame')
+      const chartLegend = page.locator('#results_panel_drill .chartLegendOverlay')
+      await expect(chartMeta).toContainText(/candles=72/)
+      await expect(chartMeta).toContainText(/entries=3/)
+      await expect(chartMeta).toContainText(/exits=3/)
+      await expect(chartMeta).toContainText(/markers=6/)
+      if (standaloneVisualization) {
+        const defaultVisibleSeries = standaloneVisualization.series.filter(
+          (series) => series.default_visible,
+        )
+        const activeNativePaneCount =
+          1 + new Set(
+            defaultVisibleSeries
+              .map((series) => series.pane_id)
+              .filter((paneId) => paneId !== 'price'),
+          ).size
+        const controls = page.locator(
+          `details[data-testid="native-indicator-controls"][data-native-strategy="${strategy.kind}"]`,
+        )
+        await expect(controls).toBeVisible()
+        await expect(chartFrame).toHaveAttribute('data-native-strategy', strategy.kind)
+        await expect(chartFrame).toHaveAttribute(
+          'data-native-series-visible',
+          String(defaultVisibleSeries.length),
+        )
+        await expect(chartFrame).toHaveAttribute(
+          'data-native-series-total',
+          String(standaloneVisualization.series.length),
+        )
+        await expect(chartFrame).toHaveAttribute(
+          'data-native-pane-count',
+          String(activeNativePaneCount),
+        )
+        const checkboxes = controls.locator(
+          'input[type="checkbox"][data-indicator-series-id]',
+        )
+        await expect(checkboxes).toHaveCount(standaloneVisualization.series.length)
+        await expect(
+          controls.locator('input[type="checkbox"][data-indicator-series-id]:checked'),
+        ).toHaveCount(defaultVisibleSeries.length)
+        const firstRepresentativeDefinition = standaloneVisualization.series.find(
+          (series) => series.label === standaloneVisualization.representativeLabels[0],
+        )
+        const secondRepresentativeDefinition = standaloneVisualization.series.find(
+          (series) => series.label === standaloneVisualization.representativeLabels[1],
+        )
+        expect(firstRepresentativeDefinition).toBeTruthy()
+        expect(secondRepresentativeDefinition).toBeTruthy()
+        const firstRepresentative = controls.locator(
+          `[data-indicator-series-id="${firstRepresentativeDefinition?.id || ''}"]`,
+        )
+        if (!(await firstRepresentative.isVisible())) {
+          await controls.locator('summary').click()
+        }
+        await expect(firstRepresentative).toBeVisible()
+        await expect(firstRepresentative).toHaveAttribute('aria-controls', 'drillTvChartVue')
+        await expect(
+          controls.getByRole('checkbox', {
+            name: standaloneVisualization.representativeLabels[0],
+            exact: true,
+          }),
+        ).toHaveAttribute(
+          'data-indicator-series-id',
+          firstRepresentativeDefinition?.id || '',
+        )
+        await expect(
+          controls.locator(
+            `[data-indicator-series-id="${secondRepresentativeDefinition?.id || ''}"]`,
+          ),
+        ).toBeVisible()
+        await expect(
+          controls.getByRole('checkbox', {
+            name: standaloneVisualization.representativeLabels[1],
+            exact: true,
+          }),
+        ).toHaveAttribute(
+          'data-indicator-series-id',
+          secondRepresentativeDefinition?.id || '',
+        )
+        await expect(
+          chartLegend.getByText(standaloneVisualization.representativeLabels[0], {
+            exact: true,
+          }),
+        ).toBeVisible()
+        await expect(chartMeta).not.toContainText(/fast=|slow=|halftrend=|ott=|macz=/i)
+        await expect(chartLegend).not.toContainText(
+          /Fast MA|Slow MA|HalfTrend|MAC-Z|\bOTT\b/i,
+        )
+      } else {
+        await expect(chartMeta).toContainText(/fast=72/)
+        await expect(chartMeta).toContainText(/slow=72/)
+        if (strategy.optimizationCommand !== 'run_double_ma_optimization' || strategy.expectsPareto) {
+          await expect(chartMeta).toContainText(/halftrend=72/)
+          await expect(chartMeta).toContainText(/ott=72/)
+          await expect(chartMeta).toContainText(/macz=72/)
+          await expect(chartLegend.getByText(/HalfTrend/)).toBeVisible()
+          await expect(chartLegend.getByText('OTT')).toBeVisible()
+          await expect(chartLegend.getByText('MAC-Z')).toBeVisible()
+        }
       }
       await expect
         .poll(async () => {
@@ -753,4 +1716,108 @@ test.describe('conventional strategy workflow matrix', () => {
       await guard.assertClean()
     })
   }
+
+  test('switches VCC to VEMR without stale native panes and toggles the hidden ATR pane @workflow @visual', async ({
+    page,
+    context,
+  }) => {
+    const guard = installQaGuards(page)
+    await page.setViewportSize({ width: 1600, height: 1000 })
+    await gotoMockedShellWithScenario(page, context, standaloneStrategySwitchScenario())
+    await loadData(page)
+
+    await action(page, 'shell.workflowStep.optimize').click()
+    await page.locator('#vueStrategyKind').selectOption('Vcc')
+    await configureHeatmapBins(page, CONVENTIONAL_HEATMAP_BINS)
+    await action(page, 'optimize.run').click()
+    await expect
+      .poll(async () =>
+        (await readTauriInvokeLog(page)).filter(
+          (entry) => entry.command === 'run_composite_cpu_optimization',
+        ).length)
+      .toBe(1)
+    await action(page, 'shell.resultsTab.top').click()
+    await action(page, 'top.selected.openCandidateDetail').click()
+
+    const chartFrame = page.locator('#results_panel_drill .tvChartFrame')
+    await expect(chartFrame).toHaveAttribute('data-chart-ready', 'true')
+    await expect(chartFrame).toHaveAttribute('data-native-strategy', 'Vcc')
+    await expect(chartFrame).toHaveAttribute('data-native-series-visible', '3')
+    await expect(chartFrame).toHaveAttribute('data-native-series-total', '3')
+    await expect(chartFrame).toHaveAttribute('data-native-pane-count', '3')
+    await expect(
+      page.locator(
+        'details[data-testid="native-indicator-controls"][data-native-strategy="Vcc"]',
+      ),
+    ).toBeVisible()
+
+    await action(page, 'shell.workflowStep.optimize').click()
+    await page.locator('#vueStrategyKind').selectOption('Vemr')
+    await action(page, 'optimize.run').click()
+    await expect
+      .poll(async () =>
+        (await readTauriInvokeLog(page)).filter(
+          (entry) => entry.command === 'run_composite_cpu_optimization',
+        ).length)
+      .toBe(2)
+    await action(page, 'shell.resultsTab.top').click()
+    await expect(action(page, 'top.selected.openCandidateDetail')).toBeEnabled()
+    await action(page, 'top.selected.openCandidateDetail').click()
+
+    await expect(chartFrame).toHaveAttribute('data-chart-ready', 'true')
+    await expect(chartFrame).toHaveAttribute('data-native-strategy', 'Vemr')
+    await expect(chartFrame).toHaveAttribute('data-native-series-visible', '4')
+    await expect(chartFrame).toHaveAttribute('data-native-series-total', '5')
+    await expect(chartFrame).toHaveAttribute('data-native-pane-count', '2')
+    await expect(
+      page.locator(
+        'details[data-testid="native-indicator-controls"][data-native-strategy="Vcc"]',
+      ),
+    ).toHaveCount(0)
+    await expect(page.locator('#results_panel_drill .chartLegendOverlay')).not.toContainText(
+      /Squeeze state|Squeeze momentum|Trend state/,
+    )
+
+    const vemrControls = page.locator(
+      'details[data-testid="native-indicator-controls"][data-native-strategy="Vemr"]',
+    )
+    await expect(vemrControls).toBeVisible()
+    const atrToggle = vemrControls.locator(
+      '[data-indicator-series-id="vemr_atr"]',
+    )
+    if (!(await atrToggle.isVisible())) {
+      await vemrControls.locator('summary').click()
+    }
+    await expect(atrToggle).toBeVisible()
+    await expect(atrToggle).not.toBeChecked()
+    await atrToggle.check()
+    await expect(atrToggle).toBeChecked()
+    await expect(chartFrame).toHaveAttribute('data-native-series-visible', '5')
+    await expect(chartFrame).toHaveAttribute('data-native-pane-count', '3')
+    await expect(chartFrame).toHaveAttribute('data-chart-ready', 'true')
+    await expect(
+      page.locator('#results_panel_drill .chartLegendOverlay').getByText(
+        'Average true range',
+        { exact: true },
+      ),
+    ).toBeVisible()
+    await expect
+      .poll(async () => {
+        const summary = await canvasPaintSummary(page, '#drillTvChartVue')
+        return summary.canvasCount > 0 && summary.paintedCanvasCount > 0
+      })
+      .toBe(true)
+
+    await atrToggle.uncheck()
+    await expect(atrToggle).not.toBeChecked()
+    await expect(chartFrame).toHaveAttribute('data-native-series-visible', '4')
+    await expect(chartFrame).toHaveAttribute('data-native-pane-count', '2')
+    await expect(chartFrame).toHaveAttribute('data-chart-ready', 'true')
+    await expect(
+      page.locator('#results_panel_drill .chartLegendOverlay'),
+    ).not.toContainText('Average true range')
+    await expectNoHorizontalDocumentOverflow(page)
+    await expectNoStuckBusyState(page)
+    await guard.assertClean()
+  })
 })

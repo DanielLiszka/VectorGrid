@@ -51,9 +51,81 @@ pub(crate) fn sanitize_filename_component(raw: &str) -> String {
     }
 }
 
+#[cfg(windows)]
+fn metadata_is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn ensure_plain_report_directory(path: &Path) -> Result<(), String> {
+    let inspect = || -> Result<(), String> {
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+            format!(
+                "failed to inspect report directory {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink()
+            || metadata_is_reparse_point(&metadata)
+            || !metadata.is_dir()
+        {
+            return Err(format!(
+                "report directory must be an ordinary non-reparse directory: {}",
+                path.display()
+            ));
+        }
+        Ok(())
+    };
+
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => inspect(),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            std::fs::create_dir_all(path).map_err(|error| {
+                format!(
+                    "failed to create report directory {}: {error}",
+                    path.display()
+                )
+            })?;
+            // Reinspect after creation so a path that resolved to a symlink,
+            // junction, or other reparse point during creation is rejected.
+            inspect()
+        }
+        Err(error) => Err(format!(
+            "failed to inspect report directory {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 pub(super) fn reports_dir_for_base(base: &Path) -> Result<PathBuf, String> {
     let dir = base.join("reports");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    ensure_plain_report_directory(&dir)?;
+
+    let canonical_base = std::fs::canonicalize(base).map_err(|error| {
+        format!(
+            "failed to canonicalize report base directory {}: {error}",
+            base.display()
+        )
+    })?;
+    let canonical_dir = std::fs::canonicalize(&dir).map_err(|error| {
+        format!(
+            "failed to canonicalize report directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    if canonical_dir.parent() != Some(canonical_base.as_path()) {
+        return Err(format!(
+            "report directory escaped its configured base directory: {}",
+            dir.display()
+        ));
+    }
     Ok(dir)
 }
 
@@ -149,8 +221,20 @@ pub(super) fn persist_report_bytes_for_base(
     base: &Path,
     bytes: &[u8],
 ) -> Result<PathBuf, String> {
-    let dir = reports_dir_for_base(base)?;
     let base_name = report_base_name(report);
+    persist_named_report_bytes_for_base(&base_name, base, bytes)
+}
+
+pub(super) fn persist_named_report_bytes_for_base(
+    raw_base_name: &str,
+    base: &Path,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let dir = reports_dir_for_base(base)?;
+    let base_name = format!(
+        "vectorgrid_{}",
+        sanitize_filename_component(raw_base_name.trim_start_matches("vectorgrid_"))
+    );
     let temp_path = report_temp_path(&dir, &base_name);
     write_report_temp_file(&temp_path, bytes)?;
 
@@ -286,6 +370,27 @@ mod tests {
     }
 
     #[test]
+    fn persist_named_report_bytes_sanitizes_and_scopes_the_filename() {
+        let base = make_temp_dir("persist_named_report");
+        let saved = persist_named_report_bytes_for_base(
+            "vcet_temporal:2026/08/02",
+            &base,
+            b"temporal workbook",
+        )
+        .expect("persist named report");
+
+        assert_eq!(saved.parent(), Some(base.join("reports").as_path()));
+        assert_eq!(
+            saved.file_name().and_then(|name| name.to_str()),
+            Some("vectorgrid_vcet_temporal-2026_08_02.xlsx")
+        );
+        assert_eq!(
+            std::fs::read(saved).expect("read named report"),
+            b"temporal workbook"
+        );
+    }
+
+    #[test]
     fn persist_report_bytes_for_base_concurrent_same_timestamp_uses_distinct_files() {
         let base = Arc::new(make_temp_dir("persist_report_concurrent"));
         let report = Arc::new(serde_json::json!({ "ts": "2026-04-10T23:59:59Z" }));
@@ -329,6 +434,61 @@ mod tests {
         std::fs::write(base.join("reports"), b"not a directory").expect("reports file");
 
         let err = reports_dir_for_base(&base).expect_err("reports file should block dir creation");
-        assert!(!err.is_empty());
+        assert!(err.contains("ordinary non-reparse directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_dir_for_base_rejects_preexisting_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let base = make_temp_dir("reports_dir_for_base_symlink");
+        let outside = make_temp_dir("reports_dir_for_base_symlink_target");
+        let reports = base.join("reports");
+        symlink(&outside, &reports).expect("create reports symlink");
+
+        let err = reports_dir_for_base(&base).expect_err("reports symlink must fail closed");
+        assert!(err.contains("ordinary non-reparse directory"));
+        assert_eq!(
+            std::fs::read_dir(&outside)
+                .expect("read untouched target")
+                .count(),
+            0
+        );
+
+        std::fs::remove_file(&reports).expect("remove reports symlink");
+        std::fs::remove_dir_all(base).expect("remove symlink base");
+        std::fs::remove_dir_all(outside).expect("remove symlink target");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reports_dir_for_base_rejects_preexisting_reparse_escape() {
+        use std::os::windows::fs::symlink_dir;
+
+        let base = make_temp_dir("reports_dir_for_base_reparse");
+        let outside = make_temp_dir("reports_dir_for_base_reparse_target");
+        let reports = base.join("reports");
+        if let Err(error) = symlink_dir(&outside, &reports) {
+            eprintln!(
+                "skipping reports reparse test because symlink creation is unavailable: {error}"
+            );
+            std::fs::remove_dir_all(base).expect("remove reparse base");
+            std::fs::remove_dir_all(outside).expect("remove reparse target");
+            return;
+        }
+
+        let err = reports_dir_for_base(&base).expect_err("reports reparse point must fail closed");
+        assert!(err.contains("ordinary non-reparse directory"));
+        assert_eq!(
+            std::fs::read_dir(&outside)
+                .expect("read untouched target")
+                .count(),
+            0
+        );
+
+        std::fs::remove_dir(&reports).expect("remove reports reparse point");
+        std::fs::remove_dir_all(base).expect("remove reparse base");
+        std::fs::remove_dir_all(outside).expect("remove reparse target");
     }
 }

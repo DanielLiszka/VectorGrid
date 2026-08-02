@@ -971,6 +971,74 @@ describe("TopWorkspacePanel", () => {
     expect(resultsSpy).toHaveBeenCalledWith("overview");
   });
 
+  it("routes the no-data empty state to the Data workspace without adding another live region", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflowStore = useWorkflowStore(pinia);
+    workflowStore.selectResultsTab("top", { persist: false });
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const emptyState = document.querySelector(".topEmptyState");
+    expect(emptyState?.classList.contains("appEmptyState")).toBe(true);
+    expect(emptyState?.querySelector('[role="status"]')).toBeNull();
+    expect(document.body.textContent || "").toContain(
+      "Next: open Data and load a dataset.",
+    );
+
+    const openDataButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => String(button.textContent || "").trim() === "Open Data");
+    expect(openDataButton?.classList.contains("appButton")).toBe(true);
+    openDataButton?.click();
+    await nextTick();
+
+    expect(workflowStore.workspace).toBe("workflow");
+    expect(workflowStore.workflow).toBe("data");
+  });
+
+  it("routes the loaded-data empty state to optimization setup", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const dataStore = useDataStore(pinia);
+    const workflowStore = useWorkflowStore(pinia);
+    workflowStore.selectResultsTab("top", { persist: false });
+    dataStore.dataId = "dataset_1";
+    dataStore.datasetLabel = "AAPL";
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.textContent || "").toContain("No ranked runs yet.");
+    expect(document.body.textContent || "").toContain(
+      "Next: open Optimize and generate a ranked shortlist.",
+    );
+
+    const openOptimizeButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (button) =>
+        String(button.textContent || "").trim() === "Open Optimize",
+    );
+    openOptimizeButton?.click();
+    await nextTick();
+
+    expect(workflowStore.workspace).toBe("workflow");
+    expect(workflowStore.workflow).toBe("optimize");
+    expect(workflowStore.controlsTab).toBe("opt");
+  });
+
   it("surfaces the winner-only empty state when the run disables top-k output", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -997,6 +1065,22 @@ describe("TopWorkspacePanel", () => {
       "Increase Advanced > Top K above 0 and rerun optimization",
     );
     expect(text).toContain("Top k disabled by current output settings.");
+    expect(text).toContain(
+      "Next: review Top K in Advanced, then rerun optimization.",
+    );
+    expect(document.querySelector(".topEmptyState [role='status']")).toBeNull();
+
+    const reviewTopKButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (button) => String(button.textContent || "").trim() === "Review Top K",
+    );
+    reviewTopKButton?.click();
+    await nextTick();
+
+    expect(workflowStore.workspace).toBe("workflow");
+    expect(workflowStore.workflow).toBe("optimize");
+    expect(workflowStore.controlsTab).toBe("advanced");
   });
 
   it("offers a clear-filter recovery path when active filters empty the shortlist", async () => {
@@ -1035,10 +1119,12 @@ describe("TopWorkspacePanel", () => {
     );
 
     const clearButton = Array.from(
-      document.querySelectorAll<HTMLButtonElement>("button"),
+      document.querySelectorAll<HTMLButtonElement>(".topEmptyState button"),
     ).find((button) =>
       String(button.textContent || "").includes("Clear filters"),
     );
+    expect(clearButton?.classList.contains("appButton")).toBe(true);
+    expect(document.querySelector(".topEmptyState [role='status']")).toBeNull();
     clearButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(clearSpy).toHaveBeenCalledTimes(1);
   });

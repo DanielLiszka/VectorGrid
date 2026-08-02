@@ -1,6 +1,6 @@
 use super::commands_reports;
 use crate::local_path_policy::{validate_shell_open_path, ShellOpenPurpose};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::Manager;
 
@@ -10,6 +10,20 @@ pub struct SaveReportXlsxResponse {
     pub bytes: usize,
     pub artifact_updated: bool,
     pub artifact_update_warning: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveVcetTemporalReportXlsxRequestV1 {
+    pub sealed_universe:
+        super::commands_vcet_temporal_universe::VcetTemporalSealedDatasetUniverseV1,
+    pub pre_final:
+        super::commands_vcet_temporal_prefinal::ReduceVcetTemporalPreFinalShardsResponseV1,
+    #[serde(default)]
+    pub final_test:
+        Option<super::commands_vcet_temporal_final::ReduceVcetTemporalFinalTestShardsResponseV1>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[tauri::command]
@@ -37,6 +51,32 @@ pub async fn save_report_xlsx(
     app: tauri::AppHandle,
 ) -> Result<SaveReportXlsxResponse, String> {
     save_report_xlsx_with_app(report, max_rows, app).await
+}
+
+#[tauri::command]
+pub async fn save_vcet_temporal_report_xlsx(
+    req: SaveVcetTemporalReportXlsxRequestV1,
+    app: tauri::AppHandle,
+) -> Result<SaveReportXlsxResponse, String> {
+    save_vcet_temporal_report_xlsx_with_app(req, app).await
+}
+
+async fn save_vcet_temporal_report_xlsx_with_app<R: tauri::Runtime>(
+    req: SaveVcetTemporalReportXlsxRequestV1,
+    app: tauri::AppHandle<R>,
+) -> Result<SaveReportXlsxResponse, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        commands_reports::save_vcet_temporal_report_xlsx_for_base(
+            &req.sealed_universe,
+            &req.pre_final,
+            req.final_test.as_ref(),
+            req.label.as_deref(),
+            &base,
+        )
+    })
+    .await
+    .map_err(|error| format!("VCET temporal XLSX task failed: {error}"))?
 }
 
 async fn save_report_xlsx_with_app<R: tauri::Runtime>(
@@ -143,6 +183,8 @@ fn validate_generic_or_market_folder<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::commands_vcet_temporal_final::temporal_report_final_fixture;
+    use super::super::commands_vcet_temporal_prefinal::temporal_report_pre_final_fixture;
     use super::*;
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
@@ -245,6 +287,42 @@ mod tests {
         })
     }
 
+    fn assert_temporal_report_receipt<R: tauri::Runtime>(
+        response: &SaveReportXlsxResponse,
+        app: &tauri::AppHandle<R>,
+        expected_stage: &str,
+        expected_label: &str,
+        universe_sha256: &str,
+    ) {
+        let path = Path::new(&response.path);
+        let base = app.path().app_local_data_dir().expect("app local data dir");
+        assert!(path.is_file(), "temporal report must exist");
+        assert!(path.starts_with(base.join("reports")));
+        let short_hash = universe_sha256
+            .trim()
+            .strip_prefix("sha256:")
+            .unwrap_or(universe_sha256.trim())
+            .chars()
+            .take(12)
+            .collect::<String>();
+        let expected_prefix =
+            format!("vectorgrid_vcet_temporal_{expected_stage}_{expected_label}_{short_hash}");
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("UTF-8 report filename");
+        assert!(file_name.starts_with(&expected_prefix), "{file_name}");
+        assert!(file_name.ends_with(".xlsx"));
+        let bytes = std::fs::read(path).expect("read temporal report");
+        assert!(
+            bytes.starts_with(b"PK\x03\x04"),
+            "report must begin with a ZIP local-file header"
+        );
+        assert_eq!(response.bytes, bytes.len());
+        assert!(!response.artifact_updated);
+        assert!(response.artifact_update_warning.is_empty());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn build_report_xlsx_async_matches_blocking_builder() {
         let report = minimal_report(&unique_suffix("build_report"));
@@ -297,6 +375,61 @@ mod tests {
             .app_local_data_dir()
             .expect("app local data dir");
         assert!(Path::new(&path).starts_with(base.join("reports")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_vcet_temporal_report_xlsx_async_persists_pending_final_evidence() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let (sealed_universe, pre_final) = temporal_report_pre_final_fixture();
+        let label = unique_suffix("pending_temporal");
+        let response = save_vcet_temporal_report_xlsx_with_app(
+            SaveVcetTemporalReportXlsxRequestV1 {
+                sealed_universe: sealed_universe.clone(),
+                pre_final,
+                final_test: None,
+                label: Some(label.clone()),
+            },
+            handle.clone(),
+        )
+        .await
+        .expect("save pending-final temporal report through async command path");
+
+        assert_temporal_report_receipt(
+            &response,
+            &handle,
+            "selection",
+            &label,
+            &sealed_universe.universe_sha256,
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_vcet_temporal_report_xlsx_async_persists_complete_final_evidence() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let (sealed_universe, pre_final) = temporal_report_pre_final_fixture();
+        let final_test = temporal_report_final_fixture(&sealed_universe, &pre_final);
+        let label = unique_suffix("complete_temporal");
+        let response = save_vcet_temporal_report_xlsx_with_app(
+            SaveVcetTemporalReportXlsxRequestV1 {
+                sealed_universe: sealed_universe.clone(),
+                pre_final,
+                final_test: Some(final_test),
+                label: Some(label.clone()),
+            },
+            handle.clone(),
+        )
+        .await
+        .expect("save complete-final temporal report through async command path");
+
+        assert_temporal_report_receipt(
+            &response,
+            &handle,
+            "final",
+            &label,
+            &sealed_universe.universe_sha256,
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

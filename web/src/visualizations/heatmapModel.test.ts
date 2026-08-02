@@ -33,6 +33,7 @@ describe('heatmapModel', () => {
         fast_max: 9,
         slow_min: 20,
         slow_max: 30,
+        cell_order: 'slow_fast_row_major_v1',
         values: [0.1, '0.2', null, 'bad'],
         mean_values: [0.05, null, 0.15, 'bad'],
         sample_counts: [2, '3.8', -1, 'bad'],
@@ -42,23 +43,48 @@ describe('heatmapModel', () => {
     expect(model).not.toBeNull()
     expect(model?.values).toEqual([0.1, 0.2, null, null])
     expect(model?.meanValues).toEqual([0.05, null, 0.15, null])
-    expect(model?.sampleCounts).toEqual([2, 3, 0, null])
+    expect(model?.sampleCounts).toEqual([2, null, null, null])
     expect(finiteHeatmapValues(model!)).toEqual([0.1, 0.2])
   })
 
-  it('rejects missing or dimensionally invalid heatmaps', () => {
+  it('rejects missing, malformed, oversized, or unsupported heatmaps', () => {
+    const valid = {
+      bins_fast: 2,
+      bins_slow: 2,
+      fast_min: 5,
+      fast_max: 9,
+      slow_min: 20,
+      slow_max: 30,
+      cell_order: 'slow_fast_row_major_v1',
+      values: [0.1, 0.2, 0.3, 0.4],
+    }
     expect(readHeatmapModel({})).toBeNull()
+    expect(readHeatmapModel({ heatmap: { ...valid, values: [] } })).toBeNull()
+    expect(readHeatmapModel({ heatmap: { ...valid, values: [1, 2, 3] } })).toBeNull()
+    expect(readHeatmapModel({ heatmap: { ...valid, values: [1, 2, 3, 4, 5] } })).toBeNull()
     expect(
       readHeatmapModel({
-        heatmap: {
-          bins_fast: 2,
-          bins_slow: 2,
-          fast_min: 5,
-          fast_max: 9,
-          slow_min: 20,
-          slow_max: 30,
-          values: [],
-        },
+        heatmap: { ...valid, cell_order: 'fast_slow_column_major_v1' },
+      }),
+    ).toBeNull()
+    expect(
+      readHeatmapModel({
+        heatmap: { ...valid, bins_fast: 513, values: [1, 2, 3, 4] },
+      }),
+    ).toBeNull()
+    expect(
+      readHeatmapModel({
+        heatmap: { ...valid, fast_min: 10, fast_max: 9 },
+      }),
+    ).toBeNull()
+    expect(
+      readHeatmapModel({
+        heatmap: { ...valid, mean_values: [1, 2] },
+      }),
+    ).toBeNull()
+    expect(
+      readHeatmapModel({
+        heatmap: { ...valid, sample_counts: [1, 2, 3] },
       }),
     ).toBeNull()
   })
@@ -100,8 +126,40 @@ describe('heatmapModel', () => {
     expect(heatmapNeighborValues(model, 1, 1, true)).toHaveLength(8)
     expect(fastForHeatmapCol(model, 2)).toBe(15)
     expect(slowForHeatmapLogicalRow(model, 2)).toBe(40)
-    expect(heatmapColForFast(model, 14)).toBe(2)
+    expect(heatmapColForFast(model, 14)).toBe(1)
+    expect(heatmapColForFast(model, 15)).toBe(2)
     expect(heatmapLogicalRowForSlow(model, 21)).toBe(0)
+  })
+
+  it('matches backend floor binning and chooses a representative inside every bin', () => {
+    const model = readHeatmapModel({
+      heatmap: {
+        bins_fast: 4,
+        bins_slow: 5,
+        fast_min: 5,
+        fast_max: 15,
+        slow_min: 17,
+        slow_max: 30,
+        cell_order: 'slow_fast_row_major_v1',
+        values: new Array(20).fill(0),
+      },
+    })!
+
+    expect(heatmapColForFast(model, 8)).toBe(0)
+    expect(heatmapColForFast(model, 9)).toBe(1)
+    expect(heatmapColForFast(model, 11)).toBe(1)
+    expect(heatmapColForFast(model, 12)).toBe(2)
+    expect(heatmapLogicalRowForSlow(model, 20)).toBe(0)
+    expect(heatmapLogicalRowForSlow(model, 21)).toBe(1)
+
+    for (let col = 0; col < model.binsFast; col += 1) {
+      expect(heatmapColForFast(model, fastForHeatmapCol(model, col))).toBe(col)
+    }
+    for (let row = 0; row < model.binsSlow; row += 1) {
+      expect(
+        heatmapLogicalRowForSlow(model, slowForHeatmapLogicalRow(model, row)),
+      ).toBe(row)
+    }
   })
 
   it('builds derived plateau display models with diagnostics', () => {
@@ -121,7 +179,8 @@ describe('heatmapModel', () => {
     const surface = buildDerivedPlateauSurface(model, { higherIsBetter: true })
 
     expect(heatmapHigherIsBetter('Sharpe')).toBe(true)
-    expect(heatmapHigherIsBetter('MaxDrawdown')).toBe(false)
+    expect(heatmapHigherIsBetter('Volatility')).toBe(true)
+    expect(heatmapHigherIsBetter('MaxDrawdown')).toBe(true)
     expect(labelDerivedPlateau(0.8, 6, 8)).toBe('Strong')
     expect(surface.values[4]).toBeGreaterThan(0)
     expect(surface.diagnostics[4]?.sampleCount).toBe(3)

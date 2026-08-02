@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   buildMetricDistributionModel,
   chooseMetricDistributionKey,
@@ -20,12 +20,7 @@ const props = withDefaults(
   },
 )
 
-const chartHost = ref<HTMLElement | null>(null)
 const selectedMetric = ref('')
-const chartReady = ref(false)
-const chartLoadFailed = ref(false)
-let chart: { setOption: (options: Record<string, unknown>, notMerge?: boolean) => void; resize: () => void; dispose: () => void } | null = null
-let resizeObserver: ResizeObserver | null = null
 
 const metricOptions = computed(() => metricDistributionOptions(props.columns, props.rows))
 const selectedModel = computed<MetricDistributionModel | null>(() =>
@@ -40,14 +35,41 @@ const selectedSummary = computed(() => {
   if (!model) return 'No numeric metric distribution available.'
   return `${model.label}: n=${model.values.length} min=${formatMetric(model.min)} median=${formatMetric(model.median)} max=${formatMetric(model.max)}`
 })
-const fallbackBins = computed(() => {
+const histogramBins = computed(() => {
   const model = selectedModel.value
   if (!model) return []
   const maxCount = model.bins.reduce((max, bin) => Math.max(max, bin.count), 0)
   return model.bins.map((bin) => ({
     ...bin,
-    width: `${maxCount > 0 ? Math.max(8, Math.round((bin.count / maxCount) * 100)) : 0}%`,
+    heightPercent: maxCount > 0 && bin.count > 0
+      ? Math.max(3, (bin.count / maxCount) * 100)
+      : 0,
+    isPeak: bin.count > 0 && bin.count === maxCount,
+    title: `${bin.label}: ${bin.count} ${bin.count === 1 ? 'candidate' : 'candidates'}`,
   }))
+})
+const histogramMaxCount = computed(() =>
+  histogramBins.value.reduce((max, bin) => Math.max(max, bin.count), 0),
+)
+const histogramMidCount = computed<number | null>(() => {
+  const max = histogramMaxCount.value
+  return max > 1 ? Math.ceil(max / 2) : null
+})
+const histogramAxisLabels = computed(() => {
+  const bins = histogramBins.value
+  if (bins.length <= 1) return bins.map((bin) => bin.label)
+  if (bins.length === 2) return bins.map((bin) => bin.label)
+  const middle = bins[Math.floor((bins.length - 1) / 2)]
+  return [bins[0]?.label, middle?.label, bins[bins.length - 1]?.label].filter(
+    (label): label is string => Boolean(label),
+  )
+})
+const histogramAriaLabel = computed(() => {
+  if (!selectedModel.value) return selectedSummary.value
+  const bins = histogramBins.value
+    .map((bin) => bin.title)
+    .join('; ')
+  return `${selectedSummary.value}. Histogram bins: ${bins}.`
 })
 
 function formatMetric(value: number): string {
@@ -56,23 +78,6 @@ function formatMetric(value: number): string {
   if (abs >= 100) return value.toFixed(0)
   if (abs >= 10) return value.toFixed(1)
   return value.toFixed(3).replace(/\.?0+$/, '')
-}
-
-function hostColor(name: string, fallback: string): string {
-  const host = chartHost.value
-  if (!host || typeof getComputedStyle === 'undefined') return fallback
-  return getComputedStyle(host).getPropertyValue(name).trim() || fallback
-}
-
-function chartColors(): { accent: string; muted: string; grid: string; secondaryBar: string } {
-  const accent = hostColor('--accent', '#3b82f6')
-  const muted = hostColor('--muted-soft', '#94a3b8')
-  return {
-    accent,
-    muted,
-    grid: 'rgba(148, 163, 184, 0.22)',
-    secondaryBar: hostColor('--accent-soft', '#60a5fa'),
-  }
 }
 
 watch(
@@ -84,112 +89,9 @@ watch(
   { immediate: true },
 )
 
-async function ensureChart(): Promise<boolean> {
-  if (!chartHost.value) return false
-  if (chart) return true
-  try {
-    const [{ init, use }, { CanvasRenderer }] =
-      await Promise.all([
-        import('echarts/core'),
-        import('echarts/renderers'),
-        import('echarts/lib/chart/bar'),
-        import('echarts/lib/component/grid'),
-      ])
-    use([CanvasRenderer])
-    chart = init(chartHost.value, undefined, { renderer: 'canvas' })
-    chartReady.value = true
-    chartLoadFailed.value = false
-    if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => chart?.resize())
-      resizeObserver.observe(chartHost.value)
-    }
-    return true
-  } catch {
-    chartReady.value = false
-    chartLoadFailed.value = true
-    return false
-  }
-}
-
-async function renderChart(): Promise<void> {
-  const model = selectedModel.value
-  if (!model || !chartHost.value) return
-  const chartReady = await ensureChart()
-  if (!chartReady) return
-  const maxCount = model.bins.reduce((max, bin) => Math.max(max, bin.count), 0)
-  const colors = chartColors()
-  chart?.setOption(
-    {
-      grid: {
-        top: 12,
-        right: 10,
-        bottom: 30,
-        left: 34,
-      },
-      xAxis: {
-        type: 'category',
-        data: model.bins.map((bin) => bin.label),
-        axisLabel: {
-          color: colors.muted,
-          fontSize: 10,
-          hideOverlap: true,
-        },
-        axisTick: { show: false },
-      },
-      yAxis: {
-        type: 'value',
-        minInterval: 1,
-        axisLabel: {
-          color: colors.muted,
-          fontSize: 10,
-        },
-        splitLine: {
-          lineStyle: { color: colors.grid },
-        },
-      },
-      series: [
-        {
-          type: 'bar',
-          name: model.label,
-          data: model.bins.map((bin) => ({
-            value: bin.count,
-            itemStyle: {
-              borderRadius: [3, 3, 0, 0],
-              color: bin.count === maxCount ? colors.accent : colors.secondaryBar,
-            },
-          })),
-          barMaxWidth: 28,
-        },
-      ],
-    },
-    true,
-  )
-}
-
-watch(
-  selectedModel,
-  async () => {
-    await nextTick()
-    await renderChart()
-  },
-  { immediate: true },
-)
-
-onMounted(async () => {
-  await nextTick()
-  await renderChart()
-})
-
 function onMetricChange(event: Event): void {
   selectedMetric.value = String((event.target as HTMLSelectElement).value || '')
 }
-
-onBeforeUnmount(() => {
-  resizeObserver?.disconnect()
-  resizeObserver = null
-  chart?.dispose()
-  chart = null
-})
 </script>
 
 <template>
@@ -211,25 +113,40 @@ onBeforeUnmount(() => {
     <div class="metricDistributionBody">
       <div class="metricDistributionChartFrame">
         <div
-          ref="chartHost"
-          class="metricDistributionChart"
-          :class="{ isReady: chartReady && !chartLoadFailed }"
+          class="metricDistributionHistogram"
           role="img"
-          :aria-label="selectedSummary"
-          :aria-hidden="chartReady && !chartLoadFailed ? undefined : 'true'"
-        ></div>
-        <div
-          v-show="!chartReady || chartLoadFailed"
-          class="metricDistributionFallback"
-          role="img"
-          :aria-label="`${selectedSummary}. Histogram fallback.`"
+          :aria-label="histogramAriaLabel"
+          :style="{ '--metric-bin-count': histogramBins.length }"
         >
-          <div v-for="bin in fallbackBins" :key="bin.label" class="metricDistributionFallbackRow">
-            <span class="metricDistributionFallbackLabel">{{ bin.label }}</span>
-            <span class="metricDistributionFallbackTrack" aria-hidden="true">
-              <span class="metricDistributionFallbackFill" :style="{ width: bin.width }"></span>
+          <div class="metricDistributionYAxis" aria-hidden="true">
+            <span>{{ histogramMaxCount }}</span>
+            <span>{{ histogramMidCount ?? '' }}</span>
+            <span>0</span>
+          </div>
+          <div class="metricDistributionPlot" aria-hidden="true">
+            <span
+              v-for="bin in histogramBins"
+              :key="bin.label"
+              class="metricDistributionBarSlot"
+              :title="bin.title"
+            >
+              <span
+                class="metricDistributionBar"
+                :class="{ isPeak: bin.isPeak, hasValue: bin.count > 0 }"
+                :data-bin-label="bin.label"
+                :data-bin-count="bin.count"
+                :style="{ height: `${bin.heightPercent}%` }"
+              ></span>
             </span>
-            <span class="metricDistributionFallbackCount">{{ bin.count }}</span>
+          </div>
+          <div
+            class="metricDistributionXAxis"
+            :class="{ isSingle: histogramAxisLabels.length === 1 }"
+            aria-hidden="true"
+          >
+            <span v-for="label in histogramAxisLabels" :key="label" :title="label">
+              {{ label }}
+            </span>
           </div>
         </div>
       </div>
@@ -286,69 +203,120 @@ onBeforeUnmount(() => {
   gap: 0.6rem;
 }
 
-.metricDistributionChart {
-  min-width: 0;
-  height: 128px;
-}
-
 .metricDistributionChartFrame {
   min-width: 0;
   height: 128px;
   position: relative;
 }
 
-.metricDistributionFallback {
+.metricDistributionHistogram {
+  --metric-grid-line: color-mix(in oklab, var(--muted-soft) 23%, transparent);
+
   min-width: 0;
-  height: 128px;
-  position: absolute;
-  inset: 0;
+  height: 100%;
   display: grid;
-  gap: 0.18rem;
-  align-content: center;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 1.35rem;
+  column-gap: 0.32rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.metricDistributionChart {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  pointer-events: none;
+.metricDistributionYAxis {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  color: var(--muted-soft);
+  font-size: 0.58rem;
+  line-height: 1;
+  padding-block: 0.05rem 0.1rem;
 }
 
-.metricDistributionChart.isReady {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.metricDistributionFallbackRow {
+.metricDistributionPlot {
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(3.5rem, 0.35fr) minmax(0, 1fr) 1.75rem;
-  align-items: center;
-  gap: 0.32rem;
-  font-size: 0.64rem;
-  color: var(--muted-strong);
+  grid-template-columns: repeat(var(--metric-bin-count), minmax(2px, 1fr));
+  align-items: end;
+  gap: clamp(2px, 0.55vw, 7px);
+  border-bottom: 1px solid var(--metric-grid-line);
+  background:
+    linear-gradient(
+      to bottom,
+      var(--metric-grid-line) 0,
+      var(--metric-grid-line) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(50% - 0.5px),
+      var(--metric-grid-line) calc(50% - 0.5px),
+      var(--metric-grid-line) calc(50% + 0.5px),
+      transparent calc(50% + 0.5px)
+    );
 }
 
-.metricDistributionFallbackLabel,
-.metricDistributionFallbackCount {
+.metricDistributionBarSlot {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.metricDistributionBar {
+  width: min(100%, 28px);
+  height: 0;
+  border-radius: 3px 3px 0 0;
+  background: color-mix(in oklab, var(--accent-soft) 78%, var(--surface));
+  transition: height var(--motion-ui, 160ms) var(--ease-standard, ease-out);
+}
+
+.metricDistributionBar.hasValue {
+  min-height: 3px;
+}
+
+.metricDistributionBar.isPeak {
+  background: var(--accent);
+}
+
+.metricDistributionXAxis {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 0.2rem;
+  color: var(--muted-soft);
+  font-size: 0.58rem;
+  line-height: 1.1;
+}
+
+.metricDistributionXAxis span {
+  max-width: 34%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.metricDistributionFallbackTrack {
-  min-width: 0;
-  height: 0.42rem;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--muted-soft) 16%, transparent);
-  overflow: hidden;
+.metricDistributionXAxis span:last-child {
+  text-align: right;
 }
 
-.metricDistributionFallbackFill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: color-mix(in oklab, var(--accent) 72%, var(--surface));
+.metricDistributionXAxis.isSingle {
+  justify-content: center;
+  text-align: center;
+}
+
+.metricDistributionXAxis.isSingle span {
+  max-width: 100%;
+  text-align: center;
 }
 
 .metricDistributionStats {
@@ -367,6 +335,12 @@ onBeforeUnmount(() => {
 
   .metricPicker {
     min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metricDistributionBar {
+    transition: none;
   }
 }
 </style>

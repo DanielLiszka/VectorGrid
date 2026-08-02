@@ -10,9 +10,14 @@ const EXPECTED_WORKSPACE_MEMBERS = [
   'crates/app_core',
   'crates/strategies',
   'crates/optimizer',
+  'vendor/embed-resource-3.0.6',
 ]
 const EXPECTED_VECTOR_TA_VERSION = '0.2.4'
 const EXPECTED_VECTOR_TA_PATCH = 'vendor/vector-ta-0.2.4'
+const EXPECTED_EMBED_RESOURCE_VERSION = '3.0.6'
+const EXPECTED_EMBED_RESOURCE_PATCH = 'vendor/embed-resource-3.0.6'
+const EXPECTED_EMBED_RESOURCE_UPSTREAM_GIT_SHA =
+  'f1c7e7acf94ddbd19e6c3b683ba6138c4c9f03b4'
 const EXPECTED_PACKAGE_MANAGER = 'npm@11.6.4'
 const EXPECTED_NODE_ENGINE = '^20.19.0 || >=22.12.0'
 const EXPECTED_CANONICAL_DIST = '../web/dist'
@@ -77,10 +82,11 @@ const outPath = path.resolve(
 )
 
 function readCargoMetadata() {
-  const result = spawnSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
+  const result = spawnSync('cargo', ['metadata', '--locked', '--offline', '--format-version', '1'], {
     cwd: repoRoot,
     encoding: 'utf8',
     shell: false,
+    maxBuffer: 64 * 1024 * 1024,
   })
   if (result.error) throw result.error
   if ((result.status ?? 1) !== 0) {
@@ -494,6 +500,7 @@ const manifestPaths = {
   strategies: 'crates/strategies/Cargo.toml',
   optimizer: 'crates/optimizer/Cargo.toml',
   vectorTaVendor: `${EXPECTED_VECTOR_TA_PATCH}/Cargo.toml`,
+  embedResourceVendor: `${EXPECTED_EMBED_RESOURCE_PATCH}/Cargo.toml`,
 }
 
 const cargo = Object.fromEntries(
@@ -545,9 +552,206 @@ record(
   { path: vectorPatchPath },
 )
 
+const embedResourcePatch =
+  cargo.workspace?.sections['patch.crates-io']?.['embed-resource'] ?? null
+const embedResourcePatchPath =
+  embedResourcePatch && typeof embedResourcePatch === 'object'
+    ? embedResourcePatch.path
+    : null
+record(
+  'embed-resource.patch.path',
+  embedResourcePatchPath === EXPECTED_EMBED_RESOURCE_PATCH,
+  'Root Cargo.toml patches embed-resource to the expected vendored path',
+  {
+    expected: EXPECTED_EMBED_RESOURCE_PATCH,
+    actual: embedResourcePatchPath,
+  },
+)
+record(
+  'embed-resource.patch.exists',
+  typeof embedResourcePatchPath === 'string' &&
+    fs.existsSync(path.join(repoRoot, embedResourcePatchPath, 'Cargo.toml')),
+  'Vendored embed-resource patch Cargo.toml exists',
+  { path: embedResourcePatchPath },
+)
+const embedResourceVendorPackage =
+  cargo.embedResourceVendor?.sections.package ?? {}
+record(
+  'embed-resource.vendor.version',
+  embedResourceVendorPackage.name === 'embed-resource' &&
+    embedResourceVendorPackage.version === EXPECTED_EMBED_RESOURCE_VERSION,
+  'Vendored embed-resource package identity matches the pinned patch',
+  {
+    expected: {
+      name: 'embed-resource',
+      version: EXPECTED_EMBED_RESOURCE_VERSION,
+    },
+    actual: {
+      name: embedResourceVendorPackage.name ?? null,
+      version: embedResourceVendorPackage.version ?? null,
+    },
+  },
+)
+const embedResourceVcsInfoPath =
+  `${EXPECTED_EMBED_RESOURCE_PATCH}/.cargo_vcs_info.json`
+const embedResourceOriginalManifestPath =
+  `${EXPECTED_EMBED_RESOURCE_PATCH}/Cargo.toml.orig`
+const embedResourceVcsInfoExists = fs.existsSync(
+  path.join(repoRoot, embedResourceVcsInfoPath),
+)
+const embedResourceVcsInfo = embedResourceVcsInfoExists
+  ? readJson(embedResourceVcsInfoPath)
+  : null
+record(
+  'embed-resource.vendor.upstream-revision',
+  embedResourceVcsInfo?.git?.sha1 ===
+    EXPECTED_EMBED_RESOURCE_UPSTREAM_GIT_SHA &&
+    embedResourceVcsInfo?.path_in_vcs === '',
+  'Vendored embed-resource records the expected published upstream revision',
+  {
+    expected: {
+      git_sha1: EXPECTED_EMBED_RESOURCE_UPSTREAM_GIT_SHA,
+      path_in_vcs: '',
+    },
+    actual: embedResourceVcsInfo,
+    path: embedResourceVcsInfoPath,
+  },
+)
+for (const [id, provenancePath] of [
+  ['cargo-vcs-info', embedResourceVcsInfoPath],
+  ['original-manifest', embedResourceOriginalManifestPath],
+]) {
+  const ignoredCheck = runGitCheckIgnored(provenancePath)
+  record(
+    `embed-resource.vendor.provenance.${id}`,
+    fs.existsSync(path.join(repoRoot, provenancePath)) &&
+      ignoredCheck.checked &&
+      ignoredCheck.ignored === false,
+    `Vendored embed-resource ${id} provenance exists and is not ignored`,
+    {
+      path: provenancePath,
+      exists: fs.existsSync(path.join(repoRoot, provenancePath)),
+      ignored: ignoredCheck.ignored,
+      check_error: ignoredCheck.error,
+    },
+  )
+}
+
+const embedResourceMetadataPackages = cargoMetadata.packages.filter(
+  (pkg) => pkg.name === 'embed-resource',
+)
+const embedResourceMetadataPackage =
+  embedResourceMetadataPackages.length === 1
+    ? embedResourceMetadataPackages[0]
+    : null
+const expectedEmbedResourceManifestPath = fs.realpathSync.native(
+  path.join(repoRoot, EXPECTED_EMBED_RESOURCE_PATCH, 'Cargo.toml'),
+)
+const actualEmbedResourceManifestPath =
+  typeof embedResourceMetadataPackage?.manifest_path === 'string'
+    ? fs.realpathSync.native(embedResourceMetadataPackage.manifest_path)
+    : null
+record(
+  'embed-resource.metadata.identity',
+  embedResourceMetadataPackages.length === 1 &&
+    embedResourceMetadataPackage?.version === EXPECTED_EMBED_RESOURCE_VERSION,
+  'Resolved Cargo metadata contains exactly one embed-resource package at the pinned version',
+  {
+    expected: {
+      count: 1,
+      version: EXPECTED_EMBED_RESOURCE_VERSION,
+    },
+    actual: embedResourceMetadataPackages.map((pkg) => ({
+      id: pkg.id,
+      version: pkg.version,
+      source: pkg.source,
+      manifest_path: pkg.manifest_path,
+    })),
+  },
+)
+record(
+  'embed-resource.metadata.path-source',
+  embedResourceMetadataPackage?.source === null &&
+    actualEmbedResourceManifestPath === expectedEmbedResourceManifestPath,
+  'Resolved embed-resource is the canonical vendored path package',
+  {
+    expected: {
+      source: null,
+      manifest_path: expectedEmbedResourceManifestPath,
+    },
+    actual: {
+      source: embedResourceMetadataPackage?.source ?? null,
+      manifest_path: actualEmbedResourceManifestPath,
+    },
+  },
+)
+
+const tauriWinresMetadataPackages = cargoMetadata.packages.filter(
+  (pkg) => pkg.name === 'tauri-winres',
+)
+const tauriWinresMetadataPackage =
+  tauriWinresMetadataPackages.length === 1
+    ? tauriWinresMetadataPackages[0]
+    : null
+const expectedCratesIoRegistrySource =
+  'registry+https://github.com/rust-lang/crates.io-index'
+record(
+  'tauri-winres.metadata.identity',
+  tauriWinresMetadataPackages.length === 1 &&
+    tauriWinresMetadataPackage?.version === '0.3.5' &&
+    tauriWinresMetadataPackage?.source === expectedCratesIoRegistrySource,
+  'Resolved Cargo metadata contains the exact crates.io tauri-winres package',
+  {
+    expected: {
+      count: 1,
+      version: '0.3.5',
+      source: expectedCratesIoRegistrySource,
+    },
+    actual: tauriWinresMetadataPackages.map((pkg) => ({
+      id: pkg.id,
+      version: pkg.version,
+      source: pkg.source,
+      manifest_path: pkg.manifest_path,
+    })),
+  },
+)
+
+const tauriWinresResolveNode = (cargoMetadata.resolve?.nodes ?? []).find(
+  (node) => node.id === tauriWinresMetadataPackage?.id,
+)
+const tauriWinresEmbedEdges = (tauriWinresResolveNode?.deps ?? []).filter(
+  (dependency) => dependency.name === 'embed_resource',
+)
+const tauriWinresEmbedEdge =
+  tauriWinresEmbedEdges.length === 1 ? tauriWinresEmbedEdges[0] : null
+const tauriWinresEmbedKinds = tauriWinresEmbedEdge?.dep_kinds ?? []
+record(
+  'tauri-winres.resolve.embed-resource',
+  tauriWinresEmbedEdges.length === 1 &&
+    tauriWinresEmbedEdge?.pkg === embedResourceMetadataPackage?.id &&
+    tauriWinresEmbedKinds.length === 1 &&
+    tauriWinresEmbedKinds[0]?.kind === null &&
+    tauriWinresEmbedKinds[0]?.target === null,
+  'Resolved tauri-winres dependency edge points to the vendored embed-resource package for all targets',
+  {
+    expected: {
+      dependency_name: 'embed_resource',
+      package_id: embedResourceMetadataPackage?.id ?? null,
+      dep_kinds: [{ kind: null, target: null }],
+    },
+    actual: tauriWinresEmbedEdges,
+  },
+)
+
 const vectorDependencyChecks = []
 for (const [key, manifest] of Object.entries(cargo)) {
-  if (key === 'workspace' || key === 'vectorTaVendor') continue
+  if (
+    key === 'workspace' ||
+    key === 'vectorTaVendor' ||
+    key === 'embedResourceVendor'
+  ) {
+    continue
+  }
   const dependencies = manifest.sections.dependencies ?? {}
   const vectorDep = dependencies['vector-ta'] ?? null
   const wrongImportDep = dependencies.vector_ta ?? null
@@ -844,6 +1048,26 @@ for (const [label, shape] of [
     `${label} Windows Tauri config maps the CatBoost license`,
     { resources: shape.bundle.resources },
   )
+  record(
+    `tauri.windows.${label}.lightweight-charts-license-resource-mapping`,
+    hasResourceMapping(
+      shape.bundle.resources,
+      'src-tauri/resources/licenses/TradingView-Lightweight-Charts-LICENSE.txt',
+      'licenses/TradingView-Lightweight-Charts-LICENSE.txt',
+    ),
+    `${label} Windows Tauri config maps the TradingView Lightweight Charts license`,
+    { resources: shape.bundle.resources },
+  )
+  record(
+    `tauri.windows.${label}.lightweight-charts-notice-resource-mapping`,
+    hasResourceMapping(
+      shape.bundle.resources,
+      'src-tauri/resources/licenses/TradingView-Lightweight-Charts-NOTICE.txt',
+      'licenses/TradingView-Lightweight-Charts-NOTICE.txt',
+    ),
+    `${label} Windows Tauri config maps the TradingView Lightweight Charts notice`,
+    { resources: shape.bundle.resources },
+  )
   const iconPath = shape.bundle.windows?.nsis?.installerIcon ?? ''
   record(
     `tauri.windows.${label}.installer-icon-exists`,
@@ -868,6 +1092,16 @@ const requiredResources = [
     id: 'catboost-license',
     path: 'src-tauri/resources/licenses/CatBoost-LICENSE.txt',
     role: 'Required third-party license notice for the packaged CatBoost native resource',
+  },
+  {
+    id: 'lightweight-charts-license',
+    path: 'src-tauri/resources/licenses/TradingView-Lightweight-Charts-LICENSE.txt',
+    role: 'Apache-2.0 license for the packaged Lightweight Charts frontend dependency',
+  },
+  {
+    id: 'lightweight-charts-notice',
+    path: 'src-tauri/resources/licenses/TradingView-Lightweight-Charts-NOTICE.txt',
+    role: 'Required TradingView attribution notice for Lightweight Charts 5.1.0',
   },
   {
     id: 'double-crossover-ptx',
@@ -1085,6 +1319,10 @@ record(
     packagedSmokeText.includes('catboost_bundle_resource_expected_sha256') &&
     packagedSmokeText.includes('catboost_license_sha256') &&
     packagedSmokeText.includes('catboost_license_expected_sha256') &&
+    packagedSmokeText.includes('lightweight_charts_license_sha256') &&
+    packagedSmokeText.includes('lightweight_charts_license_expected_sha256') &&
+    packagedSmokeText.includes('lightweight_charts_notice_sha256') &&
+    packagedSmokeText.includes('lightweight_charts_notice_expected_sha256') &&
     packagedSmokeText.includes('synthetic_sample_csv_sha256') &&
     packagedSmokeText.includes('bundle_verified_resources'),
   'bundle inspection rejects unexpected payloads and verifies required resource hashes',
@@ -1251,7 +1489,12 @@ record(
 )
 record(
   'ci.required-cpu-gate-scope',
-  cpuCiGateText.includes('cargo metadata --locked --no-deps') &&
+  cpuCiGateText.includes('cargo fetch --locked') &&
+    cpuCiGateText.includes('cargo metadata --locked --offline --format-version 1') &&
+    cpuCiGateText.indexOf('cargo fetch --locked') <
+      cpuCiGateText.indexOf('cargo metadata --locked --offline --format-version 1') &&
+    cpuCiGateText.indexOf('cargo metadata --locked --offline --format-version 1') <
+      cpuCiGateText.indexOf('run_repo_quality_gate.ps1') &&
     cpuCiGateText.includes('run_repo_quality_gate.ps1') &&
     cpuCiGateText.includes('Strict Clippy: ta_strategies') &&
     cpuCiGateText.includes('cargo clippy --locked -p ta_strategies') &&
@@ -1307,6 +1550,20 @@ record(
   { required: docsRequiredPatterns, missing: missingDocsPatterns },
 )
 
+const manifestContractDocsText = readText(DOCS_CONTRACT_FILE)
+record(
+  'docs.manifest-contract.embed-resource-resolution',
+  manifestContractDocsText.includes('vendor/embed-resource-3.0.6') &&
+    manifestContractDocsText.includes('.cargo_vcs_info.json') &&
+    manifestContractDocsText.includes('Cargo.toml.orig') &&
+    manifestContractDocsText.includes('tauri-winres 0.3.5') &&
+    manifestContractDocsText.includes(
+      'embed-resource 3.0.6` resolution',
+    ),
+  'manifest/dependency contract documents the vendored resource crate provenance and exact resolved edge',
+  { path: DOCS_CONTRACT_FILE },
+)
+
 const docsCheck = runGitCheckIgnored(DOCS_CONTRACT_FILE)
 if (docsCheck.checked) {
   record(
@@ -1344,6 +1601,15 @@ const report = {
       name: vendorPackage.name ?? null,
       version: vendorPackage.version ?? null,
       default_features: vendorDefaultFeatures,
+    },
+  },
+  embed_resource: {
+    expected_version: EXPECTED_EMBED_RESOURCE_VERSION,
+    expected_patch: EXPECTED_EMBED_RESOURCE_PATCH,
+    expected_upstream_git_sha: EXPECTED_EMBED_RESOURCE_UPSTREAM_GIT_SHA,
+    vendor_package: {
+      name: embedResourceVendorPackage.name ?? null,
+      version: embedResourceVendorPackage.version ?? null,
     },
   },
   node: {

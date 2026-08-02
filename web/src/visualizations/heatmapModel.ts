@@ -1,3 +1,13 @@
+import {
+  heatmapPalette,
+  type HeatmapPalette,
+} from './heatmapTheme'
+
+export {
+  heatmapPalette,
+  type HeatmapPalette,
+} from './heatmapTheme'
+
 export type HeatmapMode = 'objective' | 'plateau'
 
 export interface HeatmapModel {
@@ -17,10 +27,6 @@ export interface HeatmapRange {
   max: number
   label: string
 }
-
-export type HeatmapPalette =
-  | { kind: 'diverging'; negative: string; zero: string; positive: string }
-  | { kind: 'sequential'; low: string; high: string }
 
 export interface HeatmapPlateauCellDiagnostics {
   plateauScore: number
@@ -62,28 +68,77 @@ const HEATMAP_NEIGHBOR_OFFSETS_ALL: ReadonlyArray<readonly [number, number]> = [
   [1, -1],
   [1, 1],
 ]
+const HEATMAP_CELL_ORDER = 'slow_fast_row_major_v1'
+const MAX_HEATMAP_AXIS_BINS = 512
+const MAX_HEATMAP_CELLS = MAX_HEATMAP_AXIS_BINS * MAX_HEATMAP_AXIS_BINS
+const MAX_HEATMAP_PERIOD = 65_535
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 }
 
-function num(value: unknown, fallback = Number.NaN): number {
+function nonNegativeInteger(value: unknown): number | null {
   const next = Number(value)
-  return Number.isFinite(next) ? next : fallback
+  return Number.isInteger(next) && next >= 0 ? next : null
 }
 
 export function readHeatmapModel(result: Record<string, unknown>): HeatmapModel | null {
   const heatmap = asRecord(result.heatmap)
   if (!Object.keys(heatmap).length) return null
-  const binsFast = Math.max(0, Math.floor(num(heatmap.bins_fast, 0)))
-  const binsSlow = Math.max(0, Math.floor(num(heatmap.bins_slow, 0)))
-  const fastMin = Math.max(0, Math.floor(num(heatmap.fast_min, 0)))
-  const fastMax = Math.max(0, Math.floor(num(heatmap.fast_max, 0)))
-  const slowMin = Math.max(0, Math.floor(num(heatmap.slow_min, 0)))
-  const slowMax = Math.max(0, Math.floor(num(heatmap.slow_max, 0)))
-  const rawValues = Array.isArray(heatmap.values) ? heatmap.values : []
-  if (binsFast <= 0 || binsSlow <= 0 || !rawValues.length) return null
+  const binsFast = nonNegativeInteger(heatmap.bins_fast)
+  const binsSlow = nonNegativeInteger(heatmap.bins_slow)
+  const fastMin = nonNegativeInteger(heatmap.fast_min)
+  const fastMax = nonNegativeInteger(heatmap.fast_max)
+  const slowMin = nonNegativeInteger(heatmap.slow_min)
+  const slowMax = nonNegativeInteger(heatmap.slow_max)
+  if (
+    binsFast == null ||
+    binsSlow == null ||
+    fastMin == null ||
+    fastMax == null ||
+    slowMin == null ||
+    slowMax == null ||
+    binsFast <= 0 ||
+    binsSlow <= 0 ||
+    binsFast > MAX_HEATMAP_AXIS_BINS ||
+    binsSlow > MAX_HEATMAP_AXIS_BINS ||
+    fastMin > fastMax ||
+    slowMin > slowMax ||
+    fastMax > MAX_HEATMAP_PERIOD ||
+    slowMax > MAX_HEATMAP_PERIOD
+  ) {
+    return null
+  }
   const expectedLen = binsFast * binsSlow
+  if (
+    !Number.isSafeInteger(expectedLen) ||
+    expectedLen <= 0 ||
+    expectedLen > MAX_HEATMAP_CELLS
+  ) {
+    return null
+  }
+  if (
+    heatmap.cell_order != null &&
+    String(heatmap.cell_order).trim() !== HEATMAP_CELL_ORDER
+  ) {
+    return null
+  }
+  const rawValues = Array.isArray(heatmap.values) ? heatmap.values : []
+  if (rawValues.length !== expectedLen) return null
+  if (
+    heatmap.mean_values != null &&
+    (!Array.isArray(heatmap.mean_values) ||
+      heatmap.mean_values.length !== expectedLen)
+  ) {
+    return null
+  }
+  if (
+    heatmap.sample_counts != null &&
+    (!Array.isArray(heatmap.sample_counts) ||
+      heatmap.sample_counts.length !== expectedLen)
+  ) {
+    return null
+  }
 
   const readHeatmapVector = (
     raw: unknown,
@@ -101,8 +156,8 @@ export function readHeatmapModel(result: Record<string, unknown>): HeatmapModel 
   const sampleCounts = readHeatmapVector(heatmap.sample_counts, (value) => {
     if (value == null) return null
     const next = Number(value)
-    if (!Number.isFinite(next)) return null
-    return Math.max(0, Math.floor(next))
+    if (!Number.isInteger(next) || next < 0) return null
+    return next
   })
 
   return {
@@ -143,7 +198,9 @@ export function heatmapDisplayLabel(mode: HeatmapMode, objectiveLabel: string): 
 }
 
 export function heatmapLegendNote(mode: HeatmapMode): string {
-  return mode === 'plateau' ? 'Sequential plateau scale' : 'Zero-centered'
+  return mode === 'plateau'
+    ? 'Sequential perceptual stability scale · fragile → resilient'
+    : 'Zero-centered perceptual scale · negative ↔ neutral 0 ↔ positive'
 }
 
 export function heatmapQuantile(sorted: number[], p: number): number {
@@ -186,9 +243,12 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
 
-export function heatmapHigherIsBetter(objective: string, scoreMode = false): boolean {
-  if (scoreMode) return true
-  return objective !== 'Volatility' && objective !== 'MaxDrawdown'
+export function heatmapHigherIsBetter(_objective: string, _scoreMode = false): boolean {
+  // Optimization heatmaps contain the backend's normalized ranking score, not
+  // the raw objective metric. Lower-is-better metrics such as volatility and
+  // max drawdown are negated before aggregation, so every exported heatmap
+  // surface follows the same higher-is-better contract.
+  return true
 }
 
 export function heatmapIndex(model: HeatmapModel, logicalRow: number, col: number): number {
@@ -437,17 +497,6 @@ export function buildDerivedPlateauSurface(
   return { values: out, diagnostics, multiSampleCellCount }
 }
 
-export function heatmapPalette(mode: HeatmapMode): HeatmapPalette {
-  return mode === 'plateau'
-    ? { kind: 'sequential', low: '#2563eb', high: '#15803d' }
-    : {
-        kind: 'diverging',
-        negative: '#b91c1c',
-        zero: '#2563eb',
-        positive: '#15803d',
-      }
-}
-
 export function resolveHeatmapDisplayModel(options: {
   mode: HeatmapMode
   objectiveLabel: string
@@ -481,8 +530,12 @@ export function resolveHeatmapDisplayModel(options: {
 
 export function fastForHeatmapCol(model: HeatmapModel, col: number): number {
   if (model.binsFast <= 1) return model.fastMin
-  const ratio = col / Math.max(1, model.binsFast - 1)
-  return Math.round(model.fastMin + (model.fastMax - model.fastMin) * ratio)
+  const boundedCol = Math.max(0, Math.min(model.binsFast - 1, Math.floor(col)))
+  const span = Math.max(0, model.fastMax - model.fastMin)
+  const offset = Math.ceil(
+    (boundedCol * span) / Math.max(1, model.binsFast - 1),
+  )
+  return Math.min(model.fastMax, model.fastMin + offset)
 }
 
 export function slowForHeatmapLogicalRow(
@@ -490,26 +543,35 @@ export function slowForHeatmapLogicalRow(
   logicalRow: number,
 ): number {
   if (model.binsSlow <= 1) return model.slowMin
-  const ratio = logicalRow / Math.max(1, model.binsSlow - 1)
-  return Math.round(model.slowMin + (model.slowMax - model.slowMin) * ratio)
+  const boundedRow = Math.max(
+    0,
+    Math.min(model.binsSlow - 1, Math.floor(logicalRow)),
+  )
+  const span = Math.max(0, model.slowMax - model.slowMin)
+  const offset = Math.ceil(
+    (boundedRow * span) / Math.max(1, model.binsSlow - 1),
+  )
+  return Math.min(model.slowMax, model.slowMin + offset)
 }
 
 export function heatmapColForFast(model: HeatmapModel, fast: number): number {
   if (model.binsFast <= 1 || model.fastMax <= model.fastMin) return 0
-  const ratio =
-    (fast - model.fastMin) / Math.max(1, model.fastMax - model.fastMin)
+  const period = Number.isFinite(fast) ? Math.floor(fast) : model.fastMin
+  const numerator = Math.max(0, period - model.fastMin) * (model.binsFast - 1)
+  const denominator = model.fastMax - model.fastMin
   return Math.max(
     0,
-    Math.min(model.binsFast - 1, Math.round(ratio * (model.binsFast - 1))),
+    Math.min(model.binsFast - 1, Math.floor(numerator / denominator)),
   )
 }
 
 export function heatmapLogicalRowForSlow(model: HeatmapModel, slow: number): number {
   if (model.binsSlow <= 1 || model.slowMax <= model.slowMin) return 0
-  const ratio =
-    (slow - model.slowMin) / Math.max(1, model.slowMax - model.slowMin)
+  const period = Number.isFinite(slow) ? Math.floor(slow) : model.slowMin
+  const numerator = Math.max(0, period - model.slowMin) * (model.binsSlow - 1)
+  const denominator = model.slowMax - model.slowMin
   return Math.max(
     0,
-    Math.min(model.binsSlow - 1, Math.round(ratio * (model.binsSlow - 1))),
+    Math.min(model.binsSlow - 1, Math.floor(numerator / denominator)),
   )
 }

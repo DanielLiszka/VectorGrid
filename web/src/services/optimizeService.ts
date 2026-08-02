@@ -49,6 +49,7 @@ export interface OptimizeRunOptions {
 
 interface SaveRunArtifactResponse {
   path?: unknown;
+  retention_warning?: unknown;
 }
 
 interface LegacyOptimizeBuildContext {
@@ -2340,6 +2341,7 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
       shortlistUnionMode: readStoreTextInputValue("shortlistUnionMode"),
       topK: readStoreTextInputValue("topK"),
       includeAll: readStoreTextInputValue("includeAll"),
+      heatmapBins: readStoreTextInputValue("heatmapBins"),
       compositeSignalMode: readStoreTextInputValue("compositeSignalMode"),
       halfTrendAmplitude: readStoreTextInputValue("halfTrendAmplitude"),
       halfTrendAtrPeriod: readStoreTextInputValue("halfTrendAtrPeriod"),
@@ -2787,10 +2789,16 @@ async function persistRunArtifact(
       artifact,
     })) as SaveRunArtifactResponse;
     const path = normalizeText(saved?.path);
+    const retentionWarning = normalizeText(saved?.retention_warning);
     return {
       path,
       saved: path.length > 0,
-      warning: path.length > 0 ? "" : "artifact=unsaved",
+      warning:
+        path.length === 0
+          ? "artifact=unsaved"
+          : retentionWarning
+            ? `artifact=retention warning (${retentionWarning})`
+            : "",
     };
   } catch (error) {
     const detail = errorMessage(error);
@@ -2984,7 +2992,7 @@ export async function runOptimization(
       [optimizationStageCompletion],
     );
     timings.artifactMs = elapsedMs(artifactStartedAt);
-    if (!persisted.saved) {
+    if (persisted.warning) {
       progressNotes.push(persisted.warning);
     }
 

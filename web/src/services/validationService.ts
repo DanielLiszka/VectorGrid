@@ -437,6 +437,7 @@ export interface ValidationRunOptions {
 
 interface SaveRunArtifactResponse {
   path?: unknown;
+  retention_warning?: unknown;
 }
 
 interface SaveReportXlsxResponse {
@@ -2863,6 +2864,10 @@ async function persistValidationArtifact(
         )) as SaveRunArtifactResponse;
         const next = normalizeText(saved?.path);
         if (next) path = next;
+        const retentionWarning = normalizeText(saved?.retention_warning);
+        if (retentionWarning) {
+          persistenceWarning = `Validation artifact was saved, but retention cleanup needs attention: ${retentionWarning}`;
+        }
       } catch (error) {
         const detail = normalizeText(error);
         persistenceWarning = detail

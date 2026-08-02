@@ -6,7 +6,10 @@ import CommandPaletteOverlay from './CommandPaletteOverlay.vue'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
-import { useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
+import {
+  consumeTaskCenterReturnFocus,
+  useTaskCenterVisibility,
+} from '../composables/useTaskCenterVisibility'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 describe('CommandPaletteOverlay', () => {
@@ -15,6 +18,7 @@ describe('CommandPaletteOverlay', () => {
     localStorage.setItem('vta_ui_mode_v1', 'advanced')
     document.body.innerHTML = ''
     useTaskCenterVisibility().value = false
+    consumeTaskCenterReturnFocus()
   })
 
   it('focuses the query input when opened and closes on Escape', async () => {
@@ -181,6 +185,10 @@ describe('CommandPaletteOverlay', () => {
     setActivePinia(pinia)
     const paletteStore = useCommandPaletteStore(pinia)
     const taskCenterOpen = useTaskCenterVisibility()
+    const paletteInvoker = document.createElement('button')
+    paletteInvoker.textContent = 'Open command palette'
+    document.body.appendChild(paletteInvoker)
+    paletteInvoker.focus()
     paletteStore.openPalette()
 
     const wrapper = mount(CommandPaletteOverlay, {
@@ -199,6 +207,7 @@ describe('CommandPaletteOverlay', () => {
 
     expect(taskCenterOpen.value).toBe(true)
     expect(paletteStore.open).toBe(false)
+    expect(consumeTaskCenterReturnFocus()).toBe(paletteInvoker)
 
     wrapper.unmount()
   })

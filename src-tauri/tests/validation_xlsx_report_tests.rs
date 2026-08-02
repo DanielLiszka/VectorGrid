@@ -52,6 +52,16 @@ fn chart_titles(bytes: &[u8]) -> Vec<String> {
     titles
 }
 
+fn chart_xml_for_title(bytes: &[u8], title: &str) -> String {
+    let title_marker = format!("<a:t>{title}</a:t>");
+    xml_entries(bytes)
+        .into_iter()
+        .find_map(|(name, xml)| {
+            (name.starts_with("xl/charts/chart") && xml.contains(&title_marker)).then_some(xml)
+        })
+        .unwrap_or_else(|| panic!("missing chart titled {title}"))
+}
+
 fn row_count(sheet_xml: &str) -> usize {
     sheet_xml.matches("<row ").count()
 }
@@ -490,6 +500,9 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(workbook_xml.contains("Decision Ledger"));
     assert!(workbook_xml.contains("Downside Stress"));
     assert!(workbook_xml.contains("Regime Audit"));
+    assert!(workbook_xml.contains("Candidate Comparison"));
+    assert!(workbook_xml.contains("Research Readiness"));
+    assert!(workbook_xml.contains("Execution Provenance"));
     assert!(workbook_xml.contains("activeTab=\"4\""));
 
     let names: Vec<String> = xml_entries(&bytes)
@@ -512,7 +525,7 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
         .iter()
         .any(|title| title == "Robust score distribution by rank"));
     assert!(titles.iter().any(|title| title == "Sharpe vs MaxDD"));
-    assert!(titles
+    assert!(!titles
         .iter()
         .any(|title| title == "WF Sharpe efficiency by robust rank"));
     assert!(titles
@@ -523,10 +536,10 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
         .any(|title| title == "Peer robust score by rank"));
     assert!(titles
         .iter()
-        .any(|title| title == "Validation probability metrics by rank"));
+        .any(|title| title == "Validation ratios and probabilities by rank"));
     assert!(titles
         .iter()
-        .any(|title| title == "Threshold distance by candidate"));
+        .any(|title| title == "Probability and rank-fraction gate margins by candidate"));
     assert!(titles
         .iter()
         .any(|title| title == "Rejection and review reason counts"));
@@ -536,9 +549,26 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(titles
         .iter()
         .any(|title| title == "Worst drawdown by candidate"));
-    assert!(titles
+    assert!(!titles
         .iter()
         .any(|title| title == "Drawdown stress components by candidate"));
+
+    let robustness_chart =
+        chart_xml_for_title(&bytes, "Validation ratios and probabilities by rank");
+    assert!(robustness_chart.contains(">PSR<"));
+    assert!(robustness_chart.contains(">DSR<"));
+    assert!(!robustness_chart.contains(">CSCV Rank<"));
+    assert!(!robustness_chart.contains(">Boot Prob+<"));
+    assert!(!robustness_chart.contains(">WFE Sharpe<"));
+
+    let rejection_chart = chart_xml_for_title(
+        &bytes,
+        "Probability and rank-fraction gate margins by candidate",
+    );
+    assert!(rejection_chart.contains(">PSR Gap<"));
+    assert!(rejection_chart.contains(">DSR Gap<"));
+    assert!(rejection_chart.contains(">PBO Margin<"));
+    assert!(!rejection_chart.contains(">CSCV Rank Gap<"));
 
     let approved_sheet = read_entry(&bytes, "xl/worksheets/sheet1.xml");
     let shortlist_sheet = read_entry(&bytes, "xl/worksheets/sheet2.xml");
@@ -558,6 +588,8 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(features_sheet.contains("<conditionalFormatting"));
     assert!(robustness_sheet.contains("<tableParts"));
     assert!(robustness_sheet.contains("<conditionalFormatting"));
+    assert_eq!(worksheet_cell(&bytes, 7, "A19"), "Plateau");
+    assert_eq!(worksheet_cell(&bytes, 7, "A20"), "Peer Comparison");
     assert!(diagnostics_sheet.contains("<tableParts"));
     assert!(diagnostics_sheet.contains("<conditionalFormatting"));
     assert!(guide_sheet.contains("<tableParts"));
@@ -659,7 +691,7 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(xml.contains("Gate distance columns show observed minus required minimum"));
     assert!(xml.contains("PSR Gap"));
     assert!(xml.contains("DSR Gap"));
-    assert!(xml.contains("Worst Gate Gap"));
+    assert!(xml.contains("Observed Gate Fails"));
     assert!(xml.contains("Candidate Decision Map"));
     assert!(xml.contains("CandidateDecisionMapTable"));
     assert!(xml.contains("CandidateDecisionLedgerTable"));
@@ -668,6 +700,13 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(xml.contains("DownsideStressTable"));
     assert!(xml.contains("Worst DD Source"));
     assert!(xml.contains("Worst PnL Source"));
+    assert!(xml.contains("CandidateComparisonTable"));
+    assert!(xml.contains("ResearchReadinessTable"));
+    assert!(xml.contains("DeploymentRealismTable"));
+    assert!(xml.contains("RecordedExecutionTable"));
+    assert!(xml.contains("ExpectedExecutionPolicyTable"));
+    assert!(xml.contains("Research evidence only"));
+    assert!(xml.contains("not deployment authorization"));
     assert!(xml.contains("Report Guide"));
     assert!(xml.contains("Quick reference for interpreting the workbook"));
     assert!(xml.contains("Positive is better"));
@@ -718,6 +757,76 @@ fn workbook_dashboard_links_quote_internal_sheet_targets_with_spaces() {
         dashboard_sheet.contains("location=\"'Regime Audit'!A1\"")
             || dashboard_sheet.contains("location=\"&apos;Regime Audit&apos;!A1\"")
     );
+    for sheet in [
+        "Candidate Comparison",
+        "Research Readiness",
+        "Execution Provenance",
+    ] {
+        assert!(
+            dashboard_sheet.contains(&format!("location=\"'{sheet}'!A1\""))
+                || dashboard_sheet.contains(&format!("location=\"&apos;{sheet}&apos;!A1\""))
+        );
+    }
+}
+
+#[test]
+fn optional_chart_series_reappear_only_with_complete_candidate_evidence() {
+    let mut report = baseline_report();
+    let candidates = report
+        .pointer_mut("/validation/res/candidates")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("candidate rows");
+    for (idx, row) in candidates.iter_mut().enumerate().skip(2) {
+        let offset = idx as f64 * 0.01;
+        row["walk_forward"] = json!({
+            "sharpe_median": 0.42 + offset,
+            "pnl_median": 0.06 + offset,
+            "max_dd_worst": 0.40 + offset
+        });
+        row["cscv_pbo"] = json!({
+            "is_selected_frac": 0.30 + offset,
+            "oos_rank_frac_p50": 0.40 + offset,
+            "oos_metric_p50": -0.05 + offset
+        });
+        row["trade_bootstrap"] = json!({
+            "prob_pnl_positive": 0.55 + offset,
+            "pnl_p05": -0.12,
+            "pnl_p50": 0.04,
+            "max_dd_p95": 0.49 + offset,
+            "stationary_mean_block_len": 9,
+            "stationary_pnl_p05": -0.15,
+            "stationary_max_dd_p95": 0.53 + offset
+        });
+    }
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let titles = chart_titles(&bytes);
+    assert!(titles
+        .iter()
+        .any(|title| title == "WF Sharpe efficiency by robust rank"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Drawdown stress components by candidate"));
+
+    let robustness_chart =
+        chart_xml_for_title(&bytes, "Validation ratios and probabilities by rank");
+    assert!(robustness_chart.contains(">CSCV Rank<"));
+    assert!(robustness_chart.contains(">Bootstrap Prob+<"));
+    assert!(robustness_chart.contains(">WFE Sharpe<"));
+
+    let rejection_chart = chart_xml_for_title(
+        &bytes,
+        "Probability and rank-fraction gate margins by candidate",
+    );
+    assert!(rejection_chart.contains(">CSCV Rank Gap<"));
+
+    let downside_chart = chart_xml_for_title(&bytes, "Drawdown stress components by candidate");
+    assert!(downside_chart.contains(">MaxDD<"));
+    assert!(downside_chart.contains(">WF Worst<"));
+    assert!(downside_chart.contains(">Bootstrap DD95<"));
+    assert!(downside_chart.contains(">Stationary DD95<"));
+    assert!(!downside_chart.contains(">Regime DD<"));
+    assert!(!downside_chart.contains(">Friction DD<"));
 }
 
 #[test]
@@ -983,7 +1092,7 @@ fn workbook_zero_survivor_runs_still_emit_fallback_charts() {
     assert!(xml.contains("Execution Notes"));
     assert!(xml.contains("Route Fallback"));
     assert!(xml.contains("Route Note"));
-    assert!(xml.contains("Aux CPU Tails (inferred)"));
+    assert!(xml.contains("Aux/Mixed Tails (inferred)"));
     assert!(xml.contains("Disabled Modules"));
     assert!(xml.contains("Cross Omitted Modules"));
     assert!(xml.contains("Top Warning"));
@@ -1003,8 +1112,9 @@ fn workbook_zero_survivor_runs_still_emit_fallback_charts() {
     assert!(xml.contains(
         "auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)"
     ));
-    assert!(xml.contains("GPU-native: base reruns + hard gates"));
-    assert!(xml.contains("GPU main + CPU tail: perturb + trade_bootstrap"));
+    assert!(xml.contains("GPU-backed reruns/evaluation: base reruns"));
+    assert!(xml.contains("CPU statistical/gate reduction: probability metrics + Pareto marking + hard gates + final ordering"));
+    assert!(xml.contains("CPU auxiliary tail: perturb + trade_bootstrap"));
     assert!(xml.contains(
         "Main GPU route is preserved; perturb + trade bootstrap compare (iid + stationary, stat block=auto) currently run as intentional auxiliary CPU work."
     ));
@@ -1024,7 +1134,7 @@ fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
         "res": {
           "data_id": "gpu_route_note",
           "requested_backend": "GpuHybridKernel",
-          "validation_residency_tier": "gpu_resident",
+          "validation_residency_tier": "gpu_hybrid_kernel",
           "backend_used": "Gpu",
           "backend_route": "GpuHybridKernel->GpuKernel",
           "backend_fallback_reason": "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.",
@@ -1056,7 +1166,7 @@ fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
     assert!(xml.contains("Requested Backend"));
     assert!(xml.contains("GpuHybridKernel"));
     assert!(xml.contains("Residency"));
-    assert!(xml.contains("gpu_resident"));
+    assert!(xml.contains("provenance mismatch"));
     assert!(xml.contains("Route Fallback"));
     assert!(xml.contains("Expected Route Notes"));
     assert!(xml.contains("Execution Notes"));
@@ -1064,6 +1174,13 @@ fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
     assert!(xml.contains("spa_skipped_not_enough_slices"));
     assert!(xml.contains("Top Warning"));
     assert!(xml.contains("cross_ticker_filtered_all_candidates"));
+    assert!(worksheet_cell(&bytes, 15, "B8")
+        .contains("terminal route GpuKernel implies gpu_kernel; provenance mismatch"));
+    assert_eq!(
+        worksheet_cell(&bytes, 15, "B11"),
+        "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
+    );
+    assert_eq!(worksheet_cell(&bytes, 15, "B12"), "-");
 }
 
 #[test]
@@ -1110,7 +1227,7 @@ fn workbook_uses_validation_context_strategy_kind_when_run_req_is_missing() {
     let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
     let xml = all_xml(&bytes);
     assert!(xml.contains(
-        "CARM GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route."
+        "CARM GPU validation uses GpuKernel-backed candidate and slice reruns for the fixed-candidate stack."
     ));
     assert!(!xml.contains(">Unknown<"));
 }
@@ -1129,7 +1246,7 @@ fn workbook_surfaces_composite_route_detail_note_in_expected_execution() {
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "CARM GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route."
+        "CARM GPU validation uses GpuKernel-backed candidate and slice reruns for the fixed-candidate stack."
     ));
 }
 
@@ -1168,9 +1285,14 @@ fn workbook_surfaces_cdmc_gpu_route_detail_and_composite_robustness_blocks() {
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "CDMC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route."
+        "CDMC GPU validation uses GpuKernel-backed candidate and slice reruns for the fixed-candidate stack."
     ));
-    assert!(xml.contains("GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
+    assert!(xml.contains("GPU-backed reruns/evaluation: base reruns"));
+    assert!(xml.contains("CPU statistical/gate reduction: probability metrics + Pareto marking + hard gates + final ordering"));
+    assert!(xml.contains("Mixed/GPU-assisted tail: perturb"));
+    assert!(xml.contains("CPU auxiliary tail: trade_bootstrap"));
+    assert!(xml.contains("perturb (mixed/GPU-assisted, route-dependent)"));
+    assert!(xml.contains("CPU auxiliary tail"));
     assert!(xml.contains("WF Efficiency"));
     assert!(xml.contains("Bootstrap Compare"));
     assert!(xml.contains("Regime Flag"));
@@ -1178,7 +1300,7 @@ fn workbook_surfaces_cdmc_gpu_route_detail_and_composite_robustness_blocks() {
 }
 
 #[test]
-fn workbook_surfaces_vcet_gpu_native_expected_execution_truthfully() {
+fn workbook_surfaces_vcet_gpu_backed_expected_execution_truthfully() {
     let mut report = baseline_report();
     report["run"]["req"]["strategy_kind"] = json!("Vcet");
     report["validation"]["res"]["backend_used"] = json!("Gpu");
@@ -1191,12 +1313,13 @@ fn workbook_surfaces_vcet_gpu_native_expected_execution_truthfully() {
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "VCET GPU validation now supports the current fixed-candidate validation module stack on the GpuKernel route, including walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap."
+        "VCET GPU validation uses GpuKernel-backed base, walk-forward, reopt walk-forward, CSCV-slice, and SPA-slice reruns."
     ));
-    assert!(xml.contains(
-        "GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"
-    ));
-    assert!(!xml.contains("GPU main + CPU tail: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
+    assert!(xml.contains("GPU-backed reruns/evaluation: base reruns"));
+    assert!(xml.contains("CPU statistical/gate reduction: probability metrics + Pareto marking + hard gates + final ordering"));
+    assert!(xml.contains("Mixed/GPU-assisted tail: perturb"));
+    assert!(xml.contains("CPU auxiliary tail: trade_bootstrap"));
+    assert!(!xml.contains("GPU-native:"));
 }
 
 #[test]

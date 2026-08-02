@@ -68,6 +68,7 @@ const {
 } = useTaskLifecycleSummary()
 
 const { mountReady } = useShellMount('#runFooterVueShellMount')
+const primaryDisabledReasonId = 'footerPrimaryDisabledReason'
 const footerVisible = computed(() => String(workspace.value || '').trim() === 'workflow')
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
 const optionsModeActive = computed(() => String(mode.value || '').trim() === 'options')
@@ -288,7 +289,11 @@ function openTaskCenterDetails(): void {
           <span class="meta mono">Updated {{ stamp }}</span>
         </div>
         <div class="summaryPill mono" role="status" aria-live="polite">{{ footerSummary }}</div>
-        <div v-if="primaryActionDisabled" class="blockedReason mono">
+        <div
+          v-if="primaryActionDisabled"
+          :id="primaryDisabledReasonId"
+          class="blockedReason mono"
+        >
           {{ primaryDisabledReason }}
         </div>
       </div>
@@ -332,6 +337,7 @@ function openTaskCenterDetails(): void {
           data-qa-action="footer.primaryAction.run"
           :disabled="primaryActionDisabled"
           :disabled-reason="primaryDisabledReason"
+          :aria-describedby="primaryActionDisabled ? primaryDisabledReasonId : undefined"
           @click="runPrimaryAction"
         >
           {{ primaryActionLabel }}

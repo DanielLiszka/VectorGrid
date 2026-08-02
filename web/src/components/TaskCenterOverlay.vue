@@ -13,7 +13,7 @@ import {
   useTaskCenterVisibility,
 } from '../composables/useTaskCenterVisibility'
 import { requestCancellationForMappedCommand } from '../services/runControlService'
-import { formatUiCompactDurationMs, formatUiPercentFromFraction } from '../utils/uiFormat'
+import { formatUiCompactDurationMs, formatUiPercentValue } from '../utils/uiFormat'
 import {
   describeTaskEvent,
   describeTaskToast,
@@ -501,7 +501,7 @@ function openRelatedAction(action: RelatedTaskAction | null): void {
         <span class="toggleLabel">{{ quietMode ? 'Tasks' : 'Task Center' }}</span>
         <span v-if="!quietMode || runningCount > 0" class="toggleBadge">{{ runningCount }}</span>
         <span v-if="!quietMode || centerStatusLabel !== 'Idle'" class="toggleState">{{ centerStatusLabel }}</span>
-        <span v-if="overall" class="togglePct">{{ formatUiPercentFromFraction(overall.pct) }}</span>
+        <span v-if="overall" class="togglePct">{{ formatUiPercentValue(overall.pct) }}</span>
       </button>
     </div>
 
@@ -552,7 +552,7 @@ function openRelatedAction(action: RelatedTaskAction | null): void {
       <div v-if="overall" class="overallWrap">
         <div class="overallTitle">{{ overall.label }}</div>
         <div class="bar">
-          <div class="fill" :style="{ width: formatUiPercentFromFraction(overall.pct, 1) }"></div>
+          <div class="fill" :style="{ width: formatUiPercentValue(overall.pct, 1) }"></div>
         </div>
       </div>
 

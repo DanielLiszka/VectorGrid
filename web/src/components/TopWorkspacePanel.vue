@@ -32,12 +32,13 @@ import {
 import {
   compareCandidateFocusIcon,
   compareCandidatesIcon,
-  emptyResultsWorkspaceIllustration,
   provenanceIconForText,
 } from "../utils/appSvgAssets";
 import { compareActionIcon } from "../utils/iconography";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
+import AppButton from "./ui/AppButton.vue";
 import AppDataTableShell from "./ui/AppDataTableShell.vue";
+import AppEmptyState from "./ui/AppEmptyState.vue";
 import AppMetricCell from "./ui/AppMetricCell.vue";
 import AppMetricStrip, { type AppMetricItem } from "./ui/AppMetricStrip.vue";
 import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
@@ -234,6 +235,32 @@ const emptyBody = computed(() =>
           ? "Broaden or clear the active filters to repopulate the ranking table."
           : "Run an optimization or load prior analysis results to populate the ranked table.",
 );
+const emptyNavigationActionLabel = computed(() => {
+  if (topStage.value === "no_data") return "Open Data";
+  if (topStage.value === "data_loaded_no_run") return "Open Optimize";
+  if (topDisabledForRun.value) return "Review Top K";
+  if (filtersActive.value || canClearTopFilters.value) return "";
+  return "Open Optimize";
+});
+const emptyHint = computed(() => {
+  const nextStep =
+    topStage.value === "no_data"
+      ? "Next: open Data and load a dataset."
+      : topStage.value === "data_loaded_no_run"
+        ? "Next: open Optimize and generate a ranked shortlist."
+        : topDisabledForRun.value
+          ? "Next: review Top K in Advanced, then rerun optimization."
+          : filtersActive.value || canClearTopFilters.value
+            ? "Next: clear filters or broaden the current thresholds."
+            : "Next: rerun optimization or restore a completed run.";
+  const context = [
+    String(topFilterMeta.value || "").trim(),
+    topStage.value === "ready"
+      ? String(topSelectionGuardrail.value || "").trim()
+      : "",
+  ].filter((value) => value && value !== "-" && value !== "—");
+  return [nextStep, ...context].join(" · ");
+});
 const {
   scrollElementRef: tableScrollElementRef,
   virtualRows,
@@ -490,6 +517,17 @@ function provenanceIcon(label: string | null | undefined) {
 
 function reviewOverview(): void {
   workflowStore.selectResultsTab("overview");
+}
+
+function openTopEmptyNextStep(): void {
+  if (topStage.value === "no_data") {
+    workflowStore.selectWorkspace("workflow", "data");
+    return;
+  }
+  workflowStore.selectWorkspace("workflow", "optimize");
+  workflowStore.selectControlsTab(
+    topDisabledForRun.value ? "advanced" : "opt",
+  );
 }
 
 function openCandidateDetail(): void {
@@ -971,41 +1009,34 @@ onBeforeUnmount(() => {
             <span>{{ cue }}</span>
           </div>
         </div>
-        <div
+        <AppEmptyState
           v-if="topStage !== 'ready' || !hasTopResults"
-          class="emptyState topEmptyState"
+          class="topEmptyState"
+          :title="emptyTitle"
+          :body="emptyBody"
+          :hint="emptyHint"
         >
-          <img
-            class="emptyStateIllustration"
-            :src="emptyResultsWorkspaceIllustration"
-            alt=""
-            aria-hidden="true"
-            draggable="false"
-          />
-          <div class="emptyTitle">{{ emptyTitle }}</div>
-          <div class="emptyBody">{{ emptyBody }}</div>
-          <div
-            v-if="topStage === 'ready' && (filtersActive || canClearTopFilters)"
-            class="emptyActions"
-          >
-            <button
+          <template #actions>
+            <AppButton
+              v-if="emptyNavigationActionLabel"
+              variant="primary"
+              type="button"
+              @click="openTopEmptyNextStep"
+            >
+              {{ emptyNavigationActionLabel }}
+            </AppButton>
+            <AppButton
+              v-if="
+                topStage === 'ready' && (filtersActive || canClearTopFilters)
+              "
               type="button"
               :disabled="!canClearTopFilters"
               @click="analysisStore.clearTopFilters()"
             >
               Clear filters
-            </button>
-          </div>
-          <div class="panelMuted mono panelNumeric">
-            {{ topFilterMeta || statusLine }}
-          </div>
-          <div
-            v-if="topStage === 'ready' && hasTopSelectionGuardrail"
-            class="panelMuted mono panelNumeric"
-          >
-            {{ topSelectionGuardrail }}
-          </div>
-        </div>
+            </AppButton>
+          </template>
+        </AppEmptyState>
 
         <AppDataTableShell
           v-else
@@ -1474,13 +1505,6 @@ onBeforeUnmount(() => {
   display: grid;
   align-content: center;
   gap: 0.65rem;
-}
-
-.emptyStateIllustration {
-  width: clamp(88px, 18vw, 124px);
-  height: auto;
-  justify-self: start;
-  opacity: 0.92;
 }
 
 .topTableVue {

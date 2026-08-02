@@ -26,6 +26,7 @@ import {
   topOffPolygonDataset as topOffPolygonDatasetAction,
   validatePolygonDataset as validatePolygonDatasetAction,
 } from "../services/dataService";
+import { invalidateAnalysisExecutionForDatasetChange } from "../services/analysisInvalidation";
 import { formatPolygonProviderErrorMessage } from "../services/providerErrorTaxonomy";
 import { DATA_STARTUP_SNAPSHOT_KEY } from "../utils/core/storageKeys";
 import { formatMarketDate, parsePolygonDateInput } from "../utils/marketTime";
@@ -1265,6 +1266,7 @@ export const useDataStore = defineStore("data", {
       const row = result && typeof result === "object" ? result : null;
       if (!row) return;
       const dataId = String(row.dataId || "").trim();
+      const previousDataId = String(this.dataId || "").trim();
       const meta = row.meta && typeof row.meta === "object" ? row.meta : null;
       const path = String(row.path || "").trim();
       const treatAsBase = options?.treatAsBase !== false;
@@ -1278,6 +1280,13 @@ export const useDataStore = defineStore("data", {
         loadText,
         cachePath,
       );
+      if (
+        dataId &&
+        hasLoadedDataset(previousDataId) &&
+        previousDataId !== dataId
+      ) {
+        invalidateAnalysisExecutionForDatasetChange();
+      }
 
       if (path) {
         this.csvPath = path;
@@ -1344,6 +1353,9 @@ export const useDataStore = defineStore("data", {
           ? this.baseDataMeta
           : null;
       if (!hasLoadedDataset(baseId) || !baseMeta) return;
+      if (String(this.dataId || "").trim() !== baseId) {
+        invalidateAnalysisExecutionForDatasetChange();
+      }
       const baseTf = String(baseMeta.timeframe || "").trim();
 
       this.dataId = baseId;
@@ -1821,6 +1833,7 @@ export const useDataStore = defineStore("data", {
 
     clearData(): void {
       const baseId = String(this.baseDataId || "").trim();
+      invalidateAnalysisExecutionForDatasetChange();
       void clearDataAction(baseId).catch((error: unknown) => {
         this.statusLine = `Cleared UI state (backend clear warning: ${redactDataStoreText(this, error) || "clear failed"}).`;
         markVueUpdate(this);

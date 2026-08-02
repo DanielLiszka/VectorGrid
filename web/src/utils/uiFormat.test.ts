@@ -4,6 +4,7 @@ import {
   formatUiCompactDurationMs,
   formatUiCount,
   formatUiPercentFromFraction,
+  formatUiPercentValue,
   formatUtcDateFromUnixMs,
   formatUtcDateTimeFromUnixMs,
 } from "./uiFormat";
@@ -23,6 +24,12 @@ describe("uiFormat", () => {
     expect(formatUiPercentFromFraction(0.4567, 1)).toBe("45.7%");
     expect(formatUiPercentFromFraction("bad")).toBe("—");
     expect(() => formatUiPercentFromFraction(0.1, 1000)).not.toThrow();
+  });
+
+  it("formats values that are already expressed as percentages", () => {
+    expect(formatUiPercentValue(100)).toBe("100%");
+    expect(formatUiPercentValue(45.67, 1)).toBe("45.7%");
+    expect(formatUiPercentValue("bad")).toBe("—");
   });
 
   it("formats compact durations from milliseconds", () => {

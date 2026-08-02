@@ -46,6 +46,11 @@ import {
   optionsTupleDetailIcon,
 } from "../utils/appSvgAssets";
 import { buildOptionsFinalistDashboard } from "../utils/optionsFinalistDashboardModel";
+import {
+  createOptionsValidationFormValues,
+  validateOptionsValidationFormValues,
+  type OptionsValidationFormValues,
+} from "../utils/optionsValidationForm";
 import { resolveRovingRowIndex } from "../utils/rovingRowFocus";
 
 const props = withDefaults(
@@ -133,7 +138,6 @@ const {
   validationAcceptance,
   validationBusy,
   validationDatasetPolicy,
-  validationFormErrorMessages,
   validationFormValid,
   validationFeasibilityBusy,
   validationIncludeHoldoutLeader,
@@ -160,6 +164,120 @@ const {
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+type ValidationFieldWithControl =
+  | "artifactPath"
+  | "selectedDatasetId"
+  | "datasetPolicy"
+  | "validationPlanMode"
+  | "startDate"
+  | "endDate"
+  | "trainSessionCountInput"
+  | "validationSessionCountInput"
+  | "stepSessionCountInput"
+  | "tupleIndexesInput"
+  | "minValidTradesInput";
+
+const validationControlIds: Record<ValidationFieldWithControl, string> = {
+  artifactPath: "optionsArtifactSelect",
+  selectedDatasetId: "optionsDatasetSelect",
+  datasetPolicy: "optionsValidationDatasetPolicy",
+  validationPlanMode: "optionsValidationPlanMode",
+  startDate: "optionsValidationStartDate",
+  endDate: "optionsValidationEndDate",
+  trainSessionCountInput: "optionsValidationTrainSessions",
+  validationSessionCountInput: "optionsValidationSessions",
+  stepSessionCountInput: "optionsValidationStepSessions",
+  tupleIndexesInput: "optionsValidationTupleIndexes",
+  minValidTradesInput: "optionsValidationMinValidTrades",
+};
+
+const validationFieldFocusOrder: readonly ValidationFieldWithControl[] = [
+  "artifactPath",
+  "selectedDatasetId",
+  "datasetPolicy",
+  "validationPlanMode",
+  "startDate",
+  "endDate",
+  "trainSessionCountInput",
+  "validationSessionCountInput",
+  "stepSessionCountInput",
+  "minValidTradesInput",
+  "tupleIndexesInput",
+];
+
+const optionsPanelRoot = ref<HTMLElement | null>(null);
+
+const validationFormFieldErrors = computed(() => {
+  const values = createOptionsValidationFormValues({
+    artifactPath: activeArtifactPath.value,
+    activeArtifactOptionsDatasetId:
+      store.activeArtifact?.optionsDatasetId || "",
+    selectedDatasetId: selectedDatasetId.value,
+    datasetPolicy:
+      validationDatasetPolicy.value as OptionsValidationFormValues["datasetPolicy"],
+    validationPlanMode:
+      validationPlanMode.value as OptionsValidationFormValues["validationPlanMode"],
+    startDate: validationStartDateInput.value,
+    endDate: validationEndDateInput.value,
+    trainSessionCountInput: validationTrainSessionCountInput.value,
+    validationSessionCountInput: validationSessionCountInput.value,
+    stepSessionCountInput: validationStepSessionCountInput.value,
+    tupleIndexesInput: validationTupleIndexesInput.value,
+    includeSealedFinalists: validationIncludeSealedFinalists.value,
+    includeRobustLeader: validationIncludeRobustLeader.value,
+    includeHoldoutLeader: validationIncludeHoldoutLeader.value,
+    minValidTradesInput: minValidTradesInput.value,
+  });
+  return validateOptionsValidationFormValues(values)?.fields ?? {};
+});
+
+const validationFormErrorEntries = computed(() =>
+  validationFieldFocusOrder.flatMap((field) => {
+    const message = normalizeText(validationFormFieldErrors.value[field]);
+    if (!message) return [];
+    const controlId = validationControlIds[field];
+    return [
+      {
+        field,
+        controlId,
+        errorId: `${controlId}Error`,
+        message,
+      },
+    ];
+  }),
+);
+
+function validationFieldIsInvalid(field: ValidationFieldWithControl): boolean {
+  return Boolean(validationFormFieldErrors.value[field]);
+}
+
+function validationFieldErrorReference(
+  field: ValidationFieldWithControl,
+): string | undefined {
+  return validationFieldIsInvalid(field)
+    ? `${validationControlIds[field]}Error`
+    : undefined;
+}
+
+async function focusFirstInvalidValidationControl(): Promise<boolean> {
+  await nextTick();
+  for (const error of validationFormErrorEntries.value) {
+    const control =
+      optionsPanelRoot.value?.querySelector<HTMLElement>(
+        `#${error.controlId}`,
+      ) ?? null;
+    if (!control) continue;
+    control.focus();
+    return true;
+  }
+  return validationFormErrorEntries.value.length > 0;
+}
+
+async function previewValidationFeasibility(): Promise<void> {
+  if (await focusFirstInvalidValidationControl()) return;
+  await store.previewValidationFeasibility();
 }
 
 function isSupportedParentStrategyKind(value: unknown): boolean {
@@ -4036,6 +4154,7 @@ function focusTupleIndex(index: number): void {
 
 <template>
   <section
+    ref="optionsPanelRoot"
     class="optionsPanel surfaceFocus"
     aria-label="Options expression follow-up"
   >
@@ -4196,6 +4315,10 @@ function focusTupleIndex(index: number): void {
               id="optionsDatasetSelect"
               v-model="selectedDatasetId"
               data-qa-control="options.dataset.select"
+              :aria-invalid="validationFieldIsInvalid('selectedDatasetId')"
+              :aria-describedby="
+                validationFieldErrorReference('selectedDatasetId')
+              "
             >
               <option value="">
                 Select {{ formatRealismLaneLabel(realismLane) }} Polygon.io
@@ -4602,10 +4725,15 @@ function focusTupleIndex(index: number): void {
           <label>
             Min valid trades
             <input
+              id="optionsValidationMinValidTrades"
               v-model="minValidTradesInput"
               type="text"
               inputmode="numeric"
               spellcheck="false"
+              :aria-invalid="validationFieldIsInvalid('minValidTradesInput')"
+              :aria-describedby="
+                validationFieldErrorReference('minValidTradesInput')
+              "
             />
           </label>
           <label>
@@ -4790,6 +4918,8 @@ function focusTupleIndex(index: number): void {
           id="optionsArtifactSelect"
           v-model="selectedArtifactPath"
           data-qa-control="options.artifact.select"
+          :aria-invalid="validationFieldIsInvalid('artifactPath')"
+          :aria-describedby="validationFieldErrorReference('artifactPath')"
         >
           <option value="">Select saved options expression artifact…</option>
           <option
@@ -5256,8 +5386,11 @@ function focusTupleIndex(index: number): void {
           <label>
             Dataset policy
             <select
+              id="optionsValidationDatasetPolicy"
               v-model="validationDatasetPolicy"
               data-qa-control="options.validation.datasetPolicy"
+              :aria-invalid="validationFieldIsInvalid('datasetPolicy')"
+              :aria-describedby="validationFieldErrorReference('datasetPolicy')"
             >
               <option
                 v-for="entry in OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS"
@@ -5271,8 +5404,13 @@ function focusTupleIndex(index: number): void {
           <label>
             Validation plan
             <select
+              id="optionsValidationPlanMode"
               v-model="validationPlanMode"
               data-qa-control="options.validation.planMode"
+              :aria-invalid="validationFieldIsInvalid('validationPlanMode')"
+              :aria-describedby="
+                validationFieldErrorReference('validationPlanMode')
+              "
             >
               <option
                 v-for="entry in OPTIONS_VALIDATION_PLAN_MODE_OPTIONS"
@@ -5286,17 +5424,23 @@ function focusTupleIndex(index: number): void {
           <label v-if="validationPlanMode === 'date_range_holdout'">
             Holdout start
             <input
+              id="optionsValidationStartDate"
               v-model="validationStartDateInput"
               data-qa-control="options.validation.startDate"
               type="date"
+              :aria-invalid="validationFieldIsInvalid('startDate')"
+              :aria-describedby="validationFieldErrorReference('startDate')"
             />
           </label>
           <label v-if="validationPlanMode === 'date_range_holdout'">
             Holdout end
             <input
+              id="optionsValidationEndDate"
               v-model="validationEndDateInput"
               data-qa-control="options.validation.endDate"
               type="date"
+              :aria-invalid="validationFieldIsInvalid('endDate')"
+              :aria-describedby="validationFieldErrorReference('endDate')"
             />
           </label>
           <label
@@ -5307,11 +5451,16 @@ function focusTupleIndex(index: number): void {
           >
             Train sessions
             <input
+              id="optionsValidationTrainSessions"
               v-model="validationTrainSessionCountInput"
               data-qa-control="options.validation.trainSessions"
               type="number"
               min="1"
               step="1"
+              :aria-invalid="validationFieldIsInvalid('trainSessionCountInput')"
+              :aria-describedby="
+                validationFieldErrorReference('trainSessionCountInput')
+              "
             />
           </label>
           <label
@@ -5322,11 +5471,18 @@ function focusTupleIndex(index: number): void {
           >
             Validation sessions
             <input
+              id="optionsValidationSessions"
               v-model="validationSessionCountInput"
               data-qa-control="options.validation.validationSessions"
               type="number"
               min="1"
               step="1"
+              :aria-invalid="
+                validationFieldIsInvalid('validationSessionCountInput')
+              "
+              :aria-describedby="
+                validationFieldErrorReference('validationSessionCountInput')
+              "
             />
           </label>
           <label
@@ -5337,21 +5493,31 @@ function focusTupleIndex(index: number): void {
           >
             Step sessions
             <input
+              id="optionsValidationStepSessions"
               v-model="validationStepSessionCountInput"
               data-qa-control="options.validation.stepSessions"
               type="number"
               min="1"
               step="1"
+              :aria-invalid="validationFieldIsInvalid('stepSessionCountInput')"
+              :aria-describedby="
+                validationFieldErrorReference('stepSessionCountInput')
+              "
             />
           </label>
           <label>
             Tuple indexes
             <input
+              id="optionsValidationTupleIndexes"
               v-model="validationTupleIndexesInput"
               type="text"
               inputmode="numeric"
               spellcheck="false"
               placeholder="Optional, comma-separated"
+              :aria-invalid="validationFieldIsInvalid('tupleIndexesInput')"
+              :aria-describedby="
+                validationFieldErrorReference('tupleIndexesInput')
+              "
             />
           </label>
           <div class="full">
@@ -5382,24 +5548,26 @@ function focusTupleIndex(index: number): void {
         </div>
 
         <div
-          v-if="validationFormErrorMessages.length"
+          v-if="validationFormErrorEntries.length"
           class="panelMuted validationFormErrors"
           role="status"
           aria-live="polite"
         >
-          {{ validationFormErrorMessages.join(" ") }}
+          <span
+            v-for="entry in validationFormErrorEntries"
+            :id="entry.errorId"
+            :key="entry.field"
+          >
+            {{ entry.message }}
+          </span>
         </div>
 
         <div class="actions">
           <AppButton
             type="button"
             data-qa-action="options.validation.preview"
-            :disabled="
-              validationFeasibilityBusy ||
-              !activeArtifactPath ||
-              !validationFormValid
-            "
-            @click="store.previewValidationFeasibility()"
+            :disabled="validationFeasibilityBusy || !activeArtifactPath"
+            @click="previewValidationFeasibility"
           >
             {{
               validationFeasibilityBusy
@@ -6775,6 +6943,11 @@ function focusTupleIndex(index: number): void {
   display: flex;
   flex-wrap: wrap;
   gap: 0.55rem;
+}
+
+.validationFormErrors {
+  display: grid;
+  gap: 0.25rem;
 }
 
 .buttonWithIcon {

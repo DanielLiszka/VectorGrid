@@ -40,6 +40,14 @@ describe('WorkbenchInspector', () => {
     })
 
     expect(wrapper.get('[data-qa-state="workbench.inspector.section.dataset"]').text()).toContain('SPY')
+    expect(wrapper.get('#workbench_inspector_mode_selection').attributes('aria-controls')).toBe(
+      'workbench_inspector_panel',
+    )
+    expect(wrapper.get('#workbench_inspector_panel').attributes('role')).toBe('tabpanel')
+    expect(wrapper.get('#workbench_inspector_panel').attributes('aria-labelledby')).toBe(
+      'workbench_inspector_mode_selection',
+    )
+    expect(wrapper.get('#workbench_inspector_panel').attributes('aria-live')).toBeUndefined()
     await wrapper.get('[data-qa-action="workbench.inspector.selection.openOptimize"]').trigger('click')
     expect(wrapper.emitted('runAction')?.[0]).toEqual(['selection.openOptimize'])
 
@@ -57,6 +65,24 @@ describe('WorkbenchInspector', () => {
 
     await wrapper.get('#workbench_inspector_mode_selection').trigger('keydown', { key: 'ArrowRight' })
     expect(wrapper.emitted('selectMode')?.[0]).toEqual(['validation'])
+
+    wrapper.unmount()
+  })
+
+  it('exposes compact-open inspector semantics as a modal dialog', () => {
+    const wrapper = mount(WorkbenchInspector, {
+      props: {
+        state: state(),
+        collapsed: false,
+        compact: true,
+        compactOpen: true,
+      },
+    })
+
+    const inspector = wrapper.get('[data-qa-panel="workbench.inspector"]')
+    expect(inspector.attributes('role')).toBe('dialog')
+    expect(inspector.attributes('aria-modal')).toBe('true')
+    expect(inspector.attributes('aria-labelledby')).toBe('workbenchInspectorTitle')
 
     wrapper.unmount()
   })

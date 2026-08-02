@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-07-24T18:26:19.587Z",
+  "generated_at_utc": "2026-07-28T18:56:01.671Z",
   "pack_path": "scripts/headless_output_parity_pack.json",
   "pairs_path": "scripts/output_parity_pairs.json",
   "semantic_pairs_path": "scripts/output_parity_semantic_pairs.json",
@@ -75,7 +75,7 @@
       "name": "report-json-artifact",
       "baseline": "scripts/baselines/samples/report.json",
       "candidate": "_write_test/headless_reports/vectorgrid_synthetic_headless_current.json",
-      "size_bytes": 101626
+      "size_bytes": 104461
     },
     {
       "name": "validation-shortlist-csv",

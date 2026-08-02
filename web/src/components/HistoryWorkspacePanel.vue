@@ -1466,6 +1466,68 @@ pre {
   overflow: auto;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .runListButton {
+    transition: none !important;
+  }
+
+  .runListButton:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .pane,
+  .runList,
+  .listEmpty,
+  .detailCard,
+  .pill {
+    border-color: CanvasText !important;
+    background: Canvas !important;
+    color: CanvasText !important;
+    box-shadow: none !important;
+  }
+
+  .runListItem + .runListItem {
+    border-color: CanvasText !important;
+  }
+
+  .runListButton,
+  .runListButton:hover:not(:disabled) {
+    border: 1px solid ButtonText !important;
+    background: ButtonFace !important;
+    color: ButtonText !important;
+    transform: none;
+  }
+
+  .runListButton:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -3px;
+    box-shadow: none !important;
+  }
+
+  .runListButton.active {
+    border-color: Highlight !important;
+    background: Highlight !important;
+    color: HighlightText !important;
+    box-shadow: none !important;
+  }
+
+  .runListButton.active .panelMuted {
+    color: HighlightText !important;
+  }
+
+  .pill.good {
+    border: 3px double CanvasText !important;
+    background: Canvas !important;
+    color: CanvasText !important;
+  }
+
+  .pill.subtle {
+    color: GrayText !important;
+  }
+}
+
 @media (max-width: 980px) {
   .grid {
     grid-template-columns: 1fr;

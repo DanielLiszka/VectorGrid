@@ -1,4 +1,3 @@
-
 import { createPinia, setActivePinia } from "pinia";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
@@ -11,6 +10,7 @@ import {
   META_RESULTS_TABLE_DENSITY_KEY,
   META_RESULTS_TABLE_STATE_KEY,
 } from "../utils/core/storageKeys";
+import { buildVcetCampaignEvidenceModel } from "../visualizations/vcetCampaignEvidenceModel";
 
 function installMetaPanelMountShell(): void {
   document.body.innerHTML = `
@@ -28,6 +28,56 @@ describe("MetaWorkspacePanel", () => {
   beforeEach(() => {
     installMetaPanelMountShell();
     localStorage.clear();
+  });
+
+  it("routes the saved-run empty state to the Run Library without duplicating status announcements", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    workflow.selectResultsTab("meta", { persist: false });
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const emptyState = document.querySelector(".appEmptyState");
+    const activeTab = document.querySelector<HTMLButtonElement>(
+      "#meta_aggregate_tab_meta",
+    );
+    const activePanel = document.querySelector<HTMLElement>(
+      "#meta_aggregate_panel_meta_main",
+    );
+    expect(emptyState?.textContent || "").toContain(
+      "Meta Analysis needs saved runs first.",
+    );
+    expect(emptyState?.textContent || "").toContain(
+      "Next: open the Run Library",
+    );
+    expect(emptyState?.querySelector('[role="status"]')).toBeNull();
+    expect(
+      document.querySelectorAll('[role="status"][aria-live="polite"]'),
+    ).toHaveLength(1);
+    expect(activeTab?.getAttribute("aria-controls")).toBe(activePanel?.id);
+    expect(activePanel?.getAttribute("role")).toBe("tabpanel");
+    expect(activePanel?.getAttribute("aria-labelledby")).toBe(activeTab?.id);
+    expect(
+      document.querySelector("#meta_aggregate_tab_saved")?.hasAttribute("aria-controls"),
+    ).toBe(false);
+
+    const openLibraryButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (button) =>
+        String(button.textContent || "").trim() === "Open Run Library",
+    );
+    expect(openLibraryButton?.classList.contains("appButton")).toBe(true);
+    openLibraryButton?.click();
+    await flushPanel();
+
+    expect(workflow.workspace).toBe("library");
+    expect(workflow.workflow).toBe("history");
   });
 
   it("keeps the setup state inside the active Meta tabpanel", async () => {
@@ -65,6 +115,85 @@ describe("MetaWorkspacePanel", () => {
       "Saved runs are available, but no meta artifact is active yet.",
     );
     expect(tabpanels[0]?.textContent || "").toContain("Aggregate inventory");
+    const setupState = tabpanels[0]?.querySelector(".appEmptyState");
+    expect(setupState?.querySelector('[role="status"]')).toBeNull();
+    expect(setupState?.textContent || "").toContain(
+      "Next: review the Meta Selection setup below.",
+    );
+
+    const reviewSetupButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (button) =>
+        String(button.textContent || "").trim() === "Review meta setup",
+    );
+    reviewSetupButton?.click();
+    await flushPanel();
+    expect(document.activeElement?.id).toBe("vueMetaStrategy");
+  });
+
+  it("hosts the bounded VCET temporal campaign only inside Meta Batch", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("batch", { persist: false });
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const batchPanel = document.querySelector("#meta_aggregate_panel_batch");
+    const temporalHost = batchPanel?.querySelector(
+      '[data-testid="vcet-temporal-campaign-host"]',
+    );
+    expect(temporalHost).not.toBeNull();
+    expect(temporalHost?.textContent || "").toContain(
+      "at most 64 source datasets",
+    );
+    expect(temporalHost?.textContent || "").toContain(
+      "not the 10,000-stock",
+    );
+    expect(
+      temporalHost?.querySelector<HTMLButtonElement>(
+        '[data-testid="vcet-temporal-prepare"]',
+      )?.disabled,
+    ).toBe(true);
+    expect(
+      document.querySelector("#meta_aggregate_panel_meta_main"),
+    ).toBeNull();
+  });
+
+  it("uses the shared empty state when a meta artifact has no selection rows", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const historyStore = useHistoryStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("meta", { persist: false });
+    historyStore.savedRunCount = 1;
+    analysisStore.metaOutputPreview = '{"groups":0}';
+    analysisStore.metaTableRows = [];
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const tableShell = document.querySelector(
+      '[aria-label="Meta analysis results table shell"]',
+    );
+    expect(
+      tableShell?.querySelector(".appEmptyState")?.textContent || "",
+    ).toContain("No meta selection rows were returned.");
+    expect(
+      tableShell?.querySelector(".appEmptyState [role='status']"),
+    ).toBeNull();
   });
 
   it("persists visible meta result columns and restores defaults", async () => {
@@ -179,10 +308,14 @@ describe("MetaWorkspacePanel", () => {
     );
     expect(shell?.getAttribute("data-table-row-count")).toBe("1");
     expect(shell?.getAttribute("data-table-density")).toBe("comfortable");
-    expect(document.querySelector("#metaColumnToggle_meta_score")).not.toBeNull();
+    expect(
+      document.querySelector("#metaColumnToggle_meta_score"),
+    ).not.toBeNull();
 
     document
-      .querySelector<HTMLButtonElement>('[data-qa="meta.table.density.compact"]')
+      .querySelector<HTMLButtonElement>(
+        '[data-qa="meta.table.density.compact"]',
+      )
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await flushPanel();
 
@@ -232,11 +365,9 @@ describe("MetaWorkspacePanel", () => {
     await flushPanel();
 
     const headers = Array.from(document.querySelectorAll("th"));
-    expect(headers.map((cell) => String(cell.textContent || "").trim())).toEqual([
-      "Score",
-      "Group",
-      "Selection",
-    ]);
+    expect(
+      headers.map((cell) => String(cell.textContent || "").trim()),
+    ).toEqual(["Score", "Group", "Selection"]);
     expect((headers[0] as HTMLElement).style.width).toBe("220px");
 
     const scoreResize = headers[0]?.querySelector<HTMLButtonElement>(
@@ -490,6 +621,52 @@ describe("MetaWorkspacePanel", () => {
     expect(document.querySelector("pre.preview")?.textContent?.trim()).toBe(
       "-",
     );
+  });
+
+  it("focuses the saved-meta selector from the compare empty state without a nested live region", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const historyStore = useHistoryStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("compare", { persist: false });
+    historyStore.savedRunCount = 1;
+    analysisStore.metaOutputPreview = '{"groups":1}';
+    analysisStore.metaCompareSelected = "";
+    analysisStore.metaCompareOptions = [
+      { value: "", label: "Compare against saved meta...", disabled: false },
+      {
+        value: "C:/runs/baseline_meta.json",
+        label: "Saved baseline",
+        disabled: false,
+      },
+    ];
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const emptyState = document.querySelector(
+      '[aria-label="Meta compare setup status"]',
+    );
+    expect(emptyState?.classList.contains("appEmptyState")).toBe(true);
+    expect(emptyState?.querySelector('[role="status"]')).toBeNull();
+    expect(emptyState?.textContent || "").toContain(
+      "Next: choose a saved Meta baseline",
+    );
+
+    const chooseBaselineButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (button) => String(button.textContent || "").trim() === "Choose baseline",
+    );
+    chooseBaselineButton?.click();
+    await flushPanel();
+    expect(document.activeElement?.id).toBe("vueMetaCompareSelect");
   });
 
   it("uses inline confirmation before deleting saved aggregate artifacts", async () => {
@@ -754,6 +931,11 @@ describe("MetaWorkspacePanel", () => {
     const text = document.body.textContent || "";
     expect(text).toContain("Execution mode");
     expect(text).toContain("Optimize only");
+    expect(text).toContain("VCET candidate-universe replay");
+    expect(text).toContain("expands the current VCET Fast/Slow ranges");
+    expect(text).toContain(
+      "CPU-resident auxiliary stages are intentionally omitted",
+    );
     expect(text).toContain("Preload policy");
     expect(text).toContain("Host + DoubleMa VRAM staging (experimental)");
     expect(text).toContain("Automation");
@@ -772,6 +954,172 @@ describe("MetaWorkspacePanel", () => {
     expect(text).toContain("Retry failed");
     expect(text).toContain("Resume incomplete");
     expect(text).toContain("Reveal summary");
+  });
+
+  it("exposes configurable VCET cross-universe admission in replay mode", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("batch", { persist: false });
+    analysisStore.batchExecutionMode = "evaluate_candidates";
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const text = document.body.textContent || "";
+    expect(text).toContain("Robust cross-universe admission");
+    expect(text).toContain("profitable ≥ 55%");
+    expect(text).toContain("hard gate ≥ 50%");
+    expect(text).toContain(
+      "Coverage shares use the complete requested training-stock denominator",
+    );
+    expect(text).toContain(
+      "missing or failed training datasets rank below every finite result",
+    );
+    expect(text).toContain(
+      "metric is unavailable and admission fails",
+    );
+    expect(text).toContain(
+      "not a substitute for later time-based walk-forward or regime validation",
+    );
+
+    const setInput = async (selector: string, value: string) => {
+      const input = document.querySelector<HTMLInputElement>(selector);
+      expect(input).not.toBeNull();
+      input!.value = value;
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+      await flushPanel();
+    };
+    await setInput("#vueBatchAdmissionProfitable", "0.65");
+    await setInput("#vueBatchAdmissionHardGate", "0.60");
+    await setInput("#vueBatchAdmissionPnlP10", "0.01");
+    await setInput("#vueBatchAdmissionSharpeP10", "0.25");
+    expect(analysisStore.batchAdmissionMinProfitableShare).toBe("0.65");
+    expect(analysisStore.batchAdmissionMinHardGateShare).toBe("0.60");
+    expect(analysisStore.batchAdmissionMinPnlP10).toBe("0.01");
+    expect(analysisStore.batchAdmissionMinSharpeP10).toBe("0.25");
+  });
+
+  it("hosts the bounded VCET design and blocks replay when its exact request is invalid", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("batch", { persist: false });
+    analysisStore.batchExecutionMode = "evaluate_candidates";
+    analysisStore.canRunBatch = true;
+    analysisStore.setBatchVcetCandidateDesignMode("halton");
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    expect(document.body.textContent).toContain("Bounded multidimensional");
+    expect(document.body.textContent).toContain(
+      "Deterministic Halton–Cranley–Patterson design",
+    );
+    expect(
+      document.querySelector<HTMLInputElement>("#vcetSearchBudget")?.max,
+    ).toBe("8192");
+    const runButton = document.querySelector<HTMLButtonElement>(
+      '[data-qa-action="aggregate.batch.run"]',
+    );
+    expect(runButton?.disabled).toBe(false);
+
+    const ceMultiplierMaximum =
+      document.querySelector<HTMLInputElement>("#vcetSearch_ce_mult_max");
+    expect(ceMultiplierMaximum).not.toBeNull();
+    ceMultiplierMaximum!.value = "5.1";
+    ceMultiplierMaximum!.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPanel();
+
+    expect(analysisStore.batchVcetSearchDraft.ceMultMax).toBe("5.1");
+    expect(document.body.textContent).toContain("endpoints must align exactly");
+    expect(runButton?.disabled).toBe(true);
+
+    const gridChoice = document.querySelector<HTMLInputElement>(
+      'input[name="vcetCandidateDesignMode"][value="period_grid"]',
+    );
+    gridChoice!.checked = true;
+    gridChoice!.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushPanel();
+    expect(analysisStore.batchVcetCandidateDesignMode).toBe("period_grid");
+    expect(runButton?.disabled).toBe(false);
+  });
+
+  it("hosts retained VCET campaign evidence as a first-class batch result", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const historyStore = useHistoryStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("batch", { persist: false });
+    historyStore.savedRunCount = 1;
+    analysisStore.batchVcetEvidence = buildVcetCampaignEvidenceModel({
+      holdout_pct: 0,
+      fixed_candidate_evaluation: {
+        schema_version: 4,
+        candidate_manifest_hash: "sha256-panel-grid",
+        selected_candidate_id: "vcet-8-20",
+        admitted_candidate_ids: ["vcet-8-20"],
+        requested_datasets: 8,
+        evaluated_datasets: 8,
+        missing_or_failed_datasets: 0,
+        training: {
+          requested_datasets: 8,
+          evaluated_datasets: 8,
+          missing_or_failed_datasets: 0,
+          candidates: [
+            {
+              candidate_id: "vcet-8-20",
+              fast_len: 8,
+              slow_len: 20,
+              requested_datasets: 8,
+              evaluated_datasets: 8,
+              missing_or_failed_datasets: 0,
+              profitable_share_requested: 0.75,
+              hard_gate_pass_share_requested: 0.625,
+              pnl_p10: 0.01,
+              sharpe_p10: 0.2,
+            },
+          ],
+        },
+        holdout: {
+          requested_datasets: 0,
+          evaluated_datasets: 0,
+          missing_or_failed_datasets: 0,
+          candidates: [],
+        },
+      },
+    });
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const evidence = document.querySelector(
+      '[aria-labelledby="vcetCampaignEvidenceTitle"]',
+    );
+    expect(evidence?.textContent || "").toContain("VCET parameter landscape");
+    expect(evidence?.textContent || "").toContain(
+      "1 candidate across 8 requested datasets",
+    );
+    expect(
+      evidence?.querySelector(
+        'button[aria-label^="Fast 8, Slow 20: Profitability share 75.0%"]',
+      ),
+    ).not.toBeNull();
   });
 
   it("shows ML confidence contract summaries and keeps apply paths distinct", async () => {
@@ -926,6 +1274,17 @@ describe("MetaWorkspacePanel", () => {
     );
     expect(text).toContain(
       "Backend still owns holdout rank fallback and warning text.",
+    );
+
+    analysisStore.metaStrategyKind = "Vcet";
+    await flushPanel();
+    const vcetText = document.body.textContent || "";
+    expect(vcetText).toContain(
+      "GPU-preferred base + fallback evidence + CPU stress",
+    );
+    expect(vcetText).toContain("permits backend fallback (require_gpu=false)");
+    expect(vcetText).toContain(
+      "fully-GPU, hybrid, CPU, failed, and fallback counts/reasons",
     );
   });
 

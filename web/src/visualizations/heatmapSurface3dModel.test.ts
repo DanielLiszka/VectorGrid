@@ -36,6 +36,12 @@ function renderModel(): HeatmapCanvasRenderModel {
     displayLabel: 'Sharpe',
     displayLegendNote: 'Zero-centered',
     request: {
+      fastAxisLabel: 'Fast SMA length',
+      slowAxisLabel: 'Slow EMA length',
+      fastAxisDescription: 'Fast SMA length used by each grid column.',
+      slowAxisDescription: 'Slow EMA length used by each grid row.',
+      supports3dSlices: true,
+      threeDimensionalUnavailableReason: '',
       fastMaType: 'sma',
       slowMaType: 'ema',
       fastMaParams: null,
@@ -77,6 +83,8 @@ describe('heatmapSurface3dModel', () => {
       logicalRowEnd: 1,
       fast: 6,
       slow: 20,
+      finiteCellCount: 1,
+      blockCellCount: 1,
     })
   })
 
@@ -88,6 +96,8 @@ describe('heatmapSurface3dModel', () => {
     expect(surface.sampledBinsFast).toBe(2)
     expect(surface.sampledBinsSlow).toBe(2)
     expect(surface.samples.length).toBeGreaterThan(0)
+    expect(surface.samples.some((sample) => sample.blockCellCount === 4)).toBe(true)
+    expect(surface.samples.some((sample) => sample.finiteCellCount < sample.blockCellCount)).toBe(true)
   })
 
   it('moves keyboard focus across retained bins while skipping unavailable cells', () => {

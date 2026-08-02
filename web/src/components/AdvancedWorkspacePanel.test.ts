@@ -156,7 +156,7 @@ describe('AdvancedWorkspacePanel', () => {
     wrapper.unmount()
   })
 
-  it('keeps Top K but hides heatmap for VCC', async () => {
+  it('shows the strategy-local heatmap controls for VCC', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflow = useWorkflowStore(pinia)
@@ -171,7 +171,7 @@ describe('AdvancedWorkspacePanel', () => {
     })
     await flushPanelTimers()
 
-    expect(document.querySelector('#vueHeatmapBins')).toBeNull()
+    expect(document.querySelector('#vueHeatmapBins')).not.toBeNull()
     expect(document.querySelector('#vueTopK')).not.toBeNull()
     expect(document.querySelector('#vueIncludeAll')).not.toBeNull()
 

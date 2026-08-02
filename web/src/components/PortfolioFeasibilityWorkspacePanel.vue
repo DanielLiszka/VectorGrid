@@ -35,6 +35,7 @@ import {
 } from "../utils/portfolioWorkspaceModel";
 import CompactEvidenceValue from "./CompactEvidenceValue.vue";
 import AppButton from "./ui/AppButton.vue";
+import AppEmptyState from "./ui/AppEmptyState.vue";
 
 const workflowArtifactsStore = useWorkflowArtifactsStore();
 const historyStore = useHistoryStore();
@@ -44,6 +45,8 @@ const {
   savedRunsVisible,
   savedRunsMeta,
   statusLine: historyStatusLine,
+  canRefreshSavedRuns,
+  updatedAtUnixMs: historyUpdatedAtUnixMs,
 } = storeToRefs(historyStore);
 
 const { mountReady } = useShellMount("#portfolioVueShellMount", {
@@ -58,8 +61,15 @@ const maxCandidates = ref(50);
 const requireApprovedValidation = ref(true);
 const requireReplayMatrix = ref(false);
 const requireSourceProvenance = ref(false);
-const busy = ref(false);
-const statusLine = ref("Portfolio feasibility is ready.");
+type PortfolioOperation = "analyze" | "refresh";
+type PortfolioPanelState = "idle" | "loading" | "success" | "error";
+
+const activeOperation = ref<PortfolioOperation | null>(null);
+const lastOperation = ref<PortfolioOperation | null>(null);
+const panelState = ref<PortfolioPanelState>("idle");
+const refreshBaselineUpdatedAt = ref(0);
+const refreshBaselineStatus = ref("");
+const statusLine = ref("Select one or more sources, then run Analyze.");
 const errorLine = ref("");
 const result = ref<PortfolioFeasibilityResult | null>(null);
 const analyzedSources = ref<PortfolioWorkspaceSource[]>([]);
@@ -94,8 +104,26 @@ const sourceCountPreview = computed(() => {
   count += selectedSavedPaths.value.length;
   return count;
 });
-const canAnalyze = computed(() => sourceCountPreview.value > 0 && !busy.value);
+const analyzing = computed(() => activeOperation.value === "analyze");
+const refreshingSources = computed(() => activeOperation.value === "refresh");
+const operationBusy = computed(() => activeOperation.value !== null);
+const canAnalyze = computed(
+  () => sourceCountPreview.value > 0 && !operationBusy.value,
+);
+const canRefreshSources = computed(
+  () => canRefreshSavedRuns.value && !operationBusy.value,
+);
+const showingRefreshCompletion = computed(
+  () =>
+    panelState.value === "success" &&
+    lastOperation.value === "refresh" &&
+    statusLine.value === "Saved run sources refreshed.",
+);
 const statusTone = computed(() => {
+  if (panelState.value === "error") return "bad";
+  if (panelState.value === "loading") return "loading";
+  if (panelState.value === "idle") return "neutral";
+  if (showingRefreshCompletion.value) return "good";
   const status = result.value?.status || "";
   if (status === "replay_parity_passed") return "good";
   if (
@@ -105,6 +133,35 @@ const statusTone = computed(() => {
     return "bad";
   return "warn";
 });
+const statusTitle = computed(() => {
+  if (panelState.value === "loading") {
+    return lastOperation.value === "refresh"
+      ? "Refreshing saved sources"
+      : "Analyzing portfolio feasibility";
+  }
+  if (panelState.value === "error") {
+    return lastOperation.value === "refresh"
+      ? "Saved source refresh failed"
+      : "Analysis failed";
+  }
+  if (showingRefreshCompletion.value) {
+    return "Saved sources refreshed";
+  }
+  if (result.value) return formatPortfolioEvidenceStatus(result.value.status);
+  return "Not analyzed";
+});
+const statusIcon = computed(() => {
+  if (statusTone.value === "good") return CheckCircle2;
+  if (statusTone.value === "neutral") return BriefcaseBusiness;
+  if (statusTone.value === "loading") return RefreshCw;
+  return AlertTriangle;
+});
+const statusRole = computed(() =>
+  panelState.value === "error" ? "alert" : "status",
+);
+const statusLive = computed(() =>
+  panelState.value === "error" ? "assertive" : "polite",
+);
 const latestRequestGates = computed(() => ({
   maxCandidates: effectiveMaxCandidates.value,
   requireApprovedValidation: requireApprovedValidation.value,
@@ -115,7 +172,10 @@ const constructionReadiness = computed(() =>
   buildPortfolioConstructionReadiness(result.value),
 );
 const canExport = computed(
-  () => !!result.value && analyzedSources.value.length > 0,
+  () =>
+    !!result.value &&
+    analyzedSources.value.length > 0 &&
+    !operationBusy.value,
 );
 
 watch(savedRunRows, (rows) => {
@@ -125,8 +185,34 @@ watch(savedRunRows, (rows) => {
   );
 });
 
+watch(
+  [historyUpdatedAtUnixMs, historyStatusLine],
+  ([updatedAt, historyStatus]) => {
+    if (!refreshingSources.value) return;
+    if (
+      updatedAt === refreshBaselineUpdatedAt.value &&
+      historyStatus === refreshBaselineStatus.value
+    ) {
+      return;
+    }
+
+    activeOperation.value = null;
+    if (historyStatus === "Refreshed saved runs.") {
+      panelState.value = "success";
+      errorLine.value = "";
+      statusLine.value = "Saved run sources refreshed.";
+      return;
+    }
+
+    panelState.value = "error";
+    errorLine.value =
+      String(historyStatus || "").trim() || "Failed to refresh saved runs.";
+    statusLine.value = "Saved run source refresh failed.";
+  },
+);
+
 onMounted(() => {
-  if (!savedRunsRaw.value.length) historyStore.refreshSavedRuns();
+  if (!savedRunsRaw.value.length) refreshSavedRuns();
 });
 
 function savedRunLabel(entry: HistorySavedRunSummary): string {
@@ -162,8 +248,24 @@ function clearSavedRuns(): void {
 }
 
 function refreshSavedRuns(): void {
-  historyStore.refreshSavedRuns();
+  if (!canRefreshSources.value) return;
+  lastOperation.value = "refresh";
+  activeOperation.value = "refresh";
+  panelState.value = "loading";
+  errorLine.value = "";
+  refreshBaselineUpdatedAt.value = historyUpdatedAtUnixMs.value;
+  refreshBaselineStatus.value = historyStatusLine.value;
   statusLine.value = "Refreshing saved run sources.";
+  try {
+    historyStore.refreshSavedRuns();
+  } catch (error) {
+    activeOperation.value = null;
+    panelState.value = "error";
+    errorLine.value =
+      String(error instanceof Error ? error.message : error || "").trim() ||
+      "Failed to refresh saved runs.";
+    statusLine.value = "Saved run source refresh failed.";
+  }
 }
 
 async function loadSelectedSavedSources(): Promise<PortfolioWorkspaceSource[]> {
@@ -177,10 +279,14 @@ async function loadSelectedSavedSources(): Promise<PortfolioWorkspaceSource[]> {
 }
 
 async function runFeasibility(): Promise<void> {
-  if (busy.value) return;
+  if (!canAnalyze.value) return;
+  lastOperation.value = "analyze";
+  activeOperation.value = "analyze";
+  panelState.value = "loading";
   errorLine.value = "";
   result.value = null;
-  busy.value = true;
+  analyzedSources.value = [];
+  statusLine.value = `Preparing ${sourceCountPreview.value} source${sourceCountPreview.value === 1 ? "" : "s"}.`;
   try {
     const sources: PortfolioWorkspaceSource[] = [];
     if (includeCurrentRun.value && currentRunSource.value) {
@@ -204,15 +310,17 @@ async function runFeasibility(): Promise<void> {
       requireReplayMatrix: requireReplayMatrix.value,
       requireSourceProvenance: requireSourceProvenance.value,
     });
+    panelState.value = "success";
     statusLine.value = `Analyzed ${sources.length} source${sources.length === 1 ? "" : "s"}.`;
   } catch (error) {
     const message = String(
       error instanceof Error ? error.message : error || "",
     ).trim();
     errorLine.value = message || "Portfolio feasibility analysis failed.";
+    panelState.value = "error";
     statusLine.value = "Portfolio feasibility analysis failed.";
   } finally {
-    busy.value = false;
+    if (analyzing.value) activeOperation.value = null;
   }
 }
 
@@ -231,7 +339,7 @@ function downloadText(filename: string, text: string, type: string): void {
 }
 
 function exportFeasibilityJson(): void {
-  if (!result.value) return;
+  if (!result.value || !canExport.value) return;
   const payload = buildPortfolioFeasibilityExportPayload(
     result.value,
     analyzedSources.value,
@@ -246,7 +354,7 @@ function exportFeasibilityJson(): void {
 }
 
 function exportFeasibilityCsv(): void {
-  if (!result.value) return;
+  if (!result.value || !canExport.value) return;
   const csv = buildPortfolioFeasibilityCsv(
     result.value,
     analyzedSources.value,
@@ -259,7 +367,13 @@ function exportFeasibilityCsv(): void {
 
 <template>
   <Teleport v-if="mountReady" to="#portfolioVueShellMount">
-    <section class="portfolioWorkspace" data-qa-panel="portfolio.feasibility">
+    <section
+      class="portfolioWorkspace"
+      data-qa-panel="portfolio.feasibility"
+      :data-state="panelState"
+      :data-operation="activeOperation || undefined"
+      :aria-busy="operationBusy ? 'true' : 'false'"
+    >
       <header class="portfolioHeader">
         <div class="titleBlock">
           <span class="eyebrow">Portfolio Research</span>
@@ -270,30 +384,60 @@ function exportFeasibilityCsv(): void {
           </p>
         </div>
         <div class="headerActions">
-          <button
-            type="button"
-            class="ghostButton"
+          <AppButton
+            size="sm"
+            variant="secondary"
+            :icon="RefreshCw"
+            :loading="refreshingSources"
+            loading-label="Refreshing…"
+            :disabled="!canRefreshSources"
+            :disabled-reason="
+              !canRefreshSavedRuns
+                ? 'Saved-run refresh is unavailable.'
+                : operationBusy
+                  ? 'Another portfolio action is in progress.'
+                  : ''
+            "
             data-qa-action="portfolio.refreshSources"
             @click="refreshSavedRuns"
           >
-            <RefreshCw aria-hidden="true" />
-            <span>Refresh</span>
-          </button>
-          <button
-            type="button"
-            class="primaryButton"
+            Refresh
+          </AppButton>
+          <AppButton
+            size="sm"
+            variant="primary"
+            :icon="Play"
+            :loading="analyzing"
+            loading-label="Analyzing…"
             :disabled="!canAnalyze"
+            :disabled-reason="
+              operationBusy
+                ? 'Another portfolio action is in progress.'
+                : sourceCountPreview === 0
+                  ? 'Select at least one portfolio source.'
+                  : ''
+            "
             data-qa-action="portfolio.runFeasibility"
             @click="runFeasibility"
           >
-            <Play aria-hidden="true" />
-            <span>{{ busy ? "Analyzing" : "Analyze" }}</span>
-          </button>
+            Analyze
+          </AppButton>
         </div>
       </header>
 
       <div class="portfolioGrid">
-        <section class="sourcePane" aria-label="Portfolio feasibility sources">
+        <section
+          class="sourcePane"
+          aria-label="Portfolio feasibility sources"
+          :aria-busy="refreshingSources ? 'true' : 'false'"
+          :data-state="
+            refreshingSources
+              ? 'loading'
+              : panelState === 'error' && lastOperation === 'refresh'
+                ? 'error'
+                : 'ready'
+          "
+        >
           <div class="sectionHeader">
             <div>
               <span class="eyebrow">Sources</span>
@@ -303,11 +447,14 @@ function exportFeasibilityCsv(): void {
           </div>
 
           <div class="sourceGroup">
-            <label class="checkRow" :class="{ disabled: !currentRunSource }">
+            <label
+              class="checkRow"
+              :class="{ disabled: operationBusy || !currentRunSource }"
+            >
               <input
                 v-model="includeCurrentRun"
                 type="checkbox"
-                :disabled="!currentRunSource"
+                :disabled="operationBusy || !currentRunSource"
               />
               <span>
                 <strong>Current run</strong>
@@ -318,12 +465,14 @@ function exportFeasibilityCsv(): void {
             </label>
             <label
               class="checkRow"
-              :class="{ disabled: !currentValidationSource }"
+              :class="{
+                disabled: operationBusy || !currentValidationSource,
+              }"
             >
               <input
                 v-model="includeCurrentValidation"
                 type="checkbox"
-                :disabled="!currentValidationSource"
+                :disabled="operationBusy || !currentValidationSource"
               />
               <span>
                 <strong>Current validation</strong>
@@ -336,23 +485,34 @@ function exportFeasibilityCsv(): void {
           </div>
 
           <div class="sourceToolbar">
-            <button
-              type="button"
-              class="ghostButton compact"
+            <AppButton
+              size="sm"
+              variant="subtle"
+              :disabled="operationBusy || savedRunRows.length === 0"
+              :disabled-reason="
+                operationBusy
+                  ? 'Another portfolio action is in progress.'
+                  : 'No saved-run artifacts are available.'
+              "
               data-qa-action="portfolio.saved.selectLatest"
               @click="selectLatestSavedRuns"
             >
               Latest 5
-            </button>
-            <button
-              type="button"
-              class="ghostButton compact"
-              :disabled="selectedSavedCount === 0"
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="subtle"
+              :disabled="operationBusy || selectedSavedCount === 0"
+              :disabled-reason="
+                operationBusy
+                  ? 'Another portfolio action is in progress.'
+                  : 'No saved-run artifacts are selected.'
+              "
               data-qa-action="portfolio.saved.clear"
               @click="clearSavedRuns"
             >
               Clear
-            </button>
+            </AppButton>
             <span>
               {{ selectedSavedCount }} catalog
               {{ selectedSavedCount === 1 ? "artifact" : "artifacts" }} selected
@@ -370,6 +530,7 @@ function exportFeasibilityCsv(): void {
                 :id="`portfolio-saved-run-${index}`"
                 type="checkbox"
                 :checked="selectedSavedSet.has(entry.path)"
+                :disabled="operationBusy"
                 @change="
                   toggleSavedPath(
                     entry.path,
@@ -397,6 +558,12 @@ function exportFeasibilityCsv(): void {
                         variant="subtle"
                         class="compactEvidenceAction"
                         data-qa-action="portfolio.saved.reveal"
+                        :disabled="operationBusy"
+                        :disabled-reason="
+                          operationBusy
+                            ? 'Another portfolio action is in progress.'
+                            : ''
+                        "
                         :aria-label="`Reveal saved run ${savedRunLabel(entry)}`"
                         @click.stop="historyStore.revealSavedRun(entry.path)"
                       >
@@ -413,13 +580,29 @@ function exportFeasibilityCsv(): void {
                 </div>
               </div>
             </div>
-            <div v-if="!savedRunRows.length" class="emptyState">
-              Saved run artifacts are not loaded.
-            </div>
+            <AppEmptyState
+              v-if="!savedRunRows.length"
+              title="No saved run artifacts"
+              body="The saved-run catalog is empty or has not been loaded yet."
+              hint="Use Refresh to check the local artifact catalog."
+            />
           </div>
         </section>
 
-        <section class="resultPane" aria-label="Portfolio feasibility result">
+        <section
+          class="resultPane"
+          aria-label="Portfolio feasibility result"
+          :aria-busy="analyzing ? 'true' : 'false'"
+          :data-state="
+            analyzing
+              ? 'loading'
+              : panelState === 'error' && lastOperation === 'analyze'
+                ? 'error'
+                : result
+                  ? 'success'
+                  : 'idle'
+          "
+        >
           <div class="optionsBar">
             <label>
               <span>Max candidates</span>
@@ -429,38 +612,73 @@ function exportFeasibilityCsv(): void {
                 min="1"
                 max="250"
                 step="1"
+                :disabled="operationBusy"
               />
             </label>
             <label class="toggle">
-              <input v-model="requireApprovedValidation" type="checkbox" />
+              <input
+                v-model="requireApprovedValidation"
+                type="checkbox"
+                :disabled="operationBusy"
+              />
               <span>Approved validation</span>
             </label>
             <label class="toggle">
-              <input v-model="requireReplayMatrix" type="checkbox" />
+              <input
+                v-model="requireReplayMatrix"
+                type="checkbox"
+                :disabled="operationBusy"
+              />
               <span>Replay matrix</span>
             </label>
             <label class="toggle">
-              <input v-model="requireSourceProvenance" type="checkbox" />
+              <input
+                v-model="requireSourceProvenance"
+                type="checkbox"
+                :disabled="operationBusy"
+              />
               <span>Source provenance</span>
             </label>
           </div>
 
-          <div class="statusStrip" :class="statusTone">
-            <component
-              :is="statusTone === 'good' ? CheckCircle2 : AlertTriangle"
-              aria-hidden="true"
-            />
+          <div
+            class="statusStrip"
+            :class="statusTone"
+            :data-state="panelState"
+            :role="statusRole"
+            :aria-live="statusLive"
+            aria-atomic="true"
+            :aria-busy="operationBusy ? 'true' : 'false'"
+          >
+            <component :is="statusIcon" aria-hidden="true" />
             <div>
-              <strong>{{
-                result
-                  ? formatPortfolioEvidenceStatus(result.status)
-                  : "Not analyzed"
-              }}</strong>
+              <strong>{{ statusTitle }}</strong>
               <span>{{ errorLine || statusLine }}</span>
             </div>
           </div>
 
-          <div class="metricGrid">
+          <AppEmptyState
+            v-if="
+              !result &&
+              !analyzing &&
+              !(panelState === 'error' && lastOperation === 'analyze')
+            "
+            title="No feasibility analysis yet"
+            body="Select a current run, validation, or saved artifact source, then run Analyze."
+            hint="This workspace evaluates admission evidence only; it does not place trades or allocate capital."
+          />
+
+          <AppEmptyState
+            v-else-if="
+              !result &&
+              panelState === 'error' &&
+              lastOperation === 'analyze'
+            "
+            title="No feasibility result available"
+            body="Review the error status above, adjust the source selection if needed, and retry."
+          />
+
+          <div v-if="result" class="metricGrid">
             <article>
               <span>Sources</span>
               <strong>{{
@@ -492,26 +710,28 @@ function exportFeasibilityCsv(): void {
 
           <section v-if="result" class="resultSection">
             <div class="exportToolbar">
-              <button
-                type="button"
-                class="ghostButton compact"
+              <AppButton
+                size="sm"
+                variant="subtle"
+                :icon="Download"
                 :disabled="!canExport"
+                disabled-reason="Run a successful feasibility analysis before exporting."
                 data-qa-action="portfolio.exportJson"
                 @click="exportFeasibilityJson"
               >
-                <Download aria-hidden="true" />
                 JSON
-              </button>
-              <button
-                type="button"
-                class="ghostButton compact"
+              </AppButton>
+              <AppButton
+                size="sm"
+                variant="subtle"
+                :icon="Download"
                 :disabled="!canExport"
+                disabled-reason="Run a successful feasibility analysis before exporting."
                 data-qa-action="portfolio.exportCsv"
                 @click="exportFeasibilityCsv"
               >
-                <Download aria-hidden="true" />
                 CSV
-              </button>
+              </AppButton>
             </div>
           </section>
 
@@ -709,35 +929,6 @@ function exportFeasibilityCsv(): void {
   align-items: flex-start;
 }
 
-.primaryButton,
-.ghostButton {
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.36rem;
-  border-radius: 8px;
-  padding: 0.34rem 0.62rem;
-}
-
-.primaryButton svg,
-.ghostButton svg {
-  width: 0.96rem;
-  height: 0.96rem;
-}
-
-.primaryButton {
-  color: var(--on-accent);
-  background: var(--accent);
-  border-color: color-mix(in oklab, var(--accent) 72%, var(--border));
-}
-
-.ghostButton.compact {
-  min-height: 30px;
-  padding: 0.22rem 0.5rem;
-  font-size: 0.76rem;
-}
-
 .portfolioGrid {
   min-width: 0;
   display: grid;
@@ -844,14 +1035,6 @@ function exportFeasibilityCsv(): void {
   );
 }
 
-.emptyState {
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  padding: 0.72rem;
-  color: var(--muted);
-  background: color-mix(in oklab, var(--surface) 95%, var(--panel));
-}
-
 .optionsBar {
   display: flex;
   flex-wrap: wrap;
@@ -901,6 +1084,15 @@ function exportFeasibilityCsv(): void {
 .statusStrip span {
   color: var(--muted-strong);
   font-size: 0.8rem;
+}
+
+.statusStrip.neutral {
+  background: color-mix(in oklab, var(--surface) 96%, var(--panel));
+}
+
+.statusStrip.loading {
+  border-color: color-mix(in oklab, var(--accent) 48%, var(--border));
+  background: color-mix(in oklab, var(--surface-working) 64%, var(--surface));
 }
 
 .statusStrip.good {

@@ -106,7 +106,7 @@ describe("validationRequestBuilder", () => {
       slices: 12,
       bootstrap_samples: 750,
       block_length: 5,
-      benchmark: "buy_hold",
+      benchmark: "buy_and_hold",
     });
     expect(req.reopt_walk_forward).toEqual({
       window_bars: 12000,
@@ -152,6 +152,95 @@ describe("validationRequestBuilder", () => {
         { csv_path: "C:/data/b.csv", label: "B" },
       ],
     });
+  });
+
+  it.each([
+    {
+      label: "the default stock preset",
+      strategy: {
+        fee_bps: 0.1,
+        spread_bps: 1,
+        slippage_bps: 0.5,
+        commission: 0.00011,
+      },
+    },
+    {
+      label: "custom non-default component costs",
+      strategy: {
+        fee_bps: 2.75,
+        spread_bps: 4.5,
+        slippage_bps: 1.25,
+        commission: 0.000625,
+      },
+    },
+  ])(
+    "uses component bps as the sole validation cost source for $label",
+    ({ strategy }) => {
+      const req = buildValidationRequest({
+        currentRunReq: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-cost-contract",
+          ma_source: "close",
+          fast_ma_types: ["sma"],
+          slow_ma_types: ["ema"],
+          strategy,
+        },
+        currentRunRes: { ok: true },
+        topRows: [
+          {
+            params: {
+              fast_ma_type: "sma",
+              slow_ma_type: "ema",
+              fast_len: 10,
+              slow_len: 40,
+            },
+          },
+        ],
+        perturbEnable: true,
+        perturbIters: "8",
+        perturbMin: "0.015",
+        perturbMax: "0.06",
+      });
+
+      expect(req.candidates[0]?.strategy).toEqual({
+        ...strategy,
+        commission: 0,
+      });
+      expect(strategy.commission).not.toBe(0);
+    },
+  );
+
+  it("preserves a commission-only legacy validation strategy", () => {
+    const strategy = {
+      fee_bps: 0,
+      spread_bps: 0,
+      slippage_bps: 0,
+      commission: 0.0007,
+    };
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-legacy-commission",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
+        strategy,
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 10,
+            slow_len: 40,
+          },
+        },
+      ],
+      perturbEnable: true,
+    });
+
+    expect(req.candidates[0]?.strategy).toEqual(strategy);
   });
 
   it("bridges canonical and legacy optimization trial-count fields", () => {

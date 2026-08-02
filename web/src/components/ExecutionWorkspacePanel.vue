@@ -14,6 +14,7 @@ import {
   fitExecutionChartContent,
   panExecutionChart,
   syncExecutionChart,
+  type ExecutionChartReferenceKind,
   type ExecutionChartSurfaceResult,
 } from '../services/executionChartService'
 import type { ExecutionChartReview } from '../services/executionService'
@@ -21,6 +22,7 @@ import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import type { LightweightChartLegendItem } from '../visualizations/chartTheme'
 import ConfirmationDialog from './ConfirmationDialog.vue'
 import CompactEvidenceValue from './CompactEvidenceValue.vue'
 import ContextHelpTip from './ContextHelpTip.vue'
@@ -112,7 +114,11 @@ const {
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(execStore)
-const { dataId: loadedDataId, datasetLabel: loadedDatasetLabel } = storeToRefs(dataStore)
+const {
+  dataId: loadedDataId,
+  datasetLabel: loadedDatasetLabel,
+  updatedAtUnixMs: loadedDatasetRevision,
+} = storeToRefs(dataStore)
 const { workspace } = storeToRefs(workflowStore)
 
 const { mountReady } = useShellMount('#executionVueShellMount', {
@@ -188,8 +194,10 @@ const sourceDraft = ref('selected')
 const pendingAction = ref<PendingExecutionAction | null>(null)
 const pendingActionOpenedAtUnixMs = ref(0)
 const confirmationNowUnixMs = ref(Date.now())
+const brokerReviewNowUnixMs = ref(Date.now())
 const execTvChartElementRef = ref<HTMLElement | null>(null)
 const chartSyncToken = ref(0)
+const chartSyncPending = ref(false)
 const chartSurface = ref<ExecutionChartSurfaceResult>({
   state: 'no_dataset',
   summary: 'Execution chart unavailable: load a workflow dataset first.',
@@ -209,6 +217,7 @@ const liveModeArmed = computed(() => currentTarget.value === 'alpaca_live')
 const brokerArmed = computed(() => currentTarget.value !== 'dry_run')
 const LIVE_ARMING_CONFIRMATION_TTL_MS = 30_000
 let confirmationTimerId: number | null = null
+let brokerReviewFreshnessTimerId: number | null = null
 const confirmationExpiresAtUnixMs = computed(() => {
   if (!pendingActionOpenedAtUnixMs.value) return 0
   if (pendingAction.value === 'startRunner') return pendingActionOpenedAtUnixMs.value + LIVE_ARMING_CONFIRMATION_TTL_MS
@@ -358,7 +367,7 @@ const executionPostureItems = computed<ExecutionPostureItem[]>(() => [
 const brokerReviewStale = computed(() => {
   const review = brokerReview.value
   if (!review?.fetchedAtUnixMs) return false
-  return Date.now() - review.fetchedAtUnixMs > review.staleThresholdMs
+  return brokerReviewNowUnixMs.value - review.fetchedAtUnixMs > review.staleThresholdMs
 })
 const brokerReviewFreshnessLabel = computed(() => {
   const review = brokerReview.value
@@ -459,15 +468,26 @@ const brokerReviewDetails = computed<ReviewDetailItem[]>(() => {
 const chartReviewDetails = computed<ReviewDetailItem[]>(() => {
   const chart = effectiveChartSurface.value
   const asOf = chart.fetchedAtUnixMs ? formatUiTimeFromUnixMs(chart.fetchedAtUnixMs) : 'Unknown'
-  return [
+  const items: ReviewDetailItem[] = [
     { label: 'State', value: chart.state.replace(/_/g, ' ') },
     { label: 'Dataset', value: chart.datasetLabel || chart.datasetId || loadedDatasetLabel.value || '—' },
     { label: 'Symbol', value: chart.symbol || '—' },
     { label: 'Markers', value: String(chart.markerCount) },
+    { label: 'Price levels', value: String(chart.referenceLines?.length ?? 0) },
     { label: 'Source', value: brokerReview.value ? 'get live execution snapshot' : 'dataset only' },
     { label: 'As of', value: asOf },
     { label: 'Summary', value: chart.summary || chartMeta.value },
   ]
+  if (chart.referenceLines?.length) {
+    items.push({
+      label: 'Visible levels',
+      value: chart.referenceLines.map((line) => line.label).join(' · '),
+    })
+  }
+  if (chart.referenceLineIssue) {
+    items.push({ label: 'Level overlay', value: chart.referenceLineIssue })
+  }
+  return items
 })
 const recoveryChecklistItems = computed<RecoveryChecklistItem[]>(() => {
   const chartState = effectiveChartSurface.value.state
@@ -667,6 +687,42 @@ function stopConfirmationTimer(): void {
   window.clearInterval(confirmationTimerId)
   confirmationTimerId = null
 }
+
+function stopBrokerReviewFreshnessTimer(): void {
+  if (brokerReviewFreshnessTimerId == null) return
+  window.clearTimeout(brokerReviewFreshnessTimerId)
+  brokerReviewFreshnessTimerId = null
+}
+
+function scheduleBrokerReviewFreshnessExpiry(): void {
+  stopBrokerReviewFreshnessTimer()
+  brokerReviewNowUnixMs.value = Date.now()
+  if (!visible.value || !mountReady.value) return
+
+  const review = brokerReview.value
+  const fetchedAtUnixMs = Number(review?.fetchedAtUnixMs)
+  const staleThresholdMs = Number(review?.staleThresholdMs)
+  if (
+    !Number.isFinite(fetchedAtUnixMs) ||
+    fetchedAtUnixMs <= 0 ||
+    !Number.isFinite(staleThresholdMs)
+  ) {
+    return
+  }
+
+  const expiresAtUnixMs = fetchedAtUnixMs + Math.max(0, staleThresholdMs)
+  if (brokerReviewNowUnixMs.value > expiresAtUnixMs) return
+  const delayMs = Math.max(
+    1,
+    Math.min(expiresAtUnixMs - brokerReviewNowUnixMs.value + 1, 2_147_483_647),
+  )
+  brokerReviewFreshnessTimerId = window.setTimeout(() => {
+    brokerReviewFreshnessTimerId = null
+    brokerReviewNowUnixMs.value = Date.now()
+    if (!brokerReviewStale.value) scheduleBrokerReviewFreshnessExpiry()
+  }, delayMs)
+}
+
 const confirmationTitle = computed(() => {
   if (pendingAction.value === 'clearKeys') return 'Clear stored execution credentials?'
   if (pendingAction.value === 'runOnce') {
@@ -764,27 +820,180 @@ const canConfirmPendingAction = computed(() => {
   if (pendingAction.value === 'emergencyHalt') return !!canEmergencyHalt.value
   return false
 })
-const chartSurfaceMeta = computed(() => effectiveChartSurface.value.summary || chartMeta.value)
-const executionChartRenderReady = computed(() => effectiveChartSurface.value.barCount > 0)
+const chartSurfaceMeta = computed(() => {
+  if (chartSyncPending.value) {
+    const dataset = normalizeDatasetToken(
+      loadedDatasetLabel.value ||
+      loadedDataId.value ||
+      brokerReview.value?.chart.datasetLabel ||
+      brokerReview.value?.chart.datasetId ||
+      '',
+    )
+    return dataset
+      ? `Loading execution chart for ${dataset}.`
+      : 'Preparing execution chart context.'
+  }
+  return effectiveChartSurface.value.summary || chartMeta.value
+})
+const executionChartRenderReady = computed(() => {
+  const barCount = Number(effectiveChartSurface.value.barCount)
+  if (chartSyncPending.value || !Number.isFinite(barCount) || barCount <= 0) return false
+  return [
+    'loaded_no_markers',
+    'loaded_broker_markers',
+    'loaded_marker_overlay_unavailable',
+    'provenance_suppressed',
+    'stale_broker_review',
+  ].includes(effectiveChartSurface.value.state)
+})
+const executionChartStateKind = computed<
+  'idle' | 'loading' | 'ready' | 'warning' | 'stale' | 'provenance' | 'error'
+>(() => {
+  if (chartSyncPending.value) return 'loading'
+  const state = effectiveChartSurface.value.state
+  if (state === 'stale_broker_review') return 'stale'
+  if (
+    state === 'dataset_provenance_unknown' ||
+    state === 'symbol_mismatch' ||
+    state === 'provenance_suppressed'
+  ) {
+    return 'provenance'
+  }
+  if (state === 'broker_review_loaded_chart_unavailable') return 'error'
+  if (state === 'loaded_marker_overlay_unavailable') return 'warning'
+  if (
+    executionChartRenderReady.value &&
+    (state === 'loaded_no_markers' || state === 'loaded_broker_markers')
+  ) {
+    return 'ready'
+  }
+  return 'idle'
+})
 const executionChartStateLabel = computed(() => {
   const surface = effectiveChartSurface.value
-  if (!surface.barCount) return 'Awaiting chart'
-  return surface.markerCount > 0 ? `${surface.markerCount} order marker${surface.markerCount === 1 ? '' : 's'}` : 'Chart ready'
+  if (chartSyncPending.value) return 'Loading chart'
+  if (surface.state === 'broker_review_loaded_chart_unavailable') return 'Chart unavailable'
+  if (surface.state === 'loaded_marker_overlay_unavailable') return 'Marker overlay unavailable'
+  if (surface.state === 'dataset_provenance_unknown') return 'Dataset provenance unknown'
+  if (surface.state === 'symbol_mismatch') return 'Dataset symbol mismatch'
+  if (surface.state === 'provenance_suppressed') return 'Broker markers suppressed'
+  if (surface.state === 'stale_broker_review') return 'Stale broker review'
+  if (surface.state === 'no_symbol') return 'Select a symbol'
+  if (surface.state === 'no_dataset') return 'Load a dataset'
+  if (!executionChartRenderReady.value) return 'Awaiting chart'
+  const evidence: string[] = []
+  if (surface.markerCount > 0) {
+    evidence.push(`${surface.markerCount} marker${surface.markerCount === 1 ? '' : 's'}`)
+  }
+  if (surface.referenceLines?.length) {
+    evidence.push(`${surface.referenceLines.length} broker price level${surface.referenceLines.length === 1 ? '' : 's'}`)
+  }
+  return evidence.length ? evidence.join(' · ') : 'Chart ready'
 })
 const executionChartSummaryItems = computed(() => {
+  if (chartSyncPending.value) return ['loading current dataset']
   const surface = effectiveChartSurface.value
   const items: string[] = []
   if (surface.barCount > 0) items.push(`${surface.barCount} price bars`)
   if (surface.markerCount > 0) items.push(`${surface.markerCount} broker markers`)
+  if (surface.referenceLines?.length) {
+    items.push(`${surface.referenceLines.length} broker price levels`)
+  }
+  const breakdown = surface.markerBreakdown
+  if (breakdown?.filled) items.push(`${breakdown.filled} filled`)
+  if (breakdown?.partial) items.push(`${breakdown.partial} partial`)
+  if (breakdown?.working) items.push(`${breakdown.working} working`)
+  if (breakdown?.closed) items.push(`${breakdown.closed} closed`)
+  if (breakdown?.other) items.push(`${breakdown.other} other lifecycle`)
   if (surface.state) items.push(surface.state.replace(/_/g, ' '))
   return items
 })
+function referenceLegendColor(kind: ExecutionChartReferenceKind): string {
+  if (kind === 'average_entry') return 'named-series:0'
+  if (kind === 'current_price') return 'named-series:5'
+  if (kind === 'stop') return 'named-series:4'
+  if (kind === 'take_profit') return 'named-series:3'
+  return 'named-series:1'
+}
+
+function referenceLegendLabel(kind: ExecutionChartReferenceKind): string {
+  if (kind === 'average_entry') return 'Average entry'
+  if (kind === 'current_price') return 'Broker mark'
+  if (kind === 'stop') return 'Stop'
+  if (kind === 'take_profit') return 'Take profit'
+  return 'Limit'
+}
+
+function referenceLegendValue(price: number): string {
+  if (!Number.isFinite(price)) return '—'
+  return price >= 1000
+    ? price.toFixed(2)
+    : price.toFixed(price >= 1 ? 4 : 6).replace(/0+$/u, '').replace(/\.$/u, '')
+}
+
 const executionChartLegendItems = computed(() => {
+  if (chartSyncPending.value) return []
   const surface = effectiveChartSurface.value
-  const items: Array<{ label: string; color: string; value?: string }> = []
-  if (surface.barCount > 0) items.push({ label: 'Candles', color: '#16a34a', value: String(surface.barCount) })
-  if (surface.markerCount > 0) items.push({ label: 'Orders', color: '#e11d48', value: String(surface.markerCount) })
+  const items: LightweightChartLegendItem[] = []
+  const breakdown = surface.markerBreakdown
+  if (breakdown?.filled) {
+    items.push({ label: 'Filled arrows · side color', paletteKey: 'orders', value: String(breakdown.filled) })
+  }
+  if (breakdown?.partial) {
+    items.push({ label: 'Partial arrows · side color', paletteKey: 'orders', value: String(breakdown.partial) })
+  }
+  if (breakdown?.working) {
+    items.push({ label: 'Working circles', color: 'named-series:5', value: String(breakdown.working) })
+  }
+  if (breakdown?.closed) {
+    items.push({ label: 'Closed squares · shape key', color: 'transparent', value: String(breakdown.closed) })
+  }
+  if (breakdown?.other) {
+    items.push({ label: 'Other markers · side color', paletteKey: 'orders', value: String(breakdown.other) })
+  }
+  if (surface.markerCount > 0 && !breakdown) {
+    items.push({ label: 'Orders · side color', paletteKey: 'orders', value: String(surface.markerCount) })
+  }
+  for (const reference of surface.referenceLines ?? []) {
+    items.push({
+      label: referenceLegendLabel(reference.kind),
+      color: referenceLegendColor(reference.kind),
+      value: referenceLegendValue(reference.price),
+    })
+  }
+  if (surface.barCount > 0) items.push({ label: 'Candles', paletteKey: 'candles', value: String(surface.barCount) })
   return items
+})
+const executionChartAdvisory = computed(() => {
+  const surface = effectiveChartSurface.value
+  const levelIssue = surface.referenceLineIssue
+    ? ` ${surface.referenceLineIssue}`
+    : ''
+  if (chartSyncPending.value) {
+    return 'The prior chart is temporarily unavailable while the current dataset and execution context are synchronized.'
+  }
+  if (surface.state === 'stale_broker_review') {
+    return `Price bars rendered, but broker markers and price levels come from a stale review. Refresh broker review before relying on their recency.${levelIssue}`
+  }
+  if (surface.state === 'loaded_marker_overlay_unavailable') {
+    return `Price bars rendered successfully, but broker order markers could not be displayed. Treat the candle chart as price context only and retry before relying on order placement evidence.${levelIssue}`
+  }
+  if (surface.state === 'provenance_suppressed') {
+    return 'Price bars rendered, but broker order markers are intentionally suppressed until a symbol-scoped broker review is refreshed.'
+  }
+  if (
+    surface.state === 'dataset_provenance_unknown' ||
+    surface.state === 'symbol_mismatch'
+  ) {
+    return surface.summary
+  }
+  if (surface.state === 'broker_review_loaded_chart_unavailable') {
+    return `${surface.summary} Reload the dataset or retry the chart after confirming the selected execution symbol.`
+  }
+  if (surface.state === 'no_symbol' || surface.state === 'no_dataset') {
+    return surface.summary
+  }
+  return levelIssue.trim()
 })
 
 function surfaceFromBrokerReviewChart(chart: ExecutionChartReview): ExecutionChartSurfaceResult {
@@ -827,13 +1036,25 @@ const effectiveChartSurface = computed<ExecutionChartSurfaceResult>(() => {
   const review = brokerReview.value
   const selectedSymbol = String(symbol.value || symbolDraft.value || review?.symbol || '').trim()
   const datasetId = normalizeDatasetToken(loadedDataId.value || review?.chart.datasetId || '')
+  let surface = local
   if (local.state === 'no_symbol' && !datasetId && selectedSymbol) {
-    return surfaceFromMissingDataset(selectedSymbol, review?.fetchedAtUnixMs ?? null)
+    surface = surfaceFromMissingDataset(selectedSymbol, review?.fetchedAtUnixMs ?? null)
+  } else if (local.state === 'no_symbol' && review?.chart && review.chart.state !== 'no_symbol') {
+    surface = surfaceFromBrokerReviewChart(review.chart)
   }
-  if (local.state === 'no_symbol' && review?.chart && review.chart.state !== 'no_symbol') {
-    return surfaceFromBrokerReviewChart(review.chart)
+  if (
+    brokerReviewStale.value &&
+    (surface.state === 'loaded_no_markers' || surface.state === 'loaded_broker_markers')
+  ) {
+    const fetchedAtUnixMs = surface.fetchedAtUnixMs ?? review?.fetchedAtUnixMs ?? null
+    const asOf = fetchedAtUnixMs ? formatUiTimeFromUnixMs(fetchedAtUnixMs) : 'unknown'
+    return {
+      ...surface,
+      state: 'stale_broker_review',
+      summary: `Execution chart loaded for ${surface.symbol || selectedSymbol || surface.datasetLabel || surface.datasetId || '-'}, but broker review is stale as of ${asOf}.`,
+    }
   }
-  return local
+  return surface
 })
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
@@ -1088,51 +1309,84 @@ async function syncExecutionChartSurface(): Promise<void> {
   const token = chartSyncToken.value + 1
   chartSyncToken.value = token
   if (!visible.value || !mountReady.value) {
+    chartSyncPending.value = false
     disposeExecutionChart()
     return
   }
-  await nextTick()
-  const review = brokerReview.value
-  const selectedSymbol = String(symbol.value || symbolDraft.value || review?.symbol || '').trim()
-  const requestedDatasetId = normalizeDatasetToken(loadedDataId.value || review?.chart.datasetId || '')
-  const requestedDatasetLabel = normalizeDatasetToken(loadedDatasetLabel.value || review?.chart.datasetLabel || '')
-  const brokerReviewLoaded =
-    !!review &&
-    (!!review.symbol ? String(review.symbol).trim().toUpperCase() === selectedSymbol.trim().toUpperCase() : !!selectedSymbol)
-  const result = await syncExecutionChart(execTvChartElementRef.value, {
-    dataId: requestedDatasetId,
-    datasetLabel: requestedDatasetLabel,
-    datasetSymbol: '',
-    symbol: selectedSymbol,
-    brokerReviewLoaded,
-    fetchedAtUnixMs: brokerReviewLoaded ? (review?.fetchedAtUnixMs ?? null) : null,
-    staleThresholdMs: review?.staleThresholdMs ?? 90_000,
-    orderRows: brokerReviewLoaded ? orderRows.value : [],
-  })
-  if (chartSyncToken.value !== token) return
-  if (result.state === 'no_symbol' && !requestedDatasetId) {
-    const fallbackSymbol = String(review?.symbol || selectedSymbol || '').trim()
-    if (fallbackSymbol) {
-      chartSurface.value = {
-        state: 'no_dataset',
-        summary: 'Execution chart unavailable: load a workflow dataset first.',
-        symbol: fallbackSymbol,
-        datasetId: '',
-        datasetLabel: '-',
-        datasetSymbol: '',
-        fetchedAtUnixMs: review?.fetchedAtUnixMs ?? null,
-        markerCount: 0,
-        barCount: 0,
-        visibleRangeLabel: '',
+  chartSyncPending.value = true
+  try {
+    await nextTick()
+    if (chartSyncToken.value !== token) return
+    const review = brokerReview.value
+    const selectedSymbol = String(symbol.value || symbolDraft.value || review?.symbol || '').trim()
+    const requestedDatasetId = normalizeDatasetToken(loadedDataId.value || review?.chart.datasetId || '')
+    const requestedDatasetLabel = normalizeDatasetToken(loadedDatasetLabel.value || review?.chart.datasetLabel || '')
+    const reviewDatasetId = normalizeDatasetToken(review?.chart.datasetId || '')
+    const requestedDatasetSymbol =
+      requestedDatasetId && requestedDatasetId === reviewDatasetId
+        ? normalizeDatasetToken(review?.chart.datasetSymbol || '')
+        : ''
+    const brokerReviewLoaded =
+      !!review &&
+      (!!review.symbol ? String(review.symbol).trim().toUpperCase() === selectedSymbol.trim().toUpperCase() : !!selectedSymbol)
+    const result = await syncExecutionChart(execTvChartElementRef.value, {
+      dataId: requestedDatasetId,
+      datasetLabel: requestedDatasetLabel,
+      datasetSymbol: requestedDatasetSymbol,
+      datasetRevision: loadedDatasetRevision.value,
+      symbol: selectedSymbol,
+      brokerReviewLoaded,
+      fetchedAtUnixMs: brokerReviewLoaded ? (review?.fetchedAtUnixMs ?? null) : null,
+      staleThresholdMs: review?.staleThresholdMs ?? 90_000,
+      orderRows: brokerReviewLoaded ? orderRows.value : [],
+      positionReview: brokerReviewLoaded ? (review?.position ?? null) : null,
+    })
+    if (chartSyncToken.value !== token) return
+    if (result.state === 'no_symbol' && !requestedDatasetId) {
+      const fallbackSymbol = String(review?.symbol || selectedSymbol || '').trim()
+      if (fallbackSymbol) {
+        chartSurface.value = {
+          state: 'no_dataset',
+          summary: 'Execution chart unavailable: load a workflow dataset first.',
+          symbol: fallbackSymbol,
+          datasetId: '',
+          datasetLabel: '-',
+          datasetSymbol: '',
+          fetchedAtUnixMs: review?.fetchedAtUnixMs ?? null,
+          markerCount: 0,
+          barCount: 0,
+          visibleRangeLabel: '',
+        }
+        return
       }
+    }
+    if (result.state === 'no_symbol' && review?.chart && review.chart.state !== 'no_symbol') {
+      chartSurface.value = surfaceFromBrokerReviewChart(review.chart)
       return
     }
+    chartSurface.value = result
+  } catch {
+    if (chartSyncToken.value !== token) return
+    const selectedSymbol = String(symbol.value || symbolDraft.value || brokerReview.value?.symbol || '').trim()
+    const datasetId = normalizeDatasetToken(loadedDataId.value || brokerReview.value?.chart.datasetId || '')
+    const datasetLabel = normalizeDatasetToken(
+      loadedDatasetLabel.value || brokerReview.value?.chart.datasetLabel || datasetId,
+    )
+    chartSurface.value = {
+      state: 'broker_review_loaded_chart_unavailable',
+      summary: `Execution chart unavailable: the current chart synchronization failed for ${datasetLabel || selectedSymbol || 'the selected context'}.`,
+      symbol: selectedSymbol,
+      datasetId,
+      datasetLabel: datasetLabel || '-',
+      datasetSymbol: '',
+      fetchedAtUnixMs: brokerReview.value?.fetchedAtUnixMs ?? null,
+      markerCount: 0,
+      barCount: 0,
+      visibleRangeLabel: '',
+    }
+  } finally {
+    if (chartSyncToken.value === token) chartSyncPending.value = false
   }
-  if (result.state === 'no_symbol' && review?.chart && review.chart.state !== 'no_symbol') {
-    chartSurface.value = surfaceFromBrokerReviewChart(review.chart)
-    return
-  }
-  chartSurface.value = result
 }
 
 onBeforeUnmount(() => {
@@ -1140,7 +1394,9 @@ onBeforeUnmount(() => {
   pendingAction.value = null
   pendingActionOpenedAtUnixMs.value = 0
   stopConfirmationTimer()
+  stopBrokerReviewFreshnessTimer()
   chartSyncToken.value += 1
+  chartSyncPending.value = false
   disposeExecutionChart()
 })
 
@@ -1157,13 +1413,32 @@ watch(
   () => [
     visible.value,
     mountReady.value,
+    brokerReview.value?.fetchedAtUnixMs ?? null,
+    brokerReview.value?.staleThresholdMs ?? null,
+  ] as const,
+  () => {
+    scheduleBrokerReviewFreshnessExpiry()
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [
+    visible.value,
+    mountReady.value,
     String(symbol.value || ''),
     String(symbolDraft.value || ''),
     String(brokerReview.value?.symbol || ''),
     brokerReview.value?.fetchedAtUnixMs ?? null,
-    orderRows.value.length,
+    String(brokerReview.value?.chart.datasetId || ''),
+    String(brokerReview.value?.chart.datasetSymbol || ''),
+    String(brokerReview.value?.position.state || ''),
+    String(brokerReview.value?.position.avgEntryPrice ?? ''),
+    String(brokerReview.value?.position.currentPrice ?? ''),
+    orderRows.value.map((row) => row.cells.join('\u001f')).join('\u001e'),
     String(loadedDataId.value || ''),
     String(loadedDatasetLabel.value || ''),
+    loadedDatasetRevision.value,
     updatedAtUnixMs.value,
   ] as const,
   () => {
@@ -1420,7 +1695,7 @@ watch(
             Use delayed feed
           </label>
         </div>
-        <div class="credentialStateCard" role="status" aria-live="polite">
+        <div class="credentialStateCard">
           <div class="credentialStateLabel">Credential state</div>
           <div class="credentialStateValue mono">{{ keyStateLabel }}</div>
           <div class="panelMuted">
@@ -1468,7 +1743,7 @@ watch(
               <button type="button" data-qa-action="live.runner.runOnce" :disabled="!canRunOnce" @click="queueRunOnceAction">{{ runOnceActionLabel }}</button>
             </div>
             <div class="actionHelp panelMuted">{{ runOnceActionDetail }}</div>
-            <div class="preflightBlock" role="status" aria-live="polite">
+            <div class="preflightBlock">
               <div class="preflightLabel">Preflight</div>
               <ul class="preflightList">
                 <li v-for="note in manualExecutionNotes" :key="`manual_preflight_${note}`">{{ note }}</li>
@@ -1484,7 +1759,7 @@ watch(
               <button type="button" data-qa-action="live.runner.start" :disabled="!canStartRunner" @click="queueConfirmation('startRunner')">Start runner</button>
               <button type="button" data-qa-action="live.runner.stop" :disabled="!canStopRunner" @click="stopRunnerAction">Stop runner</button>
             </div>
-            <div class="preflightBlock" role="status" aria-live="polite">
+            <div class="preflightBlock">
               <div class="preflightLabel">Preflight</div>
               <ul class="preflightList">
                 <li v-for="note in liveAutomationNotes" :key="`automation_preflight_${note}`">{{ note }}</li>
@@ -1502,7 +1777,7 @@ watch(
             <div class="actionHelp panelMuted">
               Broker-facing safety controls stay backend-authoritative and current-symbol-only. Emergency halt is local disarm only.
             </div>
-            <div class="preflightBlock" role="status" aria-live="polite">
+            <div class="preflightBlock">
               <div class="preflightLabel">Control notes</div>
               <ul class="preflightList">
                 <li v-for="note in safetyControlNotes" :key="`safety_control_${note}`">{{ note }}</li>
@@ -1545,7 +1820,7 @@ watch(
             <div><span class="panelMetricKey">Recovery</span><span class="panelMetricValue mono panelNumeric">{{ recoveryStatusLabel }}</span></div>
             <div><span class="panelMetricKey">Position</span><span class="panelMetricValue mono panelNumeric">{{ positionMeta }}</span></div>
             <div><span class="panelMetricKey">Chart</span><span class="panelMetricValue mono panelNumeric">{{ chartSurfaceMeta }}</span></div>
-            <div><span class="panelMetricKey">App</span><span class="panelMetricValue mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</span></div>
+            <div><span class="panelMetricKey">App</span><span class="panelMetricValue mono panelNumeric">{{ statusLine }}</span></div>
           </div>
           <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">
             {{ liveStatusHint }} · {{ runnerStatusHint }} · {{ statusHint }}
@@ -1601,18 +1876,19 @@ watch(
             <PriceChartPanel
               chart-id="execTvChartVue"
               meta-id="execTvChartMetaVue"
-              title="Execution chart (loaded dataset + broker orders)"
+              title="Broker telemetry chart"
               :meta-text="chartSurfaceMeta"
               :summary-items="executionChartSummaryItems"
               :legend-items="executionChartLegendItems"
               :state-label="executionChartStateLabel"
+              :state-kind="executionChartStateKind"
               :render-ready="executionChartRenderReady"
               :view-label="effectiveChartSurface.visibleRangeLabel"
               :navigation="true"
               qa-prefix="executionChart"
-              advisory="If this chart remains blank, confirm the current dataset matches the selected symbol and refresh broker review before relying on marker overlays."
-              frame-aria-label="Execution chart for the loaded dataset with broker order markers."
-              host-aria-label="Execution chart"
+              :advisory="executionChartAdvisory"
+              frame-aria-label="Execution chart for the loaded dataset with broker order lifecycle markers and broker-confirmed price levels."
+              host-aria-label="Broker telemetry price chart"
               @host-ready="setExecutionChartHost"
               @fit-content="fitExecutionChart"
               @pan-left="panExecutionChartLeft"
@@ -1772,6 +2048,9 @@ watch(
 <style scoped>
 .execPanelVueRoot {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
   gap: 0.85rem;
 }
 
@@ -1867,6 +2146,7 @@ watch(
 }
 
 .pane {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel-footer);
@@ -2043,6 +2323,8 @@ watch(
 
 .executionSubsection {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 0.5rem;
 }
 
@@ -2056,8 +2338,13 @@ watch(
 
 .statusGrid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
   gap: 0.4rem 0.75rem;
+}
+
+.statusGrid > div {
+  min-width: 0;
 }
 
 .reviewDetailGrid {
@@ -2148,6 +2435,8 @@ watch(
 }
 
 .chartBlock {
+  min-width: 0;
+  max-width: 100%;
   margin-top: 0.75rem;
   display: grid;
   gap: 0.5rem;

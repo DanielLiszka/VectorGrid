@@ -86,7 +86,8 @@ try {
   Invoke-Step "Release-proof evidence and packaged-gate contracts" {
     node --test `
       (Join-Path $repoRoot "scripts\\release_proof_evidence_contract.test.mjs") `
-      (Join-Path $repoRoot "scripts\\release_proof_packaged_gate_contract.test.mjs")
+      (Join-Path $repoRoot "scripts\\release_proof_packaged_gate_contract.test.mjs") `
+      (Join-Path $repoRoot "scripts\\lightweight_charts_license_contract.test.mjs")
   }
 
   Invoke-Step "Support-evidence privacy canaries" {
@@ -99,14 +100,30 @@ try {
   $env:SCCACHE_NO_DAEMON = "1"
 
   if (-not $SkipRust) {
-    Invoke-Step "Rust format" { cargo fmt --all -- --check }
+    # Keep third-party vendored source in its upstream formatting style. The
+    # embed-resource fork remains a workspace member so check/test still compile
+    # and execute its opt-in override coverage.
+    Invoke-Step "Rust format" {
+      cargo fmt `
+        -p ta_desktop_demo_app `
+        -p ta_app_core `
+        -p ta_strategies `
+        -p ta_optimizer `
+        -- --check
+    }
     Invoke-Step "Rust check" { cargo check --workspace }
     Invoke-Step "Rust maintainer target check" {
       cargo check -p ta_desktop_demo_app --no-default-features --features maintainer-tools --bins
     }
 
     if (-not $SkipClippy) {
-      $clippyArgs = @("clippy", "--workspace", "--all-targets", "--no-deps")
+      $clippyArgs = @(
+        "clippy",
+        "--workspace",
+        "--exclude", "embed-resource",
+        "--all-targets",
+        "--no-deps"
+      )
       if ($StrictClippy) {
         $clippyArgs += @("--", "-D", "warnings")
       }

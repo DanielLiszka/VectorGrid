@@ -227,17 +227,52 @@ describe('WorkbenchShell', () => {
     await flushUi()
 
     const launcher = wrapper.get('[data-qa-action="workbench.inspector.compactOpen"]')
+    ;(launcher.element as HTMLButtonElement).focus()
     expect(launcher.attributes('aria-expanded')).toBe('false')
     expect(wrapper.get('[data-qa-panel="workbench.inspector"]').attributes('aria-hidden')).toBe('true')
 
     await launcher.trigger('click')
     await flushUi()
     expect(launcher.attributes('aria-expanded')).toBe('true')
-    expect(wrapper.get('[data-qa-panel="workbench.inspector"]').attributes('aria-hidden')).toBeUndefined()
+    const inspector = wrapper.get('[data-qa-panel="workbench.inspector"]')
+    expect(inspector.attributes('aria-hidden')).toBeUndefined()
+    expect(inspector.attributes('role')).toBe('dialog')
+    expect(inspector.attributes('aria-modal')).toBe('true')
+    expect(document.querySelector('.workbenchContent')?.hasAttribute('inert')).toBe(true)
+    expect(document.activeElement).toBe(
+      wrapper.get('[data-qa-action="workbench.inspector.toggle"]').element,
+    )
 
-    await wrapper.get('[data-qa-action="workbench.inspector.toggle"]').trigger('click')
+    const focusable = Array.from(
+      inspector.element.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    )
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    expect(first).toBeTruthy()
+    expect(last).toBeTruthy()
+    first?.focus()
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    expect(document.activeElement).toBe(last)
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
     await flushUi()
     expect(launcher.attributes('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(launcher.element)
 
     wrapper.unmount()
   })
@@ -259,15 +294,31 @@ describe('WorkbenchShell', () => {
     })
     await flushUi()
 
-    const supportLabel = document.querySelector(
-      '[aria-label="Current live support envelope"] strong[title]',
-    )
-    const title = supportLabel?.getAttribute('title') || ''
-
     expect(loadExecutionStrategySupportMatrixMock).toHaveBeenCalledTimes(1)
-    expect(title).toContain('Live support matrix unavailable:')
-    expect(title).toContain('Desktop runtime unavailable')
-    expect(title).not.toContain('TauriRuntimeError')
+    const supportPane = wrapper.get('[aria-label="Current live support envelope"]')
+    expect(supportPane.text()).toContain('Unavailable')
+    expect(supportPane.text()).not.toContain('DoubleMa · CompositeCpu')
+    const status = wrapper.get('[data-qa-state="workbench.liveSupport.status"]')
+    expect(status.text()).toContain('Live support matrix unavailable:')
+    expect(status.text()).toContain('Desktop runtime unavailable')
+    expect(status.text()).not.toContain('TauriRuntimeError')
+
+    loadExecutionStrategySupportMatrixMock.mockResolvedValueOnce([
+      {
+        strategyKind: 'DoubleMa',
+        supported: true,
+        adapter: 'double_ma_execution_adapter',
+        supportLevel: 'signal_and_delta',
+        notes: 'ready',
+      },
+    ])
+    await wrapper.get('.liveSupportRetry').trigger('click')
+    await flushUi()
+
+    expect(loadExecutionStrategySupportMatrixMock).toHaveBeenCalledTimes(2)
+    expect(supportPane.text()).toContain('DoubleMa')
+    expect(supportPane.text()).toContain('double_ma_execution_adapter')
+    expect(supportPane.text()).not.toContain('Retry support check')
 
     wrapper.unmount()
   })

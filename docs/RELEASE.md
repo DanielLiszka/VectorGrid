@@ -131,10 +131,16 @@ The Windows platform config is intentionally explicit:
 - The configured public bundle target is `nsis`, producing a setup `.exe`.
 - `resources/native/catboostmodel.dll` is bundled as `native/catboostmodel.dll` so packaged ML/native workflows can resolve it from Tauri's resource directory.
 - `resources/licenses/CatBoost-LICENSE.txt` is bundled as `licenses/CatBoost-LICENSE.txt`.
+- `resources/licenses/TradingView-Lightweight-Charts-LICENSE.txt` and `resources/licenses/TradingView-Lightweight-Charts-NOTICE.txt` are bundled under `licenses/` for the pinned `lightweight-charts` `5.1.0` frontend dependency.
 - `resources/sample-data/vectorgrid_synthetic_ohlcv.csv` is bundled as `sample-data/vectorgrid_synthetic_ohlcv.csv` so the documented first-run workflow can use a clean-machine sample fast path once the shipped UI and docs are aligned.
 - WebView2 install behavior is declared explicitly with `downloadBootstrapper`; offline WebView2 distribution is a future release-profile decision because it materially increases installer size.
 
 `node scripts/check_tauri_config_sync.mjs` validates the mirror, resource source paths, NSIS target, WebView2 install mode, and installer icon path.
+
+`node --test scripts/lightweight_charts_license_contract.test.mjs` pins the
+dependency and lockfile version, verifies the exact reviewed upstream NOTICE
+text and Apache-2.0 license hash, and checks both Tauri resource maps plus the
+release-manifest and extracted-package smoke contracts.
 
 ### CatBoost native dependency
 

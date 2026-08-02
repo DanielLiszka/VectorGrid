@@ -910,6 +910,47 @@ describe("executionService", () => {
     expect(result.outputPreview).toContain('"ord_123"');
   });
 
+  it("uses a valid limit trigger when stop price is absent and preserves valid stops", async () => {
+    invokeCommandMock.mockResolvedValue({
+      symbol: "AAPL",
+      account_number: "ABC123",
+      account_status: "ACTIVE",
+      fetched_at_unix_ms: Date.now(),
+      position: null,
+      orders: [
+        {
+          id: "limit_123",
+          side: "sell",
+          status: "new",
+          qty: "1",
+          filled_qty: "0",
+          order_type: "limit",
+          limit_price: "110",
+          stop_price: null,
+          submitted_at: "2026-04-10T14:55:00Z",
+        },
+        {
+          id: "stop_123",
+          side: "sell",
+          status: "accepted",
+          qty: "1",
+          filled_qty: "0",
+          order_type: "stop",
+          limit_price: null,
+          stop_price: "95",
+          submitted_at: "2026-04-10T14:56:00Z",
+        },
+      ],
+    });
+
+    const result = await refreshOrders(baseOptions());
+
+    expect(result.orderRows?.map((row) => row.cells?.[7])).toEqual([
+      "limit 110",
+      "stop 95",
+    ]);
+  });
+
   it("parses rich live stream status metadata during status refresh", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === "live_execution_runner_status") {

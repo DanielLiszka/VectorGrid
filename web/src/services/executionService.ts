@@ -1158,8 +1158,14 @@ function buildOrderRows(ordersRaw: unknown): ExecutionOrderRow[] {
     const avgPx = trimTrailingZeros(toNumber(order.filled_avg_price));
     const orderId = text(order.id) || "-";
     const orderType = text(order.order_type) || text(order.type);
-    const limitPrice = trimTrailingZeros(toNumber(order.limit_price));
-    const stopPrice = trimTrailingZeros(toNumber(order.stop_price));
+    const limitPriceValue = toNumber(order.limit_price);
+    const stopPriceValue = toNumber(order.stop_price);
+    const limitPrice = Number.isFinite(limitPriceValue) && limitPriceValue > 0
+      ? trimTrailingZeros(limitPriceValue)
+      : "";
+    const stopPrice = Number.isFinite(stopPriceValue) && stopPriceValue > 0
+      ? trimTrailingZeros(stopPriceValue)
+      : "";
     const trigger = stopPrice
       ? `stop ${stopPrice}`
       : limitPrice

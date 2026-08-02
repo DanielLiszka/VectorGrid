@@ -72,7 +72,11 @@ describe('paretoModel', () => {
     expect(model.frontier.map((point) => point.rank)).toEqual([2])
     expect(model.points.find((point) => point.rank === 1)?.frontier).toBe(false)
     expect(model.meta).toContain('2 points')
+    expect(model.meta).toContain('from the retained shortlist')
     expect(model.meta).toContain('x=max_dd')
+    expect(model.truthNote).toContain('non-dominated only within the retained shortlist')
+    expect(model.truthNote).toContain('not a global search-space frontier')
+    expect(model.confidenceNote).toContain('Retained-shortlist frontier membership')
   })
 
   it('summarizes representative and selected frontier points', () => {
@@ -148,5 +152,18 @@ describe('paretoModel', () => {
       summary: expect.stringContaining('#1'),
     })
     expect('row' in renderModel.points[0]!).toBe(false)
+  })
+
+  it('keeps retained-shortlist scope explicit when no comparable points are available', () => {
+    const model = buildParetoViewModel({
+      rows: [rows[2]!],
+      xKey: 'max_dd',
+      yKey: 'pnl',
+      axisValueFor: (row, key) => paretoAxisValue(row, key),
+    })
+
+    expect(model.status).toBe('unavailable')
+    expect(model.truthNote).toContain('only within the retained shortlist')
+    expect(model.truthNote).toContain('not across the global search space')
   })
 })

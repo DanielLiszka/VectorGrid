@@ -33,6 +33,17 @@ export function formatUiPercentFromFraction(
   return `${(fraction * 100).toFixed(safeDigits)}%`;
 }
 
+export function formatUiPercentValue(
+  value: unknown,
+  digits = 0,
+  fallback = "—",
+): string {
+  const percent = Number(value);
+  if (!Number.isFinite(percent)) return fallback;
+  const safeDigits = Math.min(20, Math.max(0, Math.floor(Number(digits) || 0)));
+  return `${percent.toFixed(safeDigits)}%`;
+}
+
 export function formatUiCompactDurationMs(
   value: unknown,
   fallback = "—",

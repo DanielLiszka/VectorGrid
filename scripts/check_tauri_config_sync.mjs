@@ -154,6 +154,42 @@ function validateWindowsReleaseBundleConfig(label, shape, failures) {
       `${label} must bundle src-tauri/resources/licenses/CatBoost-LICENSE.txt as licenses/CatBoost-LICENSE.txt.`,
     )
   }
+  const expectedLightweightChartsLicenseSource = path.resolve(
+    ROOT,
+    'src-tauri',
+    'resources',
+    'licenses',
+    'TradingView-Lightweight-Charts-LICENSE.txt',
+  )
+  const hasLightweightChartsLicenseResource = resources.some(
+    (entry) =>
+      entry?.source === expectedLightweightChartsLicenseSource &&
+      String(entry?.target || '').replaceAll('\\', '/') ===
+        'licenses/TradingView-Lightweight-Charts-LICENSE.txt',
+  )
+  if (!hasLightweightChartsLicenseResource) {
+    failures.push(
+      `${label} must bundle src-tauri/resources/licenses/TradingView-Lightweight-Charts-LICENSE.txt as licenses/TradingView-Lightweight-Charts-LICENSE.txt.`,
+    )
+  }
+  const expectedLightweightChartsNoticeSource = path.resolve(
+    ROOT,
+    'src-tauri',
+    'resources',
+    'licenses',
+    'TradingView-Lightweight-Charts-NOTICE.txt',
+  )
+  const hasLightweightChartsNoticeResource = resources.some(
+    (entry) =>
+      entry?.source === expectedLightweightChartsNoticeSource &&
+      String(entry?.target || '').replaceAll('\\', '/') ===
+        'licenses/TradingView-Lightweight-Charts-NOTICE.txt',
+  )
+  if (!hasLightweightChartsNoticeResource) {
+    failures.push(
+      `${label} must bundle src-tauri/resources/licenses/TradingView-Lightweight-Charts-NOTICE.txt as licenses/TradingView-Lightweight-Charts-NOTICE.txt.`,
+    )
+  }
 
   const targets = Array.isArray(shape.bundle.targets) ? shape.bundle.targets : []
   if (!targets.includes('nsis')) {

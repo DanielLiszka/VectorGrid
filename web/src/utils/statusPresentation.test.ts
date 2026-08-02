@@ -100,7 +100,15 @@ describe('statusPresentation', () => {
         source: 'double_ma_progress',
         atUnixMs: 1_700_000_000_000,
       }),
-    ).toContain('Optimize 42/100')
+    ).toBe('42% · Optimize 42/100')
+    expect(
+      formatOverallProgressLabel({
+        pct: 100,
+        label: '',
+        source: 'double_ma_progress',
+        atUnixMs: 1_700_000_000_000,
+      }),
+    ).toBe('100% complete')
 
     expect(runtimePhaseLabel('booting')).toBe('Booting')
     expect(

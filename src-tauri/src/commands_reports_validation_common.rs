@@ -55,22 +55,46 @@ pub(super) struct ExportValidationEvidencePack {
     pub status: String,
     pub status_reason: String,
     pub generated_by: String,
+    pub dataset_data_id: String,
+    pub dataset_strategy_kind: String,
+    pub dataset_label: String,
+    pub dataset_source_file: String,
+    pub dataset_timeframe: String,
+    pub realism_price_adjustment: String,
+    pub realism_corporate_actions: String,
+    pub realism_survivorship_bias: String,
+    pub realism_liquidity_capacity: String,
+    pub realism_market_impact: String,
+    pub realism_borrow_availability: String,
+    pub realism_complete: Option<bool>,
+    pub realism_missing_or_unknown_recorded: bool,
+    pub realism_missing_or_unknown: String,
+    pub promotion_eligible: Option<bool>,
+    pub promotion_state: String,
+    pub promotion_reason: String,
+    pub promotion_gates_passed: String,
+    pub promotion_gates_failed: String,
     pub requested_backend: String,
     pub realized_backend: String,
     pub route_label: String,
     pub residency_tier: String,
     pub fallback_reason: String,
+    pub route_diagnostics: String,
     pub candidate_source: String,
-    pub requested_candidates: usize,
-    pub evaluated_candidates: usize,
-    pub retained_candidates: usize,
-    pub survived_hard_gates: usize,
-    pub approved_candidates: usize,
+    pub requested_candidates: Option<usize>,
+    pub evaluated_candidates: Option<usize>,
+    pub retained_candidates: Option<usize>,
+    pub survived_hard_gates: Option<usize>,
+    pub approved_candidates: Option<usize>,
     pub optimization_trials: Option<usize>,
+    pub verdict_passed: Option<bool>,
+    pub verdict_approved: Option<bool>,
     pub verdict_summary: String,
     pub verdict_recommendation: String,
     pub module_statuses: String,
     pub metric_summaries: String,
+    pub warnings: String,
+    pub caveats: String,
 }
 
 #[allow(dead_code)]
@@ -1083,6 +1107,53 @@ fn parse_validation_evidence_pack(validation_res: &Value) -> Option<ExportValida
     let pack = validation_res
         .get("validation_evidence_pack")
         .or_else(|| validation_res.get("validationEvidencePack"))?;
+    let _ = pack.as_object()?;
+    let has_identity = !first_nonempty_text(
+        pack,
+        &[
+            "/schema_version",
+            "/schemaVersion",
+            "/workflow",
+            "/status",
+            "/generated_by",
+            "/generatedBy",
+        ],
+    )
+    .is_empty();
+    let has_body = [
+        "dataset",
+        "promotion_eligibility",
+        "promotionEligibility",
+        "route",
+        "candidate_universe",
+        "candidateUniverse",
+        "verdict",
+        "metrics",
+        "modules",
+        "warnings",
+        "caveats",
+    ]
+    .iter()
+    .filter_map(|key| pack.get(*key))
+    .any(|value| match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(values) => !values.is_empty(),
+        Value::Bool(_) | Value::Number(_) => true,
+    });
+    if !has_identity && !has_body {
+        return None;
+    }
+    let dataset = pack.get("dataset").unwrap_or(&Value::Null);
+    let realism = dataset
+        .get("data_realism")
+        .or_else(|| dataset.get("dataRealism"))
+        .unwrap_or(&Value::Null);
+    let promotion = pack
+        .get("promotion_eligibility")
+        .or_else(|| pack.get("promotionEligibility"))
+        .unwrap_or(&Value::Null);
     let route = pack.get("route").unwrap_or(&Value::Null);
     let universe = pack
         .get("candidate_universe")
@@ -1154,42 +1225,99 @@ fn parse_validation_evidence_pack(validation_res: &Value) -> Option<ExportValida
         status: first_nonempty_text(pack, &["/status"]),
         status_reason: first_nonempty_text(pack, &["/status_reason", "/statusReason"]),
         generated_by: first_nonempty_text(pack, &["/generated_by", "/generatedBy"]),
+        dataset_data_id: first_nonempty_text(dataset, &["/data_id", "/dataId"]),
+        dataset_strategy_kind: first_nonempty_text(dataset, &["/strategy_kind", "/strategyKind"]),
+        dataset_label: first_nonempty_text(dataset, &["/label"]),
+        dataset_source_file: cross_dataset_display_name_from_path(&first_nonempty_text(
+            dataset,
+            &["/csv_path", "/csvPath"],
+        ))
+        .unwrap_or_default(),
+        dataset_timeframe: first_nonempty_text(dataset, &["/timeframe"]),
+        realism_price_adjustment: first_nonempty_text(
+            realism,
+            &["/price_adjustment", "/priceAdjustment"],
+        ),
+        realism_corporate_actions: first_nonempty_text(
+            realism,
+            &["/corporate_actions", "/corporateActions"],
+        ),
+        realism_survivorship_bias: first_nonempty_text(
+            realism,
+            &["/survivorship_bias", "/survivorshipBias"],
+        ),
+        realism_liquidity_capacity: first_nonempty_text(
+            realism,
+            &["/liquidity_capacity", "/liquidityCapacity"],
+        ),
+        realism_market_impact: first_nonempty_text(realism, &["/market_impact", "/marketImpact"]),
+        realism_borrow_availability: first_nonempty_text(
+            realism,
+            &["/borrow_availability", "/borrowAvailability"],
+        ),
+        realism_complete: first_bool(realism, &["/complete"]),
+        realism_missing_or_unknown_recorded: realism
+            .get("missing_or_unknown")
+            .or_else(|| realism.get("missingOrUnknown"))
+            .and_then(Value::as_array)
+            .is_some(),
+        realism_missing_or_unknown: first_joined_text_array(
+            realism,
+            &["/missing_or_unknown", "/missingOrUnknown"],
+            "; ",
+        ),
+        promotion_eligible: first_bool(promotion, &["/eligible"]),
+        promotion_state: first_nonempty_text(promotion, &["/state"]),
+        promotion_reason: first_nonempty_text(promotion, &["/reason"]),
+        promotion_gates_passed: first_joined_text_array(
+            promotion,
+            &["/gates_passed", "/gatesPassed"],
+            "; ",
+        ),
+        promotion_gates_failed: first_joined_text_array(
+            promotion,
+            &["/gates_failed", "/gatesFailed"],
+            "; ",
+        ),
         requested_backend: first_nonempty_text(route, &["/requested_backend", "/requestedBackend"]),
         realized_backend: first_nonempty_text(route, &["/realized_backend", "/realizedBackend"]),
         route_label: first_nonempty_text(route, &["/route_label", "/routeLabel"]),
         residency_tier: first_nonempty_text(route, &["/residency_tier", "/residencyTier"]),
         fallback_reason: first_nonempty_text(route, &["/fallback_reason", "/fallbackReason"]),
+        route_diagnostics: first_joined_text_array(route, &["/diagnostics"], "; "),
         candidate_source: first_nonempty_text(universe, &["/source"]),
         requested_candidates: universe
             .get("requested_candidates")
             .or_else(|| universe.get("requestedCandidates"))
             .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
+            .map(|value| value as usize),
         evaluated_candidates: universe
             .get("evaluated_candidates")
             .or_else(|| universe.get("evaluatedCandidates"))
             .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
+            .map(|value| value as usize),
         retained_candidates: universe
             .get("retained_candidates")
             .or_else(|| universe.get("retainedCandidates"))
             .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
+            .map(|value| value as usize),
         survived_hard_gates: universe
             .get("survived_hard_gates")
             .or_else(|| universe.get("survivedHardGates"))
             .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
+            .map(|value| value as usize),
         approved_candidates: universe
             .get("approved_candidates")
             .or_else(|| universe.get("approvedCandidates"))
             .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
+            .map(|value| value as usize),
         optimization_trials: universe
             .get("optimization_trials")
             .or_else(|| universe.get("optimizationTrials"))
             .and_then(Value::as_u64)
             .map(|value| value as usize),
+        verdict_passed: first_bool(verdict, &["/passed"]),
+        verdict_approved: first_bool(verdict, &["/approved"]),
         verdict_summary: first_nonempty_text(verdict, &["/summary"]),
         verdict_recommendation: first_nonempty_text(
             verdict,
@@ -1201,6 +1329,8 @@ fn parse_validation_evidence_pack(validation_res: &Value) -> Option<ExportValida
         ),
         module_statuses,
         metric_summaries,
+        warnings: first_joined_text_array(pack, &["/warnings"], "; "),
+        caveats: first_joined_text_array(pack, &["/caveats"], "; "),
     })
 }
 
@@ -1421,12 +1551,6 @@ fn resolve_composite_double_like_validation_target(
 
     if backend == "CpuOnly" {
         return Some(("CpuOnly", false));
-    }
-    if matches!(backend, "Auto" | "GpuKernel")
-        && strategy_kind == "CompositeTrend"
-        && !trend_use_adx
-    {
-        return Some(("CpuOnly", backend != "Auto"));
     }
     if backend == "GpuHybridKernel" {
         return Some(("GpuHybridKernel", false));
@@ -2047,10 +2171,10 @@ fn is_composite_gpu_native_advanced_strategy(strategy_kind: &str) -> bool {
     )
 }
 
-fn describe_composite_gpu_native_optional_modules(validation_req: &Value) -> Vec<String> {
+fn describe_advanced_aux_execution_tails(validation_req: &Value) -> Vec<String> {
     let mut modules = Vec::new();
     if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
-        modules.push("perturb".to_string());
+        modules.push("perturb (mixed/GPU-assisted, route-dependent)".to_string());
     }
     if let Some(bootstrap) = active_monte_carlo_request(validation_req) {
         if bootstrap
@@ -2058,7 +2182,7 @@ fn describe_composite_gpu_native_optional_modules(validation_req: &Value) -> Vec
             .and_then(Value::as_u64)
             == Some(0)
         {
-            modules.push("trade bootstrap iid-only".to_string());
+            modules.push("trade bootstrap iid-only (CPU auxiliary tail)".to_string());
             return modules;
         }
         let stat_block = bootstrap
@@ -2067,7 +2191,7 @@ fn describe_composite_gpu_native_optional_modules(validation_req: &Value) -> Vec
             .map(|v| v.to_string())
             .unwrap_or_else(|| "auto".to_string());
         modules.push(format!(
-            "trade bootstrap compare (iid + stationary, stat block={stat_block})"
+            "trade bootstrap compare (iid + stationary, stat block={stat_block}; CPU auxiliary tail)"
         ));
     }
     modules
@@ -2153,7 +2277,15 @@ fn split_actual_route_reason(
     if backend_fallback_reason.trim().is_empty() {
         return ("-".to_string(), "-".to_string());
     }
-    if backend_route.contains("->CpuOnly") {
+    let mut route_parts = backend_route
+        .split("->")
+        .map(str::trim)
+        .filter(|part| !part.is_empty());
+    let first = route_parts.next().unwrap_or_default();
+    let last = route_parts.last().unwrap_or(first);
+    let explicit_route_downgrade =
+        !first.eq_ignore_ascii_case("auto") && !first.eq_ignore_ascii_case(last);
+    if backend_route.contains("->CpuOnly") || explicit_route_downgrade {
         (backend_fallback_reason.trim().to_string(), "-".to_string())
     } else {
         ("-".to_string(), backend_fallback_reason.trim().to_string())
@@ -2236,6 +2368,69 @@ fn format_execution_category_summary(groups: Vec<(&'static str, Vec<&'static str
     }
 }
 
+fn build_gpu_execution_category_summary(
+    validation_req: &Value,
+    main_category: &'static str,
+    perturb_is_mixed: bool,
+) -> String {
+    let mut gpu_evaluation = vec!["base reruns"];
+    let mut cpu_reduction = vec![
+        "probability metrics",
+        "Pareto marking",
+        "hard gates",
+        "final ordering",
+    ];
+    if validation_req
+        .get("walk_forward")
+        .is_some_and(|value| !value.is_null())
+    {
+        gpu_evaluation.push("walk_forward reruns");
+    }
+    if validation_req
+        .get("reopt_walk_forward")
+        .is_some_and(|value| !value.is_null())
+    {
+        gpu_evaluation.push("reopt walk-forward reruns");
+    }
+    if validation_req
+        .get("cscv_pbo")
+        .is_some_and(|value| !value.is_null())
+    {
+        gpu_evaluation.push("CSCV slice evaluation");
+        cpu_reduction.push("CSCV/PBO reduction");
+    }
+    if validation_req
+        .get("spa")
+        .is_some_and(|value| !value.is_null())
+    {
+        gpu_evaluation.push("SPA slice evaluation");
+        cpu_reduction.push("SPA reduction");
+    }
+
+    let mut mixed_tail = Vec::new();
+    let mut cpu_tail = Vec::new();
+    if validation_req
+        .get("perturb")
+        .is_some_and(|value| !value.is_null())
+    {
+        if perturb_is_mixed {
+            mixed_tail.push("perturb");
+        } else {
+            cpu_tail.push("perturb");
+        }
+    }
+    if validation_module_enabled(validation_req, "trade_bootstrap") {
+        cpu_tail.push("trade_bootstrap");
+    }
+
+    format_execution_category_summary(vec![
+        (main_category, gpu_evaluation),
+        ("CPU statistical/gate reduction", cpu_reduction),
+        ("Mixed/GPU-assisted tail", mixed_tail),
+        ("CPU auxiliary tail", cpu_tail),
+    ])
+}
+
 fn build_expected_execution_category_summary(
     strategy_kind: &str,
     validation_req: &Value,
@@ -2252,36 +2447,13 @@ fn build_expected_execution_category_summary(
         {
             return format_execution_category_summary(vec![("CPU-only", modules)]);
         }
-        let mut gpu_native = vec!["base reruns", "hard gates"];
-        if validation_req
-            .get("walk_forward")
-            .is_some_and(|v| !v.is_null())
-        {
-            gpu_native.push("walk_forward");
-        }
-        if validation_req
-            .get("reopt_walk_forward")
-            .is_some_and(|v| !v.is_null())
-        {
-            gpu_native.push("reopt_walk_forward");
-        }
-        if validation_req.get("cscv_pbo").is_some_and(|v| !v.is_null()) {
-            gpu_native.push("cscv_pbo");
-        }
-        if validation_req.get("spa").is_some_and(|v| !v.is_null()) {
-            gpu_native.push("spa");
-        }
-        let mut gpu_tail = Vec::new();
-        if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
-            gpu_tail.push("perturb");
-        }
-        if validation_module_enabled(validation_req, "trade_bootstrap") {
-            gpu_tail.push("trade_bootstrap");
-        }
-        return format_execution_category_summary(vec![
-            ("GPU-native", gpu_native),
-            ("GPU main + CPU tail", gpu_tail),
-        ]);
+        let main_category =
+            if composite_double_like_target.is_some_and(|target| target == "GpuHybridKernel") {
+                "GPU-hybrid backed reruns/evaluation (ADX CPU-preferred)"
+            } else {
+                "GPU-backed reruns/evaluation"
+            };
+        return build_gpu_execution_category_summary(validation_req, main_category, false);
     }
 
     let cpu_preferred = describe_composite_auto_cpu_preference(strategy_kind, backend).is_some();
@@ -2289,50 +2461,11 @@ fn build_expected_execution_category_summary(
     if backend == "CpuOnly" || cpu_preferred || cpu_fallback {
         return format_execution_category_summary(vec![("CPU-only", modules)]);
     }
-    let mut gpu_native = Vec::new();
-    let mut gpu_tail = Vec::new();
-    let gpu_native_advanced = is_composite_gpu_native_advanced_strategy(strategy_kind);
-
-    let base_category = &mut gpu_native;
-    base_category.push("base reruns");
-    base_category.push("hard gates");
-
-    if validation_req
-        .get("walk_forward")
-        .is_some_and(|v| !v.is_null())
-    {
-        gpu_native.push("walk_forward");
-    }
-    if validation_req
-        .get("reopt_walk_forward")
-        .is_some_and(|v| !v.is_null())
-    {
-        gpu_native.push("reopt_walk_forward");
-    }
-    if validation_req.get("cscv_pbo").is_some_and(|v| !v.is_null()) {
-        gpu_native.push("cscv_pbo");
-    }
-    if validation_req.get("spa").is_some_and(|v| !v.is_null()) {
-        gpu_native.push("spa");
-    }
-    if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
-        if gpu_native_advanced {
-            gpu_native.push("perturb");
-        } else {
-            gpu_tail.push("perturb");
-        }
-    }
-    if validation_module_enabled(validation_req, "trade_bootstrap") {
-        if gpu_native_advanced {
-            gpu_native.push("trade_bootstrap");
-        } else {
-            gpu_tail.push("trade_bootstrap");
-        }
-    }
-    format_execution_category_summary(vec![
-        ("GPU-native", gpu_native),
-        ("GPU main + CPU tail", gpu_tail),
-    ])
+    build_gpu_execution_category_summary(
+        validation_req,
+        "GPU-backed reruns/evaluation",
+        is_composite_gpu_native_advanced_strategy(strategy_kind),
+    )
 }
 
 fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option<String> {
@@ -2349,7 +2482,7 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Vcc" => Some(
-            "VCC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route while keeping strict validation parity."
+            "VCC GPU validation uses GpuKernel-backed candidate and slice reruns for the fixed-candidate stack while keeping strict validation parity. Statistical reductions, hard-gate decisions, and final ordering remain CPU finalization; perturbation is mixed/GPU-assisted and route-dependent, and trade bootstrap is an auxiliary CPU tail."
                 .to_string(),
         ),
         "Vemr" => Some(
@@ -2361,7 +2494,7 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Vcet" => Some(
-            "VCET GPU validation now supports the current fixed-candidate validation module stack on the GpuKernel route, including walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap."
+            "VCET GPU validation uses GpuKernel-backed base, walk-forward, reopt walk-forward, CSCV-slice, and SPA-slice reruns. Statistical reductions, hard-gate decisions, and final ordering remain CPU finalization; perturbation is mixed/GPU-assisted and route-dependent, and trade bootstrap is an auxiliary CPU tail."
                 .to_string(),
         ),
         "Mkcs" => Some(
@@ -2381,11 +2514,11 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Carm" => Some(
-            "CARM GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
+            "CARM GPU validation uses GpuKernel-backed candidate and slice reruns for the fixed-candidate stack. Statistical reductions, hard-gate decisions, and final ordering remain CPU finalization; perturbation is mixed/GPU-assisted and route-dependent, and trade bootstrap is an auxiliary CPU tail. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
                 .to_string(),
         ),
         "Cdmc" => Some(
-            "CDMC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads."
+            "CDMC GPU validation uses GpuKernel-backed candidate and slice reruns for the fixed-candidate stack. Statistical reductions, hard-gate decisions, and final ordering remain CPU finalization; perturbation is mixed/GPU-assisted and route-dependent, and trade bootstrap is an auxiliary CPU tail. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads."
                 .to_string(),
         ),
         _ => None,
@@ -2475,21 +2608,12 @@ fn build_expected_execution_summary(
     let enabled_main = describe_enabled_modules(validation_req);
     let composite_gpu_native_advanced = !is_double_like_strategy(strategy_kind)
         && is_composite_gpu_native_advanced_strategy(strategy_kind);
-    let gpu_native_optional_modules = if composite_gpu_native_advanced {
-        describe_composite_gpu_native_optional_modules(validation_req)
-    } else {
-        Vec::new()
-    };
     let aux_cpu = if composite_gpu_native_advanced {
-        Vec::new()
+        describe_advanced_aux_execution_tails(validation_req)
     } else {
         describe_aux_cpu_tails(validation_req)
     };
-    let gpu_native_optional_module_suffix = if gpu_native_optional_modules.is_empty() {
-        String::new()
-    } else {
-        format!(" + {}", gpu_native_optional_modules.join(" + "))
-    };
+    let gpu_native_optional_module_suffix = String::new();
     let disabled_module_summary = summary_or_dash(describe_disabled_modules(validation_req), " + ");
     let cross_omitted_summary = summary_or_dash(
         describe_cross_omitted_modules(strategy_kind, validation_req),
@@ -2712,7 +2836,7 @@ fn build_expected_execution_summary(
                 if aux_cpu.is_empty() {
                     gpu_native_optional_module_suffix.clone()
                 } else {
-                    format!(" + {}", aux_cpu.join(" + "))
+                    format!(" | auxiliary/mixed tails: {}", aux_cpu.join(" + "))
                 }
             );
             if let Some(route_detail) = composite_route_detail {
@@ -2721,7 +2845,7 @@ fn build_expected_execution_summary(
         }
         if !aux_cpu.is_empty() && backend != "CpuOnly" {
             warning_notes.push(format!(
-                "{} may not share the same execution route as the main validation pass; confirm post-run route notes because these are intentional auxiliary CPU work today.",
+                "{} do not share a blanket GPU-native contract with the main validation pass; perturbation can be mixed/GPU-assisted and trade bootstrap is an auxiliary CPU tail.",
                 aux_cpu.join(" + ")
             ));
         }
@@ -3209,7 +3333,7 @@ pub(super) fn build_model_from_report(
         let aux_cpu = if !is_double_like_strategy(&model.strategy_kind)
             && is_composite_gpu_native_advanced_strategy(&model.strategy_kind)
         {
-            Vec::new()
+            describe_advanced_aux_execution_tails(validation_req)
         } else {
             describe_aux_cpu_tails(validation_req)
         };
@@ -3562,7 +3686,32 @@ mod tests {
     }
 
     #[test]
-    fn composite_trend_auto_expected_summary_tracks_cpu_and_hybrid_validation_routes() {
+    fn actual_route_reasons_distinguish_gpu_downgrades_from_informational_notes() {
+        assert_eq!(
+            split_actual_route_reason(
+                "GpuHybridKernel->GpuKernel",
+                "hybrid route unavailable; kernel fallback used",
+            ),
+            (
+                "hybrid route unavailable; kernel fallback used".to_string(),
+                "-".to_string(),
+            )
+        );
+        assert_eq!(
+            split_actual_route_reason("Auto->GpuKernel", "auto selected the kernel route"),
+            (
+                "-".to_string(),
+                "auto selected the kernel route".to_string(),
+            )
+        );
+        assert_eq!(
+            split_actual_route_reason("Auto->CpuOnly", "GPU unavailable"),
+            ("GPU unavailable".to_string(), "-".to_string())
+        );
+    }
+
+    #[test]
+    fn composite_trend_auto_expected_summary_tracks_kernel_and_hybrid_validation_routes() {
         let kernel_req = json!({
             "backend": { "backend": "Auto" },
             "candidates": [
@@ -3587,11 +3736,16 @@ mod tests {
         let kernel_summary = build_expected_execution_summary("CompositeTrend", Some(&kernel_req));
         assert!(kernel_summary
             .route_summary
-            .contains("expected CPU route (CompositeTrend)"));
+            .contains("expected GPU kernel main route (CompositeTrend) when available"));
         assert!(kernel_summary
             .module_summary
-            .contains("CPU route (CompositeTrend):"));
-        assert!(kernel_summary.category_summary.contains("CPU-only:"));
+            .contains("Expected GPU kernel route (CompositeTrend) when available:"));
+        assert!(kernel_summary
+            .category_summary
+            .contains("GPU-backed reruns/evaluation:"));
+        assert!(kernel_summary
+            .category_summary
+            .contains("CPU statistical/gate reduction:"));
 
         let hybrid_summary = build_expected_execution_summary("CompositeTrend", Some(&hybrid_req));
         assert!(hybrid_summary
@@ -3600,6 +3754,13 @@ mod tests {
         assert!(hybrid_summary
             .module_summary
             .contains("Expected GPU hybrid route (CompositeTrend) when available:"));
+        assert!(hybrid_summary
+            .category_summary
+            .contains("GPU-hybrid backed reruns/evaluation (ADX CPU-preferred):"));
+        assert!(hybrid_summary
+            .category_summary
+            .contains("CPU statistical/gate reduction:"));
+        assert!(!hybrid_summary.category_summary.contains("GPU-native:"));
     }
 
     #[test]
@@ -3788,11 +3949,29 @@ mod tests {
                 "status": "complete",
                 "status_reason": "all requested validation evidence modules produced review metadata",
                 "generated_by": "ta_app_core.validation_pipeline",
+                "dataset": {
+                    "data_id": "dataset",
+                    "strategy_kind": "DoubleMa",
+                    "csv_path": "C:\\private\\inputs\\dataset.csv",
+                    "timeframe": "1h",
+                    "label": "Primary validation set",
+                    "data_realism": {
+                        "price_adjustment": "adjusted",
+                        "corporate_actions": "declared",
+                        "survivorship_bias": "unknown",
+                        "liquidity_capacity": "declared",
+                        "market_impact": "unknown",
+                        "borrow_availability": "not_applicable",
+                        "complete": false,
+                        "missing_or_unknown": ["survivorship_bias", "market_impact"]
+                    }
+                },
                 "route": {
                     "requested_backend": "GpuKernel",
                     "realized_backend": "Gpu",
                     "route_label": "GpuKernel",
-                    "residency_tier": "gpu_kernel"
+                    "residency_tier": "gpu_kernel",
+                    "diagnostics": ["prices resident", "compact results returned"]
                 },
                 "candidate_universe": {
                     "source": "validation_request_candidates",
@@ -3808,6 +3987,13 @@ mod tests {
                     "approved": true,
                     "recommendation": "approved_with_warnings",
                     "summary": "approved"
+                },
+                "promotion_eligibility": {
+                    "eligible": false,
+                    "state": "research_only",
+                    "gates_passed": ["validation_run_approved"],
+                    "gates_failed": ["realism_survivorship_bias_declared", "realism_market_impact_declared"],
+                    "reason": "promotion blocked until missing realism evidence is declared"
                 },
                 "metrics": [
                     {
@@ -3830,7 +4016,9 @@ mod tests {
                         "requested": false,
                         "summary": "not_requested"
                     }
-                ]
+                ],
+                "warnings": ["promotion_blocked_missing_realism_evidence"],
+                "caveats": ["validation approval is research evidence, not deployment authorization"]
             },
             "candidates": [
                 test_candidate(
@@ -3865,12 +4053,61 @@ mod tests {
         assert_eq!(pack.requested_backend, "GpuKernel");
         assert_eq!(pack.realized_backend, "Gpu");
         assert_eq!(pack.route_label, "GpuKernel");
+        assert_eq!(pack.dataset_data_id, "dataset");
+        assert_eq!(pack.dataset_strategy_kind, "DoubleMa");
+        assert_eq!(pack.dataset_label, "Primary validation set");
+        assert_eq!(pack.dataset_source_file, "dataset.csv");
+        assert_eq!(pack.dataset_timeframe, "1h");
+        assert_eq!(pack.realism_price_adjustment, "adjusted");
+        assert_eq!(pack.realism_survivorship_bias, "unknown");
+        assert_eq!(pack.realism_complete, Some(false));
+        assert!(pack.realism_missing_or_unknown_recorded);
+        assert_eq!(
+            pack.realism_missing_or_unknown,
+            "survivorship_bias; market_impact"
+        );
+        assert_eq!(pack.promotion_eligible, Some(false));
+        assert_eq!(pack.promotion_state, "research_only");
+        assert!(pack
+            .promotion_gates_failed
+            .contains("realism_market_impact_declared"));
+        assert!(pack.route_diagnostics.contains("compact results returned"));
+        assert_eq!(pack.requested_candidates, Some(4));
+        assert_eq!(pack.evaluated_candidates, Some(4));
+        assert_eq!(pack.retained_candidates, Some(2));
+        assert_eq!(pack.survived_hard_gates, Some(2));
+        assert_eq!(pack.approved_candidates, Some(1));
         assert_eq!(pack.optimization_trials, Some(58_300));
+        assert_eq!(pack.verdict_passed, Some(true));
+        assert_eq!(pack.verdict_approved, Some(true));
         assert_eq!(pack.verdict_recommendation, "approved_with_warnings");
         assert!(pack
             .module_statuses
             .contains("cscv_pbo=available:evaluated"));
         assert!(pack.metric_summaries.contains("cscv_pbo=0.140000"));
+        assert!(pack
+            .warnings
+            .contains("promotion_blocked_missing_realism_evidence"));
+        assert!(pack.caveats.contains("not deployment authorization"));
+    }
+
+    #[test]
+    fn empty_or_non_object_validation_evidence_pack_is_treated_as_absent() {
+        for pack in [
+            Value::Null,
+            json!({}),
+            json!("invalid"),
+            json!({"version": 1}),
+        ] {
+            let validation_res = json!({
+                "data_id": "dataset",
+                "validation_evidence_pack": pack,
+                "candidates": []
+            });
+            let model = build_model_from_validation_res(&validation_res, None)
+                .expect("report model should remain buildable");
+            assert!(model.validation_evidence_pack.is_none());
+        }
     }
 
     #[test]

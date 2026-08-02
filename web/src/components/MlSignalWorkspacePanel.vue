@@ -25,6 +25,14 @@ interface BundleOption {
   label: string;
 }
 
+type MlActionKind = "dataset_export" | "validation" | "policy_sweep";
+type MlActionState = "idle" | "pending" | "success" | "error";
+
+interface MlActionFeedback {
+  state: MlActionState;
+  message: string;
+}
+
 const optimizeStore = useOptimizeStore();
 const dataStore = useDataStore();
 const strategyStore = useStrategyStore();
@@ -90,6 +98,13 @@ const { workflowStep } = storeToRefs(workflowStore);
 
 const bundleOptions = ref<BundleOption[]>([]);
 const bundleRefreshBusy = ref(false);
+const actionInFlight = ref<MlActionKind | null>(null);
+const actionFeedback = ref<Record<MlActionKind, MlActionFeedback>>({
+  dataset_export: { state: "idle", message: "" },
+  validation: { state: "idle", message: "" },
+  policy_sweep: { state: "idle", message: "" },
+});
+const mlActionBusy = computed(() => actionInFlight.value !== null);
 const hasTauriRuntime = computed(() => tauriRuntimeAvailable());
 const nativeBackendValue = computed(() =>
   String(mlSignalNativeBackend.value || "").trim() || "native_cpu",
@@ -150,7 +165,8 @@ const canExportDataset = computed(
   () =>
     datasetLoaded.value &&
     !!String(mlSignalDatasetExportPath.value || "").trim() &&
-    !runDisabled.value,
+    !runDisabled.value &&
+    !mlActionBusy.value,
 );
 const canBuildScoreCache = computed(
   () =>
@@ -165,13 +181,15 @@ const canRunValidation = computed(
   () =>
     datasetLoaded.value &&
     !!String(mlSignalScoreCachePath.value || "").trim() &&
-    !validateDisabled.value,
+    !validateDisabled.value &&
+    !mlActionBusy.value,
 );
 const canRunSweep = computed(
   () =>
     datasetLoaded.value &&
     !!String(mlSignalScoreCachePath.value || "").trim() &&
-    !validateDisabled.value,
+    !validateDisabled.value &&
+    !mlActionBusy.value,
 );
 const nativeScoreSource = computed(
   () => String(mlSignalScoreSource.value || "").trim() === "native",
@@ -1003,6 +1021,57 @@ function describeUiError(error: unknown, fallback: string): string {
   return detail ? `${fallback}: ${detail}` : fallback;
 }
 
+function actionIsPending(kind: MlActionKind): boolean {
+  return actionInFlight.value === kind;
+}
+
+function actionFeedbackFor(kind: MlActionKind): MlActionFeedback {
+  return actionFeedback.value[kind];
+}
+
+async function runMlAction(
+  kind: MlActionKind,
+  pendingMessage: string,
+  successFallback: string,
+  errorFallback: string,
+  action: () => Promise<unknown>,
+): Promise<void> {
+  if (mlActionBusy.value) return;
+
+  const statusBeforeAction = normalizeText(statusLine.value);
+  actionInFlight.value = kind;
+  actionFeedback.value = {
+    ...actionFeedback.value,
+    [kind]: { state: "pending", message: pendingMessage },
+  };
+
+  try {
+    await action();
+    actionFeedback.value = {
+      ...actionFeedback.value,
+      [kind]: {
+        state: "success",
+        message: normalizeText(statusLine.value) || successFallback,
+      },
+    };
+  } catch (error) {
+    const actionStatus = normalizeText(statusLine.value);
+    actionFeedback.value = {
+      ...actionFeedback.value,
+      [kind]: {
+        state: "error",
+        message:
+          (actionStatus && actionStatus !== statusBeforeAction
+            ? actionStatus
+            : "") ||
+          describeUiError(error, errorFallback),
+      },
+    };
+  } finally {
+    actionInFlight.value = null;
+  }
+}
+
 async function refreshBundleStatus(): Promise<void> {
   if (!hasTauriRuntime.value) return;
   try {
@@ -1018,11 +1087,13 @@ async function refreshBundleStatus(): Promise<void> {
 }
 
 async function onExportDataset(): Promise<void> {
-  try {
-    await exportMlSignalDataset();
-  } catch {
-
-  }
+  await runMlAction(
+    "dataset_export",
+    "Exporting ML feature dataset…",
+    "ML feature dataset exported.",
+    "ML dataset export failed",
+    exportMlSignalDataset,
+  );
 }
 
 async function onBuildScoreCache(): Promise<void> {
@@ -1034,19 +1105,23 @@ async function onBuildScoreCache(): Promise<void> {
 }
 
 async function onRunValidation(): Promise<void> {
-  try {
-    await runMlSignalValidation();
-  } catch {
-
-  }
+  await runMlAction(
+    "validation",
+    "Running ML score-cache validation…",
+    "ML validation completed.",
+    "ML validation failed",
+    runMlSignalValidation,
+  );
 }
 
 async function onRunPolicySweep(): Promise<void> {
-  try {
-    await runMlSignalPolicySweep();
-  } catch {
-
-  }
+  await runMlAction(
+    "policy_sweep",
+    "Running ML policy sweep…",
+    "ML policy sweep completed.",
+    "ML policy sweep failed",
+    runMlSignalPolicySweep,
+  );
 }
 
 async function onOpenArtifactPath(path: string): Promise<void> {
@@ -1118,7 +1193,12 @@ onMounted(() => {
       </div>
     </section>
 
-    <section v-show="workflowStep === 'data'" class="pane" data-ml-stage="data">
+    <section
+      v-show="workflowStep === 'data'"
+      class="pane"
+      data-ml-stage="data"
+      :aria-busy="actionIsPending('dataset_export')"
+    >
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 1</div>
@@ -1349,12 +1429,31 @@ onMounted(() => {
           class="primary"
           data-qa-action="mlSignal.dataset.export"
           :disabled="!canExportDataset"
+          :aria-busy="actionIsPending('dataset_export')"
+          aria-describedby="mlSignalDatasetActionFeedback"
           @click="void onExportDataset()"
         >
-          Export dataset
+          {{
+            actionIsPending("dataset_export")
+              ? "Exporting dataset…"
+              : "Export dataset"
+          }}
         </button>
       </div>
       <div class="muted mono">{{ mlSignalDatasetMeta }}</div>
+      <div
+        id="mlSignalDatasetActionFeedback"
+        class="mlActionFeedback mono"
+        :class="`is-${actionFeedbackFor('dataset_export').state}`"
+        :data-action-state="actionFeedbackFor('dataset_export').state"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {{
+          actionFeedbackFor("dataset_export").message || mlSignalDatasetMeta
+        }}
+      </div>
     </section>
 
     <section v-show="workflowStep === 'optimize'" class="pane" data-ml-stage="optimize">
@@ -1664,7 +1763,12 @@ onMounted(() => {
       <div class="muted mono">{{ mlSignalScoreMeta }}</div>
     </section>
 
-    <section v-show="workflowStep === 'validate'" class="pane" data-ml-stage="validate">
+    <section
+      v-show="workflowStep === 'validate'"
+      class="pane"
+      data-ml-stage="validate"
+      :aria-busy="actionIsPending('validation')"
+    >
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 3</div>
@@ -1854,9 +1958,15 @@ onMounted(() => {
           class="primary"
           data-qa-action="mlSignal.validation.run"
           :disabled="!canRunValidation"
+          :aria-busy="actionIsPending('validation')"
+          aria-describedby="mlSignalValidationActionFeedback"
           @click="void onRunValidation()"
         >
-          Run ML validation
+          {{
+            actionIsPending("validation")
+              ? "Running ML validation…"
+              : "Run ML validation"
+          }}
         </button>
         <button
           type="button"
@@ -1868,12 +1978,25 @@ onMounted(() => {
       </div>
       <div class="muted mono">{{ mlSignalValidationMeta }}</div>
       <div class="muted mono">{{ progressMeta || "—" }}</div>
-      <div class="muted mono" role="status" aria-live="polite">
-        {{ statusLine }}
+      <div
+        id="mlSignalValidationActionFeedback"
+        class="mlActionFeedback mono"
+        :class="`is-${actionFeedbackFor('validation').state}`"
+        :data-action-state="actionFeedbackFor('validation').state"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {{ actionFeedbackFor("validation").message || statusLine }}
       </div>
     </section>
 
-    <section v-show="workflowStep === 'analyze'" class="pane" data-ml-stage="analyze">
+    <section
+      v-show="workflowStep === 'analyze'"
+      class="pane"
+      data-ml-stage="analyze"
+      :aria-busy="actionIsPending('policy_sweep')"
+    >
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 4</div>
@@ -2139,12 +2262,29 @@ onMounted(() => {
           class="primary"
           data-qa-action="mlSignal.policySweep.run"
           :disabled="!canRunSweep"
+          :aria-busy="actionIsPending('policy_sweep')"
+          aria-describedby="mlSignalPolicySweepActionFeedback"
           @click="void onRunPolicySweep()"
         >
-          Run ML policy sweep
+          {{
+            actionIsPending("policy_sweep")
+              ? "Running policy sweep…"
+              : "Run ML policy sweep"
+          }}
         </button>
       </div>
       <div class="muted mono">{{ mlSignalSweepMeta }}</div>
+      <div
+        id="mlSignalPolicySweepActionFeedback"
+        class="mlActionFeedback mono"
+        :class="`is-${actionFeedbackFor('policy_sweep').state}`"
+        :data-action-state="actionFeedbackFor('policy_sweep').state"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {{ actionFeedbackFor("policy_sweep").message || mlSignalSweepMeta }}
+      </div>
     </section>
 
     <section v-show="workflowStep === 'finalize'" class="pane" data-ml-stage="finalize">
@@ -2618,6 +2758,32 @@ label + input,
   color: var(--muted);
   font-size: 0.8rem;
   margin-top: 0.4rem;
+}
+
+.mlActionFeedback {
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--panel-footer) 88%, var(--surface));
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.mlActionFeedback.is-pending {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+  color: var(--text);
+}
+
+.mlActionFeedback.is-success {
+  border-color: color-mix(in oklab, #2c9a61 55%, var(--border));
+  color: color-mix(in oklab, #2c9a61 76%, var(--text));
+}
+
+.mlActionFeedback.is-error {
+  border-color: color-mix(in oklab, #c64b4b 62%, var(--border));
+  color: color-mix(in oklab, #c64b4b 78%, var(--text));
 }
 
 .warningText {

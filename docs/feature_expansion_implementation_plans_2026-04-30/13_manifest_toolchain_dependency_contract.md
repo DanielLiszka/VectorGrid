@@ -18,6 +18,10 @@ Toolchain and manifests:
 - `crates/app_core/Cargo.toml`
 - `crates/strategies/Cargo.toml`
 - `crates/optimizer/Cargo.toml`
+- `vendor/embed-resource-3.0.6/Cargo.toml`
+- `vendor/embed-resource-3.0.6/Cargo.toml.orig`
+- `vendor/embed-resource-3.0.6/.cargo_vcs_info.json`
+- `vendor/embed-resource-3.0.6/LOCAL_PATCHES.md`
 - `web/package.json`
 - `web/package-lock.json`
 - `src-tauri/tauri.conf.json`
@@ -51,10 +55,20 @@ Generated contracts:
 
 Rust:
 
-- workspace members are `src-tauri`, `crates/app_core`, `crates/strategies`, and `crates/optimizer`;
+- workspace members are `src-tauri`, `crates/app_core`, `crates/strategies`,
+  `crates/optimizer`, and `vendor/embed-resource-3.0.6`;
 - workspace uses resolver `2`;
 - `vector-ta` dependency name is hyphenated and Rust import path is `vector_ta`;
 - root `Cargo.toml` currently patches `vector-ta = { path = "vendor/vector-ta-0.2.4" }`;
+- root `Cargo.toml` patches
+  `embed-resource = { path = "vendor/embed-resource-3.0.6" }`;
+- the locked resolved graph must contain exactly `tauri-winres 0.3.5` from
+  crates.io and its unconditional `embed_resource` edge must resolve to the
+  single vendored `embed-resource 3.0.6` path package;
+- the vendored resource crate preserves its published `.cargo_vcs_info.json`
+  and `Cargo.toml.orig`, records the reviewed local delta in
+  `LOCAL_PATCHES.md`, and remains compiled/tested without imposing upstream
+  formatting on first-party crates;
 - CPU-only default must not require CUDA, NVCC, NVIDIA driver, GPU, CatBoost native DLL, or PTX loading.
 
 Frontend:
@@ -170,6 +184,9 @@ Current npm wrapper:
 Inputs:
 
 - Cargo manifests;
+- locked, offline full Cargo dependency metadata;
+- vendored `embed-resource` original manifest, Cargo VCS provenance, and local
+  patch declaration;
 - `web/package.json`;
 - Tauri configs;
 - Windows resource configs;
@@ -186,6 +203,10 @@ Outputs:
 Initial assertions:
 
 - `vector-ta` version/patch consistency;
+- `embed-resource` patch identity, published upstream revision, and
+  non-ignored provenance files;
+- exact `tauri-winres 0.3.5 -> embed_resource -> vendored
+  embed-resource 3.0.6` resolution;
 - Node/npm engine/package manager matches docs;
 - `src-tauri/tauri.windows.conf.json` and root mirror agree;
 - sample CSV and CatBoost resource mappings exist;

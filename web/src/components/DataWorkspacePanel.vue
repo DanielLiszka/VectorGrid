@@ -13,11 +13,13 @@ import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import ContextHelpTip from "./ContextHelpTip.vue";
 import {
   AppButton,
+  AppEmptyState,
   AppMetricStrip,
   AppPanel,
   AppStatusChip,
   AppToolbar,
 } from "./ui";
+import type { PolygonDatasetSummary } from "../services/dataService";
 import { useDataStore } from "../stores/dataStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { parsePolygonDateInput } from "../utils/marketTime";
@@ -93,6 +95,29 @@ const polygonToDraft = ref("");
 const polygonTimeframeDraft = ref("1m");
 const polygonSelectedPathDraft = ref("");
 
+type PolygonOperation =
+  | "refresh"
+  | "save-key"
+  | "clear-key"
+  | "download"
+  | "load"
+  | "validate"
+  | "repair";
+
+type PolygonOperationPhase = "idle" | "pending" | "success" | "error";
+
+interface PolygonOperationFeedback {
+  action: PolygonOperation | null;
+  phase: PolygonOperationPhase;
+  message: string;
+}
+
+const polygonOperationFeedback = ref<PolygonOperationFeedback>({
+  action: null,
+  phase: "idle",
+  message: "",
+});
+
 const visible = computed(
   () => String(controlsTab.value || "").trim() === "data",
 );
@@ -150,6 +175,141 @@ const polygonDateRangeHint = computed(() => {
   const plural = requests === 1 ? "" : "s";
   return `About ${requests} Polygon request${plural} before cache reuse. Free REST keys are rate-limited; long ranges run in 30-day chunks.`;
 });
+
+const polygonControlsLocked = computed(() => !canPolygonRefresh.value);
+const polygonOperationPending = computed(
+  () => polygonOperationFeedback.value.phase === "pending",
+);
+const polygonOperationTone = computed<
+  "accent" | "success" | "danger" | "muted"
+>(() => {
+  switch (polygonOperationFeedback.value.phase) {
+    case "pending":
+      return "accent";
+    case "success":
+      return "success";
+    case "error":
+      return "danger";
+    default:
+      return "muted";
+  }
+});
+const polygonOperationLabel = computed(() => {
+  switch (polygonOperationFeedback.value.phase) {
+    case "pending":
+      return "In progress";
+    case "success":
+      return "Completed";
+    case "error":
+      return "Needs attention";
+    default:
+      return "Ready";
+  }
+});
+const polygonOperationNextStep = computed(() => {
+  const { action, phase, message } = polygonOperationFeedback.value;
+  if (phase === "pending") {
+    return "Keep this window open. Cache controls are locked until the operation finishes.";
+  }
+  if (phase === "error") {
+    const normalized = message.toLowerCase();
+    if (
+      normalized.includes("api key") ||
+      normalized.includes("credential") ||
+      normalized.includes("authentication") ||
+      normalized.includes("unauthorized")
+    ) {
+      return "Review the API key, save it again, then retry the operation.";
+    }
+    if (
+      normalized.includes("entitlement") ||
+      normalized.includes("subscription") ||
+      normalized.includes("plan does not allow")
+    ) {
+      return "Review Polygon plan access and the requested history before retrying.";
+    }
+    if (normalized.includes("rate limit")) {
+      return "Wait for the provider limit to reset, then retry; cached datasets remain available.";
+    }
+    if (
+      normalized.includes("ticker") ||
+      normalized.includes("symbol") ||
+      normalized.includes("no bars") ||
+      normalized.includes("market session")
+    ) {
+      return "Review the market, symbol, and date range, then retry the request.";
+    }
+    if (
+      normalized.includes("network") ||
+      normalized.includes("server error") ||
+      normalized.includes("retry later")
+    ) {
+      return "Check connectivity and retry later; existing cached datasets remain available.";
+    }
+    if (
+      normalized.includes("desktop runtime") ||
+      normalized.includes("unavailable")
+    ) {
+      return "Open this workflow in the desktop app, then retry.";
+    }
+    if (action === "validate" || action === "repair") {
+      return "Keep the original cache file, review its integrity details, then retry.";
+    }
+    return "Review the message and inputs, then retry. Existing cached datasets are unchanged.";
+  }
+  if (phase === "success") {
+    switch (action) {
+      case "save-key":
+        return "Choose a symbol and date range to download, or refresh the cache inventory.";
+      case "clear-key":
+        return "Cached datasets remain local. Save a key before requesting new market data.";
+      case "download":
+      case "load":
+        return "Confirm the loaded dataset context and timeframe before optimization.";
+      case "validate":
+        return "Review the integrity details; repair the dataset if any issues remain.";
+      case "repair":
+        return "Validate the repaired dataset before relying on it for a run.";
+      case "refresh":
+        return "Select a cached dataset to load, validate, or repair.";
+      default:
+        return "";
+    }
+  }
+  return "";
+});
+
+function polygonOperationSucceeded(
+  action: PolygonOperation,
+  message: string,
+): boolean {
+  const normalized = String(message || "").trim().toLowerCase();
+  switch (action) {
+    case "refresh":
+      return normalized.startsWith("refreshed polygon cache");
+    case "save-key":
+      return normalized.startsWith("saved polygon api key");
+    case "clear-key":
+      return normalized.startsWith("cleared polygon api key");
+    case "download":
+      return (
+        normalized.startsWith("loaded polygon dataset") ||
+        ((normalized.startsWith("using ") ||
+          normalized.includes("loaded polygon dataset")) &&
+          (normalized.includes("cache reused") ||
+            normalized.includes("bars downloaded") ||
+            normalized.includes("no new bars available")))
+      );
+    case "load":
+      return normalized.startsWith("loaded polygon dataset");
+    case "validate":
+      return normalized.startsWith("validated polygon dataset");
+    case "repair":
+      return normalized.startsWith("repaired polygon dataset");
+    default:
+      return false;
+  }
+}
 
 const rowLabel = computed(() => {
   const rows = String(dataLen.value || "").trim();
@@ -237,13 +397,48 @@ watch(
   { immediate: true },
 );
 
+async function focusPolygonPrimaryInput(): Promise<void> {
+  if (!polygonOpen.value || !visible.value) return;
+  await nextTick();
+  const focusTarget = polygonHasApiKey.value
+    ? (polygonSymbolInput.value ?? polygonApiKeyInput.value)
+    : (polygonApiKeyInput.value ?? polygonSymbolInput.value);
+  focusTarget?.focus();
+}
+
 watch(
-  () => Boolean(polygonOpen.value),
-  async (open) => {
-    if (!open) return;
-    await nextTick();
-    const focusTarget = polygonSymbolInput.value ?? polygonApiKeyInput.value;
-    focusTarget?.focus();
+  () => [Boolean(polygonOpen.value), Boolean(visible.value)] as const,
+  ([open, panelVisible]) => {
+    if (!open || !panelVisible) return;
+    void focusPolygonPrimaryInput();
+  },
+);
+
+watch(
+  () =>
+    [
+      String(statusLine.value || "").trim(),
+      Boolean(canPolygonRefresh.value),
+    ] as const,
+  ([message, controlsAvailable]) => {
+    const feedback = polygonOperationFeedback.value;
+    if (feedback.phase !== "pending" || !feedback.action) return;
+    if (!controlsAvailable) {
+      if (message) {
+        polygonOperationFeedback.value = { ...feedback, message };
+      }
+      return;
+    }
+    const succeeded = polygonOperationSucceeded(feedback.action, message);
+    polygonOperationFeedback.value = {
+      action: feedback.action,
+      phase: succeeded ? "success" : "error",
+      message:
+        message ||
+        (succeeded
+          ? "Polygon operation completed."
+          : "Polygon operation failed."),
+    };
   },
 );
 
@@ -264,10 +459,92 @@ function browseCsv(): void {
 
 function togglePolygonSection(): void {
   if (polygonOpen.value) {
-    dataStore.closePolygon();
+    closePolygonSection();
     return;
   }
   dataStore.openPolygon();
+}
+
+async function closePolygonSection(): Promise<void> {
+  dataStore.closePolygon();
+  await nextTick();
+  document
+    .querySelector<HTMLButtonElement>(
+      '[data-qa-action="data.polygon.toggle"]',
+    )
+    ?.focus();
+}
+
+function beginPolygonOperation(
+  action: PolygonOperation,
+  pendingMessage: string,
+  invoke: () => void,
+): void {
+  if (polygonControlsLocked.value || polygonOperationPending.value) return;
+  polygonOperationFeedback.value = {
+    action,
+    phase: "pending",
+    message: pendingMessage,
+  };
+  invoke();
+}
+
+function refreshPolygon(): void {
+  beginPolygonOperation(
+    "refresh",
+    "Refreshing Polygon cache...",
+    () => dataStore.refreshPolygon(),
+  );
+}
+
+function savePolygonApiKey(): void {
+  flushQueuedInputValuesNow();
+  beginPolygonOperation(
+    "save-key",
+    "Saving Polygon API key...",
+    () => dataStore.savePolygonApiKey(),
+  );
+}
+
+function clearPolygonApiKey(): void {
+  beginPolygonOperation(
+    "clear-key",
+    "Clearing Polygon API key...",
+    () => dataStore.clearPolygonApiKey(),
+  );
+}
+
+function downloadPolygonDataset(): void {
+  flushQueuedInputValuesNow();
+  beginPolygonOperation(
+    "download",
+    "Downloading Polygon dataset...",
+    () => dataStore.downloadPolygonDataset(),
+  );
+}
+
+function loadSelectedPolygonDataset(): void {
+  beginPolygonOperation(
+    "load",
+    "Loading Polygon dataset...",
+    () => dataStore.loadPolygonDataset(polygonSelectedPathDraft.value),
+  );
+}
+
+function validateSelectedPolygonDataset(): void {
+  beginPolygonOperation(
+    "validate",
+    "Validating Polygon dataset...",
+    () => dataStore.validatePolygonDataset(polygonSelectedPathDraft.value),
+  );
+}
+
+function repairSelectedPolygonDataset(): void {
+  beginPolygonOperation(
+    "repair",
+    "Repairing Polygon dataset...",
+    () => dataStore.repairPolygonDataset(polygonSelectedPathDraft.value),
+  );
 }
 
 function loadCsvFromDraft(): void {
@@ -309,6 +586,22 @@ function selectPolygonDataset(path: string): void {
 
 function polygonDatasetMetaId(index: number): string {
   return `polygon_dataset_meta_${index}`;
+}
+
+function polygonDatasetIntegrityStatus(dataset: PolygonDatasetSummary): {
+  label: string;
+  tone: "success" | "warning" | "muted";
+} {
+  const integrity = dataset.integrity;
+  if (!integrity) return { label: "Unchecked", tone: "muted" };
+  const issueCount =
+    Math.max(0, Number(integrity.parseErrors) || 0) +
+    Math.max(0, Number(integrity.duplicates) || 0) +
+    Math.max(0, Number(integrity.outOfOrder) || 0) +
+    Math.max(0, Number(integrity.sameDayGapsGt2Min) || 0);
+  return issueCount > 0
+    ? { label: `${issueCount} integrity issue${issueCount === 1 ? "" : "s"}`, tone: "warning" }
+    : { label: "Integrity verified", tone: "success" };
 }
 
 function movePolygonDatasetFocus(
@@ -357,6 +650,7 @@ function onPolygonDatasetKeydown(event: KeyboardEvent): void {
 
 onMounted(async () => {
   await nextTick();
+  await focusPolygonPrimaryInput();
   dataStore.hydrateStartupState();
 });
 
@@ -480,31 +774,62 @@ onBeforeUnmount(() => {
         </AppToolbar>
       </AppPanel>
 
-      <section class="pane paneProminent" v-if="polygonOpen">
+      <section
+        v-if="polygonOpen"
+        class="pane paneProminent"
+        aria-labelledby="polygonWorkspaceHeading"
+        :aria-busy="polygonOperationPending ? 'true' : 'false'"
+      >
         <div class="panelSectionHeader">
           <div>
             <div class="panelEyebrow">Market Download</div>
-            <h3 class="panelPaneTitle">Polygon</h3>
+            <h3 id="polygonWorkspaceHeading" class="panelPaneTitle">
+              Polygon
+            </h3>
           </div>
           <div class="actions">
-            <button
-              type="button"
+            <AppButton
+              size="sm"
               data-qa-action="data.polygon.refresh"
               :disabled="!canPolygonRefresh"
-              @click="dataStore.refreshPolygon()"
+              :loading="
+                polygonOperationPending &&
+                polygonOperationFeedback.action === 'refresh'
+              "
+              loading-label="Refreshing cache"
+              @click="refreshPolygon"
             >
               Refresh cache
-            </button>
-            <button
-              type="button"
+            </AppButton>
+            <AppButton
+              size="sm"
               data-qa-action="data.polygon.close"
-              @click="dataStore.closePolygon()"
+              @click="closePolygonSection"
             >
               Close
-            </button>
+            </AppButton>
           </div>
         </div>
         <div class="muted mono">{{ polygonCacheMeta }}</div>
+        <div
+          v-if="polygonOperationFeedback.message"
+          class="polygonOperationState"
+          data-qa-state="data.polygon.operation"
+          role="group"
+          aria-label="Polygon operation status"
+        >
+          <AppStatusChip :tone="polygonOperationTone">
+            {{ polygonOperationLabel }}
+          </AppStatusChip>
+          <div class="polygonOperationCopy">
+            <strong class="polygonOperationMessage mono">
+              {{ polygonOperationFeedback.message }}
+            </strong>
+            <span v-if="polygonOperationNextStep" class="muted">
+              {{ polygonOperationNextStep }}
+            </span>
+          </div>
+        </div>
 
         <div class="gridTwo">
           <div>
@@ -516,6 +841,13 @@ onBeforeUnmount(() => {
                 type="password"
                 :value="polygonApiKeyDraft"
                 placeholder="Paste Polygon API key"
+                autocomplete="off"
+                :disabled="polygonControlsLocked"
+                :aria-describedby="
+                  polygonOperationFeedback.phase === 'error'
+                    ? 'polygonOperationGuidance'
+                    : undefined
+                "
                 @input="
                   polygonApiKeyDraft = String(
                     ($event.target as HTMLInputElement).value || '',
@@ -525,22 +857,32 @@ onBeforeUnmount(() => {
                 @change="commitInputValue('polygonApiKey', polygonApiKeyDraft)"
               />
               <div class="actions">
-                <button
-                  type="button"
+                <AppButton
+                  size="sm"
                   data-qa-action="data.polygon.saveApiKey"
                   :disabled="!canPolygonSaveApiKey"
-                  @click="dataStore.savePolygonApiKey()"
+                  :loading="
+                    polygonOperationPending &&
+                    polygonOperationFeedback.action === 'save-key'
+                  "
+                  loading-label="Saving key"
+                  @click="savePolygonApiKey"
                 >
                   Save key
-                </button>
-                <button
-                  type="button"
+                </AppButton>
+                <AppButton
+                  size="sm"
                   data-qa-action="data.polygon.clearApiKey"
                   :disabled="!canPolygonClearApiKey"
-                  @click="dataStore.clearPolygonApiKey()"
+                  :loading="
+                    polygonOperationPending &&
+                    polygonOperationFeedback.action === 'clear-key'
+                  "
+                  loading-label="Clearing key"
+                  @click="clearPolygonApiKey"
                 >
                   Clear key
-                </button>
+                </AppButton>
               </div>
             </div>
             <div class="muted mono">
@@ -573,6 +915,7 @@ onBeforeUnmount(() => {
             <select
               id="vuePolygonMarket"
               :value="polygonMarketDraft"
+              :disabled="polygonControlsLocked"
               @change="
                 polygonMarketDraft = String(
                   ($event.target as HTMLSelectElement).value || 'stocks',
@@ -590,6 +933,7 @@ onBeforeUnmount(() => {
             <select
               id="vuePolygonTimeframe"
               :value="polygonTimeframeDraft"
+              :disabled="polygonControlsLocked"
               @change="
                 polygonTimeframeDraft = String(
                   ($event.target as HTMLSelectElement).value || '1m',
@@ -618,6 +962,10 @@ onBeforeUnmount(() => {
               type="text"
               :value="polygonSymbolDraft"
               placeholder="AAPL"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              :disabled="polygonControlsLocked"
               @input="
                 polygonSymbolDraft = String(
                   ($event.target as HTMLInputElement).value || '',
@@ -632,7 +980,7 @@ onBeforeUnmount(() => {
               <input
                 type="checkbox"
                 :checked="!polygonAdjustedDisabled && polygonAdjusted"
-                :disabled="polygonAdjustedDisabled"
+                :disabled="polygonAdjustedDisabled || polygonControlsLocked"
                 @change="
                   setPolygonCheckboxValue(
                     'polygonAdjusted',
@@ -653,6 +1001,8 @@ onBeforeUnmount(() => {
               id="vuePolygonFrom"
               type="date"
               :value="polygonFromDraft"
+              :disabled="polygonControlsLocked"
+              aria-describedby="polygonDateRangeHint"
               @input="
                 polygonFromDraft = String(
                   ($event.target as HTMLInputElement).value || '',
@@ -668,6 +1018,8 @@ onBeforeUnmount(() => {
               id="vuePolygonTo"
               type="date"
               :value="polygonToDraft"
+              :disabled="polygonControlsLocked"
+              aria-describedby="polygonDateRangeHint"
               @input="
                 polygonToDraft = String(
                   ($event.target as HTMLInputElement).value || '',
@@ -679,18 +1031,26 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="muted mono">{{ polygonDateRangeHint }}</div>
+        <div id="polygonDateRangeHint" class="muted mono">
+          {{ polygonDateRangeHint }}
+        </div>
 
         <div class="actions">
-          <button
-            type="button"
+          <AppButton
+            variant="primary"
+            size="sm"
             class="primary"
             data-qa-action="data.polygon.download"
             :disabled="!canPolygonDownload"
-            @click="dataStore.downloadPolygonDataset()"
+            :loading="
+              polygonOperationPending &&
+              polygonOperationFeedback.action === 'download'
+            "
+            loading-label="Downloading and loading"
+            @click="downloadPolygonDataset"
           >
             Download and load
-          </button>
+          </AppButton>
         </div>
 
         <div class="pane subtlePane">
@@ -719,6 +1079,7 @@ onBeforeUnmount(() => {
               :key="`polygon_dataset_${dataset.csvPath}`"
               type="button"
               class="listCard"
+              :disabled="polygonControlsLocked"
               :data-selected="
                 polygonSelectedPath === dataset.csvPath ? '1' : '0'
               "
@@ -733,43 +1094,68 @@ onBeforeUnmount(() => {
                 dataset.csvPath
               }}</span>
               <span :id="polygonDatasetMetaId(index)" class="muted mono"
-                >{{ dataset.timeframe }} · {{ dataset.rowCount }} rows</span
-              >
+                >{{ dataset.timeframe }} · {{ dataset.rowCount }} rows
+                <AppStatusChip
+                  class="datasetIntegrityChip"
+                  :tone="polygonDatasetIntegrityStatus(dataset).tone"
+                >
+                  {{ polygonDatasetIntegrityStatus(dataset).label }}
+                </AppStatusChip>
+              </span>
             </button>
           </div>
-          <div v-else class="muted">
-            No cached Polygon datasets yet. Save a key, choose a symbol/date
-            range, then download.
-          </div>
+          <AppEmptyState
+            v-else
+            class="polygonCacheEmptyState"
+            title="No cached Polygon datasets yet."
+            body="Save an API key, choose a symbol and date range, then download the first local dataset."
+            hint="Refresh the cache inventory if another app session added a dataset."
+          />
           <div class="muted mono">{{ polygonSelectedMeta }}</div>
           <div class="actions">
-            <button
-              type="button"
+            <AppButton
+              size="sm"
               data-qa-action="data.polygon.loadSelected"
               :disabled="!canPolygonLoadSelected"
-              @click="dataStore.loadPolygonDataset(polygonSelectedPathDraft)"
+              :loading="
+                polygonOperationPending &&
+                polygonOperationFeedback.action === 'load'
+              "
+              loading-label="Loading selected"
+              @click="loadSelectedPolygonDataset"
             >
               Load selected
-            </button>
-            <button
-              type="button"
+            </AppButton>
+            <AppButton
+              size="sm"
               data-qa-action="data.polygon.validateSelected"
               :disabled="!canPolygonValidateSelected"
-              @click="
-                dataStore.validatePolygonDataset(polygonSelectedPathDraft)
+              :loading="
+                polygonOperationPending &&
+                polygonOperationFeedback.action === 'validate'
               "
+              loading-label="Validating selected"
+              @click="validateSelectedPolygonDataset"
             >
               Validate selected
-            </button>
-            <button
-              type="button"
+            </AppButton>
+            <AppButton
+              size="sm"
               data-qa-action="data.polygon.repairSelected"
               :disabled="!canPolygonRepairSelected"
-              @click="dataStore.repairPolygonDataset(polygonSelectedPathDraft)"
+              :loading="
+                polygonOperationPending &&
+                polygonOperationFeedback.action === 'repair'
+              "
+              loading-label="Repairing selected"
+              @click="repairSelectedPolygonDataset"
             >
               Repair selected
-            </button>
+            </AppButton>
           </div>
+          <span id="polygonOperationGuidance" class="srOnly">
+            {{ polygonOperationNextStep }}
+          </span>
         </div>
       </section>
 
@@ -1086,6 +1472,39 @@ onBeforeUnmount(() => {
     color-mix(in oklab, var(--accent) 24%, transparent);
 }
 
+.datasetIntegrityChip {
+  margin-inline-start: 0.35rem;
+  vertical-align: middle;
+}
+
+.polygonCacheEmptyState {
+  margin-block: 0.55rem;
+}
+
+.polygonOperationState {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: 0.75rem;
+  background: color-mix(in oklab, var(--surface) 84%, transparent);
+  padding: 0.65rem 0.7rem;
+}
+
+.polygonOperationCopy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.polygonOperationMessage {
+  color: var(--text);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
 .muted {
   color: var(--muted);
   font-size: 0.8rem;
@@ -1115,6 +1534,10 @@ onBeforeUnmount(() => {
 
   .panelSectionHeader {
     flex-direction: column;
+  }
+
+  .polygonOperationState {
+    grid-template-columns: 1fr;
   }
 }
 </style>

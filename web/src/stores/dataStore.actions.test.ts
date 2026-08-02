@@ -30,6 +30,7 @@ import {
   topOffPolygonDataset,
   validatePolygonDataset,
 } from "../services/dataService";
+import { invalidateAnalysisExecutionForDatasetChange } from "../services/analysisInvalidation";
 import { DATA_STARTUP_SNAPSHOT_KEY } from "../utils/core/storageKeys";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import { TauriRuntimeError } from "../tauri/runtimeError";
@@ -288,8 +289,15 @@ vi.mock("../services/dataService", () => ({
   })),
 }));
 
+vi.mock("../services/analysisInvalidation", () => ({
+  invalidateAnalysisExecutionForDatasetChange: vi.fn(),
+}));
+
 const applyTimeframeMock = vi.mocked(applyTimeframe);
 const clearDataMock = vi.mocked(clearData);
+const invalidateAnalysisExecutionForDatasetChangeMock = vi.mocked(
+  invalidateAnalysisExecutionForDatasetChange,
+);
 const loadCsvMock = vi.mocked(loadCsv);
 const loadSampleCsvMock = vi.mocked(loadSampleCsv);
 const browseCsvMock = vi.mocked(browseCsv);
@@ -411,6 +419,7 @@ describe("data store actions", () => {
     useDataStore(pinia).applyLegacySnapshot({});
     applyTimeframeMock.mockClear();
     clearDataMock.mockClear();
+    invalidateAnalysisExecutionForDatasetChangeMock.mockClear();
     loadCsvMock.mockClear();
     loadSampleCsvMock.mockClear();
     browseCsvMock.mockClear();
@@ -557,6 +566,24 @@ describe("data store actions", () => {
     expect(snapshot?.baseCsvPath).toBe("C:/tmp/aapl.csv");
     expect(snapshot?.baseSourceSizeBytes).toBe(123);
     expect(snapshot?.baseSourceMtimeUtcMs).toBe(456);
+  });
+
+  it("invalidates analysis when the active dataset identity changes", () => {
+    const store = useDataStore();
+
+    store.applyLoadResult({ ...defaultLoadResult }, { treatAsBase: true });
+    expect(invalidateAnalysisExecutionForDatasetChangeMock).not.toHaveBeenCalled();
+
+    store.applyLoadResult(
+      {
+        ...defaultLoadResult,
+        dataId: "data-2",
+        path: "C:/tmp/msft.csv",
+      },
+      { treatAsBase: true },
+    );
+
+    expect(invalidateAnalysisExecutionForDatasetChangeMock).toHaveBeenCalledTimes(1);
   });
 
   it("applies timeframe using base data id and supports reset to base timeframe", async () => {
@@ -1395,6 +1422,7 @@ describe("data store actions", () => {
     await flushAsync();
 
     expect(clearDataMock).toHaveBeenCalledWith("data-1");
+    expect(invalidateAnalysisExecutionForDatasetChangeMock).toHaveBeenCalledTimes(1);
     expect(store.dataId).toBe("—");
     expect(store.baseDataId).toBe("");
     expect(store.csvPath).toBe("");

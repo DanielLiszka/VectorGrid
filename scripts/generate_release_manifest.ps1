@@ -304,6 +304,13 @@ Set-Content -Path $hashPath -Encoding UTF8 -Value $hashLines
 $catboostPath = Join-Path $repoRoot "src-tauri\\resources\\native\\catboostmodel.dll"
 $catboostBaselinePath = Join-Path $repoRoot "scripts\\baselines\\catboost-native-v1.2.10.json"
 $catboostLicensePath = Join-Path $repoRoot "src-tauri\\resources\\licenses\\CatBoost-LICENSE.txt"
+$lightweightChartsLicensePath = Join-Path $repoRoot "src-tauri\\resources\\licenses\\TradingView-Lightweight-Charts-LICENSE.txt"
+$lightweightChartsNoticePath = Join-Path $repoRoot "src-tauri\\resources\\licenses\\TradingView-Lightweight-Charts-NOTICE.txt"
+$lightweightChartsPackagePath = Join-Path $repoRoot "web\\package.json"
+$lightweightChartsPackageLockPath = Join-Path $repoRoot "web\\package-lock.json"
+$expectedLightweightChartsVersion = "5.1.0"
+$expectedLightweightChartsLicenseSha256 = "70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823"
+$expectedLightweightChartsNoticeSha256 = "eccf1c464e60ff87453aa11e80d15649d6e0c3315d7f11f660f5e1c91378a375"
 $sampleCsvPath = Join-Path $repoRoot "src-tauri\\resources\\sample-data\\vectorgrid_synthetic_ohlcv.csv"
 $kernelPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\double_crossover.prebuilt.ptx"
 $optionsPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\options_expression.prebuilt.ptx"
@@ -316,6 +323,31 @@ if (-not (Test-Path -LiteralPath $catboostBaselinePath -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $catboostLicensePath -PathType Leaf)) {
   throw "Required CatBoost license notice is missing: $catboostLicensePath"
+}
+if (-not (Test-Path -LiteralPath $lightweightChartsLicensePath -PathType Leaf)) {
+  throw "Required TradingView Lightweight Charts Apache-2.0 license is missing: $lightweightChartsLicensePath"
+}
+if (-not (Test-Path -LiteralPath $lightweightChartsNoticePath -PathType Leaf)) {
+  throw "Required TradingView Lightweight Charts attribution notice is missing: $lightweightChartsNoticePath"
+}
+$webPackage = Get-Content -Raw -LiteralPath $lightweightChartsPackagePath | ConvertFrom-Json
+$webPackageLock = Get-Content -Raw -LiteralPath $lightweightChartsPackageLockPath | ConvertFrom-Json
+$declaredLightweightChartsVersion = [string]$webPackage.dependencies.'lightweight-charts'
+$lockedLightweightChartsPackage = $webPackageLock.packages.'node_modules/lightweight-charts'
+if (
+  $declaredLightweightChartsVersion -ne $expectedLightweightChartsVersion -or
+  [string]$lockedLightweightChartsPackage.version -ne $expectedLightweightChartsVersion -or
+  [string]$lockedLightweightChartsPackage.license -ne "Apache-2.0"
+) {
+  throw "TradingView Lightweight Charts dependency and lockfile must remain pinned to reviewed Apache-2.0 version $expectedLightweightChartsVersion."
+}
+$actualLightweightChartsLicenseSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $lightweightChartsLicensePath).Hash.ToLowerInvariant()
+$actualLightweightChartsNoticeSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $lightweightChartsNoticePath).Hash.ToLowerInvariant()
+if ($actualLightweightChartsLicenseSha256 -ne $expectedLightweightChartsLicenseSha256) {
+  throw "TradingView Lightweight Charts license does not match the reviewed v$expectedLightweightChartsVersion package license."
+}
+if ($actualLightweightChartsNoticeSha256 -ne $expectedLightweightChartsNoticeSha256) {
+  throw "TradingView Lightweight Charts NOTICE does not match the reviewed v$expectedLightweightChartsVersion upstream notice."
 }
 $catboostBaseline = Get-Content -Raw -LiteralPath $catboostBaselinePath | ConvertFrom-Json
 $expectedCatboostSha256 = ([string]$catboostBaseline.asset_sha256).ToLowerInvariant()
@@ -336,6 +368,8 @@ if ($actualCatboostLicenseSha256 -ne $expectedCatboostLicenseSha256) {
 $requiredResourceDetails = @(
   (New-RequiredResourceDetail -Id "catboost_native_library" -Path $catboostPath -BundleTarget "native/catboostmodel.dll" -ExpectedInWindowsBundle $true),
   (New-RequiredResourceDetail -Id "catboost_license" -Path $catboostLicensePath -BundleTarget "licenses/CatBoost-LICENSE.txt" -ExpectedInWindowsBundle $true),
+  (New-RequiredResourceDetail -Id "lightweight_charts_license" -Path $lightweightChartsLicensePath -BundleTarget "licenses/TradingView-Lightweight-Charts-LICENSE.txt" -ExpectedInWindowsBundle $true),
+  (New-RequiredResourceDetail -Id "lightweight_charts_notice" -Path $lightweightChartsNoticePath -BundleTarget "licenses/TradingView-Lightweight-Charts-NOTICE.txt" -ExpectedInWindowsBundle $true),
   (New-RequiredResourceDetail -Id "synthetic_sample_csv" -Path $sampleCsvPath -BundleTarget "sample-data/vectorgrid_synthetic_ohlcv.csv" -ExpectedInWindowsBundle $true),
   (New-RequiredResourceDetail -Id "double_crossover_prebuilt_ptx" -Path $kernelPtxPath -BundleTarget "" -ExpectedInWindowsBundle $false),
   (New-RequiredResourceDetail -Id "options_expression_prebuilt_ptx" -Path $optionsPtxPath -BundleTarget "" -ExpectedInWindowsBundle $false)
@@ -406,6 +440,15 @@ $manifest = [ordered]@{
     catboost_license_path = $catboostLicensePath
     catboost_license_sha256 = $actualCatboostLicenseSha256
     catboost_license_expected_sha256 = $expectedCatboostLicenseSha256
+    lightweight_charts_version = $expectedLightweightChartsVersion
+    lightweight_charts_license_path = $lightweightChartsLicensePath
+    lightweight_charts_license_exists = Test-Path -LiteralPath $lightweightChartsLicensePath -PathType Leaf
+    lightweight_charts_license_sha256 = $actualLightweightChartsLicenseSha256
+    lightweight_charts_license_expected_sha256 = $expectedLightweightChartsLicenseSha256
+    lightweight_charts_notice_path = $lightweightChartsNoticePath
+    lightweight_charts_notice_exists = Test-Path -LiteralPath $lightweightChartsNoticePath -PathType Leaf
+    lightweight_charts_notice_sha256 = $actualLightweightChartsNoticeSha256
+    lightweight_charts_notice_expected_sha256 = $expectedLightweightChartsNoticeSha256
     synthetic_sample_csv_path = $sampleCsvPath
     synthetic_sample_csv_exists = Test-Path -LiteralPath $sampleCsvPath -PathType Leaf
     synthetic_sample_csv_sha256 = Get-OptionalSha256 -Path $sampleCsvPath

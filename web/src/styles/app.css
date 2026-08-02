@@ -1977,6 +1977,18 @@ html.ui-transitions .tabPanel.active {
     animation: none !important;
   }
 
+  button,
+  .detailsCard summary::after,
+  .toast {
+    transition: none !important;
+  }
+
+  button:active:not(:disabled),
+  .toast,
+  .toast.in {
+    transform: none;
+  }
+
   .progressFill.indeterminate {
     transform: none;
   }
@@ -1991,6 +2003,177 @@ html.ui-transitions .tabPanel.active {
 
   html.ui-transitions .tabPanel.active {
     animation: none !important;
+  }
+
+  :root.ui-transitions::view-transition-old(root),
+  :root.ui-transitions::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  a {
+    color: LinkText;
+  }
+
+  input[type="text"],
+  input[type="number"],
+  input[type="password"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  input[type="search"],
+  textarea,
+  select,
+  button,
+  .subtleBtn,
+  .tabBtn,
+  .panelDetails summary,
+  .detailsCard summary,
+  .cmdItem {
+    border-color: ButtonText !important;
+    background: ButtonFace !important;
+    color: ButtonText !important;
+    box-shadow: none !important;
+  }
+
+  button.primary,
+  button.primary:hover:not(:disabled),
+  .tabBtn.active,
+  .tabBtn.active:hover:not(:disabled),
+  .cmdItem.selected,
+  tbody tr.selected {
+    border-color: Highlight !important;
+    background: Highlight !important;
+    color: HighlightText !important;
+    box-shadow: none !important;
+  }
+
+  button.danger-btn,
+  button.danger-btn:hover:not(:disabled) {
+    border-color: LinkText !important;
+    background: Canvas !important;
+    color: LinkText !important;
+  }
+
+  button:disabled,
+  .cmdItem.disabled {
+    border-color: GrayText !important;
+    color: GrayText !important;
+    opacity: 1;
+  }
+
+  input::placeholder,
+  textarea::placeholder,
+  .statusChip.muted {
+    color: GrayText !important;
+  }
+
+  input[type="text"]:focus-visible,
+  input[type="number"]:focus-visible,
+  input[type="password"]:focus-visible,
+  input[type="date"]:focus-visible,
+  input[type="time"]:focus-visible,
+  input[type="datetime-local"]:focus-visible,
+  input[type="search"]:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  button:focus-visible,
+  summary:focus-visible,
+  .tabBtn:focus-visible,
+  .cmdItem:focus-visible,
+  .tableWrap:focus-visible,
+  .table-wrap:focus-visible,
+  input[type="checkbox"]:focus-visible,
+  input[type="radio"]:focus-visible,
+  .checks label:focus-within,
+  .checkboxRow:focus-within,
+  .inlineCheck:focus-within {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+    border-color: Highlight !important;
+    box-shadow: none !important;
+  }
+
+  .surfaceSunken,
+  .surfaceWorking,
+  .surfaceFocus,
+  .surfaceSticky,
+  .elevSunken,
+  .elevDefault,
+  .elevRaised,
+  .elevOverlay,
+  .stickySelectionSummary,
+  .panelAdvisory,
+  .panelDetails,
+  .detailsCard,
+  .emptyState,
+  .toast,
+  .tabBar,
+  .progress,
+  .statusChip,
+  .badge {
+    border-color: CanvasText !important;
+    background: Canvas !important;
+    color: CanvasText !important;
+    box-shadow: none !important;
+  }
+
+  .selectionRail::before,
+  .progressFill,
+  .progressFill.indeterminate {
+    background: Highlight !important;
+  }
+
+  .surfaceWarning,
+  .badge.warn {
+    border: 2px dashed MarkText !important;
+    background: Mark !important;
+    color: MarkText !important;
+  }
+
+  .surfaceSuccess,
+  .statusChip.ok,
+  .badge.on {
+    border: 3px double CanvasText !important;
+    background: Canvas !important;
+    color: CanvasText !important;
+  }
+
+  .surfaceDanger,
+  .statusChip.danger,
+  .badge.off {
+    border: 2px solid LinkText !important;
+    background: Canvas !important;
+    color: LinkText !important;
+  }
+
+  .goodText,
+  .ok {
+    color: CanvasText !important;
+  }
+
+  .badText,
+  .danger {
+    color: LinkText !important;
+  }
+
+  .skeleton {
+    border: 1px solid GrayText;
+    background: Canvas !important;
+  }
+
+  .toastDot {
+    border: 1px solid CanvasText;
+    background: CanvasText !important;
+  }
+
+  .toast.ok .toastDot {
+    background: Highlight !important;
+  }
+
+  .toast.danger .toastDot {
+    background: LinkText !important;
   }
 }
 

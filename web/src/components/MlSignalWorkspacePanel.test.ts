@@ -1,5 +1,5 @@
 
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -340,6 +340,259 @@ describe("MlSignalWorkspacePanel", () => {
     expect(buildButton?.attributes("disabled")).toBeUndefined();
     expect(validateButton?.attributes("disabled")).toBeUndefined();
     expect(sweepButton?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("announces pending and successful dataset exports in the active ML stage", async () => {
+    const data = useDataStore();
+    const optimize = useOptimizeStore();
+    const workflow = useWorkflowStore();
+    const workflowArtifacts = useWorkflowArtifactsStore();
+    let resolveExport!: (value: unknown) => void;
+    const exportResult = new Promise<unknown>((resolve) => {
+      resolveExport = resolve;
+    });
+
+    data.dataId = "data-1";
+    data.csvPath = "C:\\data\\prices.csv";
+    data.datasetLabel = "prices.csv";
+    data.dataTimeframe = "1d";
+    optimize.mlSignalDatasetExportPath = "C:\\data\\ml_dataset.csv";
+    workflow.selectMode("ml-signal", { persist: false });
+    workflow.selectWorkflowStep("data", { persist: false });
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "export_ml_signal_dataset") return exportResult;
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_ml_dataset.json" };
+      }
+      return {};
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    const section = wrapper.get('[data-ml-stage="data"]');
+    const exportButton = wrapper.get(
+      '[data-qa-action="mlSignal.dataset.export"]',
+    );
+
+    await exportButton.trigger("click");
+    await nextTick();
+
+    expect(section.attributes("aria-busy")).toBe("true");
+    expect(exportButton.attributes("aria-busy")).toBe("true");
+    expect(exportButton.text()).toContain("Exporting dataset");
+    expect(
+      wrapper
+        .get("#mlSignalDatasetActionFeedback")
+        .attributes("data-action-state"),
+    ).toBe("pending");
+    expect(wrapper.get("#mlSignalDatasetActionFeedback").text()).toContain(
+      "Exporting ML feature dataset",
+    );
+
+    resolveExport({
+      row_count: 321,
+      split_count: 3,
+      split_manifest_path: "C:\\data\\ml_dataset.split_manifest.json",
+      feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
+      export_manifest_path: "C:\\data\\ml_dataset.export_manifest.json",
+    });
+    await flushPromises();
+    await nextTick();
+
+    expect(section.attributes("aria-busy")).toBe("false");
+    expect(exportButton.text()).toContain("Export dataset");
+    expect(
+      wrapper
+        .get("#mlSignalDatasetActionFeedback")
+        .attributes("data-action-state"),
+    ).toBe("success");
+    expect(wrapper.get("#mlSignalDatasetActionFeedback").text()).toContain(
+      "ML feature dataset exported",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.stage).toBe(
+      "dataset_export",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.datasetExportPath).toBe(
+      "C:\\data\\ml_dataset.csv",
+    );
+  });
+
+  it("renders successful ML validation feedback and the attached result", async () => {
+    const data = useDataStore();
+    const optimize = useOptimizeStore();
+    const workflow = useWorkflowStore();
+    const workflowArtifacts = useWorkflowArtifactsStore();
+
+    data.dataId = "data-1";
+    data.csvPath = "C:\\data\\prices.csv";
+    data.datasetLabel = "prices.csv";
+    data.dataTimeframe = "1d";
+    optimize.mlSignalScoreCachePath = "C:\\data\\score_cache.json";
+    workflow.selectMode("ml-signal", { persist: false });
+    workflow.selectWorkflowStep("validate", { persist: false });
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "run_ml_signal_validation") {
+        return {
+          runtime_ms: 42,
+          score_space: "Probability",
+          score_scope: "WalkforwardTest",
+          coverage_ratio: 1,
+          candidates: [
+            {
+              robust_score: 1.2,
+              params: {
+                label: "ml_signal_v1",
+                t_long: 0.55,
+                t_short: 0.55,
+                delta: 0.05,
+                max_hold_bars: 10,
+              },
+            },
+          ],
+          run_verdict: {
+            approved_candidate_count: 1,
+            candidates_survived_hard_gates: 1,
+            candidates_considered: 1,
+            warning_flags: [],
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_ml_validation.json" };
+      }
+      return {};
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    const validationButton = wrapper.get(
+      '[data-qa-action="mlSignal.validation.run"]',
+    );
+
+    await validationButton.trigger("click");
+    await flushPromises();
+    await nextTick();
+
+    const feedback = wrapper.get("#mlSignalValidationActionFeedback");
+    expect(feedback.attributes("data-action-state")).toBe("success");
+    expect(feedback.text()).toContain("ML validation completed");
+    expect(feedback.attributes("role")).toBe("status");
+    expect(validationButton.attributes("aria-busy")).toBe("false");
+    expect(workflowArtifacts.currentRun?.mlSignal?.stage).toBe("validation");
+    expect(workflowArtifacts.currentValidation?.res).toMatchObject({
+      candidates: [expect.objectContaining({ robust_score: 1.2 })],
+    });
+  });
+
+  it("renders successful ML policy-sweep feedback and retained-candidate evidence", async () => {
+    const data = useDataStore();
+    const optimize = useOptimizeStore();
+    const workflow = useWorkflowStore();
+    const workflowArtifacts = useWorkflowArtifactsStore();
+
+    data.dataId = "data-1";
+    data.csvPath = "C:\\data\\prices.csv";
+    data.datasetLabel = "prices.csv";
+    data.dataTimeframe = "1d";
+    optimize.mlSignalScoreCachePath = "C:\\data\\score_cache.json";
+    optimize.mlSignalSweepTopK = "2";
+    workflow.selectMode("ml-signal", { persist: false });
+    workflow.selectWorkflowStep("analyze", { persist: false });
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "run_ml_signal_policy_sweep") {
+        return {
+          sweep_size: 27,
+          top_k: 2,
+          validation: {
+            runtime_ms: 24,
+            run_verdict: {
+              approved_candidate_count: 1,
+              candidates_survived_hard_gates: 1,
+              candidates_considered: 27,
+              warning_flags: [],
+            },
+            candidates: [
+              {
+                robust_score: 1.44,
+                params: {
+                  label: "best_sweep",
+                  t_long: 0.6,
+                  t_short: 0.6,
+                  delta: 0.05,
+                  max_hold_bars: 10,
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_ml_sweep.json" };
+      }
+      return {};
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    const sweepButton = wrapper.get(
+      '[data-qa-action="mlSignal.policySweep.run"]',
+    );
+
+    await sweepButton.trigger("click");
+    await flushPromises();
+    await nextTick();
+
+    const feedback = wrapper.get("#mlSignalPolicySweepActionFeedback");
+    expect(feedback.attributes("data-action-state")).toBe("success");
+    expect(feedback.text()).toContain("ML policy sweep completed");
+    expect(workflowArtifacts.currentRun?.mlSignal?.stage).toBe("policy_sweep");
+    expect(workflowArtifacts.currentRun?.mlSignal?.policySweep).toMatchObject({
+      sweep_size: 27,
+      top_k: 2,
+      best_label: "best_sweep",
+    });
+    expect(workflowArtifacts.currentValidation?.res).toMatchObject({
+      sweep_size: 27,
+    });
+  });
+
+  it("keeps dataset-export failures visible beside the recovered action", async () => {
+    const data = useDataStore();
+    const optimize = useOptimizeStore();
+    const workflow = useWorkflowStore();
+
+    data.dataId = "data-1";
+    data.csvPath = "C:\\data\\prices.csv";
+    optimize.mlSignalDatasetExportPath = "C:\\data\\ml_dataset.csv";
+    workflow.selectMode("ml-signal", { persist: false });
+    workflow.selectWorkflowStep("data", { persist: false });
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "export_ml_signal_dataset") {
+        throw new Error("export destination unavailable");
+      }
+      return {};
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    const exportButton = wrapper.get(
+      '[data-qa-action="mlSignal.dataset.export"]',
+    );
+
+    await exportButton.trigger("click");
+    await flushPromises();
+    await nextTick();
+
+    const feedback = wrapper.get("#mlSignalDatasetActionFeedback");
+    expect(feedback.attributes("data-action-state")).toBe("error");
+    expect(feedback.text()).toContain("ML dataset export failed");
+    expect(feedback.text()).toContain("export destination unavailable");
+    expect(exportButton.attributes("disabled")).toBeUndefined();
+    expect(exportButton.attributes("aria-busy")).toBe("false");
   });
 
   it("switches Stage 2 between CSV import and native bundle controls", async () => {

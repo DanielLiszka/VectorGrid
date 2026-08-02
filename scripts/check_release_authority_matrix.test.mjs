@@ -112,6 +112,174 @@ test("missing command paths fail closed", () => {
   );
 });
 
+test("public desktop variants cannot omit public-release authority", () => {
+  const matrix = readCanonicalMatrix();
+  for (const variantId of ["cpu", "gpu-kernel", "gpu-ma"]) {
+    const missingClaim = structuredClone(matrix);
+    const claimVariant = missingClaim.release_variants.find(
+      (entry) => entry.id === variantId,
+    );
+    claimVariant.required_claims = claimVariant.required_claims.filter(
+      (id) => id !== "public-release-eligibility",
+    );
+    const claimErrors = validateAuthorityMatrix({
+      matrix: missingClaim,
+      repoRoot,
+      matrixRelativePath,
+    });
+    assert.ok(
+      claimErrors.some(
+        (error) =>
+          error.includes(
+            `release_variants.${variantId}.required_claims`,
+          ) && error.includes("must require public-release-eligibility"),
+      ),
+      `expected ${variantId} to require the public-release claim`,
+    );
+
+    const missingSource = structuredClone(matrix);
+    const sourceVariant = missingSource.release_variants.find(
+      (entry) => entry.id === variantId,
+    );
+    sourceVariant.required_sources = sourceVariant.required_sources.filter(
+      (id) => id !== "public_release_gate",
+    );
+    const sourceErrors = validateAuthorityMatrix({
+      matrix: missingSource,
+      repoRoot,
+      matrixRelativePath,
+    });
+    assert.ok(
+      sourceErrors.some(
+        (error) =>
+          error.includes(
+            `release_variants.${variantId}.required_sources`,
+          ) && error.includes("must require public_release_gate"),
+      ),
+      `expected ${variantId} to require the public-release gate`,
+    );
+  }
+});
+
+test("CPU reliability authority and short-mode boundary cannot disappear", () => {
+  const matrix = readCanonicalMatrix();
+  matrix.claims = matrix.claims.filter(
+    (entry) => entry.id !== "cpu-reliability-operator-authority",
+  );
+  matrix.contract_wiring = matrix.contract_wiring.filter(
+    (entry) => entry.id !== "cpu-reliability-short-fail-closed",
+  );
+  const errors = validateAuthorityMatrix({
+    matrix,
+    repoRoot,
+    matrixRelativePath,
+  });
+  assert.ok(
+    errors.some(
+      (error) =>
+        error.includes("claims") &&
+        error.includes(
+          "missing required id cpu-reliability-operator-authority",
+        ),
+    ),
+  );
+  assert.ok(
+    errors.some(
+      (error) =>
+        error.includes("contract_wiring") &&
+        error.includes(
+          "missing required id cpu-reliability-short-fail-closed",
+        ),
+    ),
+  );
+});
+
+test("CPU reliability claim and source cannot be semantically rewired together", () => {
+  const matrix = readCanonicalMatrix();
+  const source = matrix.evidence_sources.find(
+    (entry) => entry.id === "cpu_reliability_soak_gate",
+  );
+  source.authority_class = "broad_authoritative_gate";
+  source.path = "scripts/run_workflow_gate.ps1";
+  source.invocation =
+    "powershell -File scripts/run_workflow_gate.ps1 -Mode candidate";
+  const artifact = matrix.evidence_sources.find(
+    (entry) => entry.id === "cpu_reliability_soak_artifact",
+  );
+  artifact.producer = "workflow_gate";
+  const claim = matrix.claims.find(
+    (entry) => entry.id === "cpu-reliability-operator-authority",
+  );
+  claim.primary_authority = ["workflow_gate"];
+  claim.companion_sources = ["readiness_artifact"];
+  claim.required_companion_evidence = ["A workflow command passed."];
+
+  const errors = validateAuthorityMatrix({
+    matrix,
+    repoRoot,
+    matrixRelativePath,
+  });
+  for (const expected of [
+    "pinned_authority_sources.cpu_reliability_soak_gate.authority_class",
+    "pinned_authority_sources.cpu_reliability_soak_gate.path",
+    "pinned_authority_sources.cpu_reliability_soak_artifact.producer",
+    "pinned_claims.cpu-reliability-operator-authority.primary_authority",
+    "pinned_claims.cpu-reliability-operator-authority.companion_sources",
+    "pinned_claims.cpu-reliability-operator-authority.required_companion_evidence",
+  ]) {
+    assert.ok(
+      errors.some((error) => error.includes(expected)),
+      `expected pinned CPU reliability error for ${expected}`,
+    );
+  }
+});
+
+test("public-release claim, artifacts, and gate cannot be semantically rewired together", () => {
+  const matrix = readCanonicalMatrix();
+  const source = matrix.evidence_sources.find(
+    (entry) => entry.id === "public_release_gate",
+  );
+  source.authority_class = "subsystem_authority";
+  source.path = "scripts/run_release_candidate_gate.ps1";
+  source.invocation =
+    "powershell -File scripts/run_release_candidate_gate.ps1 -Variant <variant>";
+  for (const artifactId of [
+    "public_release_summary_artifact",
+    "release_proof_evidence_manifest_artifact",
+  ]) {
+    const artifact = matrix.evidence_sources.find(
+      (entry) => entry.id === artifactId,
+    );
+    artifact.producer = "release_candidate_gate";
+  }
+  const claim = matrix.claims.find(
+    (entry) => entry.id === "public-release-eligibility",
+  );
+  claim.primary_authority = ["release_candidate_gate"];
+  claim.companion_sources = ["manifest_artifact"];
+  claim.required_companion_evidence = ["A candidate build completed."];
+
+  const errors = validateAuthorityMatrix({
+    matrix,
+    repoRoot,
+    matrixRelativePath,
+  });
+  for (const expected of [
+    "pinned_authority_sources.public_release_gate.authority_class",
+    "pinned_authority_sources.public_release_gate.path",
+    "pinned_authority_sources.public_release_summary_artifact.producer",
+    "pinned_authority_sources.release_proof_evidence_manifest_artifact.producer",
+    "pinned_claims.public-release-eligibility.primary_authority",
+    "pinned_claims.public-release-eligibility.companion_sources",
+    "pinned_claims.public-release-eligibility.required_companion_evidence",
+  ]) {
+    assert.ok(
+      errors.some((error) => error.includes(expected)),
+      `expected pinned public-release error for ${expected}`,
+    );
+  }
+});
+
 test("locally implemented GPU release-authority gaps cannot regress to deferred", () => {
   const matrix = readCanonicalMatrix();
   for (const gapId of [

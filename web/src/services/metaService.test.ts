@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { invokeCommand } from "../tauri/invoke";
 import { bindRuntimePinia } from "../stores/runtimePinia";
 import { useCommandActionStore } from "../stores/commandActionStore";
+import { LAST_BATCH_SUMMARY_KEY } from "../utils/core/storageKeys";
 import { buildOptimizationRequestFromVueStores } from "./optimizeService";
 import {
   batchRefresh,
@@ -12,6 +13,7 @@ import {
   deletePolicyEvalSaved,
   deleteSaved,
   deleteStage5Saved,
+  deriveVcetTemporalCampaignSourceEligibility,
   loadPolicyEvalSaved,
   loadSaved,
   loadStage5Saved,
@@ -23,6 +25,7 @@ import {
   refreshPolicyEvalSaved,
   refreshSaved,
   refreshStage5Saved,
+  resolveLatestVcetTemporalCampaignSource,
   revealMetaFiles,
   revealPolicyEvalSaved,
   revealStage5Saved,
@@ -40,6 +43,10 @@ import { useOptimizeStore } from "../stores/optimizeStore";
 import { useValidationStore } from "../stores/validationStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
 import { TauriRuntimeError } from "../tauri/runtimeError";
+import {
+  buildVcetSearchConfigFromDraft,
+  createDefaultVcetSearchDraft,
+} from "./vcetSearchRequestBuilder";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => undefined),
@@ -438,6 +445,154 @@ describe("meta service", () => {
     mockInvokeDefaults();
   });
 
+  it("admits only the retained latest exact terminal VCET evaluate_candidates source for temporal preparation", async () => {
+    const candidateManifestHash = "b".repeat(64);
+    const envelope = {
+      path: "C:/PickerSpelling/VCET-summary.json",
+      summary: {
+        kind: "vectorgrid_campaign_summary",
+        version: 2,
+        state: "completed",
+        strategy_kind: "Vcet",
+        counts: { cancelled: false },
+        request: {
+          strategy_kind: "Vcet",
+          execution_mode: "evaluate_candidates",
+          datasets: [{ csv_path: "C:/a.csv" }, { csv_path: "C:/b.csv" }],
+        },
+        manifest: {
+          strategy_kind: "Vcet",
+          execution_mode: "evaluate_candidates",
+          manifest_hash: "a".repeat(64),
+          candidate_manifest_hash: candidateManifestHash,
+        },
+        fixed_candidate_evaluation: {
+          schema_version: 4,
+          candidate_manifest_hash: candidateManifestHash,
+          admitted_candidate_count: 2,
+          admitted_candidate_ids: ["candidate-1", "candidate-2"],
+        },
+        items: [
+          {
+            item_id: "dataset-a",
+            is_holdout: false,
+            status: "ok",
+            artifact_path: "C:/runs/a.json",
+            artifact_sha256: "c".repeat(64),
+          },
+          {
+            item_id: "dataset-b",
+            is_holdout: true,
+            status: "ok",
+            artifact_path: "C:/runs/b.json",
+            artifact_sha256: "d".repeat(64),
+          },
+        ],
+      },
+    };
+
+    expect(deriveVcetTemporalCampaignSourceEligibility(envelope)).toEqual({
+      eligible: true,
+      summaryPath: "C:/PickerSpelling/VCET-summary.json",
+      identity: {
+        nativePathKey: "c:/pickerspelling/vcet-summary.json",
+        summaryContentFingerprint: expect.stringMatching(
+          /^campaign-summary-v2-fnv1a64-[0-9a-f]{16}$/u,
+        ),
+      },
+      message: expect.stringContaining("Structurally eligible"),
+    });
+
+    const legacyAlias = structuredClone(envelope);
+    legacyAlias.summary.kind = "vectorbt_campaign_summary";
+    expect(
+      deriveVcetTemporalCampaignSourceEligibility(legacyAlias).eligible,
+    ).toBe(false);
+
+    const wrongMode = structuredClone(envelope);
+    wrongMode.summary.request.execution_mode = "search";
+    expect(
+      deriveVcetTemporalCampaignSourceEligibility(wrongMode).eligible,
+    ).toBe(false);
+
+    const unsealedDataset = structuredClone(envelope);
+    unsealedDataset.summary.items[1]!.artifact_sha256 = "not-sealed";
+    expect(
+      deriveVcetTemporalCampaignSourceEligibility(unsealedDataset).eligible,
+    ).toBe(false);
+
+    const samePathChangedContent = structuredClone(envelope);
+    (samePathChangedContent.summary as Record<string, unknown>).operator_note =
+      "changed on disk";
+    const originalIdentity =
+      deriveVcetTemporalCampaignSourceEligibility(envelope).identity;
+    const changedIdentity = deriveVcetTemporalCampaignSourceEligibility(
+      samePathChangedContent,
+    ).identity;
+    expect(changedIdentity?.nativePathKey).toBe(
+      originalIdentity?.nativePathKey,
+    );
+    expect(changedIdentity?.summaryContentFingerprint).not.toBe(
+      originalIdentity?.summaryContentFingerprint,
+    );
+
+    const storage = new Map<string, string>([
+      [LAST_BATCH_SUMMARY_KEY, envelope.path],
+    ]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, String(value)),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    const analysisStore = useAnalysisStore(pinia);
+    analysisStore.batchOutputPreview = "retained UI preview";
+    analysisStore.batchMeta = "retained UI metadata";
+    analysisStore.updatedAtUnixMs = 123;
+    let diskArtifact: unknown = envelope.summary;
+    invokeCommandMock.mockImplementation(async (command: string, args) => {
+      if (command === "load_artifact") {
+        expect(args).toEqual({ path: envelope.path });
+        return diskArtifact;
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await expect(resolveLatestVcetTemporalCampaignSource()).resolves.toEqual({
+      eligible: true,
+      summaryPath: envelope.path,
+      identity: {
+        nativePathKey: "c:/pickerspelling/vcet-summary.json",
+        summaryContentFingerprint: expect.stringMatching(
+          /^campaign-summary-v2-fnv1a64-[0-9a-f]{16}$/u,
+        ),
+      },
+      message: expect.stringContaining("sealing-time verification"),
+    });
+    expect(invokeCommandMock).toHaveBeenCalledWith("load_artifact", {
+      path: envelope.path,
+    });
+    expect(analysisStore.batchOutputPreview).toBe("retained UI preview");
+    expect(analysisStore.batchMeta).toBe("retained UI metadata");
+    expect(analysisStore.updatedAtUnixMs).toBe(123);
+
+    const replacedOnDisk = structuredClone(envelope.summary);
+    replacedOnDisk.request.execution_mode = "search";
+    diskArtifact = replacedOnDisk;
+    invokeCommandMock.mockClear();
+
+    await expect(resolveLatestVcetTemporalCampaignSource()).resolves.toEqual(
+      expect.objectContaining({
+        eligible: false,
+        summaryPath: "",
+        message: expect.stringContaining("evaluate_candidates"),
+      }),
+    );
+    expect(invokeCommandMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenCalledWith("load_artifact", {
+      path: envelope.path,
+    });
+  });
+
   it("runs meta with auto-built request via direct tauri invoke without waiting on saved refresh", async () => {
     const analysisStore = useAnalysisStore(pinia);
     analysisStore.applyLegacySnapshot({
@@ -494,6 +649,168 @@ describe("meta service", () => {
         ([command]) => command === "list_artifact_library",
       ),
     ).toBe(true);
+  });
+
+  it("renders VCET holdout GPU residency and requested-universe rates", async () => {
+    const analysisStore = useAnalysisStore(pinia);
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: "Vcet",
+      metaTimeframe: "1m",
+      metaTopK: "25",
+      metaMinSamples: "5",
+    });
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_meta_selection") {
+        return {
+          ts: "2026-07-31T10:00:00Z",
+          report_xlsx_path: "C:/reports/vcet-meta.xlsx",
+          meta_json_path: "C:/runs/vcet-meta.json",
+          holdout_execution: {
+            requested_backend: "GpuKernel",
+            require_gpu: true,
+            gpu_device_id: 0,
+            datasets_requested: 10,
+            datasets_evaluated: 8,
+            datasets_failed: 2,
+            gpu_datasets: 8,
+            cpu_datasets: 0,
+            fallback_datasets: 0,
+            pass_rate_denominator: "requested_unique_holdout_datasets",
+            profitable_rate_denominator: "requested_unique_holdout_datasets",
+            group_metrics: [
+              {
+                group_key: "vcet-candidate-1",
+                datasets_requested: 10,
+                datasets_evaluated: 8,
+                datasets_failed: 2,
+                passes: 6,
+                profitable: 7,
+                evaluation_rate: 0.8,
+                pass_rate: 0.6,
+                profitable_rate: 0.7,
+              },
+            ],
+          },
+          result: {
+            strategy_kind: "Vcet",
+            timeframe: "1m",
+            artifacts_used: 10,
+            artifacts_considered: 10,
+            candidates_considered: 1,
+            runtime_ms: 123,
+            holdout: { datasets: 8, skipped: 2 },
+            groups: [
+              {
+                key: "vcet-candidate-1",
+                params: {
+                  fast_ma_type: "ema",
+                  fast_len: 10,
+                  slow_ma_type: "ema",
+                  slow_len: 30,
+                },
+                samples: 10,
+                pass_rate: 0.5,
+                robust_score_p10: 0.1,
+                robust_score_median: 0.2,
+                max_dd_p90: 0.1,
+                meta_score: 0.3,
+                holdout: {
+                  pass_rate: 0.6,
+                  score_p10: 0.01,
+                  score_median: 0.02,
+                  max_dd_p90: 0.08,
+                },
+              },
+            ],
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runMeta();
+
+    expect(analysisStore.metaMeta).toContain("holdout_route=GpuKernel");
+    expect(analysisStore.metaMeta).toContain("eval=8/10");
+    expect(analysisStore.metaOutputPreview).toContain("fully_gpu=8");
+    expect(analysisStore.metaOutputPreview).toContain(
+      "requested-universe denominators",
+    );
+    expect(analysisStore.aggregateSummaryLatestHoldout).toBe(
+      "8/10 (GPU 8) · fail 2",
+    );
+    expect(
+      analysisStore.metaTableColumns.map((column) => column.label),
+    ).toEqual(
+      expect.arrayContaining([
+        "H eval (requested)",
+        "H pass (requested)",
+        "H PnL+ (requested)",
+      ]),
+    );
+    expect(
+      analysisStore.metaTableRows[0]?.cells.map((cell) => cell.text),
+    ).toEqual(expect.arrayContaining(["80.0%", "60.0%", "70.0%"]));
+  });
+
+  it("labels legacy holdout pass rates without claiming a requested-universe denominator", async () => {
+    const analysisStore = useAnalysisStore(pinia);
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: "Vcet",
+      metaTimeframe: "1m",
+      metaTopK: "25",
+      metaMinSamples: "5",
+    });
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_meta_selection") {
+        return {
+          ts: "2026-07-31T10:05:00Z",
+          meta_json_path: "C:/runs/vcet-meta-legacy.json",
+          result: {
+            strategy_kind: "Vcet",
+            timeframe: "1m",
+            artifacts_used: 4,
+            artifacts_considered: 4,
+            candidates_considered: 1,
+            runtime_ms: 12,
+            holdout: { datasets: 3, skipped: 0 },
+            groups: [
+              {
+                key: "legacy-vcet-candidate",
+                params: {
+                  fast_ma_type: "ema",
+                  fast_len: 10,
+                  slow_ma_type: "ema",
+                  slow_len: 30,
+                },
+                samples: 4,
+                pass_rate: 0.5,
+                meta_score: 0.3,
+                holdout: {
+                  pass_rate: 0.75,
+                  score_p10: 0.01,
+                  score_median: 0.02,
+                  max_dd_p90: 0.08,
+                },
+              },
+            ],
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runMeta();
+
+    expect(
+      analysisStore.metaTableColumns.map((column) => column.label),
+    ).toEqual(
+      expect.arrayContaining(["H eval", "H pass (legacy reported)", "H PnL+"]),
+    );
+    expect(analysisStore.metaTableRows[0]?.cells[11]?.text).toBe("75.0%");
+    expect(analysisStore.metaOutputPreview).not.toContain(
+      "requested-universe denominators",
+    );
   });
 
   it("runs stage5 without waiting on saved refresh or redundant ML status refresh", async () => {
@@ -1230,7 +1547,9 @@ describe("meta service", () => {
 
     expect(analysisStore.metaSavedSelected).toBe("C:/runs/meta_saved.json");
     expect(analysisStore.stage4SavedSelected).toBe("C:/runs/stage5_saved.json");
-    expect(analysisStore.stage4SavedMeta).toContain("evidence=cross validation");
+    expect(analysisStore.stage4SavedMeta).toContain(
+      "evidence=cross validation",
+    );
     expect(analysisStore.stage4SavedMeta).toContain("training_artifacts=4");
     expect(analysisStore.stage4SavedMeta).toContain("warn=1");
     expect(analysisStore.policyEvalSavedSelected).toBe(
@@ -1945,8 +2264,7 @@ describe("meta service", () => {
               label: "AAPL",
               timeframe: "1m",
               source_size_bytes: 456,
-              source_content_fingerprint:
-                "sha256:d2683b5ef685d46c4f32e3e92d89e83a1eb70dce166f47311266823189441d82",
+              source_content_fingerprint: null,
             }),
           ],
         }),
@@ -1975,6 +2293,940 @@ describe("meta service", () => {
     expect(workflowArtifacts.currentRun?.mlSignal).toMatchObject({
       stage: "stage5",
     });
+  });
+
+  it("emits the UI multidimensional VCET search with an exact candidate cap and no fixed manifest", async () => {
+    const analysisStore = useAnalysisStore(pinia);
+    analysisStore.setBatchVcetCandidateDesignMode("halton");
+    analysisStore.setBatchVcetSearchDraft({
+      ...createDefaultVcetSearchDraft(),
+      budget: "17",
+      seed: "42",
+    });
+    useOptimizeStore(pinia).strategyKind = "Vcet";
+
+    await runBatch({
+      request: {
+        strategy_kind: "Vcet",
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          fast_range: [8, 10, 2],
+          slow_range: [20, 30, 10],
+        },
+        validation_config: {},
+      },
+    });
+
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "run_research_campaign",
+    );
+    const request = (call?.[1] as { req?: Record<string, unknown> })?.req;
+    const validation = request?.validation_config as
+      | Record<string, unknown>
+      | undefined;
+    expect(validation).toMatchObject({
+      max_candidates: 17,
+      require_gpu_kernel: true,
+      vcet_search: {
+        budget: 17,
+        seed: 42,
+        vidya_short_period: { min: 4, max: 48, step: 2 },
+        vidya_long_period: { min: 12, max: 160, step: 4 },
+        ce_use_close: { values: [false, true] },
+        require_vidya_slope: { values: [false, true] },
+      },
+    });
+    expect(validation).not.toHaveProperty("fixed_candidates");
+  });
+
+  it("rejects an injected VCET request that supplies both candidate design contracts", async () => {
+    const search = buildVcetSearchConfigFromDraft(
+      createDefaultVcetSearchDraft(),
+    ).config;
+    useOptimizeStore(pinia).strategyKind = "Vcet";
+
+    await runBatch({
+      request: {
+        strategy_kind: "Vcet",
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+        },
+        validation_config: {
+          max_candidates: 2048,
+          fixed_candidates: [{}],
+          vcet_search: search,
+        },
+      },
+    });
+
+    expect(
+      invokeCommandMock.mock.calls.some(
+        ([command]) => command === "run_research_campaign",
+      ),
+    ).toBe(false);
+    expect(useAnalysisStore(pinia).statusLine).toContain(
+      "either fixed_candidates or vcet_search, not both",
+    );
+  });
+
+  it("fails closed instead of truncating an injected multidimensional design", async () => {
+    const search = buildVcetSearchConfigFromDraft(
+      createDefaultVcetSearchDraft(),
+    ).config;
+    useOptimizeStore(pinia).strategyKind = "Vcet";
+
+    await runBatch({
+      request: {
+        strategy_kind: "Vcet",
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+        },
+        validation_config: {
+          max_candidates: 128,
+          vcet_search: search,
+        },
+      },
+    });
+
+    expect(
+      invokeCommandMock.mock.calls.some(
+        ([command]) => command === "run_research_campaign",
+      ),
+    ).toBe(false);
+    expect(useAnalysisStore(pinia).statusLine).toContain(
+      "resolves to 2048 candidates",
+    );
+    expect(useAnalysisStore(pinia).statusLine).toContain(
+      "will not be truncated",
+    );
+  });
+
+  it("validates and canonicalizes an injected VCET search before invoking the backend", async () => {
+    const defaults = buildVcetSearchConfigFromDraft(
+      createDefaultVcetSearchDraft(),
+    ).config;
+    useOptimizeStore(pinia).strategyKind = "Vcet";
+
+    await runBatch({
+      request: {
+        strategy_kind: "Vcet",
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+        },
+        validation_config: {
+          vcet_search: {
+            ...defaults,
+            budget: 2,
+            seed: 7,
+            ce_use_close: { values: [true, false, true] },
+            require_vidya_slope: { values: [true, true] },
+          },
+        },
+      },
+    });
+
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "run_research_campaign",
+    );
+    const request = (call?.[1] as { req?: Record<string, unknown> })?.req;
+    const validation = request?.validation_config as
+      | Record<string, unknown>
+      | undefined;
+    expect(validation?.max_candidates).toBe(2);
+    expect(validation?.vcet_search).toMatchObject({
+      budget: 2,
+      seed: 7,
+      ce_use_close: { values: [false, true] },
+      require_vidya_slope: { values: [true] },
+    });
+    expect(validation).not.toHaveProperty("fixed_candidates");
+  });
+
+  it("summarizes VCET fixed-candidate universe coverage and ranks candidates visibly", async () => {
+    const optimizeStore = useOptimizeStore(pinia);
+    optimizeStore.strategyKind = "Vcet";
+    optimizeStore.updatedAtUnixMs = Date.now();
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_research_campaign") {
+        return {
+          summary_json_path: "C:/runs/vcet-campaign.json",
+          summary: {
+            version: 2,
+            kind: "vectorgrid_campaign_summary",
+            ts: "2026-07-31T10:00:00Z",
+            state: "completed",
+            strategy_kind: "Vcet",
+            counts: {
+              total: 10,
+              optimized: 0,
+              validated: 8,
+              skipped: 0,
+              failed: 2,
+              cancelled: false,
+            },
+            items: [],
+            warnings: [],
+            runtime_ms: 10,
+            tags: ["vcet-universe"],
+            holdout_pct: 0,
+            fixed_candidate_evaluation: {
+              schema_version: 4,
+              candidate_manifest_hash: "sha256-manifest",
+              require_gpu_kernel: true,
+              cross_universe_admission: {
+                min_profitable_share_requested: 0.55,
+                min_hard_gate_pass_share_requested: 0.5,
+                min_pnl_p10: 0,
+                min_sharpe_p10: 0,
+              },
+              admitted_candidate_count: 1,
+              selection_status: "selected",
+              selection_cohort: "legacy",
+              selected_candidate_id: "vcet-10-30",
+              requested_datasets: 10,
+              evaluated_datasets: 8,
+              gpu_kernel_datasets: 8,
+              missing_or_failed_datasets: 2,
+              candidates: [
+                {
+                  candidate_id: "vcet-8-20",
+                  fast_len: 8,
+                  slow_len: 20,
+                  requested_datasets: 10,
+                  evaluated_datasets: 8,
+                  missing_or_failed_datasets: 2,
+                  profitable_datasets: 5,
+                  hard_gate_pass_datasets: 4,
+                  profitable_share_requested: 0.5,
+                  hard_gate_pass_share_requested: 0.4,
+                  pnl_p10: -0.01,
+                  sharpe_p10: -0.1,
+                  max_drawdown_p90: 0.2,
+                },
+                {
+                  candidate_id: "vcet-10-30",
+                  fast_len: 10,
+                  slow_len: 30,
+                  requested_datasets: 10,
+                  evaluated_datasets: 8,
+                  missing_or_failed_datasets: 2,
+                  profitable_datasets: 7,
+                  hard_gate_pass_datasets: 6,
+                  profitable_share_requested: 0.7,
+                  hard_gate_pass_share_requested: 0.6,
+                  pnl_p10: 0.02,
+                  sharpe_p10: 0.3,
+                  max_drawdown_p90: 0.12,
+                },
+              ],
+            },
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runBatch({
+      request: {
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        tags: ["vcet-universe"],
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          fast_range: [8, 10, 2],
+          slow_range: [20, 30, 10],
+        },
+        validation_config: { max_candidates: 8 },
+      },
+    });
+
+    const analysisStore = useAnalysisStore(pinia);
+    expect(analysisStore.batchMeta).toContain("VCET replay 8/10");
+    expect(analysisStore.batchMeta).toContain("GPU 8");
+    expect(analysisStore.batchOutputPreview).toContain(
+      "VCET candidate-universe replay",
+    );
+    expect(analysisStore.batchOutputPreview).toContain(
+      "datasets=8/10 fully_gpu=8 missing_or_failed=2",
+    );
+    expect(analysisStore.batchOutputPreview).toContain(
+      "cross-universe admission: PnL+ requested >= 55.0% · hard gate requested >= 50.0% · PnL p10 >= 0.000000 · Sharpe p10 >= 0.0000 · admitted=1/2",
+    );
+    expect(analysisStore.batchOutputPreview).toContain(
+      "p10 requested-tail rule: missing or failed training datasets rank below every finite result; if p10 falls in that missing tail, the metric is unavailable and admission fails",
+    );
+    expect(analysisStore.batchOutputPreview).toContain(
+      "selection_status=selected selection_cohort=legacy selected_candidate_id=vcet-10-30",
+    );
+    expect(analysisStore.batchVcetEvidence).toMatchObject({
+      state: "degraded",
+      cohort: "legacy",
+      candidateManifestHash: "sha256-manifest",
+      selectedCandidateId: "vcet-10-30",
+      admissionSource: "derived",
+      admittedCandidateCount: 1,
+      fastValues: [8, 10],
+      slowValues: [20, 30],
+    });
+    const bestIndex = analysisStore.batchOutputPreview.indexOf("#1 10/30");
+    const weakerIndex = analysisStore.batchOutputPreview.indexOf("#2 8/20");
+    expect(bestIndex).toBeGreaterThanOrEqual(0);
+    expect(weakerIndex).toBeGreaterThan(bestIndex);
+  });
+
+  it("ranks VCET campaign candidates from training only and labels holdout audit-only", async () => {
+    const optimizeStore = useOptimizeStore(pinia);
+    optimizeStore.strategyKind = "Vcet";
+    optimizeStore.updatedAtUnixMs = Date.now();
+    const candidate = (
+      id: string,
+      fast: number,
+      slow: number,
+      profitable: number,
+      gate: number,
+      sharpe: number,
+      requested: number,
+    ) => ({
+      candidate_id: id,
+      fast_len: fast,
+      slow_len: slow,
+      requested_datasets: requested,
+      evaluated_datasets: requested,
+      missing_or_failed_datasets: 0,
+      profitable_datasets: Math.round(profitable * requested),
+      hard_gate_pass_datasets: Math.round(gate * requested),
+      profitable_share_requested: profitable,
+      hard_gate_pass_share_requested: gate,
+      pnl_p10: profitable - 0.5,
+      sharpe_p10: sharpe,
+      max_drawdown_p90: 0.1,
+    });
+    const trainWinner = candidate("train-winner", 8, 20, 0.9, 0.8, 0.7, 6);
+    const holdoutWinner = candidate("holdout-winner", 10, 30, 0.2, 0.1, 0.0, 6);
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_research_campaign") {
+        return {
+          summary_json_path: "C:/runs/vcet-train-holdout.json",
+          summary: {
+            version: 2,
+            kind: "vectorgrid_campaign_summary",
+            ts: "2026-07-31T11:00:00Z",
+            state: "completed",
+            strategy_kind: "Vcet",
+            counts: {
+              total: 10,
+              optimized: 0,
+              validated: 10,
+              skipped: 0,
+              failed: 0,
+              cancelled: false,
+            },
+            items: [],
+            warnings: [],
+            runtime_ms: 10,
+            tags: ["vcet-split"],
+            holdout_pct: 40,
+            fixed_candidate_evaluation: {
+              schema_version: 2,
+              candidate_manifest_hash: "sha256-split",
+              require_gpu_kernel: true,
+              selection_cohort: "training",
+              selected_candidate_id: "train-winner",
+              requested_datasets: 10,
+              evaluated_datasets: 10,
+              gpu_kernel_datasets: 10,
+              missing_or_failed_datasets: 0,
+              // Deliberately conflicts with training; this combined/root list
+              // must not become a ranking source once split aggregates exist.
+              candidates: [
+                { ...holdoutWinner, profitable_share_requested: 1 },
+                { ...trainWinner, profitable_share_requested: 0 },
+              ],
+              training: {
+                requested_datasets: 6,
+                evaluated_datasets: 6,
+                gpu_kernel_datasets: 6,
+                missing_or_failed_datasets: 0,
+                candidates: [trainWinner, holdoutWinner],
+              },
+              holdout: {
+                requested_datasets: 4,
+                evaluated_datasets: 4,
+                gpu_kernel_datasets: 4,
+                missing_or_failed_datasets: 0,
+                candidates: [
+                  candidate("holdout-winner", 10, 30, 1, 1, 1, 4),
+                  candidate("train-winner", 8, 20, 0, 0, -1, 4),
+                ],
+              },
+            },
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runBatch({
+      request: {
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        holdout_pct: 40,
+        tags: ["vcet-split"],
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          fast_range: [8, 10, 2],
+          slow_range: [20, 30, 10],
+        },
+        validation_config: { max_candidates: 8 },
+      },
+    });
+
+    const preview = useAnalysisStore(pinia).batchOutputPreview;
+    expect(preview).toContain(
+      "training-only ranking: datasets=6/6 candidates=2",
+    );
+    expect(preview).toContain(
+      "holdout audit-only (excluded from ranking): datasets=4/4 candidates=2",
+    );
+    expect(preview).toContain(
+      "selection_cohort=training selected_candidate_id=train-winner",
+    );
+    expect(preview).toContain("#1 8/20");
+    expect(preview).toContain("#1 8/20 · PnL+ 90.0%");
+    expect(preview).toContain("backend-selected");
+    expect(preview.indexOf("#1 8/20")).toBeGreaterThanOrEqual(0);
+    expect(preview.indexOf("#2 10/30")).toBeGreaterThan(
+      preview.indexOf("#1 8/20"),
+    );
+  });
+
+  it("shows a fail-closed VCET selection when no candidate meets cross-universe admission", async () => {
+    const optimizeStore = useOptimizeStore(pinia);
+    optimizeStore.strategyKind = "Vcet";
+    optimizeStore.updatedAtUnixMs = Date.now();
+    const rejectedCandidate = {
+      candidate_id: "vcet-8-20",
+      fast_len: 8,
+      slow_len: 20,
+      requested_datasets: 10,
+      evaluated_datasets: 10,
+      missing_or_failed_datasets: 0,
+      profitable_datasets: 5,
+      hard_gate_pass_datasets: 4,
+      profitable_share_requested: 0.5,
+      hard_gate_pass_share_requested: 0.4,
+      pnl_p10: -0.01,
+      sharpe_p10: -0.1,
+      max_drawdown_p90: 0.2,
+    };
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_research_campaign") {
+        return {
+          summary_json_path: "C:/runs/vcet-no-admitted-candidate.json",
+          summary: {
+            version: 2,
+            kind: "vectorgrid_campaign_summary",
+            ts: "2026-07-31T11:15:00Z",
+            state: "completed",
+            strategy_kind: "Vcet",
+            counts: {
+              total: 10,
+              optimized: 0,
+              validated: 10,
+              skipped: 0,
+              failed: 0,
+              cancelled: false,
+            },
+            items: [],
+            warnings: [],
+            runtime_ms: 10,
+            tags: ["vcet-admission"],
+            holdout_pct: 0,
+            fixed_candidate_evaluation: {
+              schema_version: 2,
+              candidate_manifest_hash: "sha256-no-admission",
+              require_gpu_kernel: true,
+              cross_universe_admission: {
+                min_profitable_share_requested: 0.55,
+                min_hard_gate_pass_share_requested: 0.5,
+                min_pnl_p10: 0,
+                min_sharpe_p10: 0,
+              },
+              admitted_candidate_count: 0,
+              selection_status: "no_candidate_met_admission",
+              selection_cohort: "training",
+              selected_candidate_id: null,
+              requested_datasets: 10,
+              evaluated_datasets: 10,
+              gpu_kernel_datasets: 10,
+              missing_or_failed_datasets: 0,
+              candidates: [rejectedCandidate],
+              training: {
+                requested_datasets: 10,
+                evaluated_datasets: 10,
+                gpu_kernel_datasets: 10,
+                missing_or_failed_datasets: 0,
+                candidates: [rejectedCandidate],
+              },
+              holdout: {
+                requested_datasets: 0,
+                evaluated_datasets: 0,
+                gpu_kernel_datasets: 0,
+                missing_or_failed_datasets: 0,
+                candidates: [],
+              },
+            },
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runBatch({
+      request: {
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        tags: ["vcet-admission"],
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          fast_range: [8, 8, 1],
+          slow_range: [20, 20, 1],
+        },
+        validation_config: { max_candidates: 1 },
+      },
+    });
+
+    const preview = useAnalysisStore(pinia).batchOutputPreview;
+    expect(preview).toContain("admitted=0/1");
+    expect(preview).toContain(
+      "selection unavailable: no candidate met cross-universe admission",
+    );
+    expect(preview).toContain("#1 8/20");
+    expect(preview).not.toContain("backend-selected");
+  });
+
+  it("matches backend VCET tie-break ordering for missing, negative, pnl-tied, and id-tied metrics", async () => {
+    const optimizeStore = useOptimizeStore(pinia);
+    optimizeStore.strategyKind = "Vcet";
+    optimizeStore.updatedAtUnixMs = Date.now();
+    const row = (
+      candidateId: string,
+      fastLen: number,
+      slowLen: number,
+      sharpeP10: number | null,
+      pnlP10: number | null,
+    ) => ({
+      candidate_id: candidateId,
+      fast_len: fastLen,
+      slow_len: slowLen,
+      requested_datasets: 4,
+      evaluated_datasets: 4,
+      missing_or_failed_datasets: 0,
+      profitable_datasets: 2,
+      hard_gate_pass_datasets: 2,
+      profitable_share_requested: 0.5,
+      hard_gate_pass_share_requested: 0.5,
+      pnl_p10: pnlP10,
+      sharpe_p10: sharpeP10,
+      max_drawdown_p90: 0.1,
+    });
+    const candidates = [
+      row("missing", 8, 20, null, 100),
+      row("negative", 9, 21, -0.5, -1),
+      row("alpha", 10, 22, -0.5, 0),
+      row("beta", 11, 23, -0.5, 0),
+    ];
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_research_campaign") {
+        return {
+          summary_json_path: "C:/runs/vcet-ties.json",
+          summary: {
+            version: 2,
+            kind: "vectorgrid_campaign_summary",
+            ts: "2026-07-31T11:30:00Z",
+            state: "completed",
+            strategy_kind: "Vcet",
+            counts: {
+              total: 4,
+              optimized: 0,
+              validated: 4,
+              skipped: 0,
+              failed: 0,
+              cancelled: false,
+            },
+            items: [],
+            warnings: [],
+            runtime_ms: 10,
+            tags: ["vcet-ties"],
+            holdout_pct: 0,
+            fixed_candidate_evaluation: {
+              schema_version: 2,
+              candidate_manifest_hash: "sha256-ties",
+              require_gpu_kernel: true,
+              requested_datasets: 4,
+              evaluated_datasets: 4,
+              gpu_kernel_datasets: 4,
+              missing_or_failed_datasets: 0,
+              selection_cohort: "training",
+              selected_candidate_id: "alpha",
+              candidates,
+              training: {
+                requested_datasets: 4,
+                evaluated_datasets: 4,
+                gpu_kernel_datasets: 4,
+                missing_or_failed_datasets: 0,
+                candidates,
+              },
+              holdout: {
+                requested_datasets: 0,
+                evaluated_datasets: 0,
+                gpu_kernel_datasets: 0,
+                missing_or_failed_datasets: 0,
+                candidates: [],
+              },
+            },
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runBatch({
+      request: {
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        tags: ["vcet-ties"],
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          fast_range: [8, 11, 1],
+          slow_range: [20, 23, 1],
+        },
+        validation_config: { max_candidates: 32 },
+      },
+    });
+
+    const preview = useAnalysisStore(pinia).batchOutputPreview;
+    const first = preview.indexOf("#1 10/22");
+    const second = preview.indexOf("#2 11/23");
+    const third = preview.indexOf("#3 9/21");
+    const fourth = preview.indexOf("#4 8/20");
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(second).toBeGreaterThan(first);
+    expect(third).toBeGreaterThan(second);
+    expect(fourth).toBeGreaterThan(third);
+    expect(preview.slice(first, second)).toContain("backend-selected");
+    expect(preview.slice(fourth)).toContain("Sharpe p10 -");
+  });
+
+  it("does not display a VCET winner when the training cohort has no evaluated evidence", async () => {
+    useOptimizeStore(pinia).strategyKind = "Vcet";
+    const unevaluatedCandidate = {
+      candidate_id: "unevaluated",
+      fast_len: 8,
+      slow_len: 20,
+      requested_datasets: 3,
+      evaluated_datasets: 0,
+      missing_or_failed_datasets: 3,
+      profitable_datasets: 0,
+      hard_gate_pass_datasets: 0,
+      profitable_share_requested: 0,
+      hard_gate_pass_share_requested: 0,
+      pnl_p10: null,
+      sharpe_p10: null,
+      max_drawdown_p90: null,
+    };
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_research_campaign") {
+        return {
+          summary_json_path: "C:/runs/vcet-no-training-evidence.json",
+          summary: {
+            version: 2,
+            kind: "vectorgrid_campaign_summary",
+            ts: "2026-07-31T11:45:00Z",
+            state: "completed_with_failures",
+            strategy_kind: "Vcet",
+            counts: {
+              total: 5,
+              optimized: 0,
+              validated: 2,
+              skipped: 0,
+              failed: 3,
+              cancelled: false,
+            },
+            items: [],
+            warnings: [],
+            runtime_ms: 10,
+            tags: ["vcet-no-training-evidence"],
+            holdout_pct: 40,
+            fixed_candidate_evaluation: {
+              schema_version: 2,
+              candidate_manifest_hash: "sha256-no-training-evidence",
+              require_gpu_kernel: true,
+              requested_datasets: 5,
+              evaluated_datasets: 2,
+              gpu_kernel_datasets: 2,
+              missing_or_failed_datasets: 3,
+              selection_cohort: "training",
+              selected_candidate_id: null,
+              candidates: [unevaluatedCandidate],
+              training: {
+                requested_datasets: 3,
+                evaluated_datasets: 0,
+                gpu_kernel_datasets: 0,
+                missing_or_failed_datasets: 3,
+                candidates: [unevaluatedCandidate],
+              },
+              holdout: {
+                requested_datasets: 2,
+                evaluated_datasets: 2,
+                gpu_kernel_datasets: 2,
+                missing_or_failed_datasets: 0,
+                candidates: [
+                  {
+                    ...unevaluatedCandidate,
+                    evaluated_datasets: 2,
+                    missing_or_failed_datasets: 0,
+                    profitable_datasets: 2,
+                    profitable_share_requested: 1,
+                    pnl_p10: 1,
+                    sharpe_p10: 3,
+                  },
+                ],
+              },
+            },
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runBatch({
+      request: {
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        holdout_pct: 40,
+        tags: ["vcet-no-training-evidence"],
+        optimization_template: {
+          strategy_kind: "Vcet",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          fast_range: [8, 8, 1],
+          slow_range: [20, 20, 1],
+        },
+        validation_config: { max_candidates: 8 },
+      },
+    });
+
+    const preview = useAnalysisStore(pinia).batchOutputPreview;
+    expect(preview).toContain("selection unavailable: no training evidence");
+    expect(preview).toContain(
+      "holdout audit-only (excluded from ranking): datasets=2/2 candidates=1",
+    );
+    expect(preview).not.toContain("#1 ");
+    expect(preview).not.toContain("backend-selected");
+  });
+
+  it("preserves the last completed campaign and storage pointer across VCET preflight and backend failures", async () => {
+    const analysisStore = useAnalysisStore(pinia);
+    const storageValues = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return storageValues.size;
+      },
+      clear: () => storageValues.clear(),
+      getItem: (key: string) => storageValues.get(key) ?? null,
+      key: (index: number) => Array.from(storageValues.keys())[index] ?? null,
+      removeItem: (key: string) => storageValues.delete(key),
+      setItem: (key: string, value: string) => storageValues.set(key, value),
+    } satisfies Storage);
+    let campaignCalls = 0;
+    let failBackend = false;
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_research_campaign") {
+        campaignCalls += 1;
+        if (failBackend) throw new Error("campaign backend unavailable");
+        return {
+          summary_json_path: "C:/runs/last-completed.json",
+          summary: {
+            version: 2,
+            kind: "vectorgrid_campaign_summary",
+            ts: "2026-07-31T12:00:00Z",
+            state: "completed",
+            strategy_kind: "CompositeMo",
+            counts: {
+              total: 1,
+              optimized: 1,
+              validated: 1,
+              skipped: 0,
+              failed: 0,
+              cancelled: false,
+            },
+            request: { datasets: [{ csv_path: "C:/a.csv" }] },
+            items: [],
+            warnings: [],
+            runtime_ms: 10,
+            tags: ["preserved"],
+            holdout_pct: 0,
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runBatch({
+      request: {
+        strategy_kind: "CompositeMo",
+        selected_paths: ["C:/a.csv"],
+        auto_meta: false,
+        tags: ["preserved"],
+        optimization_template: { strategy_kind: "CompositeMo" },
+        validation_config: {},
+      },
+    });
+    const completedPreview = analysisStore.batchOutputPreview;
+    expect(completedPreview).toContain("path=C:/runs/last-completed.json");
+    expect(
+      globalThis.localStorage.getItem("vectorgrid_last_batch_summary_path_v1"),
+    ).toBe("C:/runs/last-completed.json");
+
+    await runBatch({
+      request: {
+        strategy_kind: "Vcet",
+        selected_paths: ["C:/a.csv"],
+        execution_mode: "evaluate_candidates",
+        auto_meta: false,
+        tags: ["invalid-vcet"],
+        optimization_template: {
+          strategy_kind: "Vcet",
+          // Invalid on purpose: fixed-manifest construction must fail before
+          // invoking the backend without destroying the completed summary.
+          fast_range: [10, 8, 1],
+          slow_range: [20, 30, 1],
+        },
+        validation_config: { max_candidates: 8 },
+      },
+    });
+
+    expect(campaignCalls).toBe(1);
+    expect(analysisStore.batchOutputPreview).toBe(completedPreview);
+    expect(analysisStore.canBatchRevealSummary).toBe(true);
+    expect(
+      globalThis.localStorage.getItem("vectorgrid_last_batch_summary_path_v1"),
+    ).toBe("C:/runs/last-completed.json");
+
+    failBackend = true;
+    await runBatch({
+      request: {
+        strategy_kind: "CompositeMo",
+        selected_paths: ["C:/a.csv"],
+        auto_meta: false,
+        tags: ["backend-failure"],
+        optimization_template: { strategy_kind: "CompositeMo" },
+        validation_config: {},
+      },
+    });
+    expect(campaignCalls).toBe(2);
+    expect(analysisStore.batchOutputPreview).toBe(completedPreview);
+    expect(
+      globalThis.localStorage.getItem("vectorgrid_last_batch_summary_path_v1"),
+    ).toBe("C:/runs/last-completed.json");
+
+    await batchRevealSummary();
+    expect(invokeCommandMock).toHaveBeenCalledWith("reveal_path", {
+      path: "C:/runs/last-completed.json",
+    });
+  });
+
+  it("keeps a 10k-dataset campaign preview bounded while retaining useful failure counts", async () => {
+    const optimizeStore = useOptimizeStore(pinia);
+    optimizeStore.strategyKind = "CompositeMo";
+    optimizeStore.updatedAtUnixMs = Date.now();
+    const items = Array.from({ length: 10_000 }, (_, index) => ({
+      csv_path: `C:/datasets/dataset-${String(index).padStart(5, "0")}.csv`,
+      label: `Dataset ${index}`,
+      timeframe: "1m",
+      is_holdout: false,
+      status: "failed",
+      error: `synthetic failure ${index}`,
+    }));
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_research_campaign") {
+        return {
+          summary_json_path: "C:/runs/campaign-10k.json",
+          summary: {
+            version: 2,
+            kind: "vectorgrid_campaign_summary",
+            ts: "2026-07-31T13:00:00Z",
+            state: "completed_with_failures",
+            strategy_kind: "CompositeMo",
+            counts: {
+              total: 10_000,
+              optimized: 0,
+              validated: 0,
+              skipped: 0,
+              failed: 10_000,
+              cancelled: false,
+            },
+            request: {
+              datasets: items.map((item) => ({ csv_path: item.csv_path })),
+            },
+            items,
+            warnings: Array.from(
+              { length: 100 },
+              (_, index) => `warning ${index} ${"x".repeat(500)}`,
+            ),
+            runtime_ms: 1234,
+            tags: ["scale"],
+            holdout_pct: 0,
+          },
+        };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runBatch({
+      request: {
+        strategy_kind: "CompositeMo",
+        selected_paths: ["C:/a.csv"],
+        auto_meta: false,
+        tags: ["scale"],
+        optimization_template: { strategy_kind: "CompositeMo" },
+        validation_config: {},
+      },
+    });
+
+    const preview = useAnalysisStore(pinia).batchOutputPreview;
+    expect(preview.length).toBeLessThan(10_000);
+    expect(preview).toContain("counts total=10000");
+    expect(preview).toContain("items=10000");
+    expect(preview).toContain("failed items showing 12/10000");
+    expect(preview).toContain("warnings showing 12/100");
+    expect(preview).toContain("dataset-00000.csv");
+    expect(preview).not.toContain("dataset-09999.csv");
   });
 
   it("refreshes, selects, clears, toggles, and reveals batch datasets in vue path", async () => {

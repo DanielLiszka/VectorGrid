@@ -69,6 +69,15 @@ describe('preflight', () => {
     expect(document.documentElement.dataset.uiMode).toBe('advanced')
   })
 
+  it('defaults first-run users to their system theme before Vue mounts', async () => {
+    stubMatchMedia(true)
+
+    await importPreflightFor('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+
+    expect(document.documentElement.dataset.themePref).toBe('system')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+  })
+
   it('applies root dataset attributes from persisted shell preferences', async () => {
     localStorage.setItem(THEME_PREF_KEY, 'system')
     localStorage.setItem(CONTROLS_COLLAPSED_KEY, '1')

@@ -163,6 +163,7 @@ fn build_double_like_parent_replay(
             data_id: "artifact_replay".to_string(),
             backend_hint: None,
             followup_cache_key: None,
+            dynamic_strategy_ir: None,
             params: params.clone(),
             ma_source: run_req.ma_source.clone(),
             fast_ma_params: params.fast_ma_params.clone(),

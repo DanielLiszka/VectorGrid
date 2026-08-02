@@ -9593,6 +9593,7 @@ mod tests {
                     data_id: "data_1".to_string(),
                     backend_hint: None,
                     followup_cache_key: None,
+                    dynamic_strategy_ir: None,
                     params: DoubleMaParamsResolved {
                         fast_len: 5,
                         slow_len: 20,

@@ -56,8 +56,87 @@ function normalizePreloadPolicy(value: unknown): string {
 
 function normalizeExecutionMode(value: unknown): string {
   const raw = normalizeText(value).toLowerCase()
-  if (raw === 'optimize_only' || raw === 'validate_only') return raw
+  if (
+    raw === 'optimize_only' ||
+    raw === 'validate_only' ||
+    raw === 'evaluate_candidates'
+  ) return raw
   return 'full'
+}
+
+interface IntegerRange {
+  start: number
+  end: number
+  step: number
+}
+
+function parseIntegerRange(
+  value: unknown,
+  label: string,
+  minimum: number = 1,
+): IntegerRange {
+  const row = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? [
+          (value as Record<string, unknown>).start ??
+            (value as Record<string, unknown>).low,
+          (value as Record<string, unknown>).end ??
+            (value as Record<string, unknown>).high,
+          (value as Record<string, unknown>).step,
+        ]
+      : []
+  const start = Math.floor(Number(row[0]))
+  const end = Math.floor(Number(row[1]))
+  const step = Math.floor(Number(row[2]))
+  if (
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    !Number.isFinite(step) ||
+    start < minimum ||
+    end < start ||
+    end > 65_535 ||
+    step < 1
+  ) {
+    throw new Error(
+      `VCET fixed-candidate replay requires a valid ${label} range [start, end, step] with values in [${minimum}, 65535].`,
+    )
+  }
+  return { start, end, step }
+}
+
+export interface VcetFixedCandidatePair {
+  fast_len: number
+  slow_len: number
+}
+
+export function buildVcetFixedCandidateManifest(
+  optimizationTemplate: Record<string, unknown>,
+  maxCandidates: number,
+): VcetFixedCandidatePair[] {
+  const limit = Math.max(1, Math.floor(Number(maxCandidates)))
+  const fast = parseIntegerRange(optimizationTemplate.fast_range, 'fast', 2)
+  const slow = parseIntegerRange(optimizationTemplate.slow_range, 'slow')
+  const candidates: VcetFixedCandidatePair[] = []
+
+  for (let fastLen = fast.start; fastLen <= fast.end; fastLen += fast.step) {
+    for (let slowLen = slow.start; slowLen <= slow.end; slowLen += slow.step) {
+      if (fastLen >= slowLen) continue
+      candidates.push({ fast_len: fastLen, slow_len: slowLen })
+      if (candidates.length > limit) {
+        throw new Error(
+          `VCET fixed-candidate replay expands to more than ${limit} candidates. Tighten the current Fast/Slow ranges or raise Validation candidates.`,
+        )
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(
+      'VCET fixed-candidate replay found no valid Fast < Slow pairs in the current ranges.',
+    )
+  }
+  return candidates
 }
 
 export interface MetaBatchBuildInputs {

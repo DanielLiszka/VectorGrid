@@ -140,13 +140,15 @@ use crate::vcet::{
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet::{
     compute_vcet_chandelier_signal_cuda_device, compute_vcet_vidya_signal_cuda_device,
-    VcetOwnedDeviceMatrix,
+    resolve_vcet_periods_checked, VcetOwnedDeviceMatrix,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet_gpu_kernel::{
-    eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices,
-    VcetGpuOwnedSignalTables,
+    eval_vcet_metrics_gpu_kernel_device_rows, eval_vcet_metrics_gpu_kernel_device_rows_per_combo,
+    VcetGpuComboBatch, VcetGpuDeviceSignalMatrices, VcetGpuOwnedSignalTables,
+    VcetGpuPerComboControls,
 };
+use crate::vcet_temporal::{VcetTemporalBarRangeV1, VcetTemporalPositionBoundaryPolicyV1};
 use crate::vemr::{
     build_vemr_desired_positions, clear_vemr_route_diagnostics, compute_vemr_fast_signals,
     compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods,
@@ -459,6 +461,95 @@ fn composite_validation_family(cand: &CompositeParams) -> CompositeValidationFam
     } else {
         CompositeValidationFamily::Base
     }
+}
+
+fn is_vcet_only_candidate(cand: &CompositeParams) -> bool {
+    cand.vcet.is_some()
+        && cand.asr.is_none()
+        && cand.vcc.is_none()
+        && cand.vemr.is_none()
+        && cand.rocb.is_none()
+        && cand.mkcs.is_none()
+        && cand.kqsr.is_none()
+        && cand.carm.is_none()
+        && cand.kvdf.is_none()
+        && cand.cdmc.is_none()
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+type VcetGpuVidyaSignalKey = (u16, u16, u64);
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+type VcetGpuCeSignalKey = (u16, u64, bool);
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VcetGpuCandidatePlanEntry {
+    vidya_key: VcetGpuVidyaSignalKey,
+    ce_key: VcetGpuCeSignalKey,
+    require_vidya_slope: i32,
+    max_trade_bars: i32,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn canonical_vcet_signal_f64_bits(value: f64) -> u64 {
+    if value == 0.0 {
+        0.0f64.to_bits()
+    } else {
+        value.to_bits()
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn build_vcet_gpu_candidate_plan(
+    req: &CompositeValidationRequest,
+) -> Result<Vec<VcetGpuCandidatePlanEntry>, String> {
+    let first = req
+        .candidates
+        .first()
+        .ok_or_else(|| "no candidates to validate".to_string())?;
+    if !is_vcet_only_candidate(first) {
+        return Err("GPU composite validation currently supports VCET candidates only".to_string());
+    }
+
+    let mut plan = Vec::with_capacity(req.candidates.len());
+    for cand in &req.candidates {
+        if !is_vcet_only_candidate(cand) {
+            return Err(
+                "GPU composite validation currently requires all candidates to use VCET"
+                    .to_string(),
+            );
+        }
+        validate_strategy_cfg(&cand.strategy)?;
+        if !serialized_eq(&cand.strategy, &first.strategy)? {
+            return Err(
+                "GPU composite validation currently requires a uniform StrategyConfig".to_string(),
+            );
+        }
+
+        let vcet = cand
+            .vcet
+            .as_ref()
+            .expect("VCET-only candidates require VCET parameters");
+        validate_vcet_params(vcet)?;
+        let periods = resolve_vcet_periods_checked(vcet, cand.fast_len, cand.slow_len)?;
+        plan.push(VcetGpuCandidatePlanEntry {
+            vidya_key: (
+                periods.vidya_short,
+                periods.vidya_long,
+                canonical_vcet_signal_f64_bits(vcet.vidya_alpha),
+            ),
+            ce_key: (
+                periods.ce,
+                canonical_vcet_signal_f64_bits(vcet.ce_mult),
+                vcet.ce_use_close,
+            ),
+            require_vidya_slope: i32::from(vcet.require_vidya_slope),
+            max_trade_bars: i32::from(vcet.max_trade_bars),
+        });
+    }
+
+    Ok(plan)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3727,8 +3818,12 @@ fn compute_vcet_gpu_cscv_slice_stats_for_candidates(
 fn try_prepare_vcet_gpu_fixed_candidate_validation(
     req: &CompositeValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
+    scored_window: Option<VcetTemporalBarRangeV1>,
 ) -> Result<GpuCompositeFixedCandidateValidationEval, String> {
     let device_id = composite_validation_supports_gpu_fixed_candidates(req)?;
+    if scored_window.is_some() {
+        reject_vcet_scored_window_auxiliary_stages(req)?;
+    }
     if let Some(reason) = composite_gpu_validation_feature_blocker(req) {
         return Err(reason);
     }
@@ -3740,14 +3835,7 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         .candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
-    let first_vcet = first.vcet.as_ref().ok_or_else(|| {
-        "GPU composite validation currently supports VCET candidates only".to_string()
-    })?;
-    if first.asr.is_some() || first.vcc.is_some() || first.vemr.is_some() || first.rocb.is_some() {
-        return Err("GPU composite validation currently supports VCET candidates only".to_string());
-    }
-    validate_strategy_cfg(&first.strategy)?;
-    validate_vcet_params(first_vcet)?;
+    let candidate_plan = build_vcet_gpu_candidate_plan(req)?;
     if first.strategy.uses_execution_overlays()
         || first.strategy.stop_loss_pct().is_some()
         || first.strategy.take_profit_pct().is_some()
@@ -3758,39 +3846,10 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         );
     }
 
-    let mut vidya_keys: Vec<(u16, u16)> = Vec::with_capacity(req.candidates.len());
-    let mut ce_keys: Vec<u16> = Vec::with_capacity(req.candidates.len());
-    let mut periods_by_candidate: Vec<((u16, u16), u16)> = Vec::with_capacity(req.candidates.len());
-
-    for cand in &req.candidates {
-        if cand.vcet.is_none()
-            || cand.asr.is_some()
-            || cand.vcc.is_some()
-            || cand.vemr.is_some()
-            || cand.rocb.is_some()
-        {
-            return Err(
-                "GPU composite validation currently requires all candidates to use VCET"
-                    .to_string(),
-            );
-        }
-        if !serialized_eq(&cand.strategy, &first.strategy)? {
-            return Err(
-                "GPU composite validation currently requires a uniform StrategyConfig".to_string(),
-            );
-        }
-        if !serialized_eq(cand.vcet.as_ref().unwrap(), first_vcet)? {
-            return Err(
-                "GPU composite validation currently requires uniform VCET parameters".to_string(),
-            );
-        }
-
-        let periods = resolve_vcet_periods(first_vcet, cand.fast_len, cand.slow_len);
-        let vidya_key = (periods.vidya_short, periods.vidya_long);
-        vidya_keys.push(vidya_key);
-        ce_keys.push(periods.ce);
-        periods_by_candidate.push((vidya_key, periods.ce));
-    }
+    let mut vidya_keys: Vec<VcetGpuVidyaSignalKey> =
+        candidate_plan.iter().map(|entry| entry.vidya_key).collect();
+    let mut ce_keys: Vec<VcetGpuCeSignalKey> =
+        candidate_plan.iter().map(|entry| entry.ce_key).collect();
     vidya_keys.sort_unstable();
     vidya_keys.dedup();
     ce_keys.sort_unstable();
@@ -3814,14 +3873,15 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let mut vidya_lookup: HashMap<(u16, u16), (i32, usize)> =
+    let mut vidya_lookup: HashMap<VcetGpuVidyaSignalKey, (i32, usize)> =
         HashMap::with_capacity(vidya_keys.len());
-    let mut ce_lookup: HashMap<u16, (i32, usize)> = HashMap::with_capacity(ce_keys.len());
+    let mut ce_lookup: HashMap<VcetGpuCeSignalKey, (i32, usize)> =
+        HashMap::with_capacity(ce_keys.len());
     let mut vidya_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(vidya_keys.len());
     let mut ce_long_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(ce_keys.len());
     let mut ce_short_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(ce_keys.len());
 
-    for &(vidya_short, vidya_long) in &vidya_keys {
+    for &(vidya_short, vidya_long, vidya_alpha_bits) in &vidya_keys {
         let matrix = compute_vcet_vidya_signal_cuda_device(
             &prepared_cuda_inputs,
             crate::vcet::VcetResolvedPeriods {
@@ -3829,26 +3889,29 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
                 vidya_long,
                 ce: 1,
             },
-            first_vcet.vidya_alpha,
+            f64::from_bits(vidya_alpha_bits),
         )?;
         if matrix.rows != 1 || matrix.cols != n {
             return Err("VCET GPU VIDYA matrix shape mismatch".to_string());
         }
         let idx = i32::try_from(vidya_keepalive.len())
             .map_err(|_| "VCET GPU VIDYA row index exceeds i32 range".to_string())?;
+        let first_valid = prepared_cuda_inputs
+            .source_first_valid()
+            .saturating_add(usize::from(vidya_long.saturating_sub(2)));
         vidya_lookup.insert(
-            (vidya_short, vidya_long),
-            (idx, usize::from(vidya_long.saturating_sub(1))),
+            (vidya_short, vidya_long, vidya_alpha_bits),
+            (idx, first_valid),
         );
         vidya_keepalive.push(matrix);
     }
 
-    for &ce_period in &ce_keys {
+    for &(ce_period, ce_mult_bits, ce_use_close) in &ce_keys {
         let (long_matrix, short_matrix) = compute_vcet_chandelier_signal_cuda_device(
             &prepared_cuda_inputs,
             ce_period,
-            first_vcet.ce_mult,
-            first_vcet.ce_use_close,
+            f64::from_bits(ce_mult_bits),
+            ce_use_close,
         )?;
         if long_matrix.rows != 1
             || short_matrix.rows != 1
@@ -3859,7 +3922,10 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         }
         let idx = i32::try_from(ce_long_keepalive.len())
             .map_err(|_| "VCET GPU chandelier row index exceeds i32 range".to_string())?;
-        ce_lookup.insert(ce_period, (idx, usize::from(ce_period.saturating_sub(1))));
+        let first_valid = prepared_cuda_inputs
+            .hlc_first_valid()
+            .saturating_add(usize::from(ce_period.saturating_sub(1)));
+        ce_lookup.insert((ce_period, ce_mult_bits, ce_use_close), (idx, first_valid));
         ce_long_keepalive.push(long_matrix);
         ce_short_keepalive.push(short_matrix);
     }
@@ -3867,16 +3933,18 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
     let mut vidya_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
     let mut ce_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
     let mut combo_start_t: Vec<i32> = Vec::with_capacity(req.candidates.len());
+    let mut combo_require_vidya_slope: Vec<i32> = Vec::with_capacity(req.candidates.len());
+    let mut combo_max_trade_bars: Vec<i32> = Vec::with_capacity(req.candidates.len());
     let mut start_ts: Vec<usize> = Vec::with_capacity(req.candidates.len());
 
-    for (vidya_key, ce_period) in periods_by_candidate {
+    for entry in &candidate_plan {
         let (vidya_row, vidya_first_valid) = *vidya_lookup
-            .get(&vidya_key)
+            .get(&entry.vidya_key)
             .ok_or_else(|| "VCET GPU VIDYA row lookup miss".to_string())?;
         let (ce_row, ce_first_valid) = *ce_lookup
-            .get(&ce_period)
+            .get(&entry.ce_key)
             .ok_or_else(|| "VCET GPU chandelier row lookup miss".to_string())?;
-        let start_t = compute_vcet_start_t(
+        let indicator_start_t = compute_vcet_start_t(
             first_valid_close,
             first_valid_high,
             first_valid_low,
@@ -3884,12 +3952,25 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
             ce_first_valid,
             first.strategy.trade_on_next_bar,
         );
-        if start_t >= n {
+        if indicator_start_t >= n {
             return Err("not enough candles after VCET GPU warmup".to_string());
         }
+        let start_t = if let Some(scored_window) = scored_window {
+            if scored_window.start_index < indicator_start_t {
+                return Err(format!(
+                    "VCET scored window starts at {} before candidate indicator warmup completes at {indicator_start_t}",
+                    scored_window.start_index
+                ));
+            }
+            scored_window.start_index
+        } else {
+            indicator_start_t
+        };
 
         vidya_row_index.push(vidya_row);
         ce_row_index.push(ce_row);
+        combo_require_vidya_slope.push(entry.require_vidya_slope);
+        combo_max_trade_bars.push(entry.max_trade_bars);
         combo_start_t.push(
             i32::try_from(start_t).map_err(|_| "VCET GPU start_t exceeds i32 range".to_string())?,
         );
@@ -3910,8 +3991,11 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
             .as_device_ptr()
             .as_raw(),
     );
+    let end_t = scored_window
+        .map(|window| window.end_index_exclusive)
+        .unwrap_or(n);
     let combo_end_t = vec![
-        i32::try_from(n)
+        i32::try_from(end_t)
             .map_err(|_| "VCET GPU end_t exceeds i32 range".to_string())?;
         vidya_row_index.len()
     ];
@@ -3921,12 +4005,16 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         start_t: &combo_start_t,
         end_t: &combo_end_t,
     };
-    let metrics = eval_vcet_metrics_gpu_kernel_device_rows(
+    let combo_controls = VcetGpuPerComboControls {
+        require_vidya_slope: &combo_require_vidya_slope,
+        max_trade_bars: &combo_max_trade_bars,
+    };
+    let metrics = eval_vcet_metrics_gpu_kernel_device_rows_per_combo(
         device_id,
         &signals,
         &combos,
+        &combo_controls,
         &first.strategy,
-        first_vcet,
     )?;
     if metrics.len() != req.candidates.len() {
         return Err("VCET GPU validation output length mismatch".to_string());
@@ -9313,7 +9401,7 @@ fn prepare_composite_gpu_eval_for_family(
             try_prepare_rocb_gpu_fixed_candidate_validation(req, candles)
         }
         CompositeValidationFamily::Vcet => {
-            try_prepare_vcet_gpu_fixed_candidate_validation(req, candles)
+            try_prepare_vcet_gpu_fixed_candidate_validation(req, candles, None)
         }
         CompositeValidationFamily::Mkcs => {
             try_prepare_mkcs_gpu_fixed_candidate_validation(req, candles)
@@ -9778,6 +9866,326 @@ pub struct CompositeValidationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validation_evidence_pack: Option<ValidationEvidencePackV1>,
     pub run_verdict: ValidationRunVerdict,
+}
+
+/// Exact backend evidence for a VCET fixed-candidate scored-window evaluation.
+///
+/// This surface is intentionally strict: it never reports a GPU route after a CPU fallback.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct VcetFixedCandidateWindowBackendProvenance {
+    pub requested_backend: String,
+    pub realized_backend: String,
+    pub backend_route: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<u32>,
+    pub strict_backend: bool,
+    pub fallback_used: bool,
+    pub metric_contract: String,
+    pub unavailable_metric_fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VcetFixedCandidateWindowCandidateResult {
+    pub candidate_index: usize,
+    pub params: CompositeParams,
+    pub metrics: Metrics,
+}
+
+/// Metrics for every supplied VCET candidate over one validated half-open bar range.
+///
+/// Indicators are computed from the full candle history, but execution state and metric
+/// accumulation both start flat at `scored_bars.start_index`. An open position at
+/// `scored_bars.end_index_exclusive` is discarded rather than liquidated. The function rejects
+/// every other boundary policy so callers cannot accidentally claim unsupported semantics.
+#[derive(Clone, Debug, Serialize)]
+pub struct VcetFixedCandidateScoredWindowResult {
+    pub data_id: String,
+    pub scored_bars: VcetTemporalBarRangeV1,
+    pub position_boundary_policy: VcetTemporalPositionBoundaryPolicyV1,
+    pub backend: VcetFixedCandidateWindowBackendProvenance,
+    pub requested_candidate_count: usize,
+    pub evaluated_candidate_count: usize,
+    pub candidates: Vec<VcetFixedCandidateWindowCandidateResult>,
+}
+
+fn reject_vcet_scored_window_auxiliary_stages(
+    req: &CompositeValidationRequest,
+) -> Result<(), String> {
+    let mut enabled = Vec::new();
+    if req.walk_forward.is_some() {
+        enabled.push("walk_forward");
+    }
+    if req.reopt_walk_forward.is_some() {
+        enabled.push("reopt_walk_forward");
+    }
+    if req.spa.is_some() {
+        enabled.push("spa");
+    }
+    if req.perturb.is_some() {
+        enabled.push("perturb");
+    }
+    if req.trade_bootstrap.is_some() {
+        enabled.push("trade_bootstrap");
+    }
+    if req.monte_carlo.is_some() {
+        enabled.push("monte_carlo");
+    }
+    if req.cross_ticker.is_some() {
+        enabled.push("cross_ticker");
+    }
+    if req.cscv_pbo.is_some() {
+        enabled.push("cscv_pbo");
+    }
+    if !enabled.is_empty() {
+        return Err(format!(
+            "VCET scored-window evaluation rejects auxiliary stages whose semantics may escape the locked range: {}",
+            enabled.join(", ")
+        ));
+    }
+    if !matches!(req.validation_engine, ValidationEngine::Vectorized) {
+        return Err(
+            "VCET scored-window evaluation supports only the vectorized validation engine"
+                .to_string(),
+        );
+    }
+    if req.iterative.stop_loss_pct.is_some()
+        || req.iterative.take_profit_pct.is_some()
+        || req.iterative.slippage_vol_mult != 0.0
+        || req.iterative.intrabar_rule != crate::iterative_sim::IntrabarRule::default()
+    {
+        return Err(
+            "VCET scored-window evaluation rejects iterative simulator controls because the direct window surface is vectorized only"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_vcet_scored_window_request(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    scored_bars: VcetTemporalBarRangeV1,
+    position_boundary_policy: VcetTemporalPositionBoundaryPolicyV1,
+) -> Result<(), String> {
+    if position_boundary_policy != VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen {
+        return Err(format!(
+            "VCET scored-window evaluation supports only reset_flat_discard_open; requested {:?}",
+            position_boundary_policy
+        ));
+    }
+    reject_vcet_scored_window_auxiliary_stages(req)?;
+    let ma_source = req.ma_source.trim().to_ascii_lowercase();
+    if !matches!(
+        ma_source.as_str(),
+        "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "hlcc" | "hlcc4"
+    ) {
+        return Err(format!(
+            "VCET scored-window ma_source '{}' is unsupported; expected open, high, low, close, volume, hl2, hlc3, ohlc4, or hlcc4",
+            req.ma_source
+        ));
+    }
+    if req.candidates.is_empty() {
+        return Err("VCET scored-window evaluation requires at least one candidate".to_string());
+    }
+    if req.max_candidates < req.candidates.len() {
+        return Err(format!(
+            "VCET scored-window evaluation refuses to truncate {} candidates to max_candidates={}",
+            req.candidates.len(),
+            req.max_candidates
+        ));
+    }
+    let n = candles.close.len();
+    if scored_bars.is_empty() || scored_bars.end_index_exclusive > n || scored_bars.len() < 2 {
+        return Err(format!(
+            "VCET scored window must contain at least two bars within [0, {n}); received [{}, {})",
+            scored_bars.start_index, scored_bars.end_index_exclusive
+        ));
+    }
+    if candles.open.len() != n
+        || candles.high.len() != n
+        || candles.low.len() != n
+        || candles.timestamp.len() != n
+    {
+        return Err("VCET scored-window candle series lengths do not match".to_string());
+    }
+    for (index, candidate) in req.candidates.iter().enumerate() {
+        if !is_vcet_only_candidate(candidate) {
+            return Err(format!(
+                "VCET scored-window candidate[{index}] must contain VCET and no other standalone strategy family"
+            ));
+        }
+        validate_strategy_cfg(&candidate.strategy)?;
+        validate_vcet_params(
+            candidate
+                .vcet
+                .as_ref()
+                .expect("VCET-only candidate must contain VCET parameters"),
+        )?;
+        if candidate.strategy.uses_execution_overlays()
+            || candidate.strategy.stop_loss_pct().is_some()
+            || candidate.strategy.take_profit_pct().is_some()
+        {
+            return Err(format!(
+                "VCET scored-window candidate[{index}] uses execution overlays/stop-loss/take-profit that are not supported by both strict CPU and GPU window routes"
+            ));
+        }
+    }
+    match req.backend {
+        Backend::CpuOnly | Backend::GpuKernel { .. } => Ok(()),
+        _ => Err(
+            "VCET scored-window evaluation requires either CpuOnly or strict GpuKernel; Auto, GpuOnly, and GpuHybridKernel are not accepted"
+                .to_string(),
+        ),
+    }
+}
+
+/// Validate the shared execution configuration used by fixed-candidate VCET scored windows.
+///
+/// Universe sealing calls this before it commits an execution specification so malformed
+/// configurations cannot be deferred until a later shard executor.
+pub fn validate_vcet_fixed_candidate_strategy_config(
+    strategy: &StrategyConfig,
+) -> Result<(), String> {
+    validate_strategy_cfg(strategy)
+}
+
+/// Evaluate every supplied fixed VCET candidate over exactly one scored window.
+///
+/// The caller supplies a normal `CompositeValidationRequest` so candidate and execution contracts
+/// remain shared with composite validation. Auxiliary validation fields must be disabled. Candidate
+/// order is preserved and an output-count mismatch is always an error.
+pub fn evaluate_vcet_fixed_candidates_scored_window_with_candles(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    scored_bars: VcetTemporalBarRangeV1,
+    position_boundary_policy: VcetTemporalPositionBoundaryPolicyV1,
+) -> Result<VcetFixedCandidateScoredWindowResult, String> {
+    validate_vcet_scored_window_request(req, candles, scored_bars, position_boundary_policy)?;
+
+    let (metrics, backend) = match req.backend {
+        Backend::CpuOnly => {
+            let lr = compute_log_returns_f64(&candles.close);
+            let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+            if ma_prices.len() != candles.close.len() {
+                return Err("VCET scored-window MA source length mismatch".to_string());
+            }
+            let mut metrics = Vec::with_capacity(req.candidates.len());
+            for (candidate_index, candidate) in req.candidates.iter().enumerate() {
+                let series = build_vcet_candidate_series_with_execution_start(
+                    candles,
+                    &lr,
+                    ma_prices,
+                    &req.ma_source,
+                    candidate,
+                    candidate
+                        .vcet
+                        .as_ref()
+                        .expect("VCET candidates were validated above"),
+                    Some(scored_bars.start_index),
+                    #[cfg(feature = "cuda")]
+                    None,
+                )
+                .map_err(|error| format!("VCET candidate[{candidate_index}] failed: {error}"))?;
+                metrics.push(eval_metrics_window(
+                    &series,
+                    scored_bars.start_index,
+                    scored_bars.end_index_exclusive,
+                ));
+            }
+            (
+                metrics,
+                VcetFixedCandidateWindowBackendProvenance {
+                    requested_backend: "CpuOnly".to_string(),
+                    realized_backend: "Cpu".to_string(),
+                    backend_route: "CpuOnly".to_string(),
+                    device_id: None,
+                    strict_backend: true,
+                    fallback_used: false,
+                    metric_contract: "full_cpu_metrics_v1".to_string(),
+                    unavailable_metric_fields: Vec::new(),
+                },
+            )
+        }
+        Backend::GpuKernel { device_id } => {
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            {
+                let gpu_eval = try_prepare_vcet_gpu_fixed_candidate_validation(
+                    req,
+                    candles,
+                    Some(scored_bars),
+                )?;
+                if !matches!(gpu_eval.backend_used, BackendUsed::Gpu)
+                    || gpu_eval.backend_route.as_deref() != Some("GpuKernel")
+                    || gpu_eval.backend_fallback_reason.is_some()
+                {
+                    return Err(
+                        "strict VCET GpuKernel scored-window evaluation did not realize an exact GPU kernel route"
+                            .to_string(),
+                    );
+                }
+                (
+                    gpu_eval.metrics,
+                    VcetFixedCandidateWindowBackendProvenance {
+                        requested_backend: "GpuKernel".to_string(),
+                        realized_backend: "Gpu".to_string(),
+                        backend_route: "GpuKernel".to_string(),
+                        device_id: Some(device_id),
+                        strict_backend: true,
+                        fallback_used: false,
+                        metric_contract: "vcet_gpu_19_field_metrics_v1".to_string(),
+                        unavailable_metric_fields: vec![
+                            "closed_trades".to_string(),
+                            "winning_trades".to_string(),
+                            "losing_trades".to_string(),
+                            "gross_profit".to_string(),
+                            "gross_loss".to_string(),
+                        ],
+                    },
+                )
+            }
+            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+            {
+                let _ = device_id;
+                return Err(
+                    "strict VCET GpuKernel scored-window evaluation requires cuda and cuda-backtest-kernel features"
+                        .to_string(),
+                );
+            }
+        }
+        _ => unreachable!("backend admission was validated above"),
+    };
+
+    if metrics.len() != req.candidates.len() {
+        return Err(format!(
+            "VCET scored-window output count mismatch: evaluated {}, requested {}",
+            metrics.len(),
+            req.candidates.len()
+        ));
+    }
+    let candidates = req
+        .candidates
+        .iter()
+        .cloned()
+        .zip(metrics)
+        .enumerate()
+        .map(
+            |(candidate_index, (params, metrics))| VcetFixedCandidateWindowCandidateResult {
+                candidate_index,
+                params,
+                metrics,
+            },
+        )
+        .collect::<Vec<_>>();
+
+    Ok(VcetFixedCandidateScoredWindowResult {
+        data_id: req.data_id.clone(),
+        scored_bars,
+        position_boundary_policy,
+        backend,
+        requested_candidate_count: req.candidates.len(),
+        evaluated_candidate_count: candidates.len(),
+        candidates,
+    })
 }
 
 fn backend_used_label(backend_used: &BackendUsed) -> &'static str {
@@ -10672,6 +11080,29 @@ fn build_vcet_candidate_series<'a>(
     vcet_cfg: &VcetStrategyParams,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<CandidateSeries<'a>, String> {
+    build_vcet_candidate_series_with_execution_start(
+        candles,
+        lr,
+        ott_prices,
+        ma_source,
+        params,
+        vcet_cfg,
+        None,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )
+}
+
+fn build_vcet_candidate_series_with_execution_start<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ott_prices: &'a [f64],
+    ma_source: &str,
+    params: &CompositeParams,
+    vcet_cfg: &VcetStrategyParams,
+    execution_start_t: Option<usize>,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CandidateSeries<'a>, String> {
     validate_strategy_cfg(&params.strategy)?;
     validate_vcet_params(vcet_cfg)?;
 
@@ -10725,7 +11156,7 @@ fn build_vcet_candidate_series<'a>(
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
     )?;
-    let start_t = compute_vcet_start_t(
+    let indicator_start_t = compute_vcet_start_t(
         first_valid_close,
         first_valid_high,
         first_valid_low,
@@ -10733,8 +11164,20 @@ fn build_vcet_candidate_series<'a>(
         ce.first_valid,
         params.strategy.trade_on_next_bar,
     );
-    if start_t >= n {
+    if indicator_start_t >= n {
         return Err("not enough candles after warmup".to_string());
+    }
+
+    let start_t = execution_start_t.unwrap_or(indicator_start_t);
+    if start_t < indicator_start_t {
+        return Err(format!(
+            "VCET scored window starts at {start_t} before candidate indicator warmup completes at {indicator_start_t}"
+        ));
+    }
+    if start_t >= n {
+        return Err(format!(
+            "VCET execution start {start_t} must be less than candle count {n}"
+        ));
     }
 
     let desired =
@@ -15985,15 +16428,33 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn vcet_validation_gpu_kernel_matches_cpu_metrics() {
+        let _guard = lock_env();
         let candles = make_trending_candles(3000);
         let cancel = AtomicBool::new(false);
+        let heterogeneous_candidates = || {
+            let base = vcet_test_candidate(12, 48);
+            let mut signal_changed = vcet_test_candidate(16, 64);
+            {
+                let vcet = signal_changed.vcet.as_mut().expect("VCET test candidate");
+                vcet.vidya_alpha = 0.35;
+                vcet.ce_mult = 4.0;
+                vcet.ce_use_close = false;
+            }
+            let mut combo_changed = vcet_test_candidate(20, 72);
+            {
+                let vcet = combo_changed.vcet.as_mut().expect("VCET test candidate");
+                vcet.require_vidya_slope = false;
+                vcet.max_trade_bars = 37;
+            }
+            vec![base, signal_changed, combo_changed]
+        };
         let mk = |backend: Backend| CompositeValidationRequest {
             data_id: "vcet-gpu-validate".to_string(),
             backend,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
-            candidates: vec![vcet_test_candidate(12, 48), vcet_test_candidate(16, 64)],
+            candidates: heterogeneous_candidates(),
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
@@ -16013,21 +16474,45 @@ mod tests {
             max_pbo: None,
             validation_context: None,
         };
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu heterogeneous vcet validation");
         let gpu_res = run_composite_validation_blocking_with_candles(
             mk(Backend::GpuKernel { device_id: 0 }),
             &candles,
             &cancel,
             None,
         )
-        .expect("gpu carm validation");
+        .expect("gpu heterogeneous vcet validation");
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.backend_fallback_reason.is_none());
-        assert_eq!(gpu_res.candidates.len(), 2);
-        assert!(gpu_res
-            .candidates
-            .iter()
-            .all(|cand| cand.in_sample.sharpe.is_finite()));
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!(
+                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-3,
+                "vcet pnl cpu={} gpu={}",
+                cpu.in_sample.pnl,
+                gpu.in_sample.pnl
+            );
+            assert!(
+                (cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 1e-3,
+                "vcet sharpe cpu={} gpu={}",
+                cpu.in_sample.sharpe,
+                gpu.in_sample.sharpe
+            );
+            assert!(
+                (cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-3,
+                "vcet max_dd cpu={} gpu={}",
+                cpu.in_sample.max_dd,
+                gpu.in_sample.max_dd
+            );
+            assert_eq!(cpu.in_sample.trades, gpu.in_sample.trades);
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -21593,6 +22078,115 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn vcet_gpu_fixed_candidate_test_request(
+        candidates: Vec<CompositeParams>,
+    ) -> CompositeValidationRequest {
+        CompositeValidationRequest {
+            data_id: "vcet-fixed-candidate-admission".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates,
+            walk_forward: None,
+            reopt_walk_forward: None,
+            spa: None,
+            perturb: None,
+            trade_bootstrap: None,
+            monte_carlo: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_gpu_fixed_candidate_batch_rejects_copresent_standalone_family() {
+        let candles = make_trending_candles(256);
+        let mut mixed = vcet_test_candidate(16, 64);
+        mixed.mkcs = Some(MkcsStrategyParams::default());
+        let req = vcet_gpu_fixed_candidate_test_request(vec![vcet_test_candidate(12, 48), mixed]);
+
+        let err = try_prepare_vcet_gpu_fixed_candidate_validation(&req, &candles, None)
+            .err()
+            .expect("mixed VCET/MKCS batch must be rejected before CUDA setup");
+        assert!(
+            err.contains("requires all candidates to use VCET"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_gpu_fixed_candidate_plan_preserves_heterogeneous_signal_and_combo_controls() {
+        let base = vcet_test_candidate(12, 48);
+        let mut alpha_changed = base.clone();
+        alpha_changed
+            .vcet
+            .as_mut()
+            .expect("VCET test candidate")
+            .vidya_alpha = 0.35;
+        let mut ce_changed = base.clone();
+        {
+            let vcet = ce_changed.vcet.as_mut().expect("VCET test candidate");
+            vcet.ce_mult = 4.0;
+            vcet.ce_use_close = false;
+        }
+        let mut combo_changed = base.clone();
+        {
+            let vcet = combo_changed.vcet.as_mut().expect("VCET test candidate");
+            vcet.require_vidya_slope = false;
+            vcet.max_trade_bars = 37;
+        }
+        let req = vcet_gpu_fixed_candidate_test_request(vec![
+            base,
+            alpha_changed,
+            ce_changed,
+            combo_changed,
+        ]);
+
+        let plan = build_vcet_gpu_candidate_plan(&req).expect("heterogeneous VCET plan");
+        assert_eq!(plan.len(), 4);
+        assert_ne!(plan[0].vidya_key, plan[1].vidya_key);
+        assert_eq!(plan[0].ce_key, plan[1].ce_key);
+        assert_eq!(plan[0].vidya_key, plan[2].vidya_key);
+        assert_ne!(plan[0].ce_key, plan[2].ce_key);
+        assert_eq!(plan[0].vidya_key, plan[3].vidya_key);
+        assert_eq!(plan[0].ce_key, plan[3].ce_key);
+        assert_eq!(plan[0].require_vidya_slope, 1);
+        assert_eq!(plan[3].require_vidya_slope, 0);
+        assert_eq!(plan[0].max_trade_bars, 120);
+        assert_eq!(plan[3].max_trade_bars, 37);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_gpu_fixed_candidate_batch_rejects_nonuniform_strategy_config() {
+        let candles = make_trending_candles(256);
+        let mut changed = vcet_test_candidate(16, 64);
+        changed.strategy.fee_bps = 2.0;
+        let req = vcet_gpu_fixed_candidate_test_request(vec![vcet_test_candidate(12, 48), changed]);
+
+        let err = try_prepare_vcet_gpu_fixed_candidate_validation(&req, &candles, None)
+            .err()
+            .expect("non-uniform strategy configs must be rejected before CUDA setup");
+        assert!(
+            err.contains("requires a uniform StrategyConfig"),
+            "unexpected error: {err}"
+        );
+    }
+
     fn carm_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "ema".to_string(),
@@ -26440,6 +27034,381 @@ mod tests {
             "mkcs-gpu-perturb",
             mkcs_test_candidate(10, 30),
             59,
+        );
+    }
+
+    fn vcet_window_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
+        CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            vcet: Some(VcetStrategyParams {
+                map_fast_to_vidya_short_period: false,
+                map_slow_to_vidya_long_period: false,
+                map_slow_to_ce_period: false,
+                vidya_short_period: fast_len,
+                vidya_long_period: slow_len,
+                ce_period: 22,
+                ..VcetStrategyParams::default()
+            }),
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        }
+    }
+
+    fn vcet_window_test_request(
+        backend: Backend,
+        candidates: Vec<CompositeParams>,
+    ) -> CompositeValidationRequest {
+        CompositeValidationRequest {
+            data_id: "vcet-window-test".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates,
+            walk_forward: None,
+            reopt_walk_forward: None,
+            spa: None,
+            perturb: None,
+            trade_bootstrap: None,
+            monte_carlo: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 1,
+            max_candidates: 16,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        }
+    }
+
+    #[test]
+    fn vcet_cpu_scored_window_is_suffix_isolated_and_preserves_every_candidate() {
+        let candles = make_trending_candles(512);
+        let candidates = vec![
+            vcet_window_test_candidate(8, 32),
+            vcet_window_test_candidate(12, 48),
+        ];
+        let req = vcet_window_test_request(Backend::CpuOnly, candidates);
+        let scored_bars = VcetTemporalBarRangeV1 {
+            start_index: 128,
+            end_index_exclusive: 320,
+        };
+        let first = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &req,
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect("first CPU scored window");
+
+        let mut suffix_changed = candles.clone();
+        for index in scored_bars.end_index_exclusive..suffix_changed.close.len() {
+            let price = if index % 2 == 0 { 10.0 } else { 10_000.0 };
+            suffix_changed.open[index] = price;
+            suffix_changed.high[index] = price + 5.0;
+            suffix_changed.low[index] = (price - 5.0).max(0.01);
+            suffix_changed.close[index] = price;
+        }
+        let second = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &req,
+            &suffix_changed,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect("suffix-mutated CPU scored window");
+
+        assert_eq!(first.requested_candidate_count, 2);
+        assert_eq!(first.evaluated_candidate_count, 2);
+        assert_eq!(first.candidates.len(), 2);
+        assert_eq!(first.backend.backend_route, "CpuOnly");
+        assert!(first.backend.strict_backend);
+        assert!(!first.backend.fallback_used);
+        for (left, right) in first.candidates.iter().zip(second.candidates.iter()) {
+            assert_eq!(left.candidate_index, right.candidate_index);
+            assert_eq!(left.metrics.trades, right.metrics.trades);
+            assert_eq!(left.metrics.closed_trades, right.metrics.closed_trades);
+            assert_eq!(left.metrics.pnl.to_bits(), right.metrics.pnl.to_bits());
+            assert_eq!(
+                left.metrics.sharpe.to_bits(),
+                right.metrics.sharpe.to_bits()
+            );
+            assert_eq!(
+                left.metrics.max_dd.to_bits(),
+                right.metrics.max_dd.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn vcet_scored_window_rejects_unsupported_boundary_auxiliary_and_truncation() {
+        let candles = make_trending_candles(256);
+        let scored_bars = VcetTemporalBarRangeV1 {
+            start_index: 96,
+            end_index_exclusive: 224,
+        };
+        let mut req = vcet_window_test_request(
+            Backend::CpuOnly,
+            vec![
+                vcet_window_test_candidate(8, 32),
+                vcet_window_test_candidate(12, 48),
+            ],
+        );
+        let boundary_error = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &req,
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatForceLiquidate,
+        )
+        .unwrap_err();
+        assert!(boundary_error.contains("only reset_flat_discard_open"));
+
+        req.walk_forward = Some(WalkForwardConfigOptional {
+            window_bars: 64,
+            step_bars: 32,
+        });
+        let auxiliary_error = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &req,
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .unwrap_err();
+        assert!(auxiliary_error.contains("rejects auxiliary stages"));
+
+        req.walk_forward = None;
+        req.max_candidates = 1;
+        let truncation_error = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &req,
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .unwrap_err();
+        assert!(truncation_error.contains("refuses to truncate"));
+
+        req.max_candidates = req.candidates.len();
+        req.ma_source = "not-a-price-source".to_string();
+        let source_error = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &req,
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .unwrap_err();
+        assert!(source_error.contains("ma_source"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_strict_gpu_scored_window_matches_cpu_when_cuda_is_available() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let candles = make_trending_candles(2048);
+        let candidates = vec![
+            vcet_window_test_candidate(8, 32),
+            vcet_window_test_candidate(12, 48),
+            vcet_window_test_candidate(16, 64),
+        ];
+        let scored_bars = VcetTemporalBarRangeV1 {
+            start_index: 256,
+            end_index_exclusive: 1800,
+        };
+        let cpu = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &vcet_window_test_request(Backend::CpuOnly, candidates.clone()),
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect("CPU VCET scored window");
+        let gpu = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &vcet_window_test_request(Backend::GpuKernel { device_id: 0 }, candidates),
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect("strict GPU VCET scored window");
+
+        assert_eq!(gpu.backend.backend_route, "GpuKernel");
+        assert_eq!(gpu.backend.realized_backend, "Gpu");
+        assert!(!gpu.backend.fallback_used);
+        assert_eq!(gpu.backend.metric_contract, "vcet_gpu_19_field_metrics_v1");
+        assert_eq!(gpu.backend.unavailable_metric_fields.len(), 5);
+        assert_eq!(cpu.candidates.len(), gpu.candidates.len());
+        for (cpu_candidate, gpu_candidate) in cpu.candidates.iter().zip(gpu.candidates.iter()) {
+            assert!((cpu_candidate.metrics.pnl - gpu_candidate.metrics.pnl).abs() < 1e-3);
+            assert!((cpu_candidate.metrics.sharpe - gpu_candidate.metrics.sharpe).abs() < 1e-3);
+            assert!((cpu_candidate.metrics.max_dd - gpu_candidate.metrics.max_dd).abs() < 1e-3);
+            assert_eq!(cpu_candidate.metrics.trades, gpu_candidate.metrics.trades);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_strict_gpu_scored_window_matches_cpu_for_short_no_flip_execution() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let len = 2048usize;
+        let mut timestamp = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut volume = Vec::with_capacity(len);
+        let mut previous_close = 70.0f64;
+        for index in 0..len {
+            let cycle = index % 64;
+            let rising_fraction = if cycle < 32 {
+                cycle as f64 / 31.0
+            } else {
+                (63 - cycle) as f64 / 31.0
+            };
+            let current_close = 70.0 + 60.0 * rising_fraction;
+            timestamp.push(index as i64);
+            open.push(previous_close);
+            high.push(previous_close.max(current_close) + 1.0);
+            low.push(previous_close.min(current_close) - 1.0);
+            close.push(current_close);
+            volume.push(1_000.0);
+            previous_close = current_close;
+        }
+        let candles = vector_ta::utilities::data_loader::Candles::new(
+            timestamp, open, high, low, close, volume,
+        );
+        let mut candidate = vcet_window_test_candidate(4, 12);
+        candidate.strategy.long_only = false;
+        candidate.strategy.allow_flip = false;
+        {
+            let vcet = candidate.vcet.as_mut().expect("VCET test candidate");
+            vcet.vidya_alpha = 0.7;
+            vcet.ce_mult = 1.5;
+            vcet.require_vidya_slope = false;
+            vcet.max_trade_bars = 256;
+        }
+        let scored_bars = VcetTemporalBarRangeV1 {
+            start_index: 128,
+            end_index_exclusive: 1920,
+        };
+        let cpu = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &vcet_window_test_request(Backend::CpuOnly, vec![candidate.clone()]),
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect("CPU VCET short/no-flip scored window");
+        let gpu = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &vcet_window_test_request(Backend::GpuKernel { device_id: 0 }, vec![candidate]),
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect("GPU VCET short/no-flip scored window");
+
+        let cpu_metrics = &cpu.candidates[0].metrics;
+        let gpu_metrics = &gpu.candidates[0].metrics;
+        assert!(
+            cpu_metrics.short_mean_return.abs() > 1e-4,
+            "fixture must exercise short returns: {cpu_metrics:?}"
+        );
+        assert!(
+            cpu_metrics.exposure - cpu_metrics.net_exposure.abs() > 0.05,
+            "fixture must exercise both long and short positions: {cpu_metrics:?}"
+        );
+        assert_eq!(cpu_metrics.trades, gpu_metrics.trades);
+        assert!(
+            (cpu_metrics.pnl - gpu_metrics.pnl).abs() <= 5e-3 * (1.0 + cpu_metrics.pnl.abs()),
+            "pnl cpu={} gpu={}",
+            cpu_metrics.pnl,
+            gpu_metrics.pnl
+        );
+        assert!(
+            (cpu_metrics.sharpe - gpu_metrics.sharpe).abs() < 2e-3,
+            "sharpe cpu={} gpu={}",
+            cpu_metrics.sharpe,
+            gpu_metrics.sharpe
+        );
+        assert!(
+            (cpu_metrics.volatility - gpu_metrics.volatility).abs() < 2e-4,
+            "volatility cpu={} gpu={}",
+            cpu_metrics.volatility,
+            gpu_metrics.volatility
+        );
+        assert!(
+            (cpu_metrics.short_mean_return - gpu_metrics.short_mean_return).abs() < 2e-4,
+            "short_mean_return cpu={} gpu={}",
+            cpu_metrics.short_mean_return,
+            gpu_metrics.short_mean_return
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_strict_gpu_scored_window_matches_cpu_leading_nan_warmup_rejection() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let mut candles = make_trending_candles(256);
+        for index in 0..40 {
+            candles.open[index] = f64::NAN;
+            candles.high[index] = f64::NAN;
+            candles.low[index] = f64::NAN;
+            candles.close[index] = f64::NAN;
+        }
+        let candidate = vcet_window_test_candidate(8, 32);
+        let scored_bars = VcetTemporalBarRangeV1 {
+            start_index: 60,
+            end_index_exclusive: 224,
+        };
+        let cpu_error = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &vcet_window_test_request(Backend::CpuOnly, vec![candidate.clone()]),
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect_err("CPU must reject a score start inside indicator warmup");
+        let gpu_error = evaluate_vcet_fixed_candidates_scored_window_with_candles(
+            &vcet_window_test_request(Backend::GpuKernel { device_id: 0 }, vec![candidate]),
+            &candles,
+            scored_bars,
+            VcetTemporalPositionBoundaryPolicyV1::ResetFlatDiscardOpen,
+        )
+        .expect_err("GPU must reject the same score start inside indicator warmup");
+
+        assert!(
+            cpu_error.contains("completes at 71"),
+            "unexpected CPU warmup error: {cpu_error}"
+        );
+        assert!(
+            gpu_error.contains("completes at 71"),
+            "unexpected GPU warmup error: {gpu_error}"
         );
     }
 }

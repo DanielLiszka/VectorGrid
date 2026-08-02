@@ -52,11 +52,26 @@ describe("ValidationWorkspacePanel", () => {
     expect(document.body.textContent || "").toContain(
       "Validation works on shortlisted optimization candidates, so the first step is loading a dataset.",
     );
+    expect(document.body.textContent || "").toContain(
+      "Next: open Data and load a dataset.",
+    );
+    expect(document.querySelector(".appEmptyState [role='status']")).toBeNull();
+
+    const openDataButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => String(button.textContent || "").trim() === "Open Data");
+    expect(openDataButton?.classList.contains("appButton")).toBe(true);
+    openDataButton?.click();
+    await flushPanel();
+    expect(workflow.workspace).toBe("workflow");
+    expect(workflow.workflow).toBe("data");
 
     first.unmount();
 
     dataStore.dataId = "dataset_validation_ready";
     dataStore.datasetLabel = "AAPL 1m";
+    workflow.selectWorkflow("analyze", { persist: false });
+    workflow.selectResultsTab("validate", { persist: false });
 
     const second = mount(ValidationWorkspacePanel, {
       global: { plugins: [pinia] },
@@ -70,6 +85,21 @@ describe("ValidationWorkspacePanel", () => {
     expect(document.body.textContent || "").toContain(
       "Your dataset is ready. Generate candidates with an optimization run, then return here to execute robustness checks.",
     );
+    expect(document.body.textContent || "").toContain(
+      "Next: open Optimize and generate a shortlist.",
+    );
+
+    const openOptimizeButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (button) =>
+        String(button.textContent || "").trim() === "Open Optimize",
+    );
+    openOptimizeButton?.click();
+    await flushPanel();
+    expect(workflow.workspace).toBe("workflow");
+    expect(workflow.workflow).toBe("optimize");
+    expect(workflow.controlsTab).toBe("opt");
 
     second.unmount();
   });
@@ -214,6 +244,10 @@ describe("ValidationWorkspacePanel", () => {
     expect(bodyText).toContain("Expected Notes");
     expect(bodyText).toContain("Admission Compare");
     expect(bodyText).toContain("Selected 0/1");
+    expect(bodyText).toContain(
+      "Next: review the run setup below, then run validation.",
+    );
+    expect(document.querySelector(".appEmptyState [role='status']")).toBeNull();
 
     const buttonByText = (label: string) =>
       Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
@@ -231,6 +265,12 @@ describe("ValidationWorkspacePanel", () => {
     expect(buttonByText("None")?.disabled).toBe(true);
     expect(buttonByText("Match current")?.disabled).toBe(true);
     expect(document.querySelector("table.validationTableVue")).toBeNull();
+
+    const reviewSetupButton = buttonByText("Review run setup");
+    expect(reviewSetupButton?.classList.contains("appButton")).toBe(true);
+    reviewSetupButton?.click();
+    await flushPanel();
+    expect(document.activeElement?.id).toBe("vueValCandidates");
 
     wrapper.unmount();
   });
@@ -521,6 +561,39 @@ describe("ValidationWorkspacePanel", () => {
         ?.textContent,
     ).toContain("1.2400");
     wrapper.unmount();
+  });
+
+  it("uses the shared empty state when a completed validation has no result rows", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    bindRuntimePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const dataStore = useDataStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+    const validationStore = useValidationStore(pinia);
+    workflow.selectResultsTab("validate", { persist: false });
+    dataStore.dataId = "dataset_1";
+    dataStore.datasetLabel = "AAPL";
+    analysisStore.topRows = 1;
+    validationStore.tableVisible = true;
+    validationStore.tableRowCount = 0;
+    validationStore.validationRows = [];
+
+    mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const tableShell = document.querySelector(
+      '[aria-label="Validation results table shell"]',
+    );
+    expect(
+      tableShell?.querySelector(".appEmptyState")?.textContent || "",
+    ).toContain("No validation rows were returned.");
+    expect(
+      tableShell?.querySelector(".appEmptyState [role='status']"),
+    ).toBeNull();
   });
 
   it("persists visible validation result columns and restores defaults", async () => {
